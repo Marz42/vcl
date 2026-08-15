@@ -230,6 +230,81 @@ clash_api_reachable_with_secret() {
   curl "${args[@]}" "$url" >/dev/null 2>&1
 }
 
+# Print fresh|stale|missing|unreadable for meta.last_success_at. Exit 0 iff fresh.
+# Fresh means the timestamp exists and is at most max_age_seconds old (default 300).
+accounting_last_success_status() {
+  local db=$1
+  local max_age=${2:-300}
+  if [[ -z "$db" || ! -r "$db" ]]; then
+    printf 'unreadable\n'
+    return 1
+  fi
+  python3 - "$db" "$max_age" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timezone
+
+db = sys.argv[1]
+try:
+    max_age = float(sys.argv[2])
+except ValueError:
+    print("unreadable")
+    raise SystemExit(1)
+try:
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+    conn.close()
+except Exception:
+    print("unreadable")
+    raise SystemExit(1)
+if not row or not row[0]:
+    print("missing")
+    raise SystemExit(1)
+ts = str(row[0]).strip()
+if ts.endswith("Z"):
+    ts = ts[:-1] + "+00:00"
+try:
+    when = datetime.fromisoformat(ts)
+except ValueError:
+    print("unreadable")
+    raise SystemExit(1)
+if when.tzinfo is None:
+    when = when.replace(tzinfo=timezone.utc)
+age = (datetime.now(timezone.utc) - when).total_seconds()
+if age <= max_age:
+    print("fresh")
+    raise SystemExit(0)
+print("stale")
+raise SystemExit(1)
+PY
+}
+
+accounting_last_success_fresh() {
+  local status
+  status=$(accounting_last_success_status "$@") || true
+  [[ "$status" == "fresh" ]]
+}
+
+# Retry a few seconds when last_success_at is missing (first poll ~5s after start).
+# A stale timestamp cannot become fresh by waiting, so that fails immediately.
+accounting_last_success_fresh_wait() {
+  local db=$1
+  local max_age=${2:-300}
+  local attempts=${3:-3}
+  local delay=${4:-2}
+  local i status
+  for (( i = 0; i < attempts; i++ )); do
+    status=$(accounting_last_success_status "$db" "$max_age") || true
+    case "$status" in
+      fresh) return 0 ;;
+      stale) return 1 ;;
+    esac
+    if (( i + 1 < attempts )); then
+      sleep "$delay"
+    fi
+  done
+  return 1
+}
+
 # Render sing-box config with localhost Clash API + acct/<tag> outbounds/routes.
 # Args: output users_file private_key short_id port reality_host listen clash_port clash_secret [sniff=true|false]
 render_sing_box_config_accounting() {

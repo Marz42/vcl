@@ -859,7 +859,7 @@ cmd_check() {
 }
 
 cmd_verify() {
-  local fail=0
+  local fail=0 clash_port clash_secret schema
   printf '[Node identity]\n\n'
   verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" || fail=1
   printf '\n[Users]\n\n'
@@ -885,8 +885,53 @@ cmd_verify() {
   fi
   if [[ -r "$ACCOUNTING_DB_FILE" ]]; then
     printf '✓ SQLite database readable\n'
+    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    print(row[0] if row else "")
+    conn.close()
+except Exception:
+    pass
+PY
+)
+    if [[ "$schema" == "2" ]]; then
+      printf '✓ expected DB schema\n'
+    else
+      printf '✗ expected DB schema\n'
+      fail=1
+    fi
   else
     printf '✗ SQLite database readable\n'
+    printf '✗ expected DB schema\n'
+    fail=1
+  fi
+  clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
+  [[ -n "$clash_port" ]] || clash_port=9090
+  clash_secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
+  # Clash triad with secret: correct Bearer passes; empty Bearer and wrong secret must fail.
+  if clash_api_reachable_with_secret "$clash_port" "$clash_secret"; then
+    printf '✓ Clash API reachable\n'
+    if [[ -n "$clash_secret" ]] && {
+         clash_api_reachable_with_secret "$clash_port" "" \
+      || clash_api_reachable_with_secret "$clash_port" "wrong-${clash_secret}"
+       }; then
+      printf '✗ Clash API authentication\n'
+      fail=1
+    else
+      printf '✓ Clash API authentication\n'
+    fi
+  else
+    printf '✗ Clash API reachable\n'
+    printf '✗ Clash API authentication\n'
+    fail=1
+  fi
+  # First poll may not have written last_success_at yet; retry a few seconds (3 × 2s).
+  if accounting_last_success_fresh_wait "$ACCOUNTING_DB_FILE"; then
+    printf '✓ collector recently successful\n'
+  else
+    printf '✗ collector recently successful\n'
     fail=1
   fi
   (( fail == 0 ))

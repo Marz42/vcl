@@ -1680,7 +1680,7 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
 
 verify_existing_install() {
   local installed_project_version installed_sing_box_version port clash_port clash_secret
-  local fail=0 schema last_success
+  local fail=0 schema
 
   installed_project_version=$(< "$VERSION_FILE")
   installed_project_version=${installed_project_version//$'\r'/}
@@ -1771,33 +1771,13 @@ PY
       log_warn "expected DB schema"
       fail=1
     fi
-    if wait_for_accountd_healthy; then
+    wait_for_accountd_healthy || true
+    # Do not treat Clash/schema health as collector freshness; require last_success_at.
+    if accounting_last_success_fresh_wait "$ACCOUNTING_DB_FILE"; then
       log_ok "collector recently successful"
     else
-      # After ensuring service is running, require last_success within 5 minutes.
-      if python3 - "$ACCOUNTING_DB_FILE" <<'PY'
-import sqlite3, sys
-from datetime import datetime, timezone
-conn = sqlite3.connect(sys.argv[1])
-row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
-conn.close()
-if not row:
-    raise SystemExit(1)
-ts = row[0]
-if ts.endswith("Z"):
-    ts = ts[:-1] + "+00:00"
-when = datetime.fromisoformat(ts)
-if when.tzinfo is None:
-    when = when.replace(tzinfo=timezone.utc)
-age = (datetime.now(timezone.utc) - when).total_seconds()
-raise SystemExit(0 if age <= 300 else 1)
-PY
-      then
-        log_ok "collector recently successful"
-      else
-        log_warn "collector recently successful"
-        fail=1
-      fi
+      log_warn "collector recently successful"
+      fail=1
     fi
   else
     log_warn "SQLite database readable"
