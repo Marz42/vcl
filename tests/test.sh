@@ -215,8 +215,9 @@ assert_equal "parses bracketed VLESS port" "8443" "$VLESS_PORT"
 
 TEST_TMP=$(mktemp -d /tmp/vincula-tests.XXXXXXXX)
 readonly TEST_NODE_ID="6fc96a10-1111-4111-8111-111111111111"
+readonly TEST_INSTANCE_ID="7aa07b21-2222-4222-8222-222222222222"
 render_sing_box_config "${TEST_TMP}/config.json" "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_SHORT_ID" 443 www.cloudflare.com
-render_state "${TEST_TMP}/state.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
+render_state "${TEST_TMP}/state.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node "$TEST_INSTANCE_ID"
 render_users "${TEST_TMP}/users.json" "$TEST_UUID" 2026-08-12T00:00:00Z "" "" "$TEST_NODE_ID"
 render_settings "${TEST_TMP}/config.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret 90 90 "$TEST_NODE_ID" test-node
 printf '%s\n' "$(render_vless_uri "$TEST_UUID" 203.0.113.10 443 www.cloudflare.com "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID")" > "${TEST_TMP}/owner.uri"
@@ -240,9 +241,84 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 assert_equal "extracts owner uuid from users registry" "$TEST_UUID" "$(json_quoted_field "${TEST_TMP}/users.json" uuid)"
 assert_equal "state includes node_id UUID" "$TEST_NODE_ID" "$(json_quoted_field "${TEST_TMP}/state.json" node_id)"
+assert_equal "state.json schema_version is 2" "2" "$(json_numeric_field "${TEST_TMP}/state.json" schema_version)"
+assert_equal "state includes instance_id UUID" "$TEST_INSTANCE_ID" "$(json_quoted_field "${TEST_TMP}/state.json" instance_id)"
 assert_failure "state does not keep owner.uuid as SoT" grep -q '"owner"' "${TEST_TMP}/state.json"
 assert_success "settings include node_id UUID" grep -q "^node_id = \"${TEST_NODE_ID}\"\$" "${TEST_TMP}/config.toml"
 assert_failure "settings do not hardcode local node_id" grep -q '^node_id = "local"$' "${TEST_TMP}/config.toml"
+assert_failure "settings do not store instance_id" \
+  grep -q '^instance_id' "${TEST_TMP}/config.toml"
+assert_equal "preserves existing instance_id" "$TEST_INSTANCE_ID" \
+  "$(mint_or_preserve_instance_id "$TEST_INSTANCE_ID" "$TEST_NODE_ID")"
+fresh=$(mint_or_preserve_instance_id "" "$TEST_NODE_ID")
+assert_success "fresh instance_id is UUID" \
+  python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$fresh"
+assert_failure "fresh instance_id is not node_id" test "$fresh" = "$TEST_NODE_ID"
+copied=$(mint_or_preserve_instance_id "$TEST_NODE_ID" "$TEST_NODE_ID")
+assert_failure "refuses node_id copy as instance_id" test "$copied" = "$TEST_NODE_ID"
+assert_success "copied-path mint is UUID" \
+  python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$copied"
+assert_equal "re-run does not remint instance_id" "$fresh" \
+  "$(mint_or_preserve_instance_id "$fresh" "$TEST_NODE_ID")"
+python3 - "${TEST_TMP}/state-schema1.json" "$TEST_NODE_ID" <<'PY'
+import json, sys
+path, node_id = sys.argv[1], sys.argv[2]
+json.dump({
+    "schema_version": 1,
+    "project_version": "0.2.7",
+    "node": {
+        "node_id": node_id,
+        "node_name": "test-node",
+        "server": "203.0.113.10",
+        "port": 443,
+    },
+}, open(path, "w", encoding="utf-8"), indent=2)
+open(path, "a", encoding="utf-8").write("\n")
+PY
+schema1_existing=$(json_quoted_field "${TEST_TMP}/state-schema1.json" instance_id || true)
+assert_equal "schema 1 state has no instance_id" "" "$schema1_existing"
+assert_equal "schema 1 migrate keeps node_id" "$TEST_NODE_ID" \
+  "$(json_quoted_field "${TEST_TMP}/state-schema1.json" node_id)"
+schema1_mint=$(mint_or_preserve_instance_id "$schema1_existing" "$TEST_NODE_ID")
+assert_success "schema 1 migrate mints instance_id UUID" \
+  python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$schema1_mint"
+assert_failure "schema 1 migrate does not copy node_id" test "$schema1_mint" = "$TEST_NODE_ID"
+assert_equal "schema 1 migrate remint is idempotent" "$schema1_mint" \
+  "$(mint_or_preserve_instance_id "$schema1_mint" "$TEST_NODE_ID")"
+render_state "${TEST_TMP}/state-schema1-migrated.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node "$schema1_mint"
+assert_equal "schema 1 migrate writes schema 2" "2" \
+  "$(json_numeric_field "${TEST_TMP}/state-schema1-migrated.json" schema_version)"
+assert_equal "schema 1 migrate preserves node_id in schema 2" "$TEST_NODE_ID" \
+  "$(json_quoted_field "${TEST_TMP}/state-schema1-migrated.json" node_id)"
+assert_equal "schema 1 migrate writes minted instance_id" "$schema1_mint" \
+  "$(json_quoted_field "${TEST_TMP}/state-schema1-migrated.json" instance_id)"
+render_state "${TEST_TMP}/state-fresh-mint.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
+fresh_state_iid=$(json_quoted_field "${TEST_TMP}/state-fresh-mint.json" instance_id)
+assert_success "fresh render_state instance_id is UUID" \
+  python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$fresh_state_iid"
+assert_failure "fresh render_state instance_id is not node_id" test "$fresh_state_iid" = "$TEST_NODE_ID"
+assert_equal "fresh render_state keeps node_id" "$TEST_NODE_ID" \
+  "$(json_quoted_field "${TEST_TMP}/state-fresh-mint.json" node_id)"
+assert_equal "fresh render_state writes schema 2" "2" \
+  "$(json_numeric_field "${TEST_TMP}/state-fresh-mint.json" schema_version)"
+install_mint_src=$(awk '/^install_new_node\(\)/,/^main\(\)/ {print}' "${PROJECT_DIR}/vincula.sh")
+migrate_mint_src=$(awk '/^migrate_existing_install\(\)/,/^verify_existing_install\(\)/ {print}' "${PROJECT_DIR}/vincula.sh")
+verify_mint_src=$(awk '/^verify_existing_install\(\)/,/^handle_existing_install\(\)/ {print}' "${PROJECT_DIR}/vincula.sh")
+if [[ "$install_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
+  pass "install_new_node mints instance_id"
+else
+  fail "install_new_node mints instance_id"
+fi
+if [[ "$migrate_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
+  pass "migrate_existing_install mints instance_id when missing"
+else
+  fail "migrate_existing_install mints instance_id when missing"
+fi
+if [[ "$verify_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
+  fail "verify_existing_install does not remint instance_id (unexpected mint)"
+else
+  pass "verify_existing_install does not remint instance_id"
+fi
 assert_success "self-test server binds localhost only" grep -q '"listen": "127.0.0.1"' "${TEST_TMP}/selftest-server.json"
 assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "socks"' "${TEST_TMP}/selftest-client.json"
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
@@ -303,12 +379,12 @@ assert_equal "install.manifest lists vcl symlink" "/usr/local/bin/vcl" \
   "$(manifest_values "${TEST_TMP}/install.manifest" symlink | awk '$0=="/usr/local/bin/vcl" {print; exit}')"
 assert_success "install.manifest lists state directory" grep -q '^directory=/etc/vincula$' "${TEST_TMP}/install.manifest"
 
-render_state "${TEST_TMP}/state-created.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 true true 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
+render_state "${TEST_TMP}/state-created.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 true true 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node "$TEST_INSTANCE_ID"
 assert_equal "persists Vincula-created service account" "true" \
   "$(json_bool_field "${TEST_TMP}/state-created.json" created_by_vincula)"
 assert_equal "persists Vincula-created service group" "true" \
   "$(json_bool_field "${TEST_TMP}/state-created.json" group_created_by_vincula)"
-render_state "${TEST_TMP}/state-reused.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
+render_state "${TEST_TMP}/state-reused.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node "$TEST_INSTANCE_ID"
 assert_equal "persists reused service account" "false" \
   "$(json_bool_field "${TEST_TMP}/state-reused.json" created_by_vincula)"
 assert_success "treats created_by_vincula true as owned" \
@@ -475,7 +551,7 @@ assert_failure "rejects service account UID drift" \
 assert_failure "rejects incomplete service account identity" \
   passwd_identity_matches 0 995 /var/lib/sing-box /usr/sbin/nologin 0 995 /var/lib/sing-box /usr/sbin/nologin
 
-render_state "${TEST_TMP}/state-identity.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 true true 995 995 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
+render_state "${TEST_TMP}/state-identity.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 true true 995 995 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node "$TEST_INSTANCE_ID"
 assert_equal "persists service account uid" "995" "$(json_numeric_field "${TEST_TMP}/state-identity.json" uid)"
 assert_equal "persists service account home" "/var/lib/sing-box" "$(json_quoted_field "${TEST_TMP}/state-identity.json" home)"
 

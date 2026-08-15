@@ -497,6 +497,21 @@ is_supported_upgrade_from() {
   esac
 }
 
+mint_or_preserve_instance_id() {
+  # Args: existing_instance_id node_id
+  # stdout: UUID. Never equals node_id.
+  local existing=$1 node_id=$2 id
+  local uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  if [[ "$existing" =~ $uuid_re && "$existing" != "$node_id" ]]; then
+    printf '%s\n' "$existing"
+    return 0
+  fi
+  id=$(generate_uuid_v4)
+  [[ "$id" != "$node_id" ]] || id=$(generate_uuid_v4)
+  [[ "$id" != "$node_id" ]] || die "Refusing to copy node_id into instance_id."
+  printf '%s\n' "$id"
+}
+
 migrate_legacy_daily_retention() {
   # stdin unused. Args: source_version current_daily
   # stdout: new daily integer. Return 0 always.
@@ -953,23 +968,26 @@ render_state() {
   local shell=${16:-/usr/sbin/nologin}
   local node_id=${17:-}
   local node_name=${18:-}
+  local instance_id=${19:-}
   case "$created_user" in true|false) ;; *) created_user=false ;; esac
   case "$created_group" in true|false) ;; *) created_group=false ;; esac
   [[ "$uid" =~ ^[0-9]+$ ]] || uid=0
   [[ "$gid" =~ ^[0-9]+$ ]] || gid=0
   [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
+  [[ -n "$instance_id" ]] || instance_id=$(mint_or_preserve_instance_id "" "$node_id")
   [[ -n "$node_name" ]] || node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
   # uuid param retained for call-site compatibility; credential UUID lives only in users.json.
   : "${uuid:-}"
   cat > "$output" <<EOF
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "project_version": "${VINCULA_VERSION}",
   "sing_box_version": "${SING_BOX_VERSION}",
   "architecture": "${arch}",
   "installed_at": "${installed_at}",
   "node": {
     "node_id": "${node_id}",
+    "instance_id": "${instance_id}",
     "node_name": "${node_name}",
     "server": "${server}",
     "listen": "${DEFAULT_LISTEN}",
@@ -1489,7 +1507,7 @@ migrate_existing_install() {
   local staged_config staged_state staged_users staged_settings staged_uri staged_manifest staged_install_manifest staged_unit staged_helper staged_version staged_common root
   local created_user created_group clash_secret clash_port
   local original_host host_changed=0
-  local node_id node_name
+  local node_id node_name instance_id
   local legacy_inbound_config=0
   local check_err
 
@@ -1525,6 +1543,9 @@ migrate_existing_install() {
     node_id=$(generate_uuid_v4)
     log_info "Assigned permanent node_id ${node_id}"
   fi
+  instance_id=$(json_quoted_field "$STATE_FILE" instance_id || true)
+  instance_id=$(mint_or_preserve_instance_id "$instance_id" "$node_id")
+  log_info "Physical instance_id ${instance_id}"
 
   [[ -n "$server" ]] || server=$(json_quoted_field "$STATE_FILE" server)
   [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
@@ -1631,7 +1652,7 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   [[ -n "$cycle_start" ]] || cycle_start=1
   render_sing_box_config_from_registry "$staged_config" "$staged_users" "$private_key" "$short_id" \
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
-  render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name"
+  render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name" "$instance_id"
   raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
   [[ -n "$raw_days" ]] || raw_days=90
   daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
@@ -1958,7 +1979,7 @@ install_new_node() {
   local installed_at uri binary_sha archive_sha
   local staged_config staged_state staged_users staged_settings staged_uri staged_checksum staged_manifest staged_install_manifest staged_unit staged_helper staged_version staged_common root
   local created_user created_group clash_secret
-  local node_id node_name clash_port
+  local node_id node_name instance_id clash_port
 
   os_arch=$(uname -m)
   arch=$(map_arch "$os_arch") || die "Unsupported architecture: ${os_arch}. Only amd64 and arm64 are supported."
@@ -1988,13 +2009,17 @@ install_new_node() {
   uuid=$("$binary" generate uuid)
   short_id=$("$binary" generate rand --hex 8)
   node_id=$("$binary" generate uuid)
+  instance_id=$(mint_or_preserve_instance_id "" "$node_id")
   node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
 
   [[ "$private_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the generated REALITY private key."
   [[ "$public_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the generated REALITY public key."
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated UUID."
   [[ "$node_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated node_id."
+  [[ "$instance_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated instance_id."
   [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Could not validate the generated REALITY short ID."
+  log_info "Assigned node_id ${node_id}"
+  log_info "Assigned instance_id ${instance_id}"
 
   run_reality_self_test "$binary" "$uuid" "$private_key" "$public_key" "$short_id" "$reality_host" \
     || die "REALITY end-to-end self-test failed for ${reality_host}. Choose another target with VCL_REALITY_HOST."
@@ -2048,7 +2073,7 @@ install_new_node() {
   if (( SERVICE_GROUP_CREATED == 1 )); then
     created_group=true
   fi
-  render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name"
+  render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name" "$instance_id"
 
   install -d -o root -g root -m 0700 "$STATE_DIR"
   install -d -o root -g "$SERVICE_GROUP" -m 0750 "$SING_BOX_DIR"
