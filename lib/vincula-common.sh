@@ -219,6 +219,17 @@ generate_clash_api_secret() {
   python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 }
 
+# Probe Clash /connections on localhost. When secret is non-empty, send Bearer.
+clash_api_reachable_with_secret() {
+  local port=$1 secret=${2:-}
+  local url="http://127.0.0.1:${port}/connections"
+  local args=(-fsS --max-time 5)
+  if [[ -n "$secret" ]]; then
+    args+=(-H "Authorization: Bearer ${secret}")
+  fi
+  curl "${args[@]}" "$url" >/dev/null 2>&1
+}
+
 # Render sing-box config with localhost Clash API + acct/<tag> outbounds/routes.
 # Args: output users_file private_key short_id port reality_host listen clash_port clash_secret [sniff=true|false]
 render_sing_box_config_accounting() {

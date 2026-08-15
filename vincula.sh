@@ -1882,16 +1882,6 @@ validate_accounting_artifacts() {
   fi
 }
 
-clash_api_reachable_with_secret() {
-  local port=$1 secret=${2:-}
-  local url="http://127.0.0.1:${port}/connections"
-  local args=(-fsS --max-time 5)
-  if [[ -n "$secret" ]]; then
-    args+=(-H "Authorization: Bearer ${secret}")
-  fi
-  curl "${args[@]}" "$url" >/dev/null 2>&1
-}
-
 localhost_port_free_or_ours() {
   local port=$1
   validate_port "$port" || return 1
