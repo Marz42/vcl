@@ -1663,6 +1663,96 @@ else
   fail "cycle --set 0 error mentions 1 to 28 (got '${set0_err}')"
 fi
 
+# F4: vcl verify dual-plane accounting checks (offline). Live Clash is operator-only:
+#   sudo vcl verify   # on a running node; expect Clash triad + schema_version=2 + last_success_at ≤300s
+verify_src_fn=$(awk '/^cmd_verify\(\)/,/^cmd_diagnose\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
+if [[ "$verify_src_fn" == *'schema_version'* ]]; then
+  pass "cmd_verify checks schema_version"
+else
+  fail "cmd_verify checks schema_version"
+fi
+if [[ "$verify_src_fn" == *'last_success'* ]]; then
+  pass "cmd_verify checks last_success_at"
+else
+  fail "cmd_verify checks last_success_at"
+fi
+if [[ "$verify_src_fn" == *'Bearer'* ]]; then
+  pass "cmd_verify documents Bearer triad"
+else
+  fail "cmd_verify documents Bearer triad"
+fi
+if [[ "$verify_src_fn" == *'wrong-${clash_secret}'* ]]; then
+  pass "cmd_verify rejects wrong Clash secret"
+else
+  fail "cmd_verify rejects wrong Clash secret"
+fi
+assert_success "clash_api_reachable_with_secret is defined in common" \
+  grep -q '^clash_api_reachable_with_secret()' "${PROJECT_DIR}/lib/vincula-common.sh"
+assert_failure "installer no longer defines clash_api_reachable_with_secret" \
+  grep -q '^clash_api_reachable_with_secret()' "${PROJECT_DIR}/vincula.sh"
+assert_success "installer still calls clash_api_reachable_with_secret" \
+  grep -q 'clash_api_reachable_with_secret ' "${PROJECT_DIR}/vincula.sh"
+assert_success "installer collector success requires last_success_at" \
+  grep -q 'accounting_last_success_fresh_wait' "${PROJECT_DIR}/vincula.sh"
+existing_verify_src=$(awk '/^verify_existing_install\(\)/,/^handle_existing_install\(\)/ {print}' "${PROJECT_DIR}/vincula.sh")
+if printf '%s\n' "$existing_verify_src" | grep -A1 'wait_for_accountd_healthy' | grep -q 'collector recently successful'; then
+  fail "installer must not print collector success from wait_for_accountd_healthy alone"
+else
+  pass "installer must not print collector success from wait_for_accountd_healthy alone"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  FRESH_DB="${TEST_TMP}/verify-freshness.db"
+  python3 - "$FRESH_DB" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timezone, timedelta
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+now = datetime.now(timezone.utc)
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+conn.execute(
+    "INSERT INTO meta(key,value) VALUES('last_success_at', ?)",
+    (now.strftime("%Y-%m-%dT%H:%M:%SZ"),),
+)
+conn.commit()
+conn.close()
+PY
+  assert_equal "fresh last_success_at status is fresh" "fresh" "$(accounting_last_success_status "$FRESH_DB")"
+  assert_success "fresh last_success_at is healthy" accounting_last_success_fresh "$FRESH_DB"
+  python3 - "$FRESH_DB" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timezone, timedelta
+conn = sqlite3.connect(sys.argv[1])
+old = (datetime.now(timezone.utc) - timedelta(seconds=400)).strftime("%Y-%m-%dT%H:%M:%SZ")
+conn.execute("UPDATE meta SET value=? WHERE key='last_success_at'", (old,))
+conn.commit()
+conn.close()
+PY
+  assert_equal "last_success_at older than 300s is stale" "stale" "$(accounting_last_success_status "$FRESH_DB")"
+  assert_failure "last_success_at older than 300s is unhealthy" accounting_last_success_fresh "$FRESH_DB"
+  stale_wait_start=$(date +%s)
+  assert_failure "stale last_success_at fails wait without sleeping" accounting_last_success_fresh_wait "$FRESH_DB"
+  stale_wait_elapsed=$(( $(date +%s) - stale_wait_start ))
+  if (( stale_wait_elapsed < 2 )); then
+    pass "stale last_success_at wait returns immediately"
+  else
+    fail "stale last_success_at wait returns immediately (elapsed ${stale_wait_elapsed}s)"
+  fi
+  MISSING_DB="${TEST_TMP}/verify-missing-success.db"
+  python3 - "$MISSING_DB" <<'PY'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+conn.commit()
+conn.close()
+PY
+  assert_equal "missing last_success_at status is missing" "missing" "$(accounting_last_success_status "$MISSING_DB")"
+  assert_failure "missing last_success_at is unhealthy" accounting_last_success_fresh "$MISSING_DB"
+else
+  fail "python3 required for last_success_at freshness helper tests"
+fi
+
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then
   arch=$(map_arch "$(uname -m)") || {
     fail "integration test architecture unsupported"
