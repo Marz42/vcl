@@ -1815,7 +1815,7 @@ cmd_stats() {
   local fmt="table" days=1 day_offset=0 month=0 mode="summary"
   local user_tag="" department="" host="" limit=20 top_compat=0 csv_file=""
   local stats_py collector_state last_success
-  local date_arg="" from_arg="" to_arg="" window=""
+  local date_arg="" from_arg="" to_arg="" window="" cycle_start
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1930,7 +1930,7 @@ vcl stats — traffic analytics (UTC)
   vcl stats today
   vcl stats yesterday
   vcl stats --days N
-  vcl stats --month
+  vcl stats --month   从账期起始日(默认每月1日)到今天 (UTC)
   vcl stats --date YYYY-MM-DD
   vcl stats --from YYYY-MM-DD --to YYYY-MM-DD
   vcl stats user <tag> [--today] [--days N] [--month] [--top N]
@@ -1966,6 +1966,8 @@ HELP
   warn_if_accounting_stale
   collector_state=$(accounting_collector_state)
   last_success=$(accounting_last_success_at)
+  cycle_start=$(toml_get "$SETTINGS_FILE" billing_cycle_start_day || true)
+  [[ -n "$cycle_start" ]] || cycle_start=1
 
   local -a args=(
     "$stats_py"
@@ -1977,6 +1979,7 @@ HELP
     --format "$fmt"
     --collector-state "$collector_state"
     --last-success-at "$last_success"
+    --cycle-start "$cycle_start"
   )
   if [[ -n "$date_arg" ]]; then
     args+=(--date "$date_arg")

@@ -64,10 +64,27 @@ def period_for_days(days: int, day_offset: int) -> Tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
-def period_for_month(day_offset: int) -> Tuple[str, str]:
-    """UTC calendar month containing (today - day_offset), from day 1 through that date."""
+def coerce_cycle_start(start_day: Any) -> int:
+    try:
+        day = int(start_day)
+    except (TypeError, ValueError):
+        day = 0
+    if day < 1 or day > 28:
+        print("WARNING: invalid billing_cycle_start_day; falling back to 1", file=sys.stderr)
+        return 1
+    return day
+
+
+def period_for_month(day_offset: int, start_day: int = 1) -> Tuple[str, str]:
+    """UTC billing window: start_day of the current (or previous) cycle through utc today."""
     end = utc_today(day_offset)
-    start = end.replace(day=1)
+    day = coerce_cycle_start(start_day)
+    if end.day >= day:
+        start = end.replace(day=day)
+    elif end.month == 1:
+        start = date(end.year - 1, 12, day)
+    else:
+        start = date(end.year, end.month - 1, day)
     return start.isoformat(), end.isoformat()
 
 
@@ -287,11 +304,12 @@ def query(
     last_success_at: str,
     range_start: str = "",
     range_end: str = "",
+    cycle_start: Any = 1,
 ) -> Result:
     if range_start:
         start, end = period_for_range(range_start, range_end or range_start)
     elif month:
-        start, end = period_for_month(day_offset)
+        start, end = period_for_month(day_offset, cycle_start)
     else:
         start, end = period_for_days(days, day_offset)
 
@@ -674,6 +692,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--to", dest="to_date", metavar="YYYY-MM-DD")
     p.add_argument("--day-offset", type=int, default=0)
     p.add_argument("--month", type=int, choices=(0, 1), default=0)
+    p.add_argument("--cycle-start", default="1")
     p.add_argument("--user", default="")
     p.add_argument("--department", default="")
     p.add_argument("--host", default="")
@@ -727,6 +746,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         last_success_at=args.last_success_at or "",
         range_start=range_start,
         range_end=range_end,
+        cycle_start=args.cycle_start,
     )
     if args.format == "json":
         render_json(result)
