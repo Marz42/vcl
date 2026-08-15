@@ -357,6 +357,7 @@ assert_success "helper rejects uninstall --force" grep -q 'uninstall --force is 
 assert_success "helper documents vcl connections" grep -q 'vcl connections' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl stats" grep -q 'vcl stats today' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl accounting status" grep -q 'vcl accounting status' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl accounting check" grep -q 'vcl accounting check' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit user" grep -q 'vcl audit user TAG' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit --user-id" grep -q 'vcl audit --user-id UUID' "${TEST_TMP}/vincula"
 assert_failure "accounting status does not prefer JSONL ingest" \
@@ -367,6 +368,7 @@ assert_success "helper documents stats month" grep -q 'vcl stats today|yesterday
 assert_success "helper documents stats top" grep -q 'vcl stats top users|departments|hosts' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats host" grep -q 'vcl stats host' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents accounting retention" grep -q 'vcl accounting retention' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents accounting check" grep -q 'vcl accounting check' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents accounting cycle" grep -q 'vcl accounting cycle' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents accounting cycle --set" grep -q 'vcl accounting cycle --set N' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats --date" grep -q 'vcl stats --date YYYY-MM-DD' "${PROJECT_DIR}/bin/vincula"
@@ -376,6 +378,11 @@ if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit user'; then
   pass "vcl help lists audit"
 else
   fail "vcl help lists audit"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl accounting check'; then
+  pass "vcl help lists accounting check"
+else
+  fail "vcl help lists accounting check"
 fi
 assert_success "stats --month help mentions billing cycle start" \
   grep -q '从账期起始日(默认每月1日)到今天' "${PROJECT_DIR}/bin/vincula"
@@ -2844,30 +2851,35 @@ else
 fi
 
 # F4: vcl verify dual-plane accounting checks (offline). Live Clash is operator-only:
-#   sudo vcl verify   # on a running node; expect Clash triad + schema_version=3 + last_success_at ≤300s
+#   sudo vcl verify   # on a running node; expect Clash triad + D3 plane + last_success_at ≤300s
 verify_src_fn=$(awk '/^cmd_verify\(\)/,/^cmd_diagnose\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
-if [[ "$verify_src_fn" == *'schema_version'* ]]; then
-  pass "cmd_verify checks schema_version"
+if [[ "$verify_src_fn" == *'accounting_plane'* || "$verify_src_fn" == *'baseline sanity'* ]]; then
+  pass "cmd_verify uses shared accounting plane checker"
 else
-  fail "cmd_verify checks schema_version"
+  fail "cmd_verify uses shared accounting plane checker"
 fi
-if [[ "$verify_src_fn" == *'"$schema" == "3"'* ]]; then
-  pass "cmd_verify expects accounting schema 3"
+assert_success "accounting_plane_checks is defined" \
+  grep -q '^def accounting_plane_checks(' "${PROJECT_DIR}/lib/vincula-accountd.py"
+acct_src_fn=$(awk '/^cmd_accounting\(\)/,/^resolve_stats_py\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
+if [[ "$acct_src_fn" == *'check)'* && "$acct_src_fn" == *'cmd_verify_accounting_plane'* ]]; then
+  pass "vcl accounting check aliases the shared accounting plane checker"
 else
-  fail "cmd_verify expects accounting schema 3"
+  fail "vcl accounting check aliases the shared accounting plane checker"
 fi
 assert_success "installer health checks expect accounting schema 3" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
+assert_failure "cmd_verify no longer inlines schema SQL" \
+  grep -q '"$schema" == "3"' "${PROJECT_DIR}/bin/vincula"
 assert_failure "cmd_verify no longer expects accounting schema 2" \
   grep -q '"$schema" == "2"' "${PROJECT_DIR}/bin/vincula"
 assert_failure "installer health checks no longer expect accounting schema 2" \
   grep -q '"$schema" == "2"' "${PROJECT_DIR}/vincula.sh"
 assert_failure "D5: instance_id is never assigned from node_id" \
   grep -E 'instance_id[[:space:]]*=[[:space:]].*node_id' "${PROJECT_DIR}/lib/vincula-accountd.py"
-if [[ "$verify_src_fn" == *'last_success'* ]]; then
-  pass "cmd_verify checks last_success_at"
+if [[ "$verify_src_fn" == *'heartbeat'* ]]; then
+  pass "cmd_verify checks collector heartbeat"
 else
-  fail "cmd_verify checks last_success_at"
+  fail "cmd_verify checks collector heartbeat"
 fi
 if [[ "$verify_src_fn" == *'Bearer'* ]]; then
   pass "cmd_verify documents Bearer triad"
@@ -2942,6 +2954,202 @@ conn.close()
 PY
   assert_equal "missing last_success_at status is missing" "missing" "$(accounting_last_success_status "$MISSING_DB")"
   assert_failure "missing last_success_at is unhealthy" accounting_last_success_fresh "$MISSING_DB"
+
+  plane_out=""
+  plane_rc=0
+  plane_out=$(python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}" <<'PY'
+import importlib.util, os, sqlite3, subprocess, sys
+from datetime import datetime, timezone, timedelta
+
+mod_path, tmp = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+rows = []
+
+def record(name, ok, detail=""):
+    rows.append(("PASS" if ok else "FAIL", name, detail))
+
+def by_name(results):
+    return {n: (ok, d) for n, ok, d in results}
+
+schema2 = os.path.join(tmp, "plane-schema2.db")
+conn = sqlite3.connect(schema2)
+conn.executescript("""
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE connections (
+  connection_id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  network TEXT,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  closed_at TEXT,
+  last_seen_at TEXT NOT NULL
+);
+""")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+conn.execute(
+    "INSERT INTO meta(key,value) VALUES('last_success_at', ?)",
+    (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),),
+)
+conn.commit()
+conn.close()
+r2 = by_name(mod.accounting_plane_checks(
+    schema2, service_active=True, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks schema 2 fails schema expected",
+    r2["schema expected"][0] is False,
+    r2["schema expected"][1],
+)
+
+healthy = os.path.join(tmp, "plane-healthy.db")
+hconn = mod.open_db(healthy)
+mod.meta_set(hconn, "last_success_at", mod.utc_now_iso())
+hconn.commit()
+hconn.close()
+rh = by_name(mod.accounting_plane_checks(
+    healthy, service_active=True, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks schema 3 healthy passes schema",
+    rh["schema expected"][0] is True,
+    rh["schema expected"][1],
+)
+record(
+    "accounting_plane_checks schema 3 healthy passes database readable",
+    rh["database readable"][0] is True,
+    rh["database readable"][1],
+)
+record(
+    "accounting_plane_checks schema 3 healthy passes counter sanity",
+    rh["counter sanity"][0] is True,
+    rh["counter sanity"][1],
+)
+record(
+    "accounting_plane_checks schema 3 healthy passes heartbeat",
+    rh["heartbeat"][0] is True,
+    rh["heartbeat"][1],
+)
+record(
+    "accounting_plane_checks service_active True is healthy",
+    rh["accountd service"][0] is True,
+    rh["accountd service"][1],
+)
+roff = by_name(mod.accounting_plane_checks(
+    healthy, service_active=False, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks service_active False is unhealthy",
+    roff["accountd service"][0] is False,
+    roff["accountd service"][1],
+)
+
+stale = os.path.join(tmp, "plane-stale.db")
+sconn = mod.open_db(stale)
+old = (datetime.now(timezone.utc) - timedelta(seconds=mod.HEARTBEAT_MAX_AGE_SECONDS + 100)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+mod.meta_set(sconn, "last_success_at", old)
+sconn.commit()
+sconn.close()
+rs = by_name(mod.accounting_plane_checks(
+    stale, service_active=True, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks stale heartbeat is unhealthy",
+    rs["heartbeat"][0] is False,
+    rs["heartbeat"][1],
+)
+
+neg = os.path.join(tmp, "plane-negative.db")
+nconn = mod.open_db(neg)
+mod.meta_set(nconn, "last_success_at", mod.utc_now_iso())
+nconn.execute(
+    """
+    INSERT INTO connections(
+      connection_id, generation, user_id, node_id,
+      started_at, last_seen_at, closed_at, upload_bytes, download_bytes
+    ) VALUES ('neg-1', 0, 'u-alice', 'n1',
+              '2026-08-14T00:00:00Z', '2026-08-14T01:00:00Z',
+              '2026-08-14T01:00:00Z', -5, 10)
+    """
+)
+nconn.commit()
+nconn.close()
+rn = by_name(mod.accounting_plane_checks(
+    neg, service_active=True, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks negative counter is unhealthy",
+    rn["counter sanity"][0] is False,
+    rn["counter sanity"][1],
+)
+
+nobase = os.path.join(tmp, "plane-open-nobaseline.db")
+bconn = mod.open_db(nobase)
+mod.meta_set(bconn, "last_success_at", mod.utc_now_iso())
+bconn.execute(
+    """
+    INSERT INTO connections(
+      connection_id, generation, user_id, node_id,
+      started_at, last_seen_at, closed_at, upload_bytes, download_bytes
+    ) VALUES ('open-1', 0, 'u-alice', 'n1',
+              '2026-08-14T00:00:00Z', '2026-08-14T01:00:00Z',
+              NULL, 100, 200)
+    """
+)
+bconn.commit()
+bconn.close()
+rb = by_name(mod.accounting_plane_checks(
+    nobase, service_active=True, raw_days=90, daily_days=90
+))
+record(
+    "accounting_plane_checks open without baseline is unhealthy",
+    rb["baseline sanity"][0] is False,
+    rb["baseline sanity"][1],
+)
+
+proc = subprocess.run(
+    [
+        sys.executable, mod_path, "--check-accounting-plane",
+        "--db", schema2, "--service-active", "--raw-days", "90", "--daily-days", "90",
+    ],
+    capture_output=True, text=True,
+)
+record(
+    "accounting_plane CLI reports FAIL schema expected on schema 2",
+    proc.returncode != 0 and "FAIL\tschema expected" in proc.stdout,
+    (proc.stdout + proc.stderr).replace("\n", " | "),
+)
+
+for status, name, detail in rows:
+    print(f"{status}\t{name}\t{detail}")
+sys.exit(0 if all(s == "PASS" for s, _, _ in rows) else 1)
+PY
+) || plane_rc=$?
+  if [[ -z "$plane_out" ]]; then
+    fail "accounting_plane_checks fixtures produced output"
+  else
+    while IFS=$'\t' read -r plane_status plane_name plane_detail; do
+      [[ -n "$plane_status" ]] || continue
+      if [[ "$plane_status" == "PASS" ]]; then
+        pass "$plane_name"
+      else
+        fail "${plane_name} (${plane_detail})"
+      fi
+    done <<< "$plane_out"
+  fi
+  if (( plane_rc != 0 )) && [[ -z "$plane_out" ]]; then
+    fail "accounting_plane_checks python fixtures exited ${plane_rc}"
+  fi
 else
   fail "python3 required for last_success_at freshness helper tests"
 fi

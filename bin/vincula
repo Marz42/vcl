@@ -99,6 +99,7 @@ Usage:
   vcl user verify
   vcl connections      Recent connection rows (requires active accountd)
   vcl accounting status
+  vcl accounting check
   vcl accounting retention
   vcl accounting cycle
   vcl accounting cycle --set N
@@ -863,12 +864,21 @@ cmd_check() {
 }
 
 cmd_verify() {
-  local fail=0 clash_port clash_secret schema
+  local fail=0
   printf '[Node identity]\n\n'
   verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" || fail=1
   printf '\n[Users]\n\n'
   verify_users_in_config "$USERS_FILE" "$CONFIG_FILE" || fail=1
   printf '\n[Accounting Plane]\n\n'
+  cmd_verify_accounting_plane || fail=1
+  (( fail == 0 ))
+}
+
+cmd_verify_accounting_plane() {
+  local fail=0 clash_port clash_secret accountd_py
+  local service_active=0 raw_days daily_days
+  local check_out check_rc=0 attempt status name detail label
+
   if [[ -f "$ACCOUNTD_PY" ]]; then
     printf '✓ accountd artifact\n'
   else
@@ -881,36 +891,66 @@ cmd_verify() {
     printf '✗ accountd unit\n'
     fail=1
   fi
+
   if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then
-    printf '✓ accountd service active\n'
-  else
-    printf '✗ accountd service active\n'
-    fail=1
+    service_active=1
   fi
-  if [[ -r "$ACCOUNTING_DB_FILE" ]]; then
-    printf '✓ SQLite database readable\n'
-    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
-import sqlite3, sys
-try:
-    conn = sqlite3.connect(sys.argv[1])
-    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    print(row[0] if row else "")
-    conn.close()
-except Exception:
-    pass
-PY
-)
-    if [[ "$schema" == "3" ]]; then
-      printf '✓ expected DB schema\n'
-    else
-      printf '✗ expected DB schema\n'
+
+  raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
+  daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
+  [[ -n "$raw_days" ]] || raw_days=90
+  [[ -n "$daily_days" ]] || daily_days=90
+
+  accountd_py=$(resolve_accountd_py) || accountd_py="$ACCOUNTD_PY"
+  if [[ -f "$accountd_py" ]]; then
+    local -a plane_args=(
+      "$accountd_py"
+      --check-accounting-plane
+      --db "$ACCOUNTING_DB_FILE"
+      --raw-days "$raw_days"
+      --daily-days "$daily_days"
+    )
+    if (( service_active == 1 )); then
+      plane_args+=(--service-active)
+    fi
+    # First poll may not have written last_success_at yet; retry a few seconds (3 × 2s).
+    for (( attempt = 0; attempt < 3; attempt++ )); do
+      check_rc=0
+      check_out=$(python3 "${plane_args[@]}" 2>/dev/null) || check_rc=$?
+      if (( check_rc == 0 )); then
+        break
+      fi
+      if [[ "$check_out" == *$'\t'heartbeat$'\t'*missing* ]] && (( attempt < 2 )); then
+        sleep 2
+        continue
+      fi
+      break
+    done
+    while IFS=$'\t' read -r status name detail; do
+      [[ -n "$status" ]] || continue
+      case "$name" in
+        "accountd service") label="accountd service active" ;;
+        "database readable") label="SQLite database readable" ;;
+        "schema expected") label="expected DB schema" ;;
+        "heartbeat") label="collector recently successful" ;;
+        *) label="$name" ;;
+      esac
+      if [[ "$status" == "OK" ]]; then
+        printf '✓ %s\n' "$label"
+      else
+        printf '✗ %s\n' "$label"
+        fail=1
+      fi
+    done <<< "$check_out"
+    if [[ -z "$check_out" ]]; then
+      printf '✗ accounting plane checker\n'
       fail=1
     fi
   else
-    printf '✗ SQLite database readable\n'
-    printf '✗ expected DB schema\n'
+    printf '✗ accounting plane checker\n'
     fail=1
   fi
+
   clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$clash_port" ]] || clash_port=9090
   clash_secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
@@ -929,13 +969,6 @@ PY
   else
     printf '✗ Clash API reachable\n'
     printf '✗ Clash API authentication\n'
-    fail=1
-  fi
-  # First poll may not have written last_success_at yet; retry a few seconds (3 × 2s).
-  if accounting_last_success_fresh_wait "$ACCOUNTING_DB_FILE"; then
-    printf '✓ collector recently successful\n'
-  else
-    printf '✗ collector recently successful\n'
     fail=1
   fi
   (( fail == 0 ))
@@ -1639,6 +1672,11 @@ cmd_accounting() {
   local sub=${1:-}
   shift || true
   case "$sub" in
+    check)
+      [[ $# == 0 ]] || die "usage: vcl accounting check"
+      printf '[Accounting Plane]\n\n'
+      cmd_verify_accounting_plane
+      ;;
     status)
       [[ $# == 0 ]] || die "usage: vcl accounting status"
       local acc_state clash_port last_ok host_pct ip_pct
@@ -1746,10 +1784,10 @@ PY
       fi
       ;;
     "")
-      die "usage: vcl accounting status|retention|cycle"
+      die "usage: vcl accounting status|check|retention|cycle"
       ;;
     *)
-      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status|retention|cycle'."
+      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status|check|retention|cycle'."
       ;;
   esac
 }
@@ -1765,6 +1803,23 @@ resolve_stats_py() {
     root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
     if [[ -n "$root" && -f "${root}/lib/vincula-stats.py" ]]; then
       printf '%s\n' "${root}/lib/vincula-stats.py"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+resolve_accountd_py() {
+  if [[ -f "$ACCOUNTD_PY" ]]; then
+    printf '%s\n' "$ACCOUNTD_PY"
+    return 0
+  fi
+  local src root
+  src=${BASH_SOURCE[0]-}
+  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$root" && -f "${root}/lib/vincula-accountd.py" ]]; then
+      printf '%s\n' "${root}/lib/vincula-accountd.py"
       return 0
     fi
   fi

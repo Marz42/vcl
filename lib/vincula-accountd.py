@@ -49,6 +49,7 @@ DEFAULT_DAILY_RETENTION_DAYS = 90
 RETENTION_DELETE_BATCH = 2000
 SCHEMA_VERSION = 3
 INT64_MAX = 2**63 - 1
+HEARTBEAT_MAX_AGE_SECONDS = 300
 
 NODE_ID = "local"
 TAG_TO_USER_ID: Dict[str, str] = {}
@@ -1257,6 +1258,348 @@ def apply_retention(
     conn.commit()
 
 
+def _parse_iso_utc(value: str) -> Optional[datetime]:
+    ts = (value or "").strip()
+    if not ts:
+        return None
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    try:
+        when = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc)
+
+
+def _open_readonly_accounting_db(db_path: str) -> sqlite3.Connection:
+    """Open accounting.db read-only. Does not migrate or write."""
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _plane_detail(text: str) -> str:
+    return str(text).replace("\t", " ").replace("\n", " ").strip()
+
+
+def accounting_plane_checks(
+    db_path: str,
+    *,
+    service_active: bool,
+    raw_days: int,
+    daily_days: int,
+) -> List[Tuple[str, bool, str]]:
+    """D3 Accounting Plane checks. Pure function; no Clash API, no writes.
+
+    Returns an ordered list of (name, ok, detail). Called by both
+    `vcl verify` and `vcl accounting check`.
+    """
+    results: List[Tuple[str, bool, str]] = []
+    results.append(
+        (
+            "accountd service",
+            bool(service_active),
+            "active" if service_active else "inactive",
+        )
+    )
+
+    conn: Optional[sqlite3.Connection] = None
+    skipped = "skipped: database unreadable"
+
+    def fail_rest(reason: str) -> List[Tuple[str, bool, str]]:
+        for name in (
+            "schema expected",
+            "heartbeat",
+            "baseline sanity",
+            "counter sanity",
+            "retention state",
+        ):
+            results.append((name, False, _plane_detail(reason)))
+        return results
+
+    if not db_path or not os.path.isfile(db_path) or not os.access(db_path, os.R_OK):
+        results.append(
+            ("database readable", False, _plane_detail(f"unreadable: {db_path or '(none)'}"))
+        )
+        return fail_rest(skipped)
+
+    try:
+        conn = _open_readonly_accounting_db(db_path)
+        check = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if check != "ok":
+            results.append(
+                ("database readable", False, _plane_detail(f"integrity_check={check}"))
+            )
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+            return fail_rest(skipped)
+        results.append(("database readable", True, "ok"))
+    except sqlite3.Error as exc:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        results.append(("database readable", False, _plane_detail(str(exc))))
+        return fail_rest(skipped)
+
+    tables = _table_names(conn)
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+        schema = str(row[0]) if row and row[0] is not None else ""
+    except sqlite3.Error as exc:
+        schema = ""
+        results.append(("schema expected", False, _plane_detail(f"unreadable: {exc}")))
+    else:
+        expected = str(SCHEMA_VERSION)
+        results.append(
+            (
+                "schema expected",
+                schema == expected,
+                f"schema_version={schema or '(none)'} (expected {expected})",
+            )
+        )
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='last_success_at'"
+        ).fetchone()
+        last_success = str(row[0]) if row and row[0] else ""
+    except sqlite3.Error:
+        last_success = ""
+    if not last_success:
+        results.append(("heartbeat", False, "last_success_at missing"))
+    else:
+        when = _parse_iso_utc(last_success)
+        if when is None:
+            results.append(
+                ("heartbeat", False, _plane_detail(f"last_success_at unreadable: {last_success}"))
+            )
+        else:
+            age = (datetime.now(timezone.utc) - when).total_seconds()
+            if age > HEARTBEAT_MAX_AGE_SECONDS:
+                results.append(
+                    (
+                        "heartbeat",
+                        False,
+                        f"last_success_at stale (age {int(age)}s > {HEARTBEAT_MAX_AGE_SECONDS}s)",
+                    )
+                )
+            else:
+                results.append(
+                    ("heartbeat", True, f"last_success_at fresh (age {int(max(age, 0))}s)")
+                )
+
+    baseline_ok = True
+    baseline_bits: List[str] = []
+    if "connections" not in tables or "poll_baseline" not in tables:
+        baseline_ok = False
+        baseline_bits.append("connections or poll_baseline missing")
+    else:
+        try:
+            missing_open = conn.execute(
+                """
+                SELECT COUNT(*) FROM connections c
+                WHERE c.closed_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM poll_baseline b
+                    WHERE b.connection_id = c.connection_id
+                      AND b.generation = c.generation
+                  )
+                """
+            ).fetchone()[0]
+            stale_baseline = conn.execute(
+                """
+                SELECT COUNT(*) FROM poll_baseline b
+                LEFT JOIN connections c
+                  ON c.connection_id = b.connection_id
+                 AND c.generation = b.generation
+                WHERE c.event_id IS NULL OR c.closed_at IS NOT NULL
+                """
+            ).fetchone()[0]
+            drifted = conn.execute(
+                """
+                SELECT COUNT(*) FROM connections c
+                JOIN poll_baseline b
+                  ON b.connection_id = c.connection_id
+                 AND b.generation = c.generation
+                WHERE c.closed_at IS NULL
+                  AND (c.upload_bytes != b.accounted_upload
+                       OR c.download_bytes != b.accounted_download)
+                """
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            baseline_ok = False
+            baseline_bits.append(f"query failed: {exc}")
+        else:
+            if missing_open:
+                baseline_ok = False
+                baseline_bits.append(f"{missing_open} open row(s) missing matching poll_baseline")
+            if stale_baseline:
+                baseline_ok = False
+                baseline_bits.append(
+                    f"{stale_baseline} poll_baseline row(s) point at missing or closed generation"
+                )
+            if drifted:
+                baseline_ok = False
+                baseline_bits.append(
+                    f"{drifted} open row(s) drifted from poll_baseline accounted bytes"
+                )
+            if baseline_ok:
+                baseline_bits.append("open generations match poll_baseline")
+    results.append(
+        (
+            "baseline sanity",
+            baseline_ok,
+            _plane_detail("; ".join(baseline_bits) or "ok"),
+        )
+    )
+
+    counter_ok = True
+    counter_bits: List[str] = []
+    if "connections" not in tables:
+        counter_ok = False
+        counter_bits.append("connections missing")
+    else:
+        try:
+            neg_conn = conn.execute(
+                """
+                SELECT COUNT(*) FROM connections
+                WHERE upload_bytes < 0 OR download_bytes < 0
+                """
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            counter_ok = False
+            counter_bits.append(f"connections query failed: {exc}")
+            neg_conn = 0
+        else:
+            if neg_conn:
+                counter_ok = False
+                counter_bits.append(f"{neg_conn} connection row(s) with negative bytes")
+    if "poll_baseline" in tables:
+        try:
+            neg_base = conn.execute(
+                """
+                SELECT COUNT(*) FROM poll_baseline
+                WHERE last_upload_counter < 0 OR last_download_counter < 0
+                   OR accounted_upload < 0 OR accounted_download < 0
+                """
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            counter_ok = False
+            counter_bits.append(f"poll_baseline query failed: {exc}")
+        else:
+            if neg_base:
+                counter_ok = False
+                counter_bits.append(f"{neg_base} poll_baseline row(s) with negative counters")
+    if counter_ok:
+        counter_bits.append("no negative counters")
+    results.append(
+        ("counter sanity", counter_ok, _plane_detail("; ".join(counter_bits)))
+    )
+
+    retention_ok = True
+    retention_bits: List[str] = []
+    last_retention = ""
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='last_retention_at'"
+        ).fetchone()
+        last_retention = str(row[0]) if row and row[0] else ""
+    except sqlite3.Error:
+        last_retention = ""
+    if last_retention:
+        when_ret = _parse_iso_utc(last_retention)
+        if when_ret is None:
+            retention_bits.append(f"last_retention_at unreadable: {last_retention}")
+        else:
+            ret_age = int((datetime.now(timezone.utc) - when_ret).total_seconds())
+            retention_bits.append(f"last_retention_at age {max(ret_age, 0)}s")
+    else:
+        retention_bits.append("last_retention_at missing")
+
+    expired_conn = 0
+    if "connections" in tables and raw_days > 0:
+        cutoff = datetime.now(timezone.utc).timestamp() - raw_days * 86400
+        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        try:
+            expired_conn = conn.execute(
+                """
+                SELECT COUNT(*) FROM connections
+                WHERE last_seen_at < ? AND closed_at IS NOT NULL
+                """,
+                (cutoff_iso,),
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            retention_ok = False
+            retention_bits.append(f"connections query failed: {exc}")
+        else:
+            retention_bits.append(f"{expired_conn} expired closed connection(s)")
+            if expired_conn > RETENTION_DELETE_BATCH:
+                retention_ok = False
+                retention_bits.append(
+                    f"retention backlog exceeds batch {RETENTION_DELETE_BATCH}"
+                )
+    else:
+        retention_bits.append("0 expired closed connection(s)")
+
+    expired_daily = 0
+    if "daily_usage" in tables and daily_days > 0:
+        cutoff_date = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() - daily_days * 86400,
+            timezone.utc,
+        ).strftime("%Y-%m-%d")
+        try:
+            expired_daily = conn.execute(
+                "SELECT COUNT(*) FROM daily_usage WHERE date < ?",
+                (cutoff_date,),
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            retention_ok = False
+            retention_bits.append(f"daily_usage query failed: {exc}")
+        else:
+            if expired_daily > RETENTION_DELETE_BATCH:
+                retention_ok = False
+                retention_bits.append(
+                    f"{expired_daily} expired daily_usage row(s) exceed batch {RETENTION_DELETE_BATCH}"
+                )
+    results.append(
+        ("retention state", retention_ok, _plane_detail("; ".join(retention_bits)))
+    )
+
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return results
+
+
+def format_accounting_plane_report(
+    results: List[Tuple[str, bool, str]],
+) -> Tuple[str, bool]:
+    """Render tab-separated `OK|FAIL name detail` lines. Returns (text, all_ok)."""
+    lines: List[str] = []
+    all_ok = True
+    for name, ok, detail in results:
+        status = "OK" if ok else "FAIL"
+        lines.append(f"{status}\t{name}\t{_plane_detail(detail)}")
+        if not ok:
+            all_ok = False
+    return "\n".join(lines) + ("\n" if lines else ""), all_ok
+
+
 class AccountDaemon:
     def __init__(
         self,
@@ -1437,7 +1780,41 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--verbose",
         action="store_true",
     )
+    parser.add_argument(
+        "--check-accounting-plane",
+        action="store_true",
+        help="run D3 Accounting Plane checks and exit (no daemon)",
+    )
+    parser.add_argument(
+        "--service-active",
+        action="store_true",
+        help="with --check-accounting-plane: treat accountd as active",
+    )
+    parser.add_argument(
+        "--raw-days",
+        type=int,
+        default=DEFAULT_RAW_RETENTION_DAYS,
+        help="with --check-accounting-plane: raw retention days for backlog cutoff",
+    )
+    parser.add_argument(
+        "--daily-days",
+        type=int,
+        default=DEFAULT_DAILY_RETENTION_DAYS,
+        help="with --check-accounting-plane: daily retention days for backlog cutoff",
+    )
     args = parser.parse_args(argv)
+    if args.check_accounting_plane:
+        db_path = args.db or DEFAULT_DB_PATH
+        report, all_ok = format_accounting_plane_report(
+            accounting_plane_checks(
+                db_path,
+                service_active=args.service_active,
+                raw_days=args.raw_days,
+                daily_days=args.daily_days,
+            )
+        )
+        sys.stdout.write(report)
+        return 0 if all_ok else 1
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
