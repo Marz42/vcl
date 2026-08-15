@@ -528,7 +528,6 @@ Refusing destructive uninstall."
     "file=${COMMON_FILE}" \
     "file=${ACCOUNTD_PY}" \
     "file=${STATS_PY}" \
-    "file=${EVENT_SCHEMA_FILE}" \
     "file=${ACCOUNTD_UNIT}"; do
     grep -qxF "$expected" "$INSTALL_MANIFEST_FILE" \
       || refuse_uninstall "install.manifest is missing ${expected}; refusing destructive uninstall."
@@ -1645,13 +1644,8 @@ cmd_accounting() {
       printf 'accounting mode:    approximate / Clash polling\n'
       printf 'clash_api:          127.0.0.1:%s (localhost only)\n' "$clash_port"
       printf 'accounting.db:      %s\n' "$ACCOUNTING_DB_FILE"
-      printf 'events.jsonl:       %s\n' "$EVENTS_JSONL_FILE"
       printf 'note:               polling ≠ exact billing\n'
-      if [[ -f "$EVENTS_JSONL_FILE" && -s "$EVENTS_JSONL_FILE" ]]; then
-        printf 'ingest:             non-empty events.jsonl preferred over Clash poll\n'
-      else
-        printf 'ingest:             Clash API poll (no non-empty events.jsonl yet)\n'
-      fi
+      printf 'ingest:             Clash API poll only\n'
       if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
         python3 - "$ACCOUNTING_DB_FILE" <<'PY'
 import sqlite3, sys

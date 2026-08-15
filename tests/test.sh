@@ -357,8 +357,10 @@ assert_success "helper rejects uninstall --force" grep -q 'uninstall --force is 
 assert_success "helper documents vcl connections" grep -q 'vcl connections' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl stats" grep -q 'vcl stats today' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl accounting status" grep -q 'vcl accounting status' "${TEST_TMP}/vincula"
-assert_success "accounting status prefers non-empty JSONL" \
+assert_failure "accounting status does not prefer JSONL ingest" \
   grep -q 'non-empty events.jsonl' "${PROJECT_DIR}/bin/vincula"
+assert_success "accounting status is Clash poll only" \
+  grep -q 'Clash API poll only' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats month" grep -q 'vcl stats today|yesterday|--days N|--month' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats top" grep -q 'vcl stats top users|departments|hosts' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats host" grep -q 'vcl stats host' "${PROJECT_DIR}/bin/vincula"
@@ -474,8 +476,14 @@ assert_success "accountd unit has RestrictRealtime" \
   grep -q '^RestrictRealtime=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "python3 can compile vincula-accountd" \
   python3 -m py_compile "${PROJECT_DIR}/lib/vincula-accountd.py"
-assert_success "event schema file exists" \
+assert_failure "event schema file is not shipped" \
   test -f "${PROJECT_DIR}/lib/vincula-event.schema.json"
+assert_failure "gen-release-lock does not include event schema" \
+  grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_failure "build-release does not include event schema" \
+  grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/scripts/build-release.sh"
+assert_failure "accountd has no JSONL ingest path" \
+  grep -Eiq 'jsonl|ingest-file|EVENTS_JSONL' "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_success "accounting reliability doc exists" \
   test -f "${PROJECT_DIR}/docs/accounting-reliability.md"
 assert_success "preflight lists VAR_LIB_VINCULA" \
@@ -523,8 +531,10 @@ if awk '/^enable_accountd_service\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh"
 else
   pass "enable_accountd has no log_warn soft-fail path"
 fi
-assert_success "install.manifest lists events.jsonl" \
+assert_failure "install.manifest does not list events.jsonl" \
   grep -q 'events.jsonl' "${TEST_TMP}/install.manifest"
+assert_failure "install.manifest does not list event schema" \
+  grep -q 'vincula-event.schema.json' "${TEST_TMP}/install.manifest"
 assert_success "helper uninstall mentions historical accounting data" \
   grep -q 'Historical accounting data' "${TEST_TMP}/vincula"
 assert_success "bootstrap script exists" \
@@ -581,8 +591,7 @@ assert_success "install.manifest lists vincula-stats.py" \
 assert_success "install.manifest lists vincula-accountd.service" \
   grep -q 'vincula-accountd.service' "${TEST_TMP}/install.manifest"
 
-# Sample events.jsonl ingest without root (needs users.json for tag→user_id)
-SAMPLE_EVENTS="${TEST_TMP}/events.jsonl"
+# Sample connection write without root (needs users.json for tag→user_id)
 SAMPLE_DB="${TEST_TMP}/accounting.db"
 SAMPLE_USERS="${TEST_TMP}/users-acct.json"
 cat > "$SAMPLE_USERS" <<'JSON'
@@ -610,11 +619,39 @@ cat > "$SAMPLE_USERS" <<'JSON'
   ]
 }
 JSON
-cat > "$SAMPLE_EVENTS" <<'JSONL'
-{"event":"connection_closed","connection_id":"c-test-1","node_id":"6fc96a10-1111-4111-8111-111111111111","user":"alice","destination_host":"Example.COM.","destination_ip":"203.0.113.10","destination_port":443,"network":"tcp","upload_bytes":100,"download_bytes":2000,"started_at":"2026-08-14T06:00:00Z","closed_at":"2026-08-14T06:01:00Z"}
-JSONL
-assert_success "accountd ingests sample jsonl event" \
-  python3 "${PROJECT_DIR}/lib/vincula-accountd.py" --db "$SAMPLE_DB" --users "$SAMPLE_USERS" --ingest-file "$SAMPLE_EVENTS"
+sample_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$SAMPLE_DB" "$SAMPLE_USERS" <<'PY' || sample_rc=$?
+import importlib.util, sys
+
+mod_path, db, users = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+conn = mod.open_db(db)
+mod.upsert_connection(conn, {
+    "connection_id": "c-test-1",
+    "node_id": "6fc96a10-1111-4111-8111-111111111111",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": mod.normalize_destination_host("Example.COM."),
+    "destination_ip": "203.0.113.10",
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 100,
+    "download_bytes": 2000,
+    "started_at": "2026-08-14T06:00:00Z",
+    "closed_at": "2026-08-14T06:01:00Z",
+    "ts": "2026-08-14T06:01:00Z",
+}, close=True)
+conn.commit()
+conn.close()
+PY
+if (( sample_rc == 0 )); then
+  pass "accountd upserts sample connection"
+else
+  fail "accountd upserts sample connection"
+fi
 assert_success "ingested connection row has user_id" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute("select count(*) from connections where user_id=\"u-alice\"").fetchone()[0]; raise SystemExit(0 if n>=1 else 1)' "$SAMPLE_DB"
 assert_success "meta.schema_version is 2" \
@@ -671,13 +708,24 @@ assert mod.normalize_destination_host("Example.COM.") == "example.com"
 assert mod.normalize_destination_host("foo.") == "foo"
 assert mod.normalize_destination_host(None) is None
 
-line = '{"event":"connection_closed","connection_id":"r1","node_id":"n1","user":"bob","destination_host":"cdn.example","destination_ip":"198.51.100.2","destination_port":443,"network":"tcp","upload_bytes":50,"download_bytes":500,"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:05:00Z"}'
-ev = mod.parse_jsonl_event(line)
-assert ev and ev["user_tag"] == "bob" and ev["user_id"] == "u-bob" and ev["event"] == "connection_close", ev
-
 conn = mod.open_db(db)
 assert mod.meta_get(conn, "schema_version") == "2"
-mod.upsert_connection(conn, ev, close=True)
+mod.upsert_connection(conn, {
+    "event": "connection_close",
+    "connection_id": "r1",
+    "node_id": "n1",
+    "user_id": "u-bob",
+    "user_tag": "bob",
+    "destination_host": "cdn.example",
+    "destination_ip": "198.51.100.2",
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 50,
+    "download_bytes": 500,
+    "started_at": "2026-08-14T10:00:00Z",
+    "closed_at": "2026-08-14T10:05:00Z",
+    "ts": "2026-08-14T10:05:00Z",
+}, close=True)
 mod.upsert_connection(conn, {
     "connection_id": "stale-1",
     "node_id": "n1",
@@ -937,7 +985,7 @@ fi
 # F1: tag→user_id hot-reload on users.json mtime change
 f1_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f1-hotreload" <<'PY' || f1_rc=$?
-import importlib.util, json, os, sys, time, urllib.error
+import importlib.util, json, os, sys, time
 
 mod_path, work = sys.argv[1], sys.argv[2]
 os.makedirs(work, exist_ok=True)
@@ -946,7 +994,6 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 users_path = os.path.join(work, "users.json")
-events_path = os.path.join(work, "events.jsonl")
 db_path = os.path.join(work, "acct.db")
 
 bob_only = {
@@ -966,26 +1013,30 @@ bob_only = {
 with open(users_path, "w", encoding="utf-8") as f:
     json.dump(bob_only, f)
 
-alice_line = (
-    '{"event":"connection_closed","connection_id":"c-alice-1","node_id":"n1",'
-    '"user":"alice","destination_host":"a.example","destination_ip":null,'
-    '"destination_port":443,"network":"tcp","upload_bytes":1,"download_bytes":2,'
-    '"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:00:01Z"}\n'
-)
-alice_line2 = alice_line.replace("c-alice-1", "c-alice-2")
-with open(events_path, "w", encoding="utf-8") as f:
-    f.write(alice_line)
+alice_item = {
+    "id": "c-alice-1",
+    "upload": 1,
+    "download": 2,
+    "start": "2026-08-14T10:00:00Z",
+    "chains": ["DIRECT", "acct/alice"],
+    "metadata": {
+        "host": "a.example",
+        "destinationPort": 443,
+        "network": "tcp",
+    },
+}
 
+def fake_fetch(*_a, **_k):
+    ev = mod.parse_clash_connection(alice_item)
+    return [ev] if ev else []
+
+mod.fetch_clash_connections = fake_fetch
 mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users_path)
 os.environ["VCL_USERS_FILE"] = users_path
 daemon = mod.AccountDaemon(
     db_path=db_path,
-    events_path=events_path,
     clash_url="http://127.0.0.1:1/connections",
     users_path=users_path,
-)
-mod.fetch_clash_connections = lambda *a, **k: (_ for _ in ()).throw(
-    urllib.error.URLError("fake clash unused")
 )
 conn = mod.open_db(db_path)
 daemon._tick(conn)
@@ -1012,8 +1063,6 @@ time.sleep(0.05)
 with open(users_path, "w", encoding="utf-8") as f:
     json.dump(bob_and_alice, f)
 os.utime(users_path, None)
-with open(events_path, "a", encoding="utf-8") as f:
-    f.write(alice_line2)
 
 daemon._tick(conn)
 n = conn.execute("SELECT COUNT(*) FROM connections WHERE user_id='u-alice'").fetchone()[0]
@@ -1037,10 +1086,10 @@ else
   fail "mtime hot-reload maps new tag after users.json change"
 fi
 
-# F2: empty events.jsonl is not success and must not block Clash polling
+# F2: Clash poll failure does not refresh last_success_at; leftover JSONL is not a collector
 f2_rc=0
-python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f2-jsonl" "$SAMPLE_USERS" <<'PY' || f2_rc=$?
-import importlib.util, os, sys, urllib.error
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f2-clash" "$SAMPLE_USERS" <<'PY' || f2_rc=$?
+import importlib.util, inspect, os, sys, urllib.error
 
 mod_path, work, users = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(work, exist_ok=True)
@@ -1049,10 +1098,16 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
 
-events_path = os.path.join(work, "events.jsonl")
+# Leftover residue file must not become an ingest path.
+residue = os.path.join(work, "events.jsonl")
+with open(residue, "w", encoding="utf-8") as f:
+    f.write(
+        '{"event":"connection_closed","connection_id":"c-bob-1","node_id":"n1",'
+        '"user":"bob","destination_host":"b.example","destination_port":443,'
+        '"network":"tcp","upload_bytes":3,"download_bytes":4,'
+        '"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:00:01Z"}\n'
+    )
 db_path = os.path.join(work, "acct.db")
-open(events_path, "w", encoding="utf-8").close()
-assert os.path.getsize(events_path) == 0
 
 polls = []
 
@@ -1063,15 +1118,27 @@ def fake_fetch(*_a, **_k):
 mod.fetch_clash_connections = fake_fetch
 daemon = mod.AccountDaemon(
     db_path=db_path,
-    events_path=events_path,
     clash_url="http://127.0.0.1:1/connections",
     users_path=users,
 )
+assert not hasattr(mod, "parse_jsonl_event")
+assert not hasattr(mod, "read_new_jsonl")
+assert not hasattr(mod, "apply_jsonl_events")
+assert not hasattr(mod, "ingest_events_file")
+assert not hasattr(daemon, "_jsonl_offset")
+assert not hasattr(daemon, "_prefer_jsonl")
+assert not hasattr(daemon, "events_path")
+src = inspect.getsource(mod.AccountDaemon._collect)
+assert "_poll_clash" in src
+assert "jsonl" not in src.lower()
+
 conn = mod.open_db(db_path)
 assert mod.meta_get(conn, "last_success_at") == ""
 daemon._tick(conn)
 assert polls == ["poll"], polls
-assert mod.meta_get(conn, "last_success_at") == "", "empty JSONL must not refresh last_success_at"
+assert mod.meta_get(conn, "last_success_at") == "", "failed Clash poll must not refresh last_success_at"
+n = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
+assert n == 0, n
 conn.close()
 
 # --once uses the same collect path
@@ -1079,7 +1146,6 @@ polls.clear()
 once_db = os.path.join(work, "once.db")
 daemon2 = mod.AccountDaemon(
     db_path=once_db,
-    events_path=events_path,
     clash_url="http://127.0.0.1:1/connections",
     users_path=users,
 )
@@ -1089,43 +1155,11 @@ daemon2._tick(conn)
 assert "poll" in polls
 assert mod.meta_get(conn, "last_success_at") == ""
 conn.close()
-
-# Legitimate JSONL events skip poll and count as success.
-polls.clear()
-legit = os.path.join(work, "legit.jsonl")
-with open(legit, "w", encoding="utf-8") as f:
-    f.write(
-        '{"event":"connection_closed","connection_id":"c-bob-1","node_id":"n1",'
-        '"user":"bob","destination_host":"b.example","destination_port":443,'
-        '"network":"tcp","upload_bytes":3,"download_bytes":4,'
-        '"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:00:01Z"}\n'
-    )
-legit_db = os.path.join(work, "legit.db")
-daemon3 = mod.AccountDaemon(
-    db_path=legit_db,
-    events_path=legit,
-    clash_url="http://127.0.0.1:1/connections",
-    users_path=users,
-)
-conn = mod.open_db(legit_db)
-daemon3._tick(conn)
-assert polls == [], polls
-assert mod.meta_get(conn, "last_success_at")
-n = conn.execute("SELECT COUNT(*) FROM connections WHERE connection_id='c-bob-1'").fetchone()[0]
-assert n == 1, n
-
-# Non-empty file caught up (producer idle): stay in JSONL mode, do not poll.
-polls.clear()
-before_success = mod.meta_get(conn, "last_success_at")
-daemon3._tick(conn)
-assert polls == [], "caught-up JSONL must not fall back to poll"
-assert mod.meta_get(conn, "last_success_at") >= before_success
-conn.close()
 PY
 if (( f2_rc == 0 )); then
-  pass "empty JSONL is not success and does not block polling"
+  pass "failed Clash poll does not refresh last_success_at"
 else
-  fail "empty JSONL is not success and does not block polling"
+  fail "failed Clash poll does not refresh last_success_at"
 fi
 
 # --- 0.2.5 user provisioning offline tests ---

@@ -8,9 +8,7 @@ connections may be missed between polls; close times and final byte
 counts are inferred from the last observed snapshot. Treat results as
 operational visibility, not metering for invoices.
 
-Optional JSONL ingest at /var/lib/vincula/events.jsonl is preferred
-when the file is non-empty and has legitimate events; an empty file
-does not skip Clash polling and does not count as collector success.
+Clash API poll is the only production collector.
 
 Daily rollups use the UTC calendar date of closed_at (or started_at if
 still open during rebuild). Day boundaries are UTC.
@@ -37,10 +35,9 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 DEFAULT_DB_PATH = "/var/lib/vincula/accounting.db"
-DEFAULT_EVENTS_PATH = "/var/lib/vincula/events.jsonl"
 DEFAULT_CLASH_URL = "http://127.0.0.1:9090/connections"
 DEFAULT_SETTINGS = "/etc/vincula/config.toml"
 DEFAULT_USERS = "/etc/vincula/users.json"
@@ -413,52 +410,6 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def parse_jsonl_event(line: str) -> Optional[Dict[str, Any]]:
-    """Parse one JSONL accounting event. Returns None if invalid/ignored."""
-    line = line.strip()
-    if not line:
-        return None
-    try:
-        obj = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    event = obj.get("event") or obj.get("type") or "connection_update"
-    cid = obj.get("connection_id") or obj.get("id")
-    user_tag = obj.get("user_tag") or obj.get("user")
-    if not user_tag:
-        user_tag = user_tag_from_outbound(obj.get("outbound"))
-    if not cid or not user_tag:
-        return None
-    host = normalize_destination_host(obj.get("destination_host"))
-    close_names = ("connection_close", "connection_closed", "close")
-    user_id = obj.get("user_id")
-    if not user_id:
-        try:
-            user_id = resolve_user_id(str(user_tag))
-        except ValueError:
-            LOG.warning("skip jsonl event %s: unknown user_tag %s", cid, user_tag)
-            return None
-    return {
-        "event": "connection_close" if event in close_names else event,
-        "connection_id": str(cid),
-        "node_id": obj.get("node_id") or NODE_ID,
-        "user_id": str(user_id),
-        "user_tag": str(user_tag),
-        "destination_host": host,
-        "destination_ip": obj.get("destination_ip") or None,
-        "destination_port": obj.get("destination_port"),
-        "network": obj.get("network"),
-        "upload_bytes": int(obj.get("upload_bytes") or 0),
-        "download_bytes": int(obj.get("download_bytes") or 0),
-        "started_at": obj.get("started_at") or obj.get("ts") or utc_now_iso(),
-        "closed_at": obj.get("closed_at"),
-        "ts": obj.get("ts") or utc_now_iso(),
-        "absolute": True,
-    }
-
-
 def upsert_connection(
     conn: sqlite3.Connection,
     ev: Dict[str, Any],
@@ -781,42 +732,12 @@ def apply_retention(
         conn.execute("DELETE FROM daily_usage WHERE date < ?", (cutoff_date,))
 
 
-def read_new_jsonl(path: str, offset: int) -> Tuple[List[Dict[str, Any]], int]:
-    events: List[Dict[str, Any]] = []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            f.seek(offset)
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                ev = parse_jsonl_event(line)
-                if ev:
-                    events.append(ev)
-            offset = f.tell()
-    except FileNotFoundError:
-        return [], 0
-    return events, offset
-
-
-def apply_jsonl_events(conn: sqlite3.Connection, events: List[Dict[str, Any]]) -> None:
-    for ev in events:
-        close = ev.get("event") in (
-            "connection_close",
-            "connection_closed",
-            "close",
-        )
-        # JSONL carries final absolute counters for the finished flow.
-        upsert_connection(conn, ev, close=close)
-
-
 class AccountDaemon:
     def __init__(
         self,
         db_path: str = DEFAULT_DB_PATH,
         clash_url: str = DEFAULT_CLASH_URL,
         clash_secret: str = "",
-        events_path: str = DEFAULT_EVENTS_PATH,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         raw_retention_days: int = DEFAULT_RAW_RETENTION_DAYS,
         daily_retention_days: int = DEFAULT_DAILY_RETENTION_DAYS,
@@ -825,7 +746,6 @@ class AccountDaemon:
         self.db_path = db_path
         self.clash_url = clash_url
         self.clash_secret = clash_secret
-        self.events_path = events_path
         self.poll_interval = poll_interval
         self.raw_retention_days = raw_retention_days
         self.daily_retention_days = daily_retention_days
@@ -834,8 +754,6 @@ class AccountDaemon:
         self._stop = False
         self._known_open: Dict[str, Dict[str, Any]] = {}
         self._last_live_ids: Optional[List[str]] = None
-        self._jsonl_offset = 0
-        self._prefer_jsonl = False
         self._cycles = 0
 
     def _reload_tag_map_if_changed(self) -> None:
@@ -868,15 +786,7 @@ class AccountDaemon:
 
     def run(self) -> int:
         conn = open_db(self.db_path)
-
-        if Path(self.events_path).is_file() and Path(self.events_path).stat().st_size > 0:
-            self._jsonl_offset = 0
-            LOG.info(
-                "non-empty JSONL events at %s; preferring file ingest for closed connections",
-                self.events_path,
-            )
-        else:
-            LOG.info("polling Clash API at %s (approximate accounting)", self.clash_url)
+        LOG.info("polling Clash API at %s (approximate accounting)", self.clash_url)
 
         signal.signal(signal.SIGTERM, self.request_stop)
         signal.signal(signal.SIGINT, self.request_stop)
@@ -897,7 +807,6 @@ class AccountDaemon:
         return 0
 
     def _poll_clash(self, conn: sqlite3.Connection) -> bool:
-        self._prefer_jsonl = False
         try:
             live = fetch_clash_connections(self.clash_url, self.clash_secret)
             live_ids = [ev["connection_id"] for ev in live]
@@ -915,23 +824,8 @@ class AccountDaemon:
             return False
 
     def _collect(self, conn: sqlite3.Connection) -> bool:
-        """Ingest JSONL or poll Clash. Empty JSONL is not success and does not skip poll."""
-        path = Path(self.events_path)
-        if not path.is_file():
-            return self._poll_clash(conn)
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return self._poll_clash(conn)
-        prior_offset = self._jsonl_offset
-        events, new_offset = read_new_jsonl(self.events_path, prior_offset)
-        if size == 0 or (prior_offset == 0 and not events):
-            return self._poll_clash(conn)
-        self._prefer_jsonl = True
-        self._jsonl_offset = new_offset
-        if events:
-            apply_jsonl_events(conn, events)
-        return True
+        """Clash API poll is the only production collector."""
+        return self._poll_clash(conn)
 
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
@@ -962,7 +856,6 @@ def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> Account
         db_path=os.environ.get("VCL_ACCOUNTING_DB", DEFAULT_DB_PATH),
         clash_url=os.environ.get("VCL_CLASH_URL", clash_url),
         clash_secret=secret,
-        events_path=os.environ.get("VCL_EVENTS_JSONL", DEFAULT_EVENTS_PATH),
         poll_interval=float(os.environ.get("VCL_ACCOUNT_POLL", DEFAULT_POLL_INTERVAL)),
         raw_retention_days=settings_int(
             settings, "accounting_raw_retention_days", DEFAULT_RAW_RETENTION_DAYS
@@ -972,20 +865,6 @@ def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> Account
         ),
         users_path=users_path,
     )
-
-
-def ingest_events_file(db_path: str, events_path: str, users_path: str = DEFAULT_USERS) -> int:
-    """Ingest an entire events.jsonl into SQLite (test/helper entrypoint)."""
-    global TAG_TO_USER_ID
-    TAG_TO_USER_ID = load_tag_to_user_id(users_path)
-    conn = open_db(db_path)
-    events, _ = read_new_jsonl(events_path, 0)
-    apply_jsonl_events(conn, events)
-    rollup_daily_usage(conn)
-    meta_set(conn, "last_success_at", utc_now_iso())
-    conn.commit()
-    conn.close()
-    return len(events)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1016,12 +895,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="override accounting SQLite path",
     )
     parser.add_argument(
-        "--ingest-file",
-        default=None,
-        metavar="PATH",
-        help="ingest a sample events.jsonl into the DB and exit",
-    )
-    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -1032,11 +905,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     os.environ.setdefault("VCL_USERS_FILE", args.users)
-    if args.ingest_file:
-        db_path = args.db or DEFAULT_DB_PATH
-        n = ingest_events_file(db_path, args.ingest_file, args.users)
-        print(f"ingested {n} event(s) into {db_path}")
-        return 0
     daemon = build_daemon_from_settings(args.settings)
     if args.db:
         daemon.db_path = args.db

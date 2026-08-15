@@ -1098,10 +1098,8 @@ file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
 file=${STATS_PY}
-file=${EVENT_SCHEMA_FILE}
 file=${ACCOUNTD_UNIT}
 file=${ACCOUNTING_DB_FILE}
-file=${EVENTS_JSONL_FILE}
 
 directory=${STATE_DIR}
 directory=${SING_BOX_DIR}
@@ -1739,7 +1737,7 @@ verify_existing_install() {
   fi
 
   printf '\n[Accounting Plane]\n'
-  if [[ -f "$ACCOUNTD_PY" && -f "$EVENT_SCHEMA_FILE" && -f "$STATS_PY" ]]; then
+  if [[ -f "$ACCOUNTD_PY" && -f "$STATS_PY" ]]; then
     log_ok "accountd artifact"
   else
     log_warn "accountd artifact"
@@ -1842,24 +1840,20 @@ wait_for_service() {
 
 
 install_accountd_artifacts() {
-  local root staged_unit staged_py staged_stats staged_schema
+  local root staged_unit staged_py staged_stats
   root=$(installer_root) || die "Cannot locate installer directory for accounting artifacts."
   staged_py="${TMP_DIR}/vincula-accountd.py"
   staged_stats="${TMP_DIR}/vincula-stats.py"
   staged_unit="${TMP_DIR}/vincula-accountd.service"
-  staged_schema="${TMP_DIR}/vincula-event.schema.json"
   [[ -f "${root}/lib/vincula-accountd.py" ]] || die "Missing ${root}/lib/vincula-accountd.py"
   [[ -f "${root}/lib/vincula-stats.py" ]] || die "Missing ${root}/lib/vincula-stats.py"
   [[ -f "${root}/lib/vincula-accountd.service" ]] || die "Missing ${root}/lib/vincula-accountd.service"
-  [[ -f "${root}/lib/vincula-event.schema.json" ]] || die "Missing ${root}/lib/vincula-event.schema.json"
   install -m 0644 "${root}/lib/vincula-accountd.py" "$staged_py"
   install -m 0644 "${root}/lib/vincula-stats.py" "$staged_stats"
   install -m 0644 "${root}/lib/vincula-accountd.service" "$staged_unit"
-  install -m 0644 "${root}/lib/vincula-event.schema.json" "$staged_schema"
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
   atomic_install "$staged_stats" "$STATS_PY" 0644 root root
-  atomic_install "$staged_schema" "$EVENT_SCHEMA_FILE" 0644 root root
   atomic_install "$staged_unit" "$ACCOUNTD_UNIT" 0644 root root
   # Create empty DB file ownership marker (daemon initializes schema).
   if [[ ! -f "$ACCOUNTING_DB_FILE" ]]; then
@@ -1871,11 +1865,9 @@ install_accountd_artifacts() {
 validate_accounting_artifacts() {
   [[ -f "$ACCOUNTD_PY" ]] || die "Missing accounting daemon ${ACCOUNTD_PY}"
   [[ -f "$STATS_PY" ]] || die "Missing stats helper ${STATS_PY}"
-  [[ -f "$EVENT_SCHEMA_FILE" ]] || die "Missing event schema ${EVENT_SCHEMA_FILE}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
   python3 -m py_compile "$ACCOUNTD_PY" || die "vincula-accountd.py failed py_compile"
   python3 -m py_compile "$STATS_PY" || die "vincula-stats.py failed py_compile"
-  python3 -m json.tool "$EVENT_SCHEMA_FILE" >/dev/null || die "vincula-event.schema.json is not valid JSON"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"
   fi

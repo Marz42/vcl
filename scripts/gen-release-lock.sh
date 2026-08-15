@@ -14,7 +14,6 @@ files=(
   lib/vincula-accountd.py
   lib/vincula-stats.py
   lib/vincula-accountd.service
-  lib/vincula-event.schema.json
 )
 
 out="${ROOT}/release.lock"
