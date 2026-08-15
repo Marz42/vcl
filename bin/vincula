@@ -895,7 +895,7 @@ except Exception:
     pass
 PY
 )
-    if [[ "$schema" == "2" ]]; then
+    if [[ "$schema" == "3" ]]; then
       printf '✓ expected DB schema\n'
     else
       printf '✗ expected DB schema\n'

@@ -880,13 +880,18 @@ fi
 # leave instance_id NULL, do not seed poll_baseline from unknown Clash counters.
 schema3_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/schema2to3.db" "${TEST_TMP}/schema3-empty.db" <<'PY' || schema3_rc=$?
-import importlib.util, sqlite3, sys
+import importlib.util, pathlib, re, sqlite3, sys
 
 mod_path, old_db, empty_db = sys.argv[1], sys.argv[2], sys.argv[3]
 spec = importlib.util.spec_from_file_location("accountd", mod_path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert mod.SCHEMA_VERSION == 3
+src = pathlib.Path(mod_path).read_text(encoding="utf-8")
+for i, line in enumerate(src.splitlines(), 1):
+    code = line.split("#", 1)[0]
+    if re.search(r"instance_id\s*=\s*.*node_id", code):
+        raise AssertionError(f"D5: instance_id assigned from node_id at {i}: {line}")
 
 raw = sqlite3.connect(old_db)
 raw.executescript("""
@@ -1018,6 +1023,17 @@ row = conn.execute(
 assert row[0] == 12345 and row[1] == 67890, row
 assert row[2] == 0 and row[3] is None, row
 
+# Subsequent poll: only the positive delta from the new baseline.
+live2 = [dict(live[0], upload_bytes=1000099, download_bytes=888938,
+              ts="2026-08-14T11:00:01Z")]
+known = mod.apply_poll_delta(conn, live2, known)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation, instance_id "
+    "FROM connections WHERE connection_id='c-open' AND generation=0"
+).fetchone()
+assert row[0] == 12445 and row[1] == 67940, row
+assert row[2] == 0 and row[3] is None, row
+
 # UNIQUE(connection_id, generation): a new generation is a second row.
 mod.upsert_connection(conn, {
     "connection_id": "c-open",
@@ -1035,13 +1051,14 @@ mod.upsert_connection(conn, {
     "ts": "2026-08-14T11:00:00Z",
 }, close=False, accounted_upload=0, accounted_download=0)
 gens = conn.execute(
-    "SELECT generation, event_id, upload_bytes FROM connections "
+    "SELECT generation, event_id, upload_bytes, instance_id FROM connections "
     "WHERE connection_id='c-open' ORDER BY generation"
 ).fetchall()
 assert len(gens) == 2, gens
-assert gens[0][0] == 0 and gens[0][2] == 12345, gens
+assert gens[0][0] == 0 and gens[0][2] == 12445, gens
 assert gens[1][0] == 1 and gens[1][2] == 0, gens
 assert gens[1][1] > gens[0][1], gens
+assert gens[0][3] is None and gens[1][3] is None, gens
 try:
     conn.execute(
         """
@@ -1101,10 +1118,12 @@ if (( schema3_rc == 0 )); then
   pass "schema 2 to 3 preserves accounted bytes"
   pass "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
   pass "open_db empty database is schema 3"
+  pass "D5 instance_id stays NULL after migrate and upsert"
 else
   fail "schema 2 to 3 preserves accounted bytes"
   fail "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
   fail "open_db empty database is schema 3"
+  fail "D5 instance_id stays NULL after migrate and upsert"
 fi
 
 # D7/D8: durable poll_baseline, generation reset, commit-then-cache.
@@ -2514,13 +2533,26 @@ else
 fi
 
 # F4: vcl verify dual-plane accounting checks (offline). Live Clash is operator-only:
-#   sudo vcl verify   # on a running node; expect Clash triad + schema_version=2 + last_success_at ≤300s
+#   sudo vcl verify   # on a running node; expect Clash triad + schema_version=3 + last_success_at ≤300s
 verify_src_fn=$(awk '/^cmd_verify\(\)/,/^cmd_diagnose\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
 if [[ "$verify_src_fn" == *'schema_version'* ]]; then
   pass "cmd_verify checks schema_version"
 else
   fail "cmd_verify checks schema_version"
 fi
+if [[ "$verify_src_fn" == *'"$schema" == "3"'* ]]; then
+  pass "cmd_verify expects accounting schema 3"
+else
+  fail "cmd_verify expects accounting schema 3"
+fi
+assert_success "installer health checks expect accounting schema 3" \
+  grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
+assert_failure "cmd_verify no longer expects accounting schema 2" \
+  grep -q '"$schema" == "2"' "${PROJECT_DIR}/bin/vincula"
+assert_failure "installer health checks no longer expect accounting schema 2" \
+  grep -q '"$schema" == "2"' "${PROJECT_DIR}/vincula.sh"
+assert_failure "D5: instance_id is never assigned from node_id" \
+  grep -E 'instance_id[[:space:]]*=[[:space:]].*node_id' "${PROJECT_DIR}/lib/vincula-accountd.py"
 if [[ "$verify_src_fn" == *'last_success'* ]]; then
   pass "cmd_verify checks last_success_at"
 else
@@ -2559,7 +2591,7 @@ from datetime import datetime, timezone, timedelta
 conn = sqlite3.connect(sys.argv[1])
 conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 now = datetime.now(timezone.utc)
-conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','3')")
 conn.execute(
     "INSERT INTO meta(key,value) VALUES('last_success_at', ?)",
     (now.strftime("%Y-%m-%dT%H:%M:%SZ"),),
@@ -2593,7 +2625,7 @@ PY
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
 conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','3')")
 conn.commit()
 conn.close()
 PY
