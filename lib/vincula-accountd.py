@@ -9,7 +9,8 @@ counts are inferred from the last observed snapshot. Treat results as
 operational visibility, not metering for invoices.
 
 Optional JSONL ingest at /var/lib/vincula/events.jsonl is preferred
-when present; polling remains the fallback.
+when the file is non-empty and has legitimate events; an empty file
+does not skip Clash polling and does not count as collector success.
 
 Daily rollups use the UTC calendar date of closed_at (or started_at if
 still open during rebuild). Day boundaries are UTC.
@@ -823,11 +824,10 @@ class AccountDaemon:
             LOG.info("marked %s stale open connection(s) closed on startup", closed)
         conn.commit()
 
-        if Path(self.events_path).is_file():
-            self._prefer_jsonl = True
+        if Path(self.events_path).is_file() and Path(self.events_path).stat().st_size > 0:
             self._jsonl_offset = 0
             LOG.info(
-                "JSONL events present at %s; preferring file ingest for closed connections",
+                "non-empty JSONL events at %s; preferring file ingest for closed connections",
                 self.events_path,
             )
         else:
@@ -851,27 +851,39 @@ class AccountDaemon:
         conn.close()
         return 0
 
+    def _poll_clash(self, conn: sqlite3.Connection) -> bool:
+        self._prefer_jsonl = False
+        try:
+            live = fetch_clash_connections(self.clash_url, self.clash_secret)
+            self._known_open = apply_poll_delta(conn, live, self._known_open)
+            return True
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            LOG.warning("Clash API poll failed: %s", exc)
+            return False
+
+    def _collect(self, conn: sqlite3.Connection) -> bool:
+        """Ingest JSONL or poll Clash. Empty JSONL is not success and does not skip poll."""
+        path = Path(self.events_path)
+        if not path.is_file():
+            return self._poll_clash(conn)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return self._poll_clash(conn)
+        prior_offset = self._jsonl_offset
+        events, new_offset = read_new_jsonl(self.events_path, prior_offset)
+        if size == 0 or (prior_offset == 0 and not events):
+            return self._poll_clash(conn)
+        self._prefer_jsonl = True
+        self._jsonl_offset = new_offset
+        if events:
+            apply_jsonl_events(conn, events)
+        return True
+
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
         self._reload_tag_map_if_changed()
-        success = False
-        if Path(self.events_path).is_file():
-            self._prefer_jsonl = True
-            events, self._jsonl_offset = read_new_jsonl(
-                self.events_path, self._jsonl_offset
-            )
-            if events:
-                apply_jsonl_events(conn, events)
-            success = True
-        else:
-            self._prefer_jsonl = False
-            try:
-                live = fetch_clash_connections(self.clash_url, self.clash_secret)
-                self._known_open = apply_poll_delta(conn, live, self._known_open)
-                success = True
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                LOG.warning("Clash API poll failed: %s", exc)
-
+        success = self._collect(conn)
         if success:
             meta_set(conn, "last_success_at", utc_now_iso())
 
@@ -978,20 +990,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.once:
         conn = open_db(daemon.db_path)
         close_stale_open_connections(conn)
-        if Path(daemon.events_path).is_file():
-            events, _ = read_new_jsonl(daemon.events_path, 0)
-            apply_jsonl_events(conn, events)
-            meta_set(conn, "last_success_at", utc_now_iso())
-        else:
-            try:
-                live = fetch_clash_connections(daemon.clash_url, daemon.clash_secret)
-                daemon._known_open = apply_poll_delta(conn, live, {})
-                meta_set(conn, "last_success_at", utc_now_iso())
-            except Exception as exc:  # noqa: BLE001
-                LOG.warning("Clash API poll failed: %s", exc)
-        rollup_daily_usage(conn)
-        apply_retention(conn, daemon.raw_retention_days, daemon.daily_retention_days)
-        conn.commit()
+        daemon._tick(conn)
         conn.close()
         return 0
     return daemon.run()

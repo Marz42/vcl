@@ -1591,10 +1591,10 @@ cmd_accounting() {
       printf 'accounting.db:      %s\n' "$ACCOUNTING_DB_FILE"
       printf 'events.jsonl:       %s\n' "$EVENTS_JSONL_FILE"
       printf 'note:               polling ≠ exact billing\n'
-      if [[ -f "$EVENTS_JSONL_FILE" ]]; then
-        printf 'ingest:             events.jsonl preferred when present\n'
+      if [[ -f "$EVENTS_JSONL_FILE" && -s "$EVENTS_JSONL_FILE" ]]; then
+        printf 'ingest:             non-empty events.jsonl preferred over Clash poll\n'
       else
-        printf 'ingest:             Clash API poll (no events.jsonl yet)\n'
+        printf 'ingest:             Clash API poll (no non-empty events.jsonl yet)\n'
       fi
       if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
         python3 - "$ACCOUNTING_DB_FILE" <<'PY'

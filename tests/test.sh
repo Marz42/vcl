@@ -335,6 +335,8 @@ assert_success "helper rejects uninstall --force" grep -q 'uninstall --force is 
 assert_success "helper documents vcl connections" grep -q 'vcl connections' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl stats" grep -q 'vcl stats today' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl accounting status" grep -q 'vcl accounting status' "${TEST_TMP}/vincula"
+assert_success "accounting status prefers non-empty JSONL" \
+  grep -q 'non-empty events.jsonl' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats month" grep -q 'vcl stats today|yesterday|--days N|--month' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats top" grep -q 'vcl stats top users|departments|hosts' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats host" grep -q 'vcl stats host' "${PROJECT_DIR}/bin/vincula"
@@ -865,6 +867,97 @@ if (( f1_rc == 0 )); then
   pass "mtime hot-reload maps new tag after users.json change"
 else
   fail "mtime hot-reload maps new tag after users.json change"
+fi
+
+# F2: empty events.jsonl is not success and must not block Clash polling
+f2_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f2-jsonl" "$SAMPLE_USERS" <<'PY' || f2_rc=$?
+import importlib.util, os, sys, urllib.error
+
+mod_path, work, users = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(work, exist_ok=True)
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+events_path = os.path.join(work, "events.jsonl")
+db_path = os.path.join(work, "acct.db")
+open(events_path, "w", encoding="utf-8").close()
+assert os.path.getsize(events_path) == 0
+
+polls = []
+
+def fake_fetch(*_a, **_k):
+    polls.append("poll")
+    raise urllib.error.URLError("fake clash down")
+
+mod.fetch_clash_connections = fake_fetch
+daemon = mod.AccountDaemon(
+    db_path=db_path,
+    events_path=events_path,
+    clash_url="http://127.0.0.1:1/connections",
+    users_path=users,
+)
+conn = mod.open_db(db_path)
+assert mod.meta_get(conn, "last_success_at") == ""
+daemon._tick(conn)
+assert polls == ["poll"], polls
+assert mod.meta_get(conn, "last_success_at") == "", "empty JSONL must not refresh last_success_at"
+conn.close()
+
+# --once uses the same collect path
+polls.clear()
+once_db = os.path.join(work, "once.db")
+daemon2 = mod.AccountDaemon(
+    db_path=once_db,
+    events_path=events_path,
+    clash_url="http://127.0.0.1:1/connections",
+    users_path=users,
+)
+conn = mod.open_db(once_db)
+mod.close_stale_open_connections(conn)
+daemon2._tick(conn)
+assert "poll" in polls
+assert mod.meta_get(conn, "last_success_at") == ""
+conn.close()
+
+# Legitimate JSONL events skip poll and count as success.
+polls.clear()
+legit = os.path.join(work, "legit.jsonl")
+with open(legit, "w", encoding="utf-8") as f:
+    f.write(
+        '{"event":"connection_closed","connection_id":"c-bob-1","node_id":"n1",'
+        '"user":"bob","destination_host":"b.example","destination_port":443,'
+        '"network":"tcp","upload_bytes":3,"download_bytes":4,'
+        '"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:00:01Z"}\n'
+    )
+legit_db = os.path.join(work, "legit.db")
+daemon3 = mod.AccountDaemon(
+    db_path=legit_db,
+    events_path=legit,
+    clash_url="http://127.0.0.1:1/connections",
+    users_path=users,
+)
+conn = mod.open_db(legit_db)
+daemon3._tick(conn)
+assert polls == [], polls
+assert mod.meta_get(conn, "last_success_at")
+n = conn.execute("SELECT COUNT(*) FROM connections WHERE connection_id='c-bob-1'").fetchone()[0]
+assert n == 1, n
+
+# Non-empty file caught up (producer idle): stay in JSONL mode, do not poll.
+polls.clear()
+before_success = mod.meta_get(conn, "last_success_at")
+daemon3._tick(conn)
+assert polls == [], "caught-up JSONL must not fall back to poll"
+assert mod.meta_get(conn, "last_success_at") >= before_success
+conn.close()
+PY
+if (( f2_rc == 0 )); then
+  pass "empty JSONL is not success and does not block polling"
+else
+  fail "empty JSONL is not success and does not block polling"
 fi
 
 # --- 0.2.5 user provisioning offline tests ---
