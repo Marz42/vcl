@@ -95,6 +95,13 @@ require_cmd stats-dept-eng vcl stats department eng --days 7
 require_cmd stats-dept-qa vcl stats department qa --days 7
 require_cmd stats-help vcl stats --help
 
+echo "======== AUDIT / ACCOUNTING CHECK ========"
+TO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+FROM=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+require_cmd audit-help vcl audit --help
+require_cmd accounting-check vcl accounting check
+require_cmd audit-user-owner vcl audit user owner --from "${FROM}" --to "${TO}"
+
 echo "======== VERIFY AFTER MUTATIONS ========"
 require_cmd verify vcl verify
 require_cmd accounting-status vcl accounting status

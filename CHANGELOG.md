@@ -2,17 +2,54 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.2.7-dev
+## 0.2.7
 
-Stability & Audit Foundation（WIP）。
+Stability & Audit Foundation. 记账仍为 **approximate / Clash polling**（非计费级）。schema 3 **不可逆**。
 
-- 吸收 27 个未发版提交为 0.2.7-dev 基线；禁止再发分叉的 0.2.6
-- 升级源加入 0.2.6
-- D18：仅当源 ≤0.2.6 且 daily=730 才改为 90
-- schema 3 / generation / poll_baseline（后续提交）
-- JSONL A2：删除生产 ingest（后续提交）
-- `vcl audit` / Accounting Plane checker（后续提交）
-- retention DELETE 分批 2000（后续提交）
+### 基线（D1）
+
+- 吸收冻结 v0.2.6 之后 27 个未发版提交为 0.2.7 基线；禁止再发「标 0.2.6、代码不同」的 artifact
+- 升级源加入 `0.2.6`（`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.6` → **0.2.7**）
+- 产品版本 freeze 为 `0.2.7`（去掉 `0.2.7-dev`）
+
+### Accounting schema 3
+
+- `connections`：`event_id INTEGER PRIMARY KEY AUTOINCREMENT`、`generation`、`UNIQUE (connection_id, generation)`、可空 `instance_id`
+- 2→3 迁移保留已记账字节；既有行 `generation=0`；`instance_id` 全为 NULL（0.2.8 才 mint）
+- 持久化 `poll_baseline`（Clash 计数器 + accounted 字节）；内存 `known_open` 仅为 cache
+- D7：SQLite COMMIT 成功后才刷新内存；COMMIT 失败 rollback 并从 DB 重载
+- D8：`current < previous` 关闭当前 generation 并开新代（accounted=0），无负 delta、不用巨额阈值
+- 重启：仍活在 Clash 的连接保留 DB 已记账字节，以当前计数重建 baseline（宕机增量放弃 = 少计）
+- **不可逆**：不提供 schema 3→2 自动回退；回滚 = 恢复 `backup_existing_install` 备份
+
+### JSONL（A2）
+
+- 删除生产 ingest 路径（JSONL 优先分支、`--ingest-file`、事件 schema 打包）
+- 唯一 collector = Clash API poll
+- 残留 `/var/lib/vincula/events.jsonl` 视为脏安装状态（preflight / uninstall / rollback），不是 collector
+
+### Retention
+
+- 默认 raw **90** / daily **90**
+- D18：仅当源版本可升级且 daily=730 时改为 90；自定义天数保留
+- `DELETE` 每表每事务最多 **2000** 行；积压跨 tick 消化；不看 Fleet cursor
+
+### CLI / verify
+
+- `vcl audit user TAG --from RFC3339 --to RFC3339`（interval-overlap；table 默认 + `--json`；**无 `--csv`**）
+- `vcl verify` Accounting Plane 扩展 D3（schema 3、heartbeat、baseline/counter sanity、retention backlog）
+- `vcl accounting check` 与 verify Accounting Plane 同一 checker
+
+### Soak / gate
+
+- LIVE-ONLY 协议：`scripts/soak-0.2.7.sh`（默认拒绝在非 live 节点跑；单测/加速时钟不满足 AC-2.7-09）
+- 无 24h soak 证据 → 不得 `READY FOR RC`；见 `docs/release-readiness-0.2.7.md` 与 `docs/known-issues-0.2.7.md`
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.6` → `0.2.7`
+- accounting DB schema 2→3；users.json schema 仍为 2
+- 保留 Reality / UUID / `user_id` / 现有 `node_id`
 
 ## 0.2.6
 

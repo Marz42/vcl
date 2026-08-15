@@ -1,4 +1,4 @@
-# vincula V0.2.7-dev
+# vincula V0.2.7
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -7,7 +7,7 @@
 sing-box 固定：1.13.18（不追 latest）
 ```
 
-一次安装得到可导入的 VLESS URI；用 `vcl user` 管理用户；用 `vcl stats` 查看近似流量（**approximate / Clash polling**，非计费级）。
+一次安装得到可导入的 VLESS URI；用 `vcl user` 管理用户；用 `vcl stats` / `vcl audit` 查看近似流量（**approximate / Clash polling**，非计费级）。
 
 | 项目 | 值 |
 | --- | --- |
@@ -18,9 +18,9 @@ sing-box 固定：1.13.18（不追 latest）
 | 默认 REALITY SNI | `www.cloudflare.com` |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
 | 用户 registry | `users.json` schema 2 |
-| Accounting | schema 2（0.2.7 将迁到 3）；raw 90 天 / daily 90 天 |
+| Accounting | schema 3；raw 90 天 / daily 90 天 |
 
-Gate / 已知限制：[`docs/release-readiness-0.2.6.md`](docs/release-readiness-0.2.6.md) · [`docs/known-issues-0.2.6.md`](docs/known-issues-0.2.6.md)
+Gate / 已知限制：[`docs/release-readiness-0.2.7.md`](docs/release-readiness-0.2.7.md) · [`docs/known-issues-0.2.7.md`](docs/known-issues-0.2.7.md)
 
 ---
 
@@ -30,10 +30,11 @@ Gate / 已知限制：[`docs/release-readiness-0.2.6.md`](docs/release-readiness
 vincula.sh                 # 安装 / 迁移入口
 vincula-bootstrap.sh       # 从 URL 拉 tarball 安装
 bin/vincula                # 运行时 CLI（安装为 vcl / vincula）
-lib/                       # common / accountd / stats / unit / event schema
+lib/                       # common / accountd / stats / audit / unit
 scripts/
   build-release.sh         # 从源码打 dist/ 产物（唯一推荐打包方式）
   gen-release-lock.sh      # 刷新 release.lock
+  soak-0.2.7.sh            # LIVE-ONLY 24h soak 协议（不在 CI 跑）
   rc-*.sh                  # 远端 RC / 升级链测试
   freeze-*.sh              # 0.2.4 freeze 辅助（历史）
 tests/test.sh              # 本地单元测试
@@ -52,7 +53,7 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-0.2.7-dev/  与  dist/vincula-0.2.7-dev.tar.gz (+ .sha256)
+# → dist/vincula-0.2.7/  与  dist/vincula-0.2.7.tar.gz (+ .sha256)
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -65,6 +66,7 @@ bin/vincula
 lib/vincula-common.sh
 lib/vincula-accountd.py
 lib/vincula-stats.py
+lib/vincula-audit.py
 lib/vincula-accountd.service
 ```
 
@@ -76,7 +78,7 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-0.2.7-dev.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-0.2.7.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -150,6 +152,7 @@ vcl user verify
 
 ```bash
 vcl accounting status
+vcl accounting check
 vcl accounting retention
 vcl accounting cycle            # 账期起始日，默认 1
 vcl accounting cycle --set 5
@@ -170,10 +173,15 @@ vcl stats top departments --month
 vcl stats top hosts --days 7
 vcl stats today --json
 vcl stats today --csv /tmp/today.csv
+
+vcl audit user alice --from 2026-08-10T09:00:00Z --to 2026-08-10T18:00:00Z
+vcl audit user alice --from 2026-08-10T09:00:00Z --to 2026-08-10T18:00:00Z --json
 ```
 
 `--month` 从 `billing_cycle_start_day` 起算（默认 1；用 `vcl accounting cycle` 查看/设置）。  
-部门按 **当前** `users.json` 归属（无历史部门维）。详见 [`docs/accounting-reliability.md`](docs/accounting-reliability.md)。
+部门按 **当前** `users.json` 归属（无历史部门维）。  
+`vcl audit` 是连接级 RFC3339 interval-overlap（不是 stats 的 UTC 日粒度）；无 `--csv`。  
+详见 [`docs/accounting-reliability.md`](docs/accounting-reliability.md)。
 
 ### 卸载
 
@@ -190,12 +198,12 @@ vcl uninstall --yes
 同机重跑安装器：
 
 - 同版本：校验双平面，不轮换凭据
-- `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7-dev**：保留 Reality / UUID / `user_id` / accounting DB
-- `0.2.6` → `0.2.7-dev`
+- `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7**：保留 Reality / UUID / `user_id` / accounting DB
+- `0.2.6` → `0.2.7`（accounting schema 2→3，不可逆）
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
-远端升级链实测（Debian 13）：[`docs/rc-live-upgrade-0.2.4-0.2.6.md`](docs/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
+远端升级链实测（Debian 13，止于 0.2.6）：[`docs/rc-live-upgrade-0.2.4-0.2.6.md`](docs/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
 
 ```bash
 # 编排机示例
@@ -209,7 +217,7 @@ bash scripts/rc-live-upgrade-driver.sh
 
 ```bash
 bash -n vincula.sh bin/vincula lib/vincula-common.sh
-python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py
+python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py lib/vincula-audit.py
 bash tests/test.sh
 bash scripts/gen-release-lock.sh   # 改过 first-party 后必跑
 bash scripts/build-release.sh
