@@ -612,6 +612,10 @@ assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
 assert_equal "release.lock has 8 first-party files" "8" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
+assert_failure "release.lock does not include vincula-fleet.py" \
+  grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
+assert_failure "gen-release-lock does not include vincula-fleet.py" \
+  grep -q 'vincula-fleet' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "verify_sibling_release_lock warns when lock is missing" \
   grep -q 'release.lock not found beside installer' "${PROJECT_DIR}/vincula.sh"
 nolock_dir="${TEST_TMP}/missing-release-lock"
@@ -783,12 +787,58 @@ assert_success "gen-release-lock script exists" \
   test -f "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "build-release script exists" \
   test -f "${PROJECT_DIR}/scripts/build-release.sh"
+assert_success "build-controller script exists" \
+  test -f "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "build-release produces verified dist package" \
   bash "${PROJECT_DIR}/scripts/build-release.sh" >/dev/null
 assert_success "dist tree contains release.lock" \
-  test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}/release.lock"
+  test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
 assert_success "dist archive exists" \
+  test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
+assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
+assert_equal "dist node release.lock has 8 first-party files" "8" \
+  "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
+assert_failure "node release.lock does not include vincula-fleet.py" \
+  grep -q 'vincula-fleet' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
+node_listing=$(tar -tzf "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz")
+assert_failure "node tarball does not contain vincula-fleet.py" \
+  grep -q 'vincula-fleet.py' <<< "$node_listing"
+assert_success "build-controller produces zip" \
+  bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
+assert_success "controller zip exists" \
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+controller_zip_rc=0
+python3 - "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
+import sys
+import zipfile
+
+archive, version = sys.argv[1], sys.argv[2]
+prefix = f"vincula-controller-{version}"
+need = (
+    f"{prefix}/README-controller.md",
+    f"{prefix}/bin/vcl-fleet",
+    f"{prefix}/bin/vcl-fleet.cmd",
+    f"{prefix}/lib/vincula-fleet.py",
+)
+forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
+with zipfile.ZipFile(archive) as zf:
+    names = zf.namelist()
+missing = [n for n in need if n not in names]
+assert not missing, missing
+for name in names:
+    base = name.rstrip("/").rsplit("/", 1)[-1]
+    assert base not in forbidden, name
+PY
+if (( controller_zip_rc == 0 )); then
+  pass "AC-2.8-11 controller zip members"
+else
+  fail "AC-2.8-11 controller zip members"
+fi
+assert_success "README mentions vincula-node artifact" \
+  grep -q 'vincula-node-' "${PROJECT_DIR}/README.md"
+assert_success "README mentions vincula-controller artifact" \
+  grep -q 'vincula-controller-' "${PROJECT_DIR}/README.md"
 
 assert_success "stats/connections warn on stale accounting" \
   grep -q 'warn_if_accounting_stale' "${PROJECT_DIR}/bin/vincula"

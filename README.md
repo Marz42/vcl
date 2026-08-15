@@ -32,8 +32,9 @@ vincula-bootstrap.sh       # 从 URL 拉 tarball 安装
 bin/vincula                # 运行时 CLI（安装为 vcl / vincula）
 lib/                       # common / accountd / stats / audit / unit
 scripts/
-  build-release.sh         # 从源码打 dist/ 产物（唯一推荐打包方式）
-  gen-release-lock.sh      # 刷新 release.lock
+  build-release.sh         # 节点产物 dist/vincula-node-<ver>.tar.gz
+  build-controller.sh      # 控制器产物 dist/vincula-controller-<ver>.zip
+  gen-release-lock.sh      # 刷新节点 release.lock（8 个 first-party 文件）
   soak-0.2.7.sh            # LIVE-ONLY 24h soak 协议（不在 CI 跑）
   rc-*.sh                  # 远端 RC / 升级链测试
   freeze-*.sh              # 0.2.4 freeze 辅助（历史）
@@ -42,7 +43,7 @@ docs/                      # 手册、gate、证据索引
 dist/                      # 生成物（gitignore，勿手改）
 ```
 
-源码以 **仓库根目录** 为准。部署只用 `scripts/build-release.sh` 生成的 `dist/vincula-<version>/`，不要手改 `dist/` 或旧 `release/`。
+源码以 **仓库根目录** 为准。节点部署只用 `scripts/build-release.sh` 生成的 `dist/vincula-node-<version>/`；工作站控制器用 `scripts/build-controller.sh` 生成的 `dist/vincula-controller-<version>.zip`。不要手改 `dist/` 或旧 `release/`。
 
 ---
 
@@ -53,7 +54,9 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-0.2.7/  与  dist/vincula-0.2.7.tar.gz (+ .sha256)
+# → dist/vincula-node-0.2.8-dev/  与  dist/vincula-node-0.2.8-dev.tar.gz (+ .sha256)
+bash scripts/build-controller.sh
+# → dist/vincula-controller-0.2.8-dev/  与  dist/vincula-controller-0.2.8-dev.zip
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -78,7 +81,7 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-0.2.7.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-node-0.2.8-dev.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -230,8 +233,9 @@ bash scripts/rc-live-upgrade-driver.sh
 bash -n vincula.sh bin/vincula lib/vincula-common.sh
 python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py lib/vincula-audit.py
 bash tests/test.sh
-bash scripts/gen-release-lock.sh   # 改过 first-party 后必跑
-bash scripts/build-release.sh
+bash scripts/gen-release-lock.sh   # 改过节点 first-party 后必跑
+bash scripts/build-release.sh      # vincula-node-<ver>.tar.gz
+bash scripts/build-controller.sh   # vincula-controller-<ver>.zip
 # 可选（需下载 pinned sing-box）：
 VCL_INTEGRATION=1 bash tests/test.sh
 ```

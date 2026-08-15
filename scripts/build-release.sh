@@ -10,10 +10,11 @@ cd -- "$ROOT"
 VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${ROOT}/vincula.sh" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 [[ -n "$VERSION" ]] || { printf 'ERROR: could not parse VINCULA_VERSION\n' >&2; exit 1; }
 
-NAME="vincula-${VERSION}"
+NAME="vincula-node-${VERSION}"
 DIST_ROOT="${ROOT}/dist"
 OUT="${DIST_ROOT}/${NAME}"
 ARCHIVE="${DIST_ROOT}/${NAME}.tar.gz"
+LEGACY_NAME="vincula-${VERSION}"
 
 FILES=(
   vincula.sh
@@ -27,7 +28,9 @@ FILES=(
 )
 
 printf 'Building %s\n' "$OUT"
-rm -rf --one-file-system -- "$OUT"
+mkdir -p "$DIST_ROOT"
+rm -rf --one-file-system -- "$OUT" "${DIST_ROOT}/${LEGACY_NAME}"
+rm -f -- "${DIST_ROOT}/${LEGACY_NAME}.tar.gz" "${DIST_ROOT}/${LEGACY_NAME}.tar.gz.sha256"
 mkdir -p "$OUT/bin" "$OUT/lib"
 
 for f in "${FILES[@]}"; do
