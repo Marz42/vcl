@@ -152,13 +152,18 @@ vcl user verify
 ```bash
 vcl accounting status
 vcl accounting retention
+vcl accounting cycle            # 账期起始日，默认 1
+vcl accounting cycle --set 5
 vcl connections                 # 需 accountd active，否则 UNAVAILABLE
 
 vcl stats today
 vcl stats yesterday
 vcl stats --days 7
 vcl stats --month
+vcl stats --date 2026-08-14
+vcl stats --from 2026-08-01 --to 2026-08-15
 vcl stats user alice --days 7
+vcl stats user alice --date 2026-08-14
 vcl stats department Eng --month
 vcl stats host github.com --days 7
 vcl stats top users --days 7 --limit 20
@@ -168,6 +173,7 @@ vcl stats today --json
 vcl stats today --csv /tmp/today.csv
 ```
 
+`--month` 从 `billing_cycle_start_day` 起算（默认 1；用 `vcl accounting cycle` 查看/设置）。  
 部门按 **当前** `users.json` 归属（无历史部门维）。详见 [`docs/accounting-reliability.md`](docs/accounting-reliability.md)。
 
 ### 卸载
