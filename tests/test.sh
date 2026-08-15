@@ -1275,6 +1275,14 @@ PY
     grep -q 'cmp -s -- "$staged_uri" "$URI_FILE"' "${PROJECT_DIR}/bin/vincula"
   assert_success "README says metadata-only user set does not restart" \
     grep -q '仅改 metadata 的 `user set` 不重启' "${PROJECT_DIR}/README.md"
+  assert_success "RC CLI coverage keeps pre-add remove cleanup" \
+    grep -q 'vcl user remove bob 2>/dev/null || true' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
+  assert_success "RC CLI coverage expects user remove exit 2" \
+    grep -q 'user-remove-bob-refused' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
+  assert_success "RC CLI coverage expects bob still listed after remove" \
+    grep -q 'user-remove-bob-still-listed' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
+  assert_failure "RC CLI coverage must not assert remove success" \
+    grep -q 'user-remove-bob-gone' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
 fi
 
 # --- 0.2.6 accounting UX / vincula-stats.py ---

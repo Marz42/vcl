@@ -68,13 +68,18 @@ if vcl user list 2>/dev/null | grep -q '^alice'; then
   require_cmd user-show-alice vcl user show alice
   require_cmd user-link-alice vcl user link alice
 fi
-vcl user remove bob
-[[ $? -eq 0 ]] && pass "user-remove-bob" || fail "user-remove-bob" "remove"
+vcl user remove bob >"$EVID/user-remove-bob.out" 2>"$EVID/user-remove-bob.err"
+[[ $? -eq 2 ]] && pass "user-remove-bob-refused" || fail "user-remove-bob-refused" "exit not 2"
+if grep -qi 'not supported\|purge\|disable' "$EVID/user-remove-bob.err"; then
+  pass "user-remove-bob-stderr"
+else
+  fail "user-remove-bob-stderr" "no refusal on stderr"
+fi
 vcl user list | tee "$EVID/users-after-remove.txt"
 if vcl user list 2>/dev/null | grep -q '^bob'; then
-  fail "user-remove-bob-gone" "still listed"
+  pass "user-remove-bob-still-listed"
 else
-  pass "user-remove-bob-gone"
+  fail "user-remove-bob-still-listed" "bob gone"
 fi
 # owner cannot be removed
 vcl user remove owner >"$EVID/user-remove-owner.out" 2>"$EVID/user-remove-owner.err"
