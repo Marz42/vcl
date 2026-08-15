@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "identity": {
+    "ok": true,
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  },
+  "proxy": {
+    "ok": true
+  },
+  "accounting": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "accountd-active",
+        "ok": true,
+        "detail": "active"
+      }
+    ]
+  },
+  "utc_now": "2026-08-16T00:00:00Z"
+}

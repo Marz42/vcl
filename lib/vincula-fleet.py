@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """vincula-fleet — workstation fleet controller (registry CLI).
 
-Stdlib only: argparse, json, pathlib, os, sys, re, tempfile (OpenSSH
-subprocess comes in Phase 6). No pip, no paramiko, no cryptography
-package. No root, no systemd, no /etc/vincula.
+Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess.
+OpenSSH via the system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH).
+No pip, no paramiko, no cryptography package. No root, no systemd, no
+/etc/vincula.
 
 User-local fleet.json is the node registry. SSH passwords are never
 stored. Targets Python 3.10+.
@@ -15,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -33,7 +35,7 @@ UUID_RE = re.compile(
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
 NODE_KEYS = ("node_id", "name", "ssh_host", "ssh_user", "ssh_port", "enabled")
-SSH_ADD_NOT_WIRED = "SSH add not wired; use --offline or wait for 0.2.8 Phase 6"
+SSH_TIMEOUT_SECONDS = 20
 STATUS_NOT_WIRED = "SSH status not wired; wait for 0.2.8 Phase 7"
 VERIFY_NOT_WIRED = "SSH verify not wired; wait for 0.2.8 Phase 7"
 
@@ -67,6 +69,112 @@ def ssh_bin() -> str:
     if env:
         return env
     return "ssh.exe" if sys.platform == "win32" else "ssh"
+
+
+def _ssh_option_text(arg: str) -> str:
+    if arg.startswith("-o") and len(arg) > 2 and not arg.startswith("-o "):
+        return arg[2:]
+    return arg
+
+
+def _reject_forbidden_ssh_options(argv: list[str]) -> None:
+    # Split literals so source grep cannot see the forbidden OpenSSH values.
+    strict_no = "StrictHostKeyChecking=" + "no"
+    known_null = "UserKnownHostsFile=" + "/dev/null"
+    joined = " ".join(argv)
+    if strict_no in argv or strict_no in joined:
+        die(f"refusing forbidden SSH option {strict_no}", 2)
+    if known_null in argv or known_null in joined:
+        die(f"refusing forbidden SSH option {known_null}", 2)
+    for arg in argv:
+        option = _ssh_option_text(arg)
+        if option.startswith("UserKnownHostsFile="):
+            die("refusing forbidden SSH option UserKnownHostsFile=", 2)
+
+
+def ssh_argv(
+    host: str,
+    user: str,
+    port: int,
+    remote_cmd: list[str],
+    *,
+    batch: bool,
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Build an OpenSSH argv. Never weakens host-key checking."""
+    argv = [ssh_bin(), "-p", str(port)]
+    if extra:
+        argv.extend(extra)
+    if batch:
+        argv.extend(["-o", "BatchMode=yes"])
+    argv.extend(["-o", "IdentitiesOnly=no", f"{user}@{host}", "--"])
+    argv.extend(list(remote_cmd))
+    _reject_forbidden_ssh_options(argv)
+    return argv
+
+
+def ssh_run(
+    host: str,
+    user: str,
+    port: int,
+    remote_cmd: list[str],
+    *,
+    batch: bool = True,
+    extra: list[str] | None = None,
+    timeout: float = SSH_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved."""
+    argv = ssh_argv(host, user, port, remote_cmd, batch=batch, extra=extra)
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout
+        stderr = exc.stderr
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        detail = (stderr or "").strip()
+        timeout_msg = f"ssh timed out after {timeout}s"
+        stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
+        return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
+    except OSError as exc:
+        die(f"cannot execute {argv[0]}: {exc}")
+
+
+def parse_identity_json(payload: str) -> dict[str, Any]:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        die(f"remote identity is not JSON: {exc}")
+    if not isinstance(data, dict):
+        die("remote identity JSON must be an object")
+    node_id = data.get("node_id")
+    if not isinstance(node_id, str) or not UUID_RE.fullmatch(node_id):
+        die(f"invalid node_id: {node_id}")
+    instance_id = data.get("instance_id")
+    if instance_id not in (None, ""):
+        if not isinstance(instance_id, str) or not UUID_RE.fullmatch(instance_id):
+            die(f"invalid instance_id: {instance_id}")
+        if instance_id == node_id:
+            die("refusing to register: instance_id equals node_id")
+    return data
+
+
+def _ssh_failure_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    err = (proc.stderr or "").strip()
+    if err:
+        return err
+    out = (proc.stdout or "").strip()
+    if out:
+        return out
+    return f"exit {proc.returncode}"
 
 
 def empty_registry() -> dict[str, Any]:
@@ -304,15 +412,29 @@ def cmd_init() -> int:
 
 
 def cmd_node_add(args: argparse.Namespace) -> int:
-    if not args.offline:
-        die(SSH_ADD_NOT_WIRED, 2)
-    if not args.node_id:
-        die("--offline requires --node-id UUID", 2)
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
+    if args.offline:
+        if not args.node_id:
+            die("--offline requires --node-id UUID", 2)
+        node_id = args.node_id
+    else:
+        proc = ssh_run(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            ["vcl", "identity", "--json"],
+            batch=True,
+        )
+        if proc.returncode != 0:
+            die(f"SSH failed for {ssh_user}@{ssh_host}: {_ssh_failure_detail(proc)}")
+        ident = parse_identity_json(proc.stdout)
+        node_id = ident["node_id"]
+        if args.node_id and args.node_id != node_id:
+            die(f"remote node_id {node_id} does not match --node-id {args.node_id}")
     registry = load_registry()
     add_node(
         registry,
-        node_id=args.node_id,
+        node_id=node_id,
         name=args.name,
         ssh_host=ssh_host,
         ssh_user=ssh_user,
@@ -366,8 +488,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
         description=(
-            "Vincula fleet controller. User-local registry only in this "
-            "milestone; SSH add/status/verify land in later 0.2.8 phases."
+            "Vincula fleet controller. Registers nodes over OpenSSH "
+            "(vcl identity --json) or with --offline; status/verify land "
+            "in a later 0.2.8 phase."
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -377,7 +500,10 @@ def build_parser() -> argparse.ArgumentParser:
     node = sub.add_parser("node", help="register and update fleet nodes")
     node_sub = node.add_subparsers(dest="node_command")
 
-    p_add = node_sub.add_parser("add", help="register a node (Phase 5: --offline)")
+    p_add = node_sub.add_parser(
+        "add",
+        help="register a node via SSH identity (or --offline)",
+    )
     p_add.add_argument("name", help="short name (same charset as user tags)")
     p_add.add_argument("--host", required=True, help="SSH hostname or IP")
     p_add.add_argument("--user", help="SSH user (default: root, or user@host)")

@@ -1,0 +1,22 @@
+{
+  "ok": false,
+  "identity": {
+    "ok": true,
+    "node_id": "8bb18c32-3333-4333-8333-333333333333",
+    "instance_id": "5ee15d43-5555-4555-8555-555555555555"
+  },
+  "proxy": {
+    "ok": true
+  },
+  "accounting": {
+    "ok": false,
+    "checks": [
+      {
+        "name": "heartbeat",
+        "ok": false,
+        "detail": "stale"
+      }
+    ]
+  },
+  "utc_now": "2026-08-16T00:00:00Z"
+}

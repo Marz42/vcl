@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""OpenSSH stand-in for vcl-fleet tests. No network.
+
+Selected by VCL_FLEET_SSH. Parses host/user/port like ssh, then returns
+canned vcl identity/status/verify JSON or simulated SSH failures.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+NODES = HERE / "nodes"
+
+FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
+
+# TEST-NET-3 fixtures. sg/badkey fail before any remote command.
+HOST_ALIAS = {
+    "203.0.113.10": "lax",
+    "lax.test": "lax",
+    "203.0.113.11": "tokyo",
+    "tokyo.test": "tokyo",
+    "203.0.113.12": "sg",
+    "sg.test": "sg",
+    "203.0.113.13": "badkey",
+    "badkey.test": "badkey",
+    "203.0.113.14": "hang",
+    "hang.test": "hang",
+    "203.0.113.15": "badjson",
+    "badjson.test": "badjson",
+    "203.0.113.16": "copied",
+    "copied.test": "copied",
+}
+
+
+def _utc_now() -> str:
+    now = datetime.now(timezone.utc)
+    skew = os.environ.get("VCL_FAKE_CLOCK_SKEW_SECONDS", "").strip()
+    if skew:
+        now = now + timedelta(seconds=int(skew))
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
+    host = ""
+    port = 22
+    remote: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            remote = argv[i + 1 :]
+            break
+        if arg == "-p" and i + 1 < len(argv):
+            port = int(argv[i + 1])
+            i += 2
+            continue
+        if arg.startswith("-p") and len(arg) > 2:
+            port = int(arg[2:])
+            i += 1
+            continue
+        if arg == "-o" and i + 1 < len(argv):
+            i += 2
+            continue
+        if arg.startswith("-o") and len(arg) > 2:
+            i += 1
+            continue
+        if arg == "-l" and i + 1 < len(argv):
+            i += 2
+            continue
+        if arg.startswith("-") and arg != "-":
+            i += 1
+            continue
+        host = arg
+        remote = argv[i + 1 :]
+        break
+    if "@" in host:
+        host = host.rsplit("@", 1)[1]
+    if host.startswith("[") and host.endswith("]") and len(host) > 2:
+        host = host[1:-1]
+    return host, port, remote
+
+
+def _remote_kind(remote: list[str]) -> str:
+    text = " ".join(remote)
+    if "identity" in text:
+        return "identity"
+    if "verify" in text:
+        return "verify"
+    if "status" in text:
+        return "status"
+    return "identity"
+
+
+def _load_fixture(name: str, kind: str) -> dict:
+    path = NODES / name / f"{kind}.json"
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, dict) and "utc_now" in data:
+        data["utc_now"] = _utc_now()
+    return data
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    joined = " ".join(argv)
+    for item in FORBIDDEN:
+        if item in argv or item in joined:
+            sys.stderr.write("FORBIDDEN_HOSTKEY_OPTION\n")
+            return 2
+
+    hang_s = os.environ.get("VCL_FAKE_SSH_HANG_SECONDS", "").strip()
+    if hang_s:
+        time.sleep(float(hang_s))
+
+    host, port, remote = _parse_argv(argv)
+    if not host:
+        sys.stderr.write("fake-ssh: missing destination host\n")
+        return 255
+
+    alias = HOST_ALIAS.get(host)
+    if alias is None:
+        sys.stderr.write(
+            f"ssh: connect to host {host} port {port}: Connection refused\n"
+        )
+        return 255
+    if alias == "sg":
+        sys.stderr.write(
+            f"ssh: connect to host {host} port {port}: Connection refused\n"
+        )
+        return 255
+    if alias == "badkey":
+        sys.stderr.write("Host key verification failed.\n")
+        return 255
+    if alias == "hang":
+        time.sleep(3600)
+        return 255
+    if alias == "badjson":
+        sys.stdout.write("this is not identity JSON\n")
+        return 0
+
+    kind = _remote_kind(remote)
+    data = _load_fixture(alias, kind)
+    sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
+    sys.stdout.write("\n")
+    if kind in ("status", "verify") and not data.get("ok", True):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
