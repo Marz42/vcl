@@ -4,7 +4,7 @@
 
 # shellcheck shell=bash
 
-readonly VINCULA_COMMON_VERSION="0.2.4"
+readonly VINCULA_COMMON_VERSION="0.2.5"
 
 json_quoted_field() {
   local file=$1 field=$2
@@ -171,12 +171,11 @@ verify_identity_consistency() {
   (( fail == 0 ))
 }
 
-# User tags: lowercase alphanumeric, underscore, hyphen; start with alnum; max 32.
+# User tags: lowercase alphanumeric, underscore, hyphen, dot; start with alnum; max 32.
 # No reserved tags beyond the format itself.
 is_valid_user_tag() {
   local tag=$1
-  [[ ${#tag} -ge 1 && ${#tag} -le 32 ]] || return 1
-  [[ "$tag" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+  [[ "$tag" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]]
 }
 
 require_python3() {
@@ -457,7 +456,7 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 }
 
-# Mutate schema 2 users registry. action: add|remove|disable|enable|rotate
+# Mutate schema 2 users registry. action: add|remove|disable|enable|rotate|set
 # Extra env/args via python argv.
 users_registry_mutate() {
   local users_file=$1 action=$2
@@ -553,6 +552,13 @@ elif action == "rotate":
         "created_at": now,
         "revoked_at": None,
     })
+elif action == "set":
+    tag, display_name, department = args
+    user = find(tag)
+    if not user:
+        raise SystemExit(f"user not found: {tag}")
+    user["display_name"] = display_name
+    user["department"] = department
 else:
     raise SystemExit(f"unknown action: {action}")
 
@@ -564,16 +570,37 @@ PY
 
 users_registry_show() {
   local users_file=$1 tag=$2
+  users_registry_show_human "$users_file" "$tag"
+}
+
+users_registry_show_human() {
+  local users_file=$1 tag=$2
   require_python3 || return 1
   python3 - "$users_file" "$tag" <<'PY'
 import json, sys
+
 path, tag = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
 for user in data.get("users", []):
-    if user.get("tag") == tag:
-        print(json.dumps(user, indent=2, ensure_ascii=False))
-        raise SystemExit(0)
+    if user.get("tag") != tag:
+        continue
+    print(f"Tag:           {user.get('tag') or ''}")
+    print(f"Display name:  {user.get('display_name') or ''}")
+    print(f"Department:    {user.get('department') or '-'}")
+    print(f"User ID:       {user.get('user_id') or ''}")
+    print(f"Enabled:       {'yes' if user.get('enabled') else 'no'}")
+    print(f"Created at:    {user.get('created_at') or ''}")
+    print()
+    print("Credentials:")
+    print(f"{'credential_id':<38} {'status':<10} {'created_at':<22} revoked_at")
+    for cred in user.get("credentials") or []:
+        cid = cred.get("credential_id") or "-"
+        status = cred.get("status") or "-"
+        created = cred.get("created_at") or "-"
+        revoked = cred.get("revoked_at") or "-"
+        print(f"{cid:<38} {status:<10} {created:<22} {revoked}")
+    raise SystemExit(0)
 raise SystemExit(f"user not found: {tag}")
 PY
 }
@@ -583,20 +610,464 @@ users_registry_list() {
   require_python3 || return 1
   python3 - "$users_file" <<'PY'
 import json, sys
+
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
-print(f"{'TAG':<20} {'ENABLED':<8} {'DEPARTMENT':<16} ACTIVE_UUID")
+print(f"{'TAG':<10} {'NAME':<14} {'DEPARTMENT':<16} STATUS")
 for user in data.get("users", []):
     tag = user.get("tag") or ""
-    enabled = "yes" if user.get("enabled") else "no"
-    dept = user.get("department") or ""
-    active = "-"
-    for cred in user.get("credentials") or []:
-        if cred.get("status") == "active":
-            active = cred.get("uuid") or "-"
+    name = user.get("display_name") or tag
+    dept = user.get("department") or "-"
+    status = "active" if user.get("enabled") else "disabled"
+    print(f"{tag:<10} {name:<14} {dept:<16} {status}")
+PY
+}
+
+users_registry_field() {
+  local users_file=$1 tag=$2 field=$3
+  require_python3 || return 1
+  python3 - "$users_file" "$tag" "$field" <<'PY'
+import json, sys
+
+path, tag, field = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+for user in data.get("users", []):
+    if user.get("tag") != tag:
+        continue
+    if field == "active_credential_id":
+        for cred in user.get("credentials") or []:
+            if cred.get("status") == "active" and cred.get("credential_id"):
+                print(cred["credential_id"])
+                raise SystemExit(0)
+        raise SystemExit(f"user {tag} has no active credential")
+    value = user.get(field)
+    if value is None:
+        raise SystemExit(f"field {field} missing for user {tag}")
+    print(value)
+    raise SystemExit(0)
+raise SystemExit(f"user not found: {tag}")
+PY
+}
+
+users_registry_verify() {
+  local users_file=$1 config_file=$2
+  require_python3 || return 1
+  python3 - "$users_file" "$config_file" <<'PY'
+import json, sys
+from collections import Counter
+
+users_path, config_path = sys.argv[1], sys.argv[2]
+fail = 0
+
+def ok(msg):
+    print(f"✓ {msg}")
+
+def bad(msg):
+    global fail
+    fail = 1
+    print(f"✗ {msg}")
+
+with open(users_path, encoding="utf-8") as f:
+    data = json.load(f)
+
+print("[Registry]")
+if data.get("schema_version") == 2:
+    ok("schema_version 2")
+else:
+    bad(f"schema_version {data.get('schema_version')!r} (expected 2)")
+
+users = data.get("users") or []
+ok(f"{len(users)} users")
+
+user_ids = [u.get("user_id") for u in users if u.get("user_id")]
+tags = [u.get("tag") for u in users if u.get("tag")]
+cred_ids = []
+active_uuids = []
+for u in users:
+    for c in u.get("credentials") or []:
+        if c.get("credential_id"):
+            cred_ids.append(c["credential_id"])
+        if c.get("status") == "active" and c.get("uuid"):
+            active_uuids.append(c["uuid"])
+
+def unique(label, values):
+    if len(values) == len(set(values)):
+        ok(f"{label} unique")
+    else:
+        dups = [k for k, n in Counter(values).items() if n > 1]
+        bad(f"{label} not unique: {', '.join(map(str, dups[:5]))}")
+
+unique("user IDs", user_ids)
+unique("tags", tags)
+unique("credential IDs", cred_ids)
+
+print()
+print("[Credentials]")
+unique("active UUIDs", active_uuids)
+
+enabled_active_ok = True
+for u in users:
+    if not u.get("enabled"):
+        continue
+    actives = [c for c in (u.get("credentials") or []) if c.get("status") == "active" and c.get("uuid")]
+    if len(actives) != 1:
+        enabled_active_ok = False
+        bad(f"enabled user {u.get('tag')} has {len(actives)} active credential(s) (expected 1)")
+if enabled_active_ok:
+    ok("each enabled user has exactly one active credential")
+
+revoked_ok = True
+for u in users:
+    for c in u.get("credentials") or []:
+        if c.get("status") == "revoked" and c.get("uuid") in {
+            x.get("uuid") for x in (u.get("credentials") or []) if x.get("status") == "active"
+        }:
+            revoked_ok = False
+if revoked_ok:
+    ok("revoked credentials excluded from active set")
+
+print()
+print("[sing-box]")
+try:
+    with open(config_path, encoding="utf-8") as f:
+        config = json.load(f)
+except OSError as exc:
+    bad(f"cannot read config: {exc}")
+    config = {}
+
+inbound_users = []
+for inbound in config.get("inbounds") or []:
+    if inbound.get("tag") == "vless-reality-in" or inbound.get("type") == "vless":
+        inbound_users = inbound.get("users") or []
+        break
+
+inbound_by_name = {}
+for iu in inbound_users:
+    name = iu.get("name")
+    if name:
+        inbound_by_name[name] = iu.get("uuid")
+
+disabled_ok = True
+for u in users:
+    if u.get("enabled"):
+        continue
+    tag = u.get("tag")
+    if tag in inbound_by_name:
+        disabled_ok = False
+        bad(f"disabled user {tag} still present in sing-box inbound users")
+if disabled_ok:
+    ok("disabled users have no sing-box auth entry")
+
+expected = {}
+for u in users:
+    if not u.get("enabled"):
+        continue
+    tag = u.get("tag")
+    for c in u.get("credentials") or []:
+        if c.get("status") == "active" and c.get("uuid"):
+            expected[tag] = c["uuid"]
             break
-    print(f"{tag:<20} {enabled:<8} {dept:<16} {active}")
+
+auth_ok = True
+for tag, uuid in expected.items():
+    if tag not in inbound_by_name:
+        auth_ok = False
+        bad(f"active registry user {tag} missing from sing-box inbound")
+    elif inbound_by_name[tag] != uuid:
+        auth_ok = False
+        bad(f"UUID mismatch for {tag}")
+for name in inbound_by_name:
+    if name not in expected:
+        auth_ok = False
+        bad(f"sing-box inbound user {name} not an enabled registry active credential")
+if auth_ok:
+    ok("generated auth users match Registry")
+
+print()
+print("[Accounting]")
+map_ok = True
+for u in users:
+    if not u.get("enabled"):
+        continue
+    if not u.get("user_id") or not u.get("tag"):
+        map_ok = False
+        bad(f"enabled user missing user_id/tag for accounting map")
+if map_ok:
+    ok("all active auth users map to stable user_id")
+
+print()
+if fail:
+    print("Result: FAIL")
+    raise SystemExit(1)
+print("Result: PASS")
+raise SystemExit(0)
+PY
+}
+
+# Validate/import CSV users into a candidate registry.
+# dry_run=1: print report only. dry_run=0: write out_users_json; optional out_cred_csv.
+# URI args (server..short_id) required when writing credential CSV.
+users_import_prepare() {
+  local csv_path=$1 users_file=$2 node_id=$3
+  local out_users_json=${4:-}
+  local out_cred_csv=${5:-}
+  local include_uuid=${6:-0}
+  local dry_run=${7:-1}
+  local server=${8:-}
+  local port=${9:-}
+  local reality_host=${10:-}
+  local public_key=${11:-}
+  local short_id=${12:-}
+  require_python3 || return 1
+  python3 - "$csv_path" "$users_file" "$node_id" "$out_users_json" "$out_cred_csv" \
+    "$include_uuid" "$dry_run" "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY'
+import csv, json, re, sys, uuid
+from datetime import datetime, timezone
+
+(
+    csv_path, users_file, node_id, out_users_json, out_cred_csv,
+    include_uuid, dry_run, server, port, reality_host, public_key, short_id,
+) = sys.argv[1:13]
+include_uuid = include_uuid in ("1", "true", "yes", "on")
+dry_run = dry_run in ("1", "true", "yes", "on")
+TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+with open(users_file, encoding="utf-8") as f:
+    data = json.load(f)
+if data.get("schema_version") != 2:
+    print("ERROR: users.json must be schema_version 2", file=sys.stderr)
+    raise SystemExit(1)
+
+existing_tags = {u.get("tag") for u in data.get("users") or [] if u.get("tag")}
+errors = []
+rows = []
+seen_in_file = {}
+
+try:
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "tag" not in [h.strip() for h in reader.fieldnames if h]:
+            print("ERROR: CSV header must include tag", file=sys.stderr)
+            raise SystemExit(1)
+        # normalize fieldnames
+        field_map = {h: h.strip() for h in reader.fieldnames if h}
+        for i, raw in enumerate(reader, start=2):
+            row = {field_map.get(k, k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items() if k}
+            tag = (row.get("tag") or "").strip()
+            display_name = (row.get("display_name") or "").strip()
+            department = (row.get("department") or "").strip()
+            if not tag and not display_name and not department:
+                continue
+            rows.append((i, tag, display_name, department))
+            if not tag:
+                errors.append(f'line {i}: missing tag')
+                continue
+            if not TAG_RE.match(tag):
+                errors.append(f'line {i}: invalid tag "{tag}"')
+            if tag in seen_in_file:
+                errors.append(f"line {i}: duplicate tag {tag}")
+            else:
+                seen_in_file[tag] = i
+            if tag in existing_tags:
+                errors.append(f"line {i}: tag {tag} already exists")
+except FileNotFoundError:
+    print(f"ERROR: CSV not found: {csv_path}", file=sys.stderr)
+    raise SystemExit(1)
+
+valid_new = []
+for i, tag, display_name, department in rows:
+    if any(e.startswith(f"line {i}:") for e in errors):
+        continue
+    valid_new.append((tag, display_name or tag, department))
+
+conflicts = sum(1 for e in errors if "already exists" in e)
+invalid_rows = len({e.split(":", 1)[0] for e in errors if "already exists" not in e})
+
+print("User import dry-run" if dry_run else "User import plan")
+print()
+print(f"Input rows:       {len(rows)}")
+print(f"Valid new users:  {len(valid_new)}")
+print(f"Conflicts:        {conflicts}")
+print(f"Invalid rows:     {invalid_rows}")
+if errors:
+    print()
+    print("Errors:")
+    for e in errors:
+        print(f"  {e}")
+if dry_run:
+    print()
+    print("No changes were made.")
+    raise SystemExit(0 if not errors else 1)
+
+if errors:
+    raise SystemExit(1)
+
+def uri_authority(host):
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+def render_uri(vless_uuid, tag):
+    auth = uri_authority(server)
+    return (
+        f"vless://{vless_uuid}@{auth}:{port}"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni={reality_host}&fp=chrome&pbk={public_key}&sid={short_id}"
+        f"&type=tcp#vincula-{tag}"
+    )
+
+new_users = []
+cred_rows = []
+for tag, display_name, department in valid_new:
+    user_id = str(uuid.uuid4())
+    credential_id = str(uuid.uuid4())
+    vless_uuid = str(uuid.uuid4())
+    new_users.append({
+        "user_id": user_id,
+        "tag": tag,
+        "display_name": display_name,
+        "department": department,
+        "enabled": True,
+        "created_at": now,
+        "credentials": [{
+            "credential_id": credential_id,
+            "node_id": node_id,
+            "uuid": vless_uuid,
+            "status": "active",
+            "created_at": now,
+            "revoked_at": None,
+        }],
+    })
+    if out_cred_csv:
+        row = {
+            "tag": tag,
+            "display_name": display_name,
+            "department": department,
+            "user_id": user_id,
+            "credential_id": credential_id,
+            "vless_uri": render_uri(vless_uuid, tag),
+        }
+        if include_uuid:
+            row["uuid"] = vless_uuid
+        cred_rows.append(row)
+
+data["users"] = list(data.get("users") or []) + new_users
+if not out_users_json:
+    print("ERROR: out_users_json path required for non-dry-run", file=sys.stderr)
+    raise SystemExit(1)
+with open(out_users_json, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+
+if out_cred_csv:
+    if not all([server, port, reality_host, public_key, short_id]):
+        print("ERROR: URI parameters required for credential CSV", file=sys.stderr)
+        raise SystemExit(1)
+    fieldnames = ["tag", "display_name", "department", "user_id", "credential_id", "vless_uri"]
+    if include_uuid:
+        fieldnames.append("uuid")
+    with open(out_cred_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(cred_rows)
+raise SystemExit(0)
+PY
+}
+
+# Export users CSV. credentials=0: metadata. credentials=1: credential export with URIs.
+# output empty => stdout (metadata only).
+users_export_csv() {
+  local users_file=$1
+  local output=${2:-}
+  local credentials=${3:-0}
+  local include_uuid=${4:-0}
+  local server=${5:-}
+  local port=${6:-}
+  local reality_host=${7:-}
+  local public_key=${8:-}
+  local short_id=${9:-}
+  require_python3 || return 1
+  python3 - "$users_file" "$output" "$credentials" "$include_uuid" \
+    "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY'
+import csv, json, sys
+
+(
+    users_file, output, credentials, include_uuid,
+    server, port, reality_host, public_key, short_id,
+) = sys.argv[1:10]
+credentials = credentials in ("1", "true", "yes", "on")
+include_uuid = include_uuid in ("1", "true", "yes", "on")
+
+with open(users_file, encoding="utf-8") as f:
+    data = json.load(f)
+
+def uri_authority(host):
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+def render_uri(vless_uuid, tag):
+    auth = uri_authority(server)
+    return (
+        f"vless://{vless_uuid}@{auth}:{port}"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni={reality_host}&fp=chrome&pbk={public_key}&sid={short_id}"
+        f"&type=tcp#vincula-{tag}"
+    )
+
+rows = []
+if credentials:
+    if not output:
+        print("ERROR: credential export requires an output path", file=sys.stderr)
+        raise SystemExit(1)
+    if not all([server, port, reality_host, public_key, short_id]):
+        print("ERROR: URI parameters required for credential export", file=sys.stderr)
+        raise SystemExit(1)
+    fieldnames = ["tag", "display_name", "department", "user_id", "credential_id", "vless_uri"]
+    if include_uuid:
+        fieldnames.append("uuid")
+    for user in data.get("users") or []:
+        active = None
+        for cred in user.get("credentials") or []:
+            if cred.get("status") == "active":
+                active = cred
+                break
+        if not active:
+            continue
+        row = {
+            "tag": user.get("tag") or "",
+            "display_name": user.get("display_name") or "",
+            "department": user.get("department") or "",
+            "user_id": user.get("user_id") or "",
+            "credential_id": active.get("credential_id") or "",
+            "vless_uri": render_uri(active.get("uuid") or "", user.get("tag") or ""),
+        }
+        if include_uuid:
+            row["uuid"] = active.get("uuid") or ""
+        rows.append(row)
+else:
+    fieldnames = ["tag", "display_name", "department", "status", "user_id"]
+    for user in data.get("users") or []:
+        rows.append({
+            "tag": user.get("tag") or "",
+            "display_name": user.get("display_name") or "",
+            "department": user.get("department") or "",
+            "status": "active" if user.get("enabled") else "disabled",
+            "user_id": user.get("user_id") or "",
+        })
+
+if output:
+    with open(output, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+else:
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
 PY
 }
 

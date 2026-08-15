@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.2.4
+# Vincula-Version: 0.2.5
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.2.4"
+readonly VINCULA_VERSION="0.2.5"
 readonly STATE_DIR="/etc/vincula"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -85,13 +85,16 @@ Usage:
   vcl logs -f          Follow journal output
   vcl link             Print the owner VLESS URI
   vcl user add <tag> [--display-name NAME] [--department DEPT]
-  vcl user remove <tag>
+  vcl user set <tag> --display-name NAME [--department DEPT]
   vcl user disable <tag>
   vcl user enable <tag>
   vcl user rotate <tag>
   vcl user list
   vcl user show <tag>
   vcl user link <tag>
+  vcl user import FILE [--dry-run] [--output FILE] [--include-uuid]
+  vcl user export [--credentials] [--output FILE] [--include-uuid]
+  vcl user verify
   vcl connections      Recent/current connection accounting rows
   vcl accounting status
   vcl stats today      Per-user traffic for today (UTC)
@@ -1194,6 +1197,7 @@ user_mutation_apply() {
   cp -a -- "$STATE_FILE" "$staged_state"
   # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
 
+  printf 'WARNING: applying user changes restarts sing-box; existing connections may drop briefly.\n' >&2
   commit_user_mutation "$staged_users" "$staged_config" "$staged_uri" "$staged_state"
   rm -rf --one-file-system -- "$staged_dir"
   printf '✓ user registry updated\n'
@@ -1222,7 +1226,7 @@ cmd_user_add() {
   done
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   [[ -n "$display_name" ]] || display_name=$tag
-  local node_id uuid staged_dir staged_users
+  local node_id uuid staged_dir staged_users user_id credential_id
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
@@ -1237,25 +1241,63 @@ cmd_user_add() {
     die "failed to add user ${tag}."
   fi
   user_mutation_apply "$staged_users"
-  printf 'User %s added.\n' "$tag"
+  user_id=$(users_registry_field "$USERS_FILE" "$tag" user_id)
+  credential_id=$(users_registry_field "$USERS_FILE" "$tag" active_credential_id)
+  printf 'Created user: %s\n' "$tag"
+  printf 'User ID: %s\n' "$user_id"
+  printf 'Credential: %s\n' "$credential_id"
+  printf 'Status: active\n'
+  printf '\nVLESS URI:\n'
+  cmd_user_link "$tag"
 }
 
-cmd_user_remove() {
+cmd_user_set() {
   local tag=$1
+  shift
+  local display_name="" department="" set_display=0 set_department=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --display-name)
+        [[ $# -ge 2 ]] || die "user set: --display-name requires a value."
+        display_name=$2
+        set_display=1
+        shift 2
+        ;;
+      --department)
+        [[ $# -ge 2 ]] || die "user set: --department requires a value."
+        department=$2
+        set_department=1
+        shift 2
+        ;;
+      *)
+        die "user set: unknown option ${1}."
+        ;;
+    esac
+  done
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
-  [[ "$tag" != owner ]] || die "refusing to remove the owner user."
-  local staged_dir staged_users
+  (( set_display || set_department )) || die "user set: require --display-name and/or --department."
+  local cur_display cur_dept staged_dir staged_users
+  cur_display=$(users_registry_field "$USERS_FILE" "$tag" display_name)
+  cur_dept=$(users_registry_field "$USERS_FILE" "$tag" department)
+  (( set_display )) || display_name=$cur_display
+  (( set_department )) || department=$cur_dept
+
   USER_MUTATION_BACKUP=""
   backup_user_mutation
   staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
   staged_users="${staged_dir}/users.json"
   cp -a -- "$USERS_FILE" "$staged_users"
-  if ! users_registry_mutate "$staged_users" remove "$tag"; then
+  if ! users_registry_mutate "$staged_users" set "$tag" "$display_name" "$department"; then
     rm -rf --one-file-system -- "$staged_dir"
-    die "failed to remove user ${tag}."
+    die "failed to update user ${tag}."
   fi
   user_mutation_apply "$staged_users"
-  printf 'User %s removed.\n' "$tag"
+  printf 'User %s metadata updated.\n' "$tag"
+}
+
+cmd_user_remove() {
+  printf 'ERROR: user purge/delete is not supported in 0.2.5. Use: vcl user disable <tag>\n' >&2
+  exit 2
 }
 
 cmd_user_disable() {
@@ -1310,6 +1352,8 @@ cmd_user_rotate() {
   fi
   user_mutation_apply "$staged_users"
   printf 'User %s credential rotated.\n' "$tag"
+  printf '\nVLESS URI:\n'
+  cmd_user_link "$tag"
 }
 
 cmd_user_list() {
@@ -1319,7 +1363,7 @@ cmd_user_list() {
 cmd_user_show() {
   local tag=$1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
-  users_registry_show "$USERS_FILE" "$tag"
+  users_registry_show_human "$USERS_FILE" "$tag"
 }
 
 cmd_user_link() {
@@ -1338,6 +1382,134 @@ cmd_user_link() {
   render_vless_uri "$uuid" "$server" "$port" "$reality_host" "$public_key" "$short_id" "$tag"
 }
 
+cmd_user_verify() {
+  users_registry_verify "$USERS_FILE" "$CONFIG_FILE"
+}
+
+cmd_user_import() {
+  local csv_file=$1
+  shift
+  local dry_run=0 output="" include_uuid=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --output)
+        [[ $# -ge 2 ]] || die "user import: --output requires a file path."
+        output=$2
+        shift 2
+        ;;
+      --include-uuid)
+        include_uuid=1
+        shift
+        ;;
+      *)
+        die "user import: unknown option ${1}."
+        ;;
+    esac
+  done
+  [[ -f "$csv_file" ]] || die "import file not found: ${csv_file}."
+  local node_id server port reality_host public_key short_id
+  node_id=$(node_id_from_settings)
+  server=$(toml_get "$SETTINGS_FILE" server)
+  [[ -n "$server" ]] || server=$(json_quoted_field "$STATE_FILE" server)
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
+  [[ -n "$reality_host" ]] || reality_host=$(json_quoted_field "$STATE_FILE" reality_server_name)
+  public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+
+  if (( dry_run )); then
+    users_import_prepare "$csv_file" "$USERS_FILE" "$node_id" "" "" "$include_uuid" 1
+    return
+  fi
+
+  local staged_dir staged_users cred_tmp="" cred_keep=""
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  if [[ -n "$output" ]]; then
+    cred_tmp="${staged_dir}/credentials.csv"
+  fi
+  if ! users_import_prepare "$csv_file" "$USERS_FILE" "$node_id" "$staged_users" "$cred_tmp" \
+      "$include_uuid" 0 "$server" "$port" "$reality_host" "$public_key" "$short_id"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "user import validation failed; no changes were made."
+  fi
+  if [[ -n "$output" && -f "$cred_tmp" ]]; then
+    cred_keep=$(mktemp /tmp/vincula-cred.XXXXXXXX)
+    cp -a -- "$cred_tmp" "$cred_keep"
+  fi
+  user_mutation_apply "$staged_users"
+  if [[ -n "$output" && -n "$cred_keep" && -f "$cred_keep" ]]; then
+    install -m 0600 -o root -g root "$cred_keep" "$output"
+    rm -f -- "$cred_keep"
+    printf 'WARNING: %s contains authentication credentials.\nStore and distribute it securely.\n' "$output" >&2
+    printf 'Credential CSV written to %s\n' "$output"
+  fi
+  printf 'User import applied.\n'
+}
+
+cmd_user_export() {
+  local credentials=0 output="" include_uuid=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --credentials)
+        credentials=1
+        shift
+        ;;
+      --output)
+        [[ $# -ge 2 ]] || die "user export: --output requires a file path."
+        output=$2
+        shift 2
+        ;;
+      --include-uuid)
+        include_uuid=1
+        shift
+        ;;
+      *)
+        die "user export: unknown option ${1}."
+        ;;
+    esac
+  done
+  if (( credentials )); then
+    [[ -n "$output" ]] || die "user export --credentials requires --output FILE."
+  fi
+  local server port reality_host public_key short_id
+  server=$(toml_get "$SETTINGS_FILE" server)
+  [[ -n "$server" ]] || server=$(json_quoted_field "$STATE_FILE" server)
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
+  [[ -n "$reality_host" ]] || reality_host=$(json_quoted_field "$STATE_FILE" reality_server_name)
+  public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+
+  if (( credentials )); then
+    local tmp
+    tmp=$(mktemp /tmp/vincula-export.XXXXXXXX)
+    if ! users_export_csv "$USERS_FILE" "$tmp" 1 "$include_uuid" \
+        "$server" "$port" "$reality_host" "$public_key" "$short_id"; then
+      rm -f -- "$tmp"
+      die "credential export failed."
+    fi
+    install -m 0600 -o root -g root "$tmp" "$output"
+    rm -f -- "$tmp"
+    printf 'WARNING: %s contains authentication credentials.\nStore and distribute it securely.\n' "$output" >&2
+    printf 'Credential CSV written to %s\n' "$output"
+  else
+    users_export_csv "$USERS_FILE" "$output" 0 "$include_uuid"
+    if [[ -n "$output" ]]; then
+      chmod 0640 "$output" 2>/dev/null || true
+      printf 'Users CSV written to %s\n' "$output"
+    fi
+  fi
+}
+
 cmd_user() {
   local sub=${1:-}
   shift || true
@@ -1346,9 +1518,12 @@ cmd_user() {
       [[ $# -ge 1 ]] || die "usage: vcl user add <tag> [--display-name NAME] [--department DEPT]"
       cmd_user_add "$@"
       ;;
-    remove)
-      [[ $# == 1 ]] || die "usage: vcl user remove <tag>"
-      cmd_user_remove "$1"
+    set)
+      [[ $# -ge 1 ]] || die "usage: vcl user set <tag> --display-name NAME [--department DEPT]"
+      cmd_user_set "$@"
+      ;;
+    remove|purge|delete)
+      cmd_user_remove
       ;;
     disable)
       [[ $# == 1 ]] || die "usage: vcl user disable <tag>"
@@ -1374,8 +1549,19 @@ cmd_user() {
       [[ $# == 1 ]] || die "usage: vcl user link <tag>"
       cmd_user_link "$1"
       ;;
+    import)
+      [[ $# -ge 1 ]] || die "usage: vcl user import FILE [--dry-run] [--output FILE] [--include-uuid]"
+      cmd_user_import "$@"
+      ;;
+    export)
+      cmd_user_export "$@"
+      ;;
+    verify)
+      [[ $# == 0 ]] || die "user verify takes no arguments."
+      cmd_user_verify
+      ;;
     ""|help|-h|--help)
-      printf 'Usage: vcl user add|remove|disable|enable|rotate|list|show|link ...\n'
+      printf 'Usage: vcl user add|set|disable|enable|rotate|list|show|link|import|export|verify ...\n'
       ;;
     *)
       die "Unknown user subcommand: ${sub}. Run 'vcl help'."

@@ -103,7 +103,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.2.4" \
+assert_equal "runs when read from standard input" "vincula 0.2.5" \
   "$(bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -121,12 +121,14 @@ assert_success "migrates from 0.2.0" is_supported_upgrade_from 0.2.0
 assert_success "migrates from 0.2.1" is_supported_upgrade_from 0.2.1
 assert_success "migrates from 0.2.2" is_supported_upgrade_from 0.2.2
 assert_success "migrates from 0.2.3" is_supported_upgrade_from 0.2.3
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.2.4
+assert_success "migrates from 0.2.4" is_supported_upgrade_from 0.2.4
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.2.5
 assert_failure "does not migrate 0.3.0" is_supported_upgrade_from 0.3.0
 
 assert_success "accepts owner tag" is_valid_user_tag owner
 assert_success "accepts alice tag" is_valid_user_tag alice
 assert_success "accepts tag with hyphen and underscore" is_valid_user_tag alice_01-x
+assert_success "accepts tag with dots" is_valid_user_tag bob.li
 assert_failure "rejects empty tag" is_valid_user_tag ""
 assert_failure "rejects uppercase tag" is_valid_user_tag Alice
 assert_failure "rejects tag starting with hyphen" is_valid_user_tag -alice
@@ -231,7 +233,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.2.4"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.2.5"$' "${TEST_TMP}/config.toml"
 assert_equal "reads canonical port from state" "443" "$(json_numeric_field "${TEST_TMP}/state.json" port)"
 assert_success "generated artifacts match canonical state" \
   verify_identity_consistency "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" "${TEST_TMP}/config.json" "${TEST_TMP}/owner.uri" "${TEST_TMP}/users.json"
@@ -423,6 +425,15 @@ assert_success "bootstrap script exists" \
   test -f "${PROJECT_DIR}/vincula-bootstrap.sh"
 assert_success "gen-release-lock script exists" \
   test -f "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "build-release script exists" \
+  test -f "${PROJECT_DIR}/scripts/build-release.sh"
+assert_success "build-release produces verified dist package" \
+  bash "${PROJECT_DIR}/scripts/build-release.sh" >/dev/null
+assert_success "dist tree contains release.lock" \
+  test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}/release.lock"
+assert_success "dist archive exists" \
+  test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
+
 assert_success "stats/connections warn on stale accounting" \
   grep -q 'warn_if_accounting_stale' "${PROJECT_DIR}/bin/vincula"
 assert_success "accountd health rejects wrong Clash secret" \
@@ -616,6 +627,247 @@ if (( rollup_rc == 0 )); then
   pass "event parse + rollup + stale close + poll baseline"
 else
   fail "event parse + rollup + stale close + poll baseline"
+fi
+
+# --- 0.2.5 user provisioning offline tests ---
+if command -v python3 >/dev/null 2>&1; then
+  PROV_DIR="${TEST_TMP}/provision"
+  mkdir -p "$PROV_DIR"
+  OWNER_UUID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  NODE_ID="$TEST_NODE_ID"
+  cat > "${PROV_DIR}/users.json" <<JSON
+{
+  "schema_version": 2,
+  "users": [
+    {
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "tag": "owner",
+      "display_name": "Owner",
+      "department": "",
+      "enabled": true,
+      "created_at": "2026-08-15T00:00:00Z",
+      "credentials": [
+        {
+          "credential_id": "22222222-2222-4222-8222-222222222222",
+          "node_id": "${NODE_ID}",
+          "uuid": "${OWNER_UUID}",
+          "status": "active",
+          "created_at": "2026-08-15T00:00:00Z",
+          "revoked_at": null
+        }
+      ]
+    },
+    {
+      "user_id": "33333333-3333-4333-8333-333333333333",
+      "tag": "alice",
+      "display_name": "Alice Zhang",
+      "department": "Sales",
+      "enabled": true,
+      "created_at": "2026-08-15T00:00:00Z",
+      "credentials": [
+        {
+          "credential_id": "44444444-4444-4444-8444-444444444444",
+          "node_id": "${NODE_ID}",
+          "uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "status": "active",
+          "created_at": "2026-08-15T00:00:00Z",
+          "revoked_at": null
+        }
+      ]
+    }
+  ]
+}
+JSON
+
+  cat > "${PROV_DIR}/config-ok.json" <<'JSON'
+{
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "users": [
+        {"name": "owner", "uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "flow": "xtls-rprx-vision"},
+        {"name": "alice", "uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "flow": "xtls-rprx-vision"}
+      ]
+    }
+  ]
+}
+JSON
+  assert_success "users_registry_verify passes for consistent registry/config" \
+    users_registry_verify "${PROV_DIR}/users.json" "${PROV_DIR}/config-ok.json"
+
+  cat > "${PROV_DIR}/config-bad.json" <<'JSON'
+{
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "users": [
+        {"name": "owner", "uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "flow": "xtls-rprx-vision"},
+        {"name": "alice", "uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "flow": "xtls-rprx-vision"},
+        {"name": "ghost", "uuid": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "flow": "xtls-rprx-vision"}
+      ]
+    }
+  ]
+}
+JSON
+  assert_failure "users_registry_verify fails when config has extra inbound user" \
+    users_registry_verify "${PROV_DIR}/users.json" "${PROV_DIR}/config-bad.json"
+
+  assert_success "users_registry_mutate set updates metadata" \
+    users_registry_mutate "${PROV_DIR}/users.json" set alice "Alice Chen" Engineering
+  assert_equal "set updates display_name" "Alice Chen" \
+    "$(users_registry_field "${PROV_DIR}/users.json" alice display_name)"
+  assert_equal "set updates department" "Engineering" \
+    "$(users_registry_field "${PROV_DIR}/users.json" alice department)"
+
+  list_out=$(users_registry_list "${PROV_DIR}/users.json")
+  if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" != *"ACTIVE_UUID"* ]]; then
+    pass "users_registry_list uses human STATUS format without UUID"
+  else
+    fail "users_registry_list uses human STATUS format without UUID"
+  fi
+  show_out=$(users_registry_show_human "${PROV_DIR}/users.json" alice)
+  if [[ "$show_out" == *"Display name:"* && "$show_out" == *"Alice Chen"* && "$show_out" != *"bbbbbbbb-bbbb"* ]]; then
+    pass "users_registry_show_human omits raw UUID"
+  else
+    fail "users_registry_show_human omits raw UUID"
+  fi
+
+  cat > "${PROV_DIR}/import-ok.csv" <<'CSV'
+tag,display_name,department
+bob.li,Bob Li,Engineering
+charlie,王明,Engineering
+CSV
+  assert_success "import dry-run accepts valid CSV with dotted tags" \
+    users_import_prepare "${PROV_DIR}/import-ok.csv" "${PROV_DIR}/users.json" "$NODE_ID" "" "" 0 1
+
+  cat > "${PROV_DIR}/import-bad.csv" <<'CSV'
+tag,display_name,department
+alice,Dup Alice,Sales
+Bad Tag,Nope,Sales
+bob.li,Bob,Eng
+bob.li,Bob Again,Eng
+CSV
+  assert_failure "import dry-run rejects conflicts and invalid tags" \
+    users_import_prepare "${PROV_DIR}/import-bad.csv" "${PROV_DIR}/users.json" "$NODE_ID" "" "" 0 1
+
+  assert_success "import prepare writes staged registry" \
+    users_import_prepare "${PROV_DIR}/import-ok.csv" "${PROV_DIR}/users.json" "$NODE_ID" \
+      "${PROV_DIR}/users-imported.json" "${PROV_DIR}/creds.csv" 0 0 \
+      203.0.113.10 443 www.cloudflare.com "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID"
+  assert_success "import staged registry includes bob.li" \
+    grep -q '"tag": "bob.li"' "${PROV_DIR}/users-imported.json"
+  assert_success "import credential CSV is written" test -f "${PROV_DIR}/creds.csv"
+  assert_success "import credential CSV has vless_uri" grep -q 'vless://' "${PROV_DIR}/creds.csv"
+
+  export_meta=$(users_export_csv "${PROV_DIR}/users.json" "" 0 0)
+  if [[ "$export_meta" == tag,display_name,department,status,user_id* && "$export_meta" == *alice* ]]; then
+    pass "users_export_csv metadata goes to stdout"
+  else
+    fail "users_export_csv metadata goes to stdout"
+  fi
+
+  # 100-user uniqueness + verify against minimal fake config
+  if python3 - "$PROV_DIR" "$NODE_ID" <<'PY'
+import json, uuid, sys
+from pathlib import Path
+base = Path(sys.argv[1])
+node_id = sys.argv[2]
+users = [{
+    "user_id": "11111111-1111-4111-8111-111111111111",
+    "tag": "owner",
+    "display_name": "Owner",
+    "department": "",
+    "enabled": True,
+    "created_at": "2026-08-15T00:00:00Z",
+    "credentials": [{
+        "credential_id": "22222222-2222-4222-8222-222222222222",
+        "node_id": node_id,
+        "uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "status": "active",
+        "created_at": "2026-08-15T00:00:00Z",
+        "revoked_at": None,
+    }],
+}]
+inbound = [{"name": "owner", "uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "flow": "xtls-rprx-vision"}]
+for i in range(100):
+    tag = f"u{i:03d}"
+    uid = str(uuid.uuid4())
+    cid = str(uuid.uuid4())
+    vuuid = str(uuid.uuid4())
+    users.append({
+        "user_id": uid,
+        "tag": tag,
+        "display_name": f"User {i}",
+        "department": "bulk",
+        "enabled": True,
+        "created_at": "2026-08-15T00:00:00Z",
+        "credentials": [{
+            "credential_id": cid,
+            "node_id": node_id,
+            "uuid": vuuid,
+            "status": "active",
+            "created_at": "2026-08-15T00:00:00Z",
+            "revoked_at": None,
+        }],
+    })
+    inbound.append({"name": tag, "uuid": vuuid, "flow": "xtls-rprx-vision"})
+for i in range(20):
+    users[1 + i]["enabled"] = False
+    inbound = [x for x in inbound if x["name"] != users[1 + i]["tag"]]
+for i in range(5):
+    u = users[1 + i]
+    u["enabled"] = True
+    active = next(c for c in u["credentials"] if c["status"] == "active")
+    inbound.append({"name": u["tag"], "uuid": active["uuid"], "flow": "xtls-rprx-vision"})
+for i in range(30, 40):
+    u = users[1 + i]
+    old = u["credentials"][0]
+    old["status"] = "revoked"
+    old["revoked_at"] = "2026-08-15T01:00:00Z"
+    new_uuid = str(uuid.uuid4())
+    u["credentials"].append({
+        "credential_id": str(uuid.uuid4()),
+        "node_id": node_id,
+        "uuid": new_uuid,
+        "status": "active",
+        "created_at": "2026-08-15T01:00:00Z",
+        "revoked_at": None,
+    })
+    for x in inbound:
+        if x["name"] == u["tag"]:
+            x["uuid"] = new_uuid
+for i in range(40, 60):
+    users[1 + i]["display_name"] = f"Renamed {i}"
+    users[1 + i]["department"] = "ops"
+uids = [u["user_id"] for u in users]
+tags = [u["tag"] for u in users]
+cids = [c["credential_id"] for u in users for c in u["credentials"]]
+active_uuids = [c["uuid"] for u in users for c in u["credentials"] if c["status"] == "active"]
+assert len(uids) == len(set(uids)) == 101
+assert len(tags) == len(set(tags)) == 101
+assert len(cids) == len(set(cids))
+assert len(active_uuids) == len(set(active_uuids))
+(base / "users-100.json").write_text(json.dumps({"schema_version": 2, "users": users}, indent=2) + "\n", encoding="utf-8")
+(base / "config-100.json").write_text(json.dumps({
+    "inbounds": [{"type": "vless", "tag": "vless-reality-in", "users": inbound}]
+}, indent=2) + "\n", encoding="utf-8")
+PY
+  then
+    pass "100-user registry builds with unique ids"
+  else
+    fail "100-user registry builds with unique ids"
+  fi
+  assert_success "100-user verify PASS after disable/rotate/metadata" \
+    users_registry_verify "${PROV_DIR}/users-100.json" "${PROV_DIR}/config-100.json"
+
+  assert_success "helper documents user import" grep -q 'vcl user import' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user export" grep -q 'vcl user export' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user verify" grep -q 'vcl user verify' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user set" grep -q 'vcl user set' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper warns on user mutation restart" \
+    grep -q 'applying user changes restarts sing-box' "${PROJECT_DIR}/bin/vincula"
 fi
 
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then

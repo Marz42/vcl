@@ -1,4 +1,4 @@
-# vincula V0.2.4
+# vincula V0.2.5
 
 `vincula` 是面向自有 Debian/Ubuntu VPS 的最小化 sing-box bootstrap。V0.2 仍只部署一种固定协议：
 
@@ -6,13 +6,13 @@
 VLESS + REALITY + xtls-rprx-vision + TCP
 ```
 
-目标工作流：在干净 VPS 上执行一次安装脚本，得到可导入客户端的 VLESS URI；再用 `vcl user` 管理内部用户身份与 credential；用本机 accounting 观察 User × Destination × Traffic。脚本不安装面板、不申请证书、不修改防火墙，也不追踪 sing-box `latest`。
+目标工作流：在干净 VPS 上执行一次安装脚本，得到可导入客户端的 VLESS URI；再用 `vcl user` 管理内部用户身份与 credential（含批量导入）；用本机 accounting 观察 User × Destination × Traffic。脚本不安装面板、不申请证书、不修改防火墙，也不追踪 sing-box `latest`。
 
 ## 当前实现基线
 
-| 项目 | V0.2.4 固定值 |
+| 项目 | V0.2.5 固定值 |
 | --- | --- |
-| vincula | 0.2.4 |
+| vincula | 0.2.5 |
 | sing-box | 1.13.18 stable |
 | OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
 | Architecture | amd64、arm64 |
@@ -28,14 +28,18 @@ VLESS + REALITY + xtls-rprx-vision + TCP
 
 sing-box 的官方下载 URL、文件大小和 SHA-256 同时记录在 [`sing-box.lock`](sing-box.lock) 与 `vincula.sh` 中。脚本不会查询或安装新版本。
 
-Release gate 现状见 [`docs/release-readiness-0.2.4.md`](docs/release-readiness-0.2.4.md)（当前：**READY WITH DOCUMENTED LIMITATIONS**，freeze candidate）。  
-**冻结记录 / 政策：** [`docs/freeze-0.2.4.md`](docs/freeze-0.2.4.md) — **0.2.4 只接受 P0/P1 regression fix**。  
-**现存问题清单：** [`docs/known-issues-0.2.4.md`](docs/known-issues-0.2.4.md)。  
-RC 手册：[`docs/rc-test-manual-0.2.4.md`](docs/rc-test-manual-0.2.4.md)。
-
-Debian 13 已验证主路径、0.2.3-shaped migration、强制 rollback；Ubuntu 22.04 容器验证 Python 3.10 `py_compile`。多 OS / reboot 等仍见已知问题。
+**0.2.5 gate：** [`docs/release-readiness-0.2.5.md`](docs/release-readiness-0.2.5.md) / [`docs/known-issues-0.2.5.md`](docs/known-issues-0.2.5.md) — User Provisioning API 冻结候选。  
+**0.2.4 freeze（基线）：** [`docs/freeze-0.2.4.md`](docs/freeze-0.2.4.md)。  
+产物构建：`bash scripts/build-release.sh` → `dist/`（勿手改）。
 
 ## 推荐安装方式
+
+```bash
+# Canonical source is the repo root. Build deployable artifacts:
+bash scripts/build-release.sh
+# → dist/vincula-<version>/  and  dist/vincula-<version>.tar.gz (+ .sha256)
+# Never edit dist/ (or legacy release/) by hand.
+```
 
 把 **完整 Release 目录**放到 VPS（至少含下列文件）：
 
@@ -59,14 +63,14 @@ sudo bash vincula.sh
 发布 tarball 可用 [`vincula-bootstrap.sh`](vincula-bootstrap.sh)：
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-0.2.4.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-0.2.5.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
 
 （下载 archive → 校验 archive SHA-256 → 解压 → 校验 `release.lock` 逐文件 → exec `vincula.sh`。）
 
-Installer 必须能从同目录读取 `bin/` 与 `lib/`，因此 **不支持** 仅 `curl | bash` 的单文件管道安装。本地/开发请直接从完整树运行 `sudo bash vincula.sh`。
+Installer 必须能从同目录读取 `bin/` 与 `lib/`，因此 **不支持** 仅 `curl | bash` 的单文件管道安装。本地/开发请直接从完整树运行 `sudo bash vincula.sh`，或使用 `dist/` 产物。
 
 默认路径非交互。必要时可通过环境变量覆盖：
 
@@ -111,7 +115,7 @@ Identity ≠ Credential：`tag` / `user_id` 稳定；UUID 只是可轮换的 cre
 
 **近似 accounting，不是精确计费；Reliable Accounting 尚未完成。** 短连接可能在两次 poll 之间漏记。详见 [`docs/accounting-reliability.md`](docs/accounting-reliability.md)。可选：向 `/var/lib/vincula/events.jsonl` 追加 `connection_closed` 事件以降低漏记（schema 见 `lib/vincula-event.schema.json`；运行时为手写解析，非 JSON Schema 库强制校验）。
 
-正确性约定（0.2.4）：
+正确性约定（0.2.5）：
 
 | 主题 | 决策 |
 | --- | --- |
@@ -151,13 +155,16 @@ vcl logs 200
 vcl logs -f
 vcl link
 vcl user add <tag> [--display-name NAME] [--department DEPT]
-vcl user remove <tag>
+vcl user set <tag> --display-name NAME [--department DEPT]
 vcl user disable <tag>
 vcl user enable <tag>
 vcl user rotate <tag>
 vcl user list
 vcl user show <tag>
 vcl user link <tag>
+vcl user import FILE [--dry-run] [--output credentials.csv]
+vcl user export [--credentials] [--output FILE]
+vcl user verify
 vcl connections
 vcl accounting status
 vcl stats today
@@ -166,7 +173,7 @@ vcl uninstall --yes
 vcl version
 ```
 
-用户变更走事务：备份 → 改 registry → 从 registry 生成 config → `sing-box check` → 原子安装 → restart → `vcl verify`；失败回滚。`owner` 不可 remove；不能 disable/remove 最后一个 enabled 用户。
+用户变更走事务：备份 → 改 registry → 从 registry 生成 config → `sing-box check` → 原子安装 → restart（会警告连接可能短暂中断）→ health；失败回滚。`owner` 不可删除；`user remove` 在 0.2.5 拒绝；不能 disable 最后一个 enabled 用户。
 
 `vcl verify` 检查节点 Reality 身份一致、用户 registry 与 config 一致，以及 Accounting Plane 基本健康。漂移则 FAIL，不静默修复。
 
@@ -175,7 +182,7 @@ vcl version
 ## 重复执行与迁移
 
 - 同版本重跑：双平面校验，不轮换凭据。
-- 已安装 `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.3`：显式 migration 到 0.2.4，保持 Reality keys / short ID / owner credential UUID；若 `node_id` 缺失或为 `local` 则生成永久 UUID 并同步 credentials。
+- 已安装 `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.4`：显式 migration 到 0.2.5，保持 Reality keys / short ID / owner credential UUID；若 `node_id` 缺失或为 `local` 则生成永久 UUID 并同步 credentials。
 - known-bad REALITY target 必须显式 `VCL_REALITY_HOST=` 才能在迁移时更换。
 - 不支持降级或跨未知版本。
 - Fresh install 若机器上已有 `/var/lib/vincula` 或 accounting 文件会直接拒绝（需先 `vcl uninstall` 或人工清理；本版不提供 `vcl recover`）。
@@ -224,14 +231,12 @@ lib/vincula-accountd.py
 lib/vincula-accountd.service
 lib/vincula-event.schema.json
 docs/accounting-reliability.md
+docs/release-readiness-0.2.5.md
+docs/known-issues-0.2.5.md
 docs/release-readiness-0.2.4.md
 docs/freeze-0.2.4.md
-docs/rc-test-manual-0.2.4.md
-docs/known-issues-0.2.4.md
-docs/evidence/0.2.4-freeze/README.md
 scripts/gen-release-lock.sh
-scripts/rc-remote-run.sh
-scripts/rc-remote-phase2.sh
+scripts/build-release.sh
 tests/test.sh
 CHANGELOG.md
 .gitignore
@@ -242,10 +247,12 @@ bash -n vincula.sh bin/vincula lib/vincula-common.sh
 python3 -m py_compile lib/vincula-accountd.py
 bash tests/test.sh
 bash scripts/gen-release-lock.sh
+bash scripts/build-release.sh
 VCL_INTEGRATION=1 bash tests/test.sh
 ```
 
-改动 first-party 文件后务必重跑 `scripts/gen-release-lock.sh`，并同步 `release/` 部署副本（若使用），否则带 `release.lock` 的安装会因 hash mismatch 拒绝启动。
+改动 first-party 文件后务必重跑 `scripts/gen-release-lock.sh`，并用 `scripts/build-release.sh` 生成 `dist/` 部署产物（勿手改 `dist/` / `release/`）。
+
 
 ## 明确不做
 

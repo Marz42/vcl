@@ -2,6 +2,30 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.2.5
+
+User provisioning & lifecycle：批量导入/导出、metadata、verify，以及 disable/enable/rotate 运维闭环。本版本**不新增** stats/analytics（留给 0.2.6）。
+
+### 用户生命周期
+
+- Tag 规则扩展：`^[a-z0-9][a-z0-9._-]{0,31}$`（允许点号，最长 32）
+- `vcl user add`：成功后打印 User ID / Credential / Status / VLESS URI
+- `vcl user set TAG --display-name/--department`：仅改 metadata
+- `vcl user disable|enable|rotate`：沿用 registry→config 事务；重启前警告连接可能短暂中断
+- `user remove/purge/delete`：0.2.5 明确拒绝（exit 2）；请用 disable
+- `vcl user list` / `show`：人类可读格式，默认不打印 raw UUID
+
+### 批量供应
+
+- `vcl user import FILE [--dry-run] [--output credentials.csv] [--include-uuid]`：全量校验后一次提交；失败零变更
+- `vcl user export [--credentials] [--output FILE] [--include-uuid]`：metadata CSV 可 stdout；credential export 必须 `--output` 且 `0600`
+- `vcl user verify`：schema / 唯一性 / enabled↔active credential / registry↔sing-box inbound 对照
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.4` → `0.2.5`
+- 保留 node identity、REALITY 密钥、全部 `user_id` / `credential_id` / UUID 与 accounting DB
+
 ## 0.2.4
 
 Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / 迁移 / 校验保证；收敛数据模型与 packaging integrity。本版本**不新增** stats/功能面。

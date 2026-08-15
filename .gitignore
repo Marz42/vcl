@@ -40,8 +40,11 @@ Thumbs.db
 .cursor/
 agent-tools/
 
-# Deploy staging copy (build from repo root + gen-release-lock.sh)
+# Deploy staging copy (legacy; prefer dist/ via scripts/build-release.sh)
 /release/
+
+# Generated release artifacts (never edit by hand)
+/dist/
 
 # Reconstructed / packed freeze artifacts
 /artifacts/
