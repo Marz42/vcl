@@ -357,6 +357,8 @@ assert_success "helper rejects uninstall --force" grep -q 'uninstall --force is 
 assert_success "helper documents vcl connections" grep -q 'vcl connections' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl stats" grep -q 'vcl stats today' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl accounting status" grep -q 'vcl accounting status' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl audit user" grep -q 'vcl audit user TAG' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl audit --user-id" grep -q 'vcl audit --user-id UUID' "${TEST_TMP}/vincula"
 assert_failure "accounting status does not prefer JSONL ingest" \
   grep -q 'non-empty events.jsonl' "${PROJECT_DIR}/bin/vincula"
 assert_success "accounting status is Clash poll only" \
@@ -368,16 +370,31 @@ assert_success "helper documents accounting retention" grep -q 'vcl accounting r
 assert_success "helper documents accounting cycle" grep -q 'vcl accounting cycle' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents accounting cycle --set" grep -q 'vcl accounting cycle --set N' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats --date" grep -q 'vcl stats --date YYYY-MM-DD' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper routes audit command" grep -q 'audit) cmd_audit' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper defines resolve_audit_py" grep -q '^resolve_audit_py()' "${PROJECT_DIR}/bin/vincula"
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit user'; then
+  pass "vcl help lists audit"
+else
+  fail "vcl help lists audit"
+fi
 assert_success "stats --month help mentions billing cycle start" \
   grep -q '从账期起始日(默认每月1日)到今天' "${PROJECT_DIR}/bin/vincula"
 assert_success "connections fail when accountd inactive" \
   grep -q 'UNAVAILABLE: vincula-accountd' "${PROJECT_DIR}/bin/vincula"
 assert_success "gen-release-lock includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "gen-release-lock includes vincula-audit.py" \
+  grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "gen-release-lock includes vincula-bootstrap.sh" \
   grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "release.lock includes vincula-bootstrap.sh" \
   grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/release.lock"
+assert_success "release.lock includes vincula-audit.py" \
+  grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/release.lock"
+assert_failure "release.lock does not include event schema" \
+  grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
+assert_equal "release.lock has 8 first-party files" "8" \
+  "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_success "verify_sibling_release_lock warns when lock is missing" \
   grep -q 'release.lock not found beside installer' "${PROJECT_DIR}/vincula.sh"
 nolock_dir="${TEST_TMP}/missing-release-lock"
@@ -392,6 +409,8 @@ else
 fi
 assert_success "build-release includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/build-release.sh"
+assert_success "build-release includes vincula-audit.py" \
+  grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
   python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
 assert_success "python3 can compile vincula-audit" \
@@ -592,6 +611,8 @@ assert_success "install.manifest lists vincula-accountd.py" \
   grep -q 'vincula-accountd.py' "${TEST_TMP}/install.manifest"
 assert_success "install.manifest lists vincula-stats.py" \
   grep -q 'vincula-stats.py' "${TEST_TMP}/install.manifest"
+assert_success "install.manifest lists vincula-audit.py" \
+  grep -q 'vincula-audit.py' "${TEST_TMP}/install.manifest"
 assert_success "install.manifest lists vincula-accountd.service" \
   grep -q 'vincula-accountd.service' "${TEST_TMP}/install.manifest"
 
@@ -2483,7 +2504,7 @@ PY
   fi
 fi
 
-# --- 0.2.7 vincula-audit.py (TASK 31–32; bin/vincula wiring is 1c-cli) ---
+# --- 0.2.7 vincula-audit.py (TASK 31–34; CLI wired in 1c-cli) ---
 if command -v python3 >/dev/null 2>&1; then
   AUDIT_DIR="${TEST_TMP}/audit027"
   mkdir -p "$AUDIT_DIR"

@@ -22,6 +22,7 @@ FILES=(
   lib/vincula-common.sh
   lib/vincula-accountd.py
   lib/vincula-stats.py
+  lib/vincula-audit.py
   lib/vincula-accountd.service
 )
 
@@ -39,7 +40,7 @@ chmod 0755 "${OUT}/vincula.sh" "${OUT}/vincula-bootstrap.sh" "${OUT}/bin/vincula
   cd "$OUT"
   : > release.lock
   for f in vincula.sh vincula-bootstrap.sh bin/vincula lib/vincula-common.sh lib/vincula-accountd.py \
-           lib/vincula-stats.py lib/vincula-accountd.service; do
+           lib/vincula-stats.py lib/vincula-audit.py lib/vincula-accountd.service; do
     sha256sum -- "$f" >> release.lock
   done
   sha256sum -- vincula.sh | tee vincula.sh.sha256 >/dev/null
