@@ -196,6 +196,8 @@ rollback_install() {
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$ACCOUNTING_DB_FILE" \
+    "${ACCOUNTING_DB_FILE}-wal" \
+    "${ACCOUNTING_DB_FILE}-shm" \
     "$EVENTS_JSONL_FILE"; do
     if [[ -f "$path" || -L "$path" ]]; then
       rm -f -- "$path"

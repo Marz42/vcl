@@ -432,6 +432,32 @@ if awk '/^preflight_clean_install\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh"
 else
   fail "preflight_clean_install mentions ACCOUNTING_DB_FILE"
 fi
+rollback_fn=$(awk '/^rollback_install\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh")
+if [[ "$rollback_fn" == *'-wal'* ]]; then
+  pass "rollback_install removal loop includes -wal"
+else
+  fail "rollback_install removal loop includes -wal"
+fi
+if [[ "$rollback_fn" == *'-shm'* ]]; then
+  pass "rollback_install removal loop includes -shm"
+else
+  fail "rollback_install removal loop includes -shm"
+fi
+uninstall_src_fn=$(awk '
+  /^cmd_uninstall\(\)/ {in_fn=1}
+  in_fn {print}
+  /^}$/ && in_fn {exit}
+' "${PROJECT_DIR}/bin/vincula")
+if [[ "$uninstall_src_fn" == *'-wal'* ]]; then
+  pass "cmd_uninstall removal loop includes -wal"
+else
+  fail "cmd_uninstall removal loop includes -wal"
+fi
+if [[ "$uninstall_src_fn" == *'-shm'* ]]; then
+  pass "cmd_uninstall removal loop includes -shm"
+else
+  fail "cmd_uninstall removal loop includes -shm"
+fi
 assert_success "enable_accountd hard-fails on health" \
   grep -q 'wait_for_accountd_healthy || die' "${PROJECT_DIR}/vincula.sh"
 if awk '/^enable_accountd_service\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'log_warn'; then

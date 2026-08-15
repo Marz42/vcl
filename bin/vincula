@@ -747,6 +747,8 @@ cmd_uninstall() {
     "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTING_DB_FILE" \
+    "${ACCOUNTING_DB_FILE}-wal" \
+    "${ACCOUNTING_DB_FILE}-shm" \
     "$EVENTS_JSONL_FILE" \
     "$COMMON_FILE"; do
     remove_managed_file "$path"
