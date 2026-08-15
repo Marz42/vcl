@@ -99,6 +99,8 @@ Usage:
   vcl connections      Recent connection rows (requires active accountd)
   vcl accounting status
   vcl accounting retention
+  vcl accounting cycle
+  vcl accounting cycle --set N
   vcl stats today|yesterday|--days N|--month
   vcl stats --date YYYY-MM-DD | --from YYYY-MM-DD --to YYYY-MM-DD
   vcl stats user TAG ...
@@ -1683,11 +1685,27 @@ PY
       printf 'accounting_daily_retention_days: %s\n' "$daily_days"
       printf 'note: read-only; change via /etc/vincula/config.toml then restart accountd\n'
       ;;
+    cycle)
+      local cur n
+      if [[ $# -eq 0 ]]; then
+        cur=$(toml_get "$SETTINGS_FILE" billing_cycle_start_day || true)
+        [[ -n "$cur" ]] || cur=1
+        printf 'billing_cycle_start_day = %s\n' "$cur"
+      elif [[ "$1" == "--set" ]]; then
+        [[ $# -eq 2 ]] || die "usage: vcl accounting cycle --set N"
+        n=$2
+        [[ "$n" =~ ^([1-9]|1[0-9]|2[0-8])$ ]] || die "billing_cycle_start_day must be an integer from 1 to 28"
+        toml_set "$SETTINGS_FILE" billing_cycle_start_day "$n" || die "failed to write billing_cycle_start_day"
+        printf 'billing_cycle_start_day = %s\n' "$n"
+      else
+        die "usage: vcl accounting cycle [--set N]"
+      fi
+      ;;
     "")
-      die "usage: vcl accounting status|retention"
+      die "usage: vcl accounting status|retention|cycle"
       ;;
     *)
-      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status|retention'."
+      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status|retention|cycle'."
       ;;
   esac
 }

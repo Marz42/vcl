@@ -26,6 +26,30 @@ toml_get() {
   awk -F' = ' -v key="$key" '$1 == key {value=$2; gsub(/^"|"$/, "", value); print value; exit}' "$file"
 }
 
+toml_set() {
+  local file=$1 key=$2 value=$3
+  local tmp
+  [[ -n "$file" && -n "$key" && -f "$file" ]] || return 1
+  tmp=$(mktemp "${file}.XXXXXX") || return 1
+  if awk -F' = ' -v key="$key" -v value="$value" '
+    BEGIN { found=0 }
+    $1 == key {
+      print key " = " value
+      found=1
+      next
+    }
+    { print }
+    END {
+      if (!found) print key " = " value
+    }
+  ' "$file" > "$tmp"; then
+    mv -f -- "$tmp" "$file"
+  else
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
 vless_query() {
   local query=$1 want=$2 pair key value
   local IFS='&'
