@@ -1259,6 +1259,8 @@ assert rows[1][3] is None, rows
 assert rows[1][1] >= 0 and rows[1][2] >= 0
 base = mod.load_poll_baseline(conn, "c-mono")
 assert base["generation"] == 1 and base["raw_up"] == 10 and base["acc_up"] == 0, base
+assert base["raw_up"] >= 0 and base["raw_dn"] >= 0, base
+assert base["acc_up"] >= 0 and base["acc_dn"] >= 0, base
 # Next poll on the new generation is a positive delta only.
 known = mod.apply_poll_delta(
     conn, [live_ev("c-mono", 20, 30, ts="2026-08-14T12:10:15Z")], known
@@ -1273,6 +1275,15 @@ old = conn.execute(
     "WHERE connection_id='c-mono' AND generation=0"
 ).fetchone()
 assert old[0] == 500 and old[1] == 600 and old[2] is not None, old
+neg_conn = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE upload_bytes < 0 OR download_bytes < 0"
+).fetchone()[0]
+assert neg_conn == 0, neg_conn
+neg_base = conn.execute(
+    "SELECT COUNT(*) FROM poll_baseline WHERE last_upload_counter < 0 "
+    "OR last_download_counter < 0 OR accounted_upload < 0 OR accounted_download < 0"
+).fetchone()[0]
+assert neg_base == 0, neg_base
 
 # TASK 24: unknown active with large Clash counters → baseline only (new gen if closed exists).
 known_unknown = mod.apply_poll_delta(
@@ -1742,11 +1753,13 @@ conn.close()
 PY
 if (( ret_batch_rc == 0 )); then
   pass "retention deletes at most 2000 rows per call"
+  pass "retention batches daily_usage at most 2000 rows per call"
   pass "retention backlog drains across calls"
   pass "retention does not hold collection commit"
   pass "retention leaves open rows and recent closed rows"
 else
   fail "retention deletes at most 2000 rows per call"
+  fail "retention batches daily_usage at most 2000 rows per call"
   fail "retention backlog drains across calls"
   fail "retention does not hold collection commit"
   fail "retention leaves open rows and recent closed rows"
@@ -3153,6 +3166,213 @@ PY
 else
   fail "python3 required for last_success_at freshness helper tests"
 fi
+
+# Phase 2 TASK 40/42: schema 3 restart with empty known_open + poll_baseline,
+# and open_db fail-closed on corrupt / future schema_version.
+# TASK 38/39/41 already pass in the D7 and retention blocks above.
+phase2_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/phase2" "$SAMPLE_USERS" <<'PY' || phase2_rc=$?
+import importlib.util, os, sqlite3, sys
+
+mod_path, work, users = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(work, exist_ok=True)
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+def live_ev(cid, up, dn, ts="2026-08-16T01:00:00Z"):
+    return {
+        "connection_id": cid,
+        "node_id": "n1",
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "destination_host": "r.example",
+        "destination_ip": None,
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": up,
+        "download_bytes": dn,
+        "started_at": "2026-08-16T00:00:00Z",
+        "ts": ts,
+    }
+
+# TASK 40: empty known_open, existing open row + poll_baseline (schema 3).
+db = os.path.join(work, "restart.db")
+conn = mod.open_db(db)
+mod.upsert_connection(
+    conn, live_ev("p-restart3", 0, 0), close=False,
+    accounted_upload=5000, accounted_download=8000, generation=0,
+)
+mod.upsert_poll_baseline(
+    conn, "p-restart3", 0, 9000, 12000, 5000, 8000, "2026-08-16T01:00:00Z"
+)
+conn.commit()
+event_id = conn.execute(
+    "SELECT event_id FROM connections WHERE connection_id='p-restart3' AND generation=0"
+).fetchone()[0]
+
+known = {}
+known = mod.apply_poll_delta(
+    conn,
+    [live_ev("p-restart3", 9000, 12000, ts="2026-08-16T01:05:00Z")],
+    known,
+)
+row = conn.execute(
+    "SELECT event_id, generation, upload_bytes, download_bytes, closed_at, instance_id "
+    "FROM connections WHERE connection_id='p-restart3' AND generation=0"
+).fetchone()
+assert row[0] == event_id, row
+assert row[1] == 0 and row[2] == 5000 and row[3] == 8000, row
+assert row[4] is None, row
+assert row[5] is None, row
+assert known["p-restart3"]["acc_up"] == 5000, known["p-restart3"]
+assert known["p-restart3"]["generation"] == 0, known["p-restart3"]
+base = mod.load_poll_baseline(conn, "p-restart3")
+assert base["generation"] == 0 and base["raw_up"] == 9000 and base["acc_up"] == 5000, base
+
+known = mod.apply_poll_delta(
+    conn,
+    [live_ev("p-restart3", 9500, 12100, ts="2026-08-16T01:05:05Z")],
+    {},
+)
+row = conn.execute(
+    "SELECT event_id, generation, upload_bytes, download_bytes FROM connections "
+    "WHERE connection_id='p-restart3' AND generation=0"
+).fetchone()
+assert row[0] == event_id, row
+assert row[1] == 0 and row[2] == 5500 and row[3] == 8100, row
+assert known["p-restart3"]["acc_up"] == 5500, known["p-restart3"]
+gens = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='p-restart3'"
+).fetchone()[0]
+assert gens == 1, gens
+neg = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE upload_bytes < 0 OR download_bytes < 0"
+).fetchone()[0]
+assert neg == 0, neg
+conn.close()
+
+# TASK 42: corrupt / future schema_version → SystemExit, no destructive rewrite.
+def schema2_fixture(path, version):
+    raw = sqlite3.connect(path)
+    raw.executescript("""
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE connections (
+          connection_id TEXT PRIMARY KEY,
+          node_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          user_tag TEXT,
+          destination_host TEXT,
+          destination_ip TEXT,
+          destination_port INTEGER,
+          network TEXT,
+          upload_bytes INTEGER NOT NULL DEFAULT 0,
+          download_bytes INTEGER NOT NULL DEFAULT 0,
+          started_at TEXT NOT NULL,
+          closed_at TEXT,
+          last_seen_at TEXT NOT NULL
+        );
+    """)
+    raw.execute("INSERT INTO meta(key,value) VALUES('schema_version', ?)", (version,))
+    raw.execute(
+        "INSERT INTO connections(connection_id, node_id, user_id, user_tag, "
+        "destination_host, destination_ip, destination_port, network, "
+        "upload_bytes, download_bytes, started_at, closed_at, last_seen_at) "
+        "VALUES ('keep-me', 'n1', 'u-alice', 'alice', 'x.example', NULL, 443, "
+        "'tcp', 12345, 67890, '2026-08-16T00:00:00Z', NULL, '2026-08-16T00:00:00Z')"
+    )
+    raw.commit()
+    raw.close()
+
+def assert_fail_closed(path, version):
+    try:
+        mod.open_db(path)
+        raise AssertionError(f"open_db must fail-closed for schema_version={version!r}")
+    except SystemExit:
+        pass
+    probe = sqlite3.connect(path)
+    got = probe.execute(
+        "SELECT value FROM meta WHERE key='schema_version'"
+    ).fetchone()[0]
+    assert got == version, (got, version)
+    cols = [r[1] for r in probe.execute("PRAGMA table_info(connections)")]
+    assert "event_id" not in cols, cols
+    row = probe.execute(
+        "SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='keep-me'"
+    ).fetchone()
+    assert row == (12345, 67890), row
+    tables = {
+        r[0] for r in probe.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert "connections_v3" not in tables, tables
+    probe.close()
+
+bogus = os.path.join(work, "schema-bogus.db")
+schema2_fixture(bogus, "bogus")
+assert_fail_closed(bogus, "bogus")
+
+future = os.path.join(work, "schema-future.db")
+schema2_fixture(future, "4")
+assert_fail_closed(future, "4")
+
+# Antique schema 1 without user_id: still fail-closed, no schema 3 rewrite.
+antique = os.path.join(work, "schema-antique.db")
+raw = sqlite3.connect(antique)
+raw.executescript("""
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE connections (
+      connection_id TEXT PRIMARY KEY,
+      node_id TEXT NOT NULL,
+      user_tag TEXT,
+      destination_host TEXT,
+      upload_bytes INTEGER NOT NULL DEFAULT 0,
+      download_bytes INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      closed_at TEXT,
+      last_seen_at TEXT NOT NULL
+    );
+""")
+raw.execute("INSERT INTO meta(key,value) VALUES('schema_version','1')")
+raw.execute(
+    "INSERT INTO connections(connection_id, node_id, user_tag, destination_host, "
+    "upload_bytes, download_bytes, started_at, last_seen_at) "
+    "VALUES ('ghost', 'n1', 'nobody', 'y.example', 9, 8, "
+    "'2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z')"
+)
+raw.commit()
+raw.close()
+try:
+    mod.open_db(antique)
+    raise AssertionError("open_db must fail-closed on unmapped schema 1 user_tag")
+except SystemExit:
+    pass
+probe = sqlite3.connect(antique)
+assert probe.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+cols = [r[1] for r in probe.execute("PRAGMA table_info(connections)")]
+assert "event_id" not in cols, cols
+row = probe.execute(
+    "SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='ghost'"
+).fetchone()
+assert row == (9, 8), row
+probe.close()
+PY
+if (( phase2_rc == 0 )); then
+  pass "restart empty known_open preserves generation bytes"
+  pass "open_db fail-closed on unknown schema_version"
+else
+  fail "restart empty known_open preserves generation bytes"
+  fail "open_db fail-closed on unknown schema_version"
+fi
+
+assert_success "soak protocol script exists" \
+  test -f "${PROJECT_DIR}/scripts/soak-0.2.7.sh"
+assert_success "soak protocol is LIVE-ONLY and not a CI gate" \
+  grep -q 'Not invoked by tests/test.sh' "${PROJECT_DIR}/scripts/soak-0.2.7.sh"
+assert_success "soak protocol documents 24h READY FOR RC" \
+  grep -q 'AC-2.7-09' "${PROJECT_DIR}/scripts/soak-0.2.7.sh"
 
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then
   arch=$(map_arch "$(uname -m)") || {
