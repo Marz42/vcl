@@ -394,6 +394,10 @@ assert_success "build-release includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
   python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
+assert_success "python3 can compile vincula-audit" \
+  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-audit.py"
+assert_failure "audit module does not import accountd" \
+  grep -q 'vincula-accountd' "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_success "helper notes polling is not exact billing" grep -q 'Polling ≠ exact billing' "${TEST_TMP}/vincula"
 
 uninstall_fn=$(awk '
@@ -2476,6 +2480,292 @@ PY
     pass "vincula-stats --date/--from/--to and billing cycle windows"
   else
     fail "vincula-stats --date/--from/--to and billing cycle windows"
+  fi
+fi
+
+# --- 0.2.7 vincula-audit.py (TASK 31–32; bin/vincula wiring is 1c-cli) ---
+if command -v python3 >/dev/null 2>&1; then
+  AUDIT_DIR="${TEST_TMP}/audit027"
+  mkdir -p "$AUDIT_DIR"
+  if python3 - "$AUDIT_DIR" "${PROJECT_DIR}/lib/vincula-audit.py" "${PROJECT_DIR}/lib/vincula-accountd.py" <<'PY'
+import importlib.util, json, sqlite3, subprocess, sys
+from pathlib import Path
+
+base = Path(sys.argv[1])
+audit_py = sys.argv[2]
+accountd_py = sys.argv[3]
+db = base / "accounting.db"
+users = base / "users.json"
+
+users.write_text(json.dumps({
+    "schema_version": 2,
+    "users": [
+        {"user_id": "u-alice", "tag": "alice", "display_name": "Alice"},
+        {"user_id": "u-bob", "tag": "bob", "display_name": "Bob"},
+    ],
+}), encoding="utf-8")
+
+spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec_a)
+spec_a.loader.exec_module(acct)
+conn = acct.open_db(str(db))
+assert acct.meta_get(conn, "schema_version") == "3"
+
+def insert(**kw):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            kw["cid"], kw.get("generation", 0), kw["user_id"], kw.get("node_id", "n1"),
+            None, kw["tag"], kw["started"], kw["last_seen"], kw.get("closed"),
+            kw.get("host"), kw.get("ip"), kw.get("port", 443), kw.get("network", "tcp"),
+            kw.get("up", 10), kw.get("down", 20),
+        ),
+    )
+
+# TASK 32 A/B/C plus extras for outside / fully-inside / started_at==query_to.
+insert(cid="conn-a", user_id="u-alice", tag="alice",
+       started="2026-08-10T08:00:00Z", last_seen="2026-08-10T12:00:00Z",
+       closed="2026-08-10T12:00:00Z", host="example.com", ip="203.0.113.10")
+insert(cid="conn-b", user_id="u-alice", tag="alice",
+       started="2026-08-10T13:00:00Z", last_seen="2026-08-10T18:00:00Z",
+       closed="2026-08-10T18:00:00Z", host="other.example", ip="198.51.100.2")
+insert(cid="conn-c", user_id="u-bob", tag="bob",
+       started="2026-08-10T07:00:00Z", last_seen="2026-08-10T20:00:00Z",
+       closed=None, host="example.com", ip="203.0.113.11")
+insert(cid="conn-inside", user_id="u-alice", tag="alice",
+       started="2026-08-10T10:00:00Z", last_seen="2026-08-10T11:00:00Z",
+       closed="2026-08-10T11:00:00Z", host="inside.example", ip="203.0.113.12")
+insert(cid="conn-before", user_id="u-alice", tag="alice",
+       started="2026-08-10T05:00:00Z", last_seen="2026-08-10T06:00:00Z",
+       closed="2026-08-10T06:00:00Z", host="before.example", ip="203.0.113.13")
+insert(cid="conn-after", user_id="u-alice", tag="alice",
+       started="2026-08-10T19:00:00Z", last_seen="2026-08-10T21:00:00Z",
+       closed="2026-08-10T21:00:00Z", host="after.example", ip="203.0.113.14")
+insert(cid="conn-eq-to", user_id="u-alice", tag="alice",
+       started="2026-08-10T18:00:00Z", last_seen="2026-08-10T19:00:00Z",
+       closed="2026-08-10T19:00:00Z", host="boundary.example", ip="203.0.113.15")
+conn.commit()
+n_baseline = conn.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0]
+assert n_baseline == 0, n_baseline
+conn.close()
+
+spec = importlib.util.spec_from_file_location("vaudit", audit_py)
+audit = importlib.util.module_from_spec(spec)
+sys.modules["vaudit"] = audit
+spec.loader.exec_module(audit)
+
+assert audit.parse_rfc3339("2026-08-10T09:00:00Z") == "2026-08-10T09:00:00Z"
+assert audit.parse_rfc3339("2026-08-10T09:00:00+00:00") == "2026-08-10T09:00:00Z"
+assert audit.parse_rfc3339("2026-08-10T17:00:00+08:00") == "2026-08-10T09:00:00Z"
+assert audit.interval_overlap_sql() == (
+    "started_at < ? AND COALESCE(closed_at, last_seen_at) >= ?"
+)
+
+try:
+    audit.parse_rfc3339("2026-08-10")
+    raise AssertionError("date-only must fail")
+except SystemExit:
+    pass
+try:
+    audit.parse_rfc3339("2026-08-10T09:00:00")
+    raise AssertionError("naive datetime must fail")
+except SystemExit:
+    pass
+
+ro = audit.open_db_readonly(str(db))
+try:
+    ro.execute(
+        "INSERT INTO poll_baseline(connection_id, generation, last_upload_counter, "
+        "last_download_counter, accounted_upload, accounted_download, last_seen_at) "
+        "VALUES ('x',0,0,0,0,0,'2026-08-10T00:00:00Z')"
+    )
+    raise AssertionError("read-only connection must not allow INSERT")
+except sqlite3.OperationalError:
+    pass
+
+def ids(rows):
+    return [r["connection_id"] for r in rows]
+
+# 09:00–18:00: A (straddle start), B (closed==to), C (open), inside.
+# Exclude: before, after, started_at==query_to.
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+)
+got = ids(rows)
+assert got == ["conn-c", "conn-a", "conn-inside", "conn-b"], got
+assert all(list(r.keys()) == list(audit.ROW_KEYS) for r in rows), rows[0].keys()
+
+# from=12:00 to=12:30: A (closed==from INCLUDE) and C (open last_seen).
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T12:00:00Z", query_to="2026-08-10T12:30:00Z",
+)
+got = ids(rows)
+assert got == ["conn-c", "conn-a"], got
+
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    user_tag="alice", users_path=str(users),
+)
+got = ids(rows)
+assert got == ["conn-a", "conn-inside", "conn-b"], got
+assert all(r["user_id"] == "u-alice" for r in rows)
+
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    user_id="u-bob",
+)
+assert ids(rows) == ["conn-c"], ids(rows)
+
+try:
+    audit.query_audit(
+        ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+        user_tag="nobody", users_path=str(users),
+    )
+    raise AssertionError("unknown tag must fail")
+except SystemExit:
+    pass
+
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    dest_host="Example.COM.",
+)
+assert ids(rows) == ["conn-c", "conn-a"], ids(rows)
+
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    dest_ip="203.0.113.10",
+)
+assert ids(rows) == ["conn-a"], ids(rows)
+
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    node_id="n1",
+)
+assert ids(rows) == ["conn-c", "conn-a", "conn-inside", "conn-b"], ids(rows)
+rows = audit.query_audit(
+    ro, query_from="2026-08-10T09:00:00Z", query_to="2026-08-10T18:00:00Z",
+    node_id="n-missing",
+)
+assert ids(rows) == [], ids(rows)
+ro.close()
+
+bad = base / "schema2.db"
+s2 = sqlite3.connect(bad)
+s2.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+s2.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '2')")
+s2.commit()
+s2.close()
+try:
+    audit.query_audit(
+        audit.open_db_readonly(str(bad)),
+        query_from="2026-08-10T09:00:00Z",
+        query_to="2026-08-10T18:00:00Z",
+    )
+    raise AssertionError("schema 2 must fail closed")
+except SystemExit:
+    pass
+
+def run(*extra, check=True):
+    cmd = [
+        sys.executable, audit_py,
+        "--db", str(db), "--users", str(users),
+        *extra,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+out = run("--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z", "--json")
+data = json.loads(out.stdout)
+assert "rows" in data and "query" in data, data.keys()
+assert data["query"]["from"] == "2026-08-10T09:00:00Z"
+assert data["query"]["to"] == "2026-08-10T18:00:00Z"
+assert [r["connection_id"] for r in data["rows"]] == [
+    "conn-c", "conn-a", "conn-inside", "conn-b",
+]
+assert list(data["rows"][0].keys()) == list(audit.ROW_KEYS)
+
+out = run(
+    "--from", "2026-08-10T17:00:00+08:00",
+    "--to", "2026-08-11T02:00:00+08:00",
+    "--format", "json",
+)
+data = json.loads(out.stdout)
+assert data["query"]["from"] == "2026-08-10T09:00:00Z"
+assert data["query"]["to"] == "2026-08-10T18:00:00Z"
+
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--user", "alice", "--json",
+)
+assert [r["connection_id"] for r in json.loads(out.stdout)["rows"]] == [
+    "conn-a", "conn-inside", "conn-b",
+]
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--user-id", "u-bob", "--json",
+)
+assert [r["connection_id"] for r in json.loads(out.stdout)["rows"]] == ["conn-c"]
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--node", "n-missing", "--json",
+)
+assert json.loads(out.stdout)["rows"] == []
+
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--host", "example.com", "--json",
+)
+assert [r["connection_id"] for r in json.loads(out.stdout)["rows"]] == [
+    "conn-c", "conn-a",
+]
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--ip", "203.0.113.10", "--json",
+)
+assert [r["connection_id"] for r in json.loads(out.stdout)["rows"]] == ["conn-a"]
+
+out = run(
+    "--from", "2026-08-10T12:00:00Z", "--to", "2026-08-10T12:30:00Z", "--json",
+)
+assert [r["connection_id"] for r in json.loads(out.stdout)["rows"]] == [
+    "conn-c", "conn-a",
+]
+
+out = run("--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z")
+assert "interval-overlap" in out.stdout
+assert "conn-a" in out.stdout and "conn-b" in out.stdout
+
+out = run(
+    "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
+    "--user", "nobody", check=False,
+)
+assert out.returncode != 0 and "unknown user tag" in out.stderr
+out = run("--from", "2026-08-10", "--to", "2026-08-10T18:00:00Z", check=False)
+assert out.returncode != 0 and "RFC3339" in out.stderr
+out = run("--from", "2026-08-10T09:00:00", "--to", "2026-08-10T18:00:00Z", check=False)
+assert out.returncode != 0
+assert "timezone" in out.stderr.lower() or "RFC3339" in out.stderr
+out = run(
+    "--from", "2026-08-10T18:00:00Z", "--to", "2026-08-10T09:00:00Z", check=False,
+)
+assert out.returncode != 0 and "must not be after" in out.stderr
+
+chk = sqlite3.connect(db)
+assert chk.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0] == 0
+chk.close()
+
+print("audit-ok")
+PY
+  then
+    pass "vincula-audit interval-overlap RFC3339 filters and json"
+  else
+    fail "vincula-audit interval-overlap RFC3339 filters and json"
   fi
 fi
 
