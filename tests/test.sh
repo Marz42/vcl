@@ -350,7 +350,7 @@ assert_success "gen-release-lock includes vincula-bootstrap.sh" \
 assert_success "release.lock includes vincula-bootstrap.sh" \
   grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/release.lock"
 assert_success "verify_sibling_release_lock warns when lock is missing" \
-  awk '/^verify_sibling_release_lock\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'release.lock not found'
+  grep -q 'release.lock not found beside installer' "${PROJECT_DIR}/vincula.sh"
 nolock_dir="${TEST_TMP}/missing-release-lock"
 mkdir -p "$nolock_dir"
 cp "${PROJECT_DIR}/vincula.sh" "${nolock_dir}/vincula.sh"
