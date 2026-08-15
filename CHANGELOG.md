@@ -14,12 +14,24 @@ Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍
 - 部门分析使用 **current attribution**（`usage.user_id` → 当前 `users.json` department）
 - IP-only 目标保留并标注 `[IP only] <ip>`；不丢弃
 - 报告含 accounting mode / collector / freshness / hostname·IP coverage
+- `vcl stats --date YYYY-MM-DD` / `--from YYYY-MM-DD --to YYYY-MM-DD`（UTC 日；与 `--days` / `--month` 互斥）
+- `--month` 窗口从 `billing_cycle_start_day` 起（默认 1）
 
 ### 运维
 
 - `vcl connections`：accountd 非 active 时失败（UNAVAILABLE），不以 SQLite 伪装 live
 - `vcl accounting status`：新鲜度与 coverage；`vcl accounting retention` 只读展示 raw/daily 天数
 - `vincula-accountd.service` 补齐 `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectControlGroups` / `RestrictRealtime`（保持 `User=root`）
+- `vincula-accountd.service` 版本戳对齐 0.2.6
+- `release.lock` 纳入 `vincula-bootstrap.sh`；缺 lock 时 WARN 并继续（非静默、非 die）
+- rollback / uninstall 删除 `accounting.db-wal` / `-shm`；fresh-install preflight 拒绝时打印确切 `rm -f` / `rmdir` 清理命令
+- `vcl accounting cycle` / `--set N`：读写 `billing_cycle_start_day`（1–28），不重启服务
+- `vcl verify` Accounting 段对齐双平面：Clash Bearer 三元组、schema_version=2、last_success_at ≤300s；Clash probe 与安装器共用
+
+### 用户 CLI
+
+- 仅改 metadata 的 `vcl user set` 不重启 sing-box
+- 删除未文档的内部 `users_registry_mutate remove`；`user remove` 仍拒绝（exit 2）；RC CLI coverage 改为期望拒绝
 
 ### Accounting correctness
 
