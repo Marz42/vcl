@@ -35,7 +35,7 @@ Do not treat poll-derived numbers as byte-perfect metering. Product retention de
 {"event":"connection_closed","connection_id":"...","node_id":"<uuid>","user":"alice","destination_host":"example.com","destination_ip":"203.0.113.10","destination_port":443,"network":"tcp","upload_bytes":123,"download_bytes":456,"started_at":"...","closed_at":"..."}
 ```
 
-When the events file exists, accountd **prefers** these records for closed connections and does not emit duplicate poll-close rows for the same poll cycle strategy.
+When the events file is non-empty and contains legitimate events, accountd **prefers** these records for closed connections and does not emit duplicate poll-close rows for the same poll cycle strategy. An empty file does not block Clash polling and is not collector success.
 
 ## Future minimal telemetry patch (protocol-neutral)
 
