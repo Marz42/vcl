@@ -1379,7 +1379,11 @@ preflight_clean_install() {
     "$VAR_LIB_VINCULA" \
     "$ACCOUNTING_DB_FILE" \
     "$EVENTS_JSONL_FILE"; do
-    [[ ! -e "$path" && ! -L "$path" ]] || die "Existing path detected: ${path}. vincula will not overwrite a non-managed installation."
+    [[ ! -e "$path" && ! -L "$path" ]] || die "Existing path detected: ${path}. vincula will not overwrite a non-managed installation.
+Fresh install refuses leftover accounting files.
+If you intend a clean install, as root:
+  rm -f ${ACCOUNTING_DB_FILE} ${ACCOUNTING_DB_FILE}-wal ${ACCOUNTING_DB_FILE}-shm ${EVENTS_JSONL_FILE}
+  rmdir ${VAR_LIB_VINCULA}"
   done
   if systemctl cat sing-box.service >/dev/null 2>&1; then
     die "An existing sing-box.service was found. vincula will not replace it."

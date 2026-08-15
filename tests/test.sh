@@ -458,6 +458,11 @@ if [[ "$uninstall_src_fn" == *'-shm'* ]]; then
 else
   fail "cmd_uninstall removal loop includes -shm"
 fi
+if awk '/^preflight_clean_install\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'rm -f'; then
+  pass "preflight refusal message contains rm -f guidance"
+else
+  fail "preflight refusal message contains rm -f guidance"
+fi
 assert_success "enable_accountd hard-fails on health" \
   grep -q 'wait_for_accountd_healthy || die' "${PROJECT_DIR}/vincula.sh"
 if awk '/^enable_accountd_service\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'log_warn'; then

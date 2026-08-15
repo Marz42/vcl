@@ -218,3 +218,4 @@ Source of Truth：`state.json`（节点/REALITY）+ `users.json`（credential UU
 ## 明确不做
 
 Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、fleet、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
+全新安装若发现残留路径会拒绝，并在报错中打印确切的 `rm -f` / `rmdir` 清理命令；仍然没有 `vcl recover`。
