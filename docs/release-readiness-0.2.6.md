@@ -23,7 +23,7 @@
 
 | Gate | Result |
 | --- | --- |
-| Offline unit suite (`tests/test.sh`) | **247 PASS** (WSL) |
+| Offline unit suite (`tests/test.sh`) | **328 PASS** (WSL) |
 | Packaging (`gen-release-lock` + `build-release`) | Includes `vincula-stats.py` |
 | Live 0.2.5→0.2.6 migration | **PASS** (Debian 13 live chain + rollback) |
 | Approximate accounting declaration | Required in all report surfaces |
