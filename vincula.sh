@@ -105,7 +105,10 @@ verify_sibling_release_lock() {
   root=$(cd -- "$(dirname -- "$src")" && pwd 2>/dev/null || true)
   [[ -n "$root" ]] || return 0
   lock="${root}/release.lock"
-  [[ -f "$lock" ]] || return 0
+  if [[ ! -f "$lock" ]]; then
+    log_warn "release.lock not found beside installer; skipping first-party digest check"
+    return 0
+  fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" ]] || continue
     hash=${line%% *}

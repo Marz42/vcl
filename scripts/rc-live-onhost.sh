@@ -355,7 +355,7 @@ phase_06_rollback() {
   (
     cd "$broken"
     : > release.lock
-    for f in vincula.sh bin/vincula lib/vincula-common.sh lib/vincula-accountd.py \
+    for f in vincula.sh vincula-bootstrap.sh bin/vincula lib/vincula-common.sh lib/vincula-accountd.py \
              lib/vincula-accountd.service lib/vincula-event.schema.json; do
       [[ -f "$f" ]] && sha256sum -- "$f" >> release.lock
     done

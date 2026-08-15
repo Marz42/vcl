@@ -8,6 +8,7 @@ cd -- "$ROOT"
 
 files=(
   vincula.sh
+  vincula-bootstrap.sh
   bin/vincula
   lib/vincula-common.sh
   lib/vincula-accountd.py
