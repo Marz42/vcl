@@ -721,6 +721,90 @@ known = mod.apply_poll_delta(conn, live2, known)
 row = conn.execute("SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='p1'").fetchone()
 assert row[0] == 500 and row[1] == 500, row
 
+# Restart: empty known_open, existing DB row with accounted bytes, still live in Clash
+mod.upsert_connection(conn, {
+    "connection_id": "p-restart",
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "r.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 5000,
+    "download_bytes": 8000,
+    "started_at": "2026-08-14T11:00:00Z",
+    "ts": "2026-08-14T11:00:10Z",
+}, close=False, accounted_upload=5000, accounted_download=8000)
+known_restart = {}
+live_restart = [dict(live1[0], connection_id="p-restart",
+                     upload_bytes=9000, download_bytes=12000,
+                     ts="2026-08-14T11:05:00Z")]
+known_restart = mod.apply_poll_delta(conn, live_restart, known_restart)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, closed_at FROM connections WHERE connection_id='p-restart'"
+).fetchone()
+assert row[0] == 5000 and row[1] == 8000, row   # NOT zeroed
+assert row[2] is None, row
+# subsequent poll: monotonic delta from new baseline 9000/12000
+live_restart2 = [dict(live_restart[0], upload_bytes=9500, download_bytes=12100)]
+known_restart = mod.apply_poll_delta(conn, live_restart2, known_restart)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='p-restart'"
+).fetchone()
+assert row[0] == 5500 and row[1] == 8100, row
+
+# AC-2.7-02: empty known_open, DB absent, large Clash counters → baseline only
+known_unknown = {}
+live_unknown = [dict(live1[0], connection_id="p-unknown",
+                     upload_bytes=999999, download_bytes=888888,
+                     ts="2026-08-14T11:06:00Z")]
+known_unknown = mod.apply_poll_delta(conn, live_unknown, known_unknown)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='p-unknown'"
+).fetchone()
+assert row[0] == 0 and row[1] == 0, row
+
+# close=False must clear closed_at on a wrongly closed still-alive row
+conn.execute(
+    "UPDATE connections SET closed_at = ? WHERE connection_id = 'p-restart'",
+    ("2026-08-14T11:05:30Z",),
+)
+known_reopen = {}
+known_reopen = mod.apply_poll_delta(conn, live_restart2, known_reopen)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, closed_at FROM connections WHERE connection_id='p-restart'"
+).fetchone()
+assert row[0] == 5500 and row[1] == 8100 and row[2] is None, row
+
+# live set: keep still-alive open rows; close only ids absent from Clash
+mod.upsert_connection(conn, {
+    "connection_id": "p-stale-live",
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "s.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 11,
+    "download_bytes": 22,
+    "started_at": "2026-08-14T11:00:00Z",
+    "ts": "2026-08-14T11:00:10Z",
+}, close=False, accounted_upload=11, accounted_download=22)
+n_live = mod.close_stale_open_connections(
+    conn, ["p-restart", "p1", "p-unknown"], now="2026-08-14T11:07:00Z"
+)
+assert n_live == 1, n_live
+row = conn.execute(
+    "SELECT closed_at FROM connections WHERE connection_id='p-restart'"
+).fetchone()
+assert row[0] is None, row
+row = conn.execute(
+    "SELECT closed_at, upload_bytes FROM connections WHERE connection_id='p-stale-live'"
+).fetchone()
+assert row[0] == "2026-08-14T11:07:00Z" and row[1] == 11, row
+
 mod.rollup_daily_usage(conn)
 conn.commit()
 agg = conn.execute(
@@ -732,9 +816,9 @@ assert "user_id" in cols and "user_tag" in cols, cols
 conn.close()
 PY
 if (( rollup_rc == 0 )); then
-  pass "event parse + rollup + stale close + poll baseline"
+  pass "event parse + rollup + stale close + poll baseline + restart bytes preserved"
 else
-  fail "event parse + rollup + stale close + poll baseline"
+  fail "event parse + rollup + stale close + poll baseline + restart bytes preserved"
 fi
 
 # D1: rollup crash-safety (injected INSERT failure must not commit an empty table)

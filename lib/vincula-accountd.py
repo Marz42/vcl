@@ -504,10 +504,7 @@ def upsert_connection(
           network = COALESCE(excluded.network, connections.network),
           upload_bytes = excluded.upload_bytes,
           download_bytes = excluded.download_bytes,
-          closed_at = CASE
-            WHEN excluded.closed_at IS NOT NULL THEN excluded.closed_at
-            ELSE connections.closed_at
-          END,
+          closed_at = excluded.closed_at,
           last_seen_at = excluded.last_seen_at
         """,
         (
@@ -528,13 +525,31 @@ def upsert_connection(
     )
 
 
-def close_stale_open_connections(conn: sqlite3.Connection, now: Optional[str] = None) -> int:
-    """On startup: mark any open rows as closed with last known bytes."""
+def close_stale_open_connections(
+    conn: sqlite3.Connection,
+    live_ids: Optional[Iterable[str]] = None,
+    now: Optional[str] = None,
+) -> int:
+    """Close open rows that are not in the live Clash set.
+
+    If live_ids is None, keep the legacy behaviour of closing every open row
+    (used by tests and callers that have no snapshot). An empty live set means
+    the Clash snapshot is empty, so every open row is stale.
+    """
     now = now or utc_now_iso()
-    cur = conn.execute(
-        "UPDATE connections SET closed_at = ?, last_seen_at = ? WHERE closed_at IS NULL",
-        (now, now),
-    )
+    ids = None if live_ids is None else [str(cid) for cid in live_ids]
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        cur = conn.execute(
+            "UPDATE connections SET closed_at = ?, last_seen_at = ? "
+            f"WHERE closed_at IS NULL AND connection_id NOT IN ({placeholders})",
+            (now, now, *ids),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE connections SET closed_at = ?, last_seen_at = ? WHERE closed_at IS NULL",
+            (now, now),
+        )
     return cur.rowcount
 
 
@@ -582,7 +597,40 @@ def apply_poll_delta(
         raw_dn = int(ev.get("download_bytes") or 0)
         prev = known_open.get(cid)
         if prev is None:
-            # First sight: baseline only, zero accounted delta.
+            existing = conn.execute(
+                "SELECT upload_bytes, download_bytes, closed_at FROM connections "
+                "WHERE connection_id = ?",
+                (cid,),
+            ).fetchone()
+            if existing is not None:
+                # Restart / empty cache: keep already-accounted bytes. Baseline
+                # on the current Clash counters (downtime increment abandoned).
+                acc_up = int(
+                    existing["upload_bytes"]
+                    if isinstance(existing, sqlite3.Row)
+                    else existing[0]
+                )
+                acc_dn = int(
+                    existing["download_bytes"]
+                    if isinstance(existing, sqlite3.Row)
+                    else existing[1]
+                )
+                upsert_connection(
+                    conn,
+                    ev,
+                    close=False,
+                    accounted_upload=acc_up,
+                    accounted_download=acc_dn,
+                )
+                known_open[cid] = {
+                    "ev": ev,
+                    "raw_up": raw_up,
+                    "raw_dn": raw_dn,
+                    "acc_up": acc_up,
+                    "acc_dn": acc_dn,
+                }
+                continue
+            # True first sight: baseline only, zero accounted delta.
             state = {
                 "ev": ev,
                 "raw_up": raw_up,
@@ -785,6 +833,7 @@ class AccountDaemon:
         self._users_mtime: Optional[float] = None
         self._stop = False
         self._known_open: Dict[str, Dict[str, Any]] = {}
+        self._last_live_ids: Optional[List[str]] = None
         self._jsonl_offset = 0
         self._prefer_jsonl = False
         self._cycles = 0
@@ -819,10 +868,6 @@ class AccountDaemon:
 
     def run(self) -> int:
         conn = open_db(self.db_path)
-        closed = close_stale_open_connections(conn)
-        if closed:
-            LOG.info("marked %s stale open connection(s) closed on startup", closed)
-        conn.commit()
 
         if Path(self.events_path).is_file() and Path(self.events_path).stat().st_size > 0:
             self._jsonl_offset = 0
@@ -855,7 +900,15 @@ class AccountDaemon:
         self._prefer_jsonl = False
         try:
             live = fetch_clash_connections(self.clash_url, self.clash_secret)
+            live_ids = [ev["connection_id"] for ev in live]
+            self._last_live_ids = live_ids
             self._known_open = apply_poll_delta(conn, live, self._known_open)
+            closed = close_stale_open_connections(conn, live_ids)
+            if closed:
+                LOG.info(
+                    "marked %s stale open connection(s) closed (absent from Clash snapshot)",
+                    closed,
+                )
             return True
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             LOG.warning("Clash API poll failed: %s", exc)
@@ -989,8 +1042,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         daemon.db_path = args.db
     if args.once:
         conn = open_db(daemon.db_path)
-        close_stale_open_connections(conn)
         daemon._tick(conn)
+        if daemon._last_live_ids is not None:
+            closed = close_stale_open_connections(conn, daemon._last_live_ids)
+            if closed:
+                LOG.info(
+                    "marked %s stale open connection(s) closed (absent from Clash snapshot)",
+                    closed,
+                )
+            conn.commit()
         conn.close()
         return 0
     return daemon.run()
