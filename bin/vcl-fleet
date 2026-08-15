@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+import runpy
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+candidates = [here / "lib" / "vincula-fleet.py", here.parent / "lib" / "vincula-fleet.py"]
+for p in candidates:
+    if p.is_file():
+        runpy.run_path(str(p), run_name="__main__")
+        raise SystemExit(0)
+raise SystemExit("vcl-fleet: cannot find lib/vincula-fleet.py")

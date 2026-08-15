@@ -3717,6 +3717,11 @@ assert_success "soak protocol is LIVE-ONLY and not a CI gate" \
 assert_success "soak protocol documents 24h READY FOR RC" \
   grep -q 'AC-2.7-09' "${PROJECT_DIR}/scripts/soak-0.2.7.sh"
 
+if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${TEST_DIR}/test-fleet.sh"
+fi
+
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then
   arch=$(map_arch "$(uname -m)") || {
     fail "integration test architecture unsupported"
