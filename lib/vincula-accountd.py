@@ -44,39 +44,72 @@ DEFAULT_USERS = "/etc/vincula/users.json"
 DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 NODE_ID = "local"
 TAG_TO_USER_ID: Dict[str, str] = {}
 
 LOG = logging.getLogger("vincula-accountd")
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS connections (
-  connection_id TEXT PRIMARY KEY,
-  node_id TEXT NOT NULL,
+# Schema 3 connections body (shared by empty-DB SCHEMA_SQL and 2→3 rewrite).
+# INTEGER PRIMARY KEY AUTOINCREMENT is required (D9): deleted event_id values
+# are not reused. instance_id is nullable; NULL means untracked (D5).
+_CONNECTIONS_V3_COLUMNS = """
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
   user_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
   user_tag TEXT,
+  started_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
   destination_host TEXT,
   destination_ip TEXT,
   destination_port INTEGER,
   network TEXT,
   upload_bytes INTEGER NOT NULL DEFAULT 0,
   download_bytes INTEGER NOT NULL DEFAULT 0,
-  started_at TEXT NOT NULL,
-  closed_at TEXT,
+  UNIQUE (connection_id, generation)
+"""
+
+_CONNECTIONS_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_connections_user_seen "
+    "ON connections(user_id, last_seen_at)",
+    "CREATE INDEX IF NOT EXISTS idx_connections_user_started "
+    "ON connections(user_id, started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_connections_open "
+    "ON connections(closed_at)",
+)
+
+_POLL_BASELINE_SQL = """
+CREATE TABLE IF NOT EXISTS poll_baseline (
+  connection_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  last_upload_counter INTEGER NOT NULL,
+  last_download_counter INTEGER NOT NULL,
+  accounted_upload INTEGER NOT NULL,
+  accounted_download INTEGER NOT NULL,
   last_seen_at TEXT NOT NULL
+)
+"""
+
+SCHEMA_SQL = f"""
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_connections_user_seen
-  ON connections(user_id, last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_connections_open
-  ON connections(closed_at);
+CREATE TABLE IF NOT EXISTS connections (
+{_CONNECTIONS_V3_COLUMNS}
+);
+
+{_CONNECTIONS_INDEX_SQL[0]};
+{_CONNECTIONS_INDEX_SQL[1]};
+{_CONNECTIONS_INDEX_SQL[2]};
+
+{_POLL_BASELINE_SQL};
 
 CREATE TABLE IF NOT EXISTS daily_usage (
   date TEXT NOT NULL,
@@ -192,14 +225,68 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
     return [r["name"] if isinstance(r, sqlite3.Row) else r[1] for r in rows]
 
 
-def migrate_schema(conn: sqlite3.Connection) -> None:
-    """Migrate schema 0/1 → 2. Fail closed if user_tag cannot map to user_id."""
-    tables = {
+def _table_names(conn: sqlite3.Connection) -> set:
+    return {
         r[0]
         for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
+
+
+def _ensure_schema_3_objects(conn: sqlite3.Connection) -> None:
+    """Create poll_baseline and schema-3 indexes if missing. Do not rebuild tables."""
+    conn.execute(_POLL_BASELINE_SQL)
+    for stmt in _CONNECTIONS_INDEX_SQL:
+        conn.execute(stmt)
+
+
+def migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
+    """Rewrite connections from schema 2 PK(connection_id) to schema 3.
+
+    Existing rows get generation=0, event_id assigned by AUTOINCREMENT, and
+    instance_id NULL (never copied from node_id). poll_baseline is created
+    empty: Clash counters cannot be recovered, so the first poll is unknown
+    (baseline-only, keep DB bytes). daily_usage is left unchanged.
+
+    Schema 3 is irreversible: there is no automatic 3→2 rollback. Pre-upgrade
+    backup is backup_existing_install; never silent-downgrade.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f"CREATE TABLE connections_v3 ({_CONNECTIONS_V3_COLUMNS})")
+        conn.execute(
+            """
+            INSERT INTO connections_v3 (
+              connection_id, generation, instance_id, user_id, node_id, user_tag,
+              started_at, last_seen_at, closed_at,
+              destination_host, destination_ip, destination_port, network,
+              upload_bytes, download_bytes
+            )
+            SELECT
+              connection_id, 0, NULL, user_id, node_id, user_tag,
+              started_at, last_seen_at, closed_at,
+              destination_host, destination_ip, destination_port, network,
+              upload_bytes, download_bytes
+            FROM connections
+            ORDER BY rowid
+            """
+        )
+        conn.execute("DROP TABLE connections")
+        conn.execute("ALTER TABLE connections_v3 RENAME TO connections")
+        _ensure_schema_3_objects(conn)
+        meta_set(conn, "schema_version", str(SCHEMA_VERSION))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    """Migrate schema 0/1 → 2 → 3. Fail closed on unknown or future versions."""
+    tables = _table_names(conn)
     if "connections" not in tables and "daily_usage" not in tables:
         conn.executescript(SCHEMA_SQL)
         meta_set(conn, "schema_version", str(SCHEMA_VERSION))
@@ -207,85 +294,107 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         return
 
     if "meta" not in tables:
-        conn.executescript(SCHEMA_SQL)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
 
     raw = meta_get(conn, "schema_version", "")
     try:
         current = int(raw) if raw else 0
     except ValueError:
-        current = 0
+        raise SystemExit(
+            f"accounting database corrupt or unreadable: schema_version={raw!r}"
+        ) from None
 
-    if current >= SCHEMA_VERSION:
-        # Ensure columns exist even if meta was set early.
-        cols = _table_columns(conn, "connections") if "connections" in tables else []
-        if cols and "user_id" in cols:
-            return
+    if current > SCHEMA_VERSION:
+        raise SystemExit(
+            f"accounting database schema_version={current} is newer than "
+            f"supported {SCHEMA_VERSION}"
+        )
 
-    conn.executescript(SCHEMA_SQL)
-
-    tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    conn_cols = _table_columns(conn, "connections")
-    if "user_id" not in conn_cols:
-        # Legacy schema: user_tag NOT NULL, no user_id.
-        conn.execute("ALTER TABLE connections ADD COLUMN user_id TEXT")
-        rows = conn.execute(
-            "SELECT connection_id, user_tag FROM connections"
-        ).fetchall()
-        for row in rows:
-            cid = row["connection_id"] if isinstance(row, sqlite3.Row) else row[0]
-            tag = row["user_tag"] if isinstance(row, sqlite3.Row) else row[1]
-            try:
-                uid = resolve_user_id(str(tag))
-            except ValueError as exc:
-                raise SystemExit(
-                    f"schema migrate fail-closed: {exc} (connection_id={cid})"
-                ) from exc
-            conn.execute(
-                "UPDATE connections SET user_id = ? WHERE connection_id = ?",
-                (uid, cid),
-            )
-        nulls = conn.execute(
-            "SELECT COUNT(*) FROM connections WHERE user_id IS NULL OR user_id = ''"
-        ).fetchone()[0]
-        if nulls:
-            raise SystemExit("schema migrate fail-closed: unmapped connection rows remain")
-
-    daily_cols = _table_columns(conn, "daily_usage") if "daily_usage" in tables else []
-    if daily_cols and "user_id" not in daily_cols:
-        conn.execute("ALTER TABLE daily_usage ADD COLUMN user_id TEXT")
-        if "user_tag" in daily_cols:
+    if current < 2:
+        # Legacy 0/1 → 2: add user_id. Fail closed if user_tag cannot map.
+        # Do not executescript SCHEMA_SQL against an existing v0/v1 connections
+        # table: IF NOT EXISTS would leave the old PK, and new indexes reference
+        # user_id before that column exists.
+        tables = _table_names(conn)
+        if "connections" not in tables:
+            conn.executescript(SCHEMA_SQL)
+            tables = _table_names(conn)
+        conn_cols = _table_columns(conn, "connections")
+        if "user_id" not in conn_cols:
+            conn.execute("ALTER TABLE connections ADD COLUMN user_id TEXT")
             rows = conn.execute(
-                "SELECT rowid, user_tag FROM daily_usage"
+                "SELECT connection_id, user_tag FROM connections"
             ).fetchall()
             for row in rows:
-                rowid = row["rowid"] if isinstance(row, sqlite3.Row) else row[0]
+                cid = row["connection_id"] if isinstance(row, sqlite3.Row) else row[0]
                 tag = row["user_tag"] if isinstance(row, sqlite3.Row) else row[1]
                 try:
                     uid = resolve_user_id(str(tag))
                 except ValueError as exc:
                     raise SystemExit(
-                        f"schema migrate fail-closed: {exc} (daily_usage rowid={rowid})"
+                        f"schema migrate fail-closed: {exc} (connection_id={cid})"
                     ) from exc
                 conn.execute(
-                    "UPDATE daily_usage SET user_id = ? WHERE rowid = ?",
-                    (uid, rowid),
+                    "UPDATE connections SET user_id = ? WHERE connection_id = ?",
+                    (uid, cid),
                 )
-        nulls = conn.execute(
-            "SELECT COUNT(*) FROM daily_usage WHERE user_id IS NULL OR user_id = ''"
-        ).fetchone()[0]
-        if nulls:
-            raise SystemExit("schema migrate fail-closed: unmapped daily_usage rows remain")
+            nulls = conn.execute(
+                "SELECT COUNT(*) FROM connections "
+                "WHERE user_id IS NULL OR user_id = ''"
+            ).fetchone()[0]
+            if nulls:
+                raise SystemExit(
+                    "schema migrate fail-closed: unmapped connection rows remain"
+                )
 
-    # Ensure user_tag column exists on daily_usage for display.
-    daily_cols = _table_columns(conn, "daily_usage")
-    if "user_tag" not in daily_cols:
-        conn.execute("ALTER TABLE daily_usage ADD COLUMN user_tag TEXT")
+        daily_cols = (
+            _table_columns(conn, "daily_usage") if "daily_usage" in tables else []
+        )
+        if daily_cols and "user_id" not in daily_cols:
+            conn.execute("ALTER TABLE daily_usage ADD COLUMN user_id TEXT")
+            if "user_tag" in daily_cols:
+                rows = conn.execute(
+                    "SELECT rowid, user_tag FROM daily_usage"
+                ).fetchall()
+                for row in rows:
+                    rowid = row["rowid"] if isinstance(row, sqlite3.Row) else row[0]
+                    tag = row["user_tag"] if isinstance(row, sqlite3.Row) else row[1]
+                    try:
+                        uid = resolve_user_id(str(tag))
+                    except ValueError as exc:
+                        raise SystemExit(
+                            f"schema migrate fail-closed: {exc} "
+                            f"(daily_usage rowid={rowid})"
+                        ) from exc
+                    conn.execute(
+                        "UPDATE daily_usage SET user_id = ? WHERE rowid = ?",
+                        (uid, rowid),
+                    )
+            nulls = conn.execute(
+                "SELECT COUNT(*) FROM daily_usage "
+                "WHERE user_id IS NULL OR user_id = ''"
+            ).fetchone()[0]
+            if nulls:
+                raise SystemExit(
+                    "schema migrate fail-closed: unmapped daily_usage rows remain"
+                )
 
+        daily_cols = _table_columns(conn, "daily_usage")
+        if daily_cols and "user_tag" not in daily_cols:
+            conn.execute("ALTER TABLE daily_usage ADD COLUMN user_tag TEXT")
+        meta_set(conn, "schema_version", "2")
+        conn.commit()
+        current = 2
+
+    conn_cols = _table_columns(conn, "connections")
+    if conn_cols and "event_id" not in conn_cols:
+        migrate_schema_2_to_3(conn)
+        return
+
+    _ensure_schema_3_objects(conn)
     meta_set(conn, "schema_version", str(SCHEMA_VERSION))
     conn.commit()
 
@@ -438,15 +547,16 @@ def upsert_connection(
         else int(ev.get("download_bytes") or 0)
     )
     user_id = ev.get("user_id") or resolve_user_id(str(ev["user_tag"]))
+    generation = int(ev.get("generation", 0))
 
     conn.execute(
         """
         INSERT INTO connections(
-          connection_id, node_id, user_id, user_tag, destination_host, destination_ip,
-          destination_port, network, upload_bytes, download_bytes,
-          started_at, closed_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(connection_id) DO UPDATE SET
+          connection_id, generation, instance_id, node_id, user_id, user_tag,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes, started_at, closed_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(connection_id, generation) DO UPDATE SET
           user_id = excluded.user_id,
           user_tag = excluded.user_tag,
           destination_host = COALESCE(excluded.destination_host, connections.destination_host),
@@ -460,6 +570,8 @@ def upsert_connection(
         """,
         (
             ev["connection_id"],
+            generation,
+            None,  # instance_id untracked (D5); never copy node_id
             ev.get("node_id") or NODE_ID,
             user_id,
             ev.get("user_tag"),

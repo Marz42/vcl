@@ -654,8 +654,8 @@ else
 fi
 assert_success "ingested connection row has user_id" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute("select count(*) from connections where user_id=\"u-alice\"").fetchone()[0]; raise SystemExit(0 if n>=1 else 1)' "$SAMPLE_DB"
-assert_success "meta.schema_version is 2" \
-  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="2" else 1)' "$SAMPLE_DB"
+assert_success "meta.schema_version is 3" \
+  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="3" else 1)' "$SAMPLE_DB"
 assert_success "destination host normalized lowercase strip dot" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); h=c.execute("select destination_host from connections where connection_id=\"c-test-1\"").fetchone()[0]; raise SystemExit(0 if h=="example.com" else 1)' "$SAMPLE_DB"
 
@@ -709,7 +709,7 @@ assert mod.normalize_destination_host("foo.") == "foo"
 assert mod.normalize_destination_host(None) is None
 
 conn = mod.open_db(db)
-assert mod.meta_get(conn, "schema_version") == "2"
+assert mod.meta_get(conn, "schema_version") == "3"
 mod.upsert_connection(conn, {
     "event": "connection_close",
     "connection_id": "r1",
@@ -869,6 +869,237 @@ else
   fail "event parse + rollup + stale close + poll baseline + restart bytes preserved"
 fi
 
+# Schema 2 → 3 migration: preserve accounted bytes, assign event_id / generation=0,
+# leave instance_id NULL, do not seed poll_baseline from unknown Clash counters.
+schema3_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/schema2to3.db" "${TEST_TMP}/schema3-empty.db" <<'PY' || schema3_rc=$?
+import importlib.util, sqlite3, sys
+
+mod_path, old_db, empty_db = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert mod.SCHEMA_VERSION == 3
+
+raw = sqlite3.connect(old_db)
+raw.executescript("""
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE connections (
+  connection_id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  network TEXT,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  closed_at TEXT,
+  last_seen_at TEXT NOT NULL
+);
+CREATE TABLE daily_usage (
+  date TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT NOT NULL,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  connection_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (date, user_id, destination_host)
+);
+""")
+raw.execute("INSERT INTO meta(key,value) VALUES('schema_version','2')")
+raw.execute(
+    """
+    INSERT INTO connections(
+      connection_id, node_id, user_id, user_tag, destination_host, destination_ip,
+      destination_port, network, upload_bytes, download_bytes,
+      started_at, closed_at, last_seen_at
+    ) VALUES (?, 'n1', 'u-alice', 'alice', 'open.example', NULL, 443, 'tcp',
+              12345, 67890, '2026-08-14T10:00:00Z', NULL, '2026-08-14T10:05:00Z')
+    """,
+    ("c-open",),
+)
+raw.execute(
+    """
+    INSERT INTO connections(
+      connection_id, node_id, user_id, user_tag, destination_host, destination_ip,
+      destination_port, network, upload_bytes, download_bytes,
+      started_at, closed_at, last_seen_at
+    ) VALUES (?, 'n1', 'u-bob', 'bob', 'closed.example', '198.51.100.9', 443, 'tcp',
+              10, 20, '2026-08-14T09:00:00Z', '2026-08-14T09:01:00Z',
+              '2026-08-14T09:01:00Z')
+    """,
+    ("c-closed",),
+)
+raw.execute(
+    """
+    INSERT INTO daily_usage(
+      date, user_id, user_tag, destination_host,
+      upload_bytes, download_bytes, connection_count
+    ) VALUES ('2026-08-14', 'u-alice', 'alice', 'open.example', 12345, 67890, 1)
+    """
+)
+raw.commit()
+raw.close()
+
+conn = mod.open_db(old_db)
+assert mod.meta_get(conn, "schema_version") == "3"
+cols = [r[1] for r in conn.execute("PRAGMA table_info(connections)").fetchall()]
+for required in ("event_id", "generation", "instance_id", "connection_id", "user_id"):
+    assert required in cols, cols
+tables = {
+    r[0]
+    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+}
+assert "poll_baseline" in tables, tables
+idx = {
+    r[0]
+    for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='connections'"
+    ).fetchall()
+}
+assert "idx_connections_user_started" in idx, idx
+
+rows = conn.execute(
+    "SELECT connection_id, generation, instance_id, event_id, "
+    "upload_bytes, download_bytes, closed_at, node_id "
+    "FROM connections ORDER BY event_id"
+).fetchall()
+assert len(rows) == 2, rows
+assert rows[0][3] >= 1 and rows[1][3] > rows[0][3], rows
+by_cid = {r[0]: r for r in rows}
+open_row = by_cid["c-open"]
+closed_row = by_cid["c-closed"]
+assert open_row[1] == 0 and open_row[2] is None, open_row
+assert open_row[4] == 12345 and open_row[5] == 67890, open_row
+assert open_row[6] is None, open_row
+assert open_row[7] == "n1" and open_row[2] is not open_row[7]
+assert closed_row[1] == 0 and closed_row[2] is None, closed_row
+assert closed_row[4] == 10 and closed_row[5] == 20, closed_row
+assert closed_row[6] == "2026-08-14T09:01:00Z", closed_row
+daily = conn.execute(
+    "SELECT upload_bytes, download_bytes, connection_count FROM daily_usage"
+).fetchone()
+assert daily[0] == 12345 and daily[1] == 67890 and daily[2] == 1, daily
+n_base = conn.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0]
+assert n_base == 0, n_base
+
+# First sight after migrate: keep accounted bytes; large Clash counters are baseline.
+known = {}
+live = [{
+    "connection_id": "c-open",
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "open.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 999999,
+    "download_bytes": 888888,
+    "started_at": "2026-08-14T10:00:00Z",
+    "ts": "2026-08-14T11:00:00Z",
+}]
+known = mod.apply_poll_delta(conn, live, known)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation, instance_id "
+    "FROM connections WHERE connection_id='c-open'"
+).fetchone()
+assert row[0] == 12345 and row[1] == 67890, row
+assert row[2] == 0 and row[3] is None, row
+
+# UNIQUE(connection_id, generation): a new generation is a second row.
+mod.upsert_connection(conn, {
+    "connection_id": "c-open",
+    "generation": 1,
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "open.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 0,
+    "download_bytes": 0,
+    "started_at": "2026-08-14T11:00:00Z",
+    "ts": "2026-08-14T11:00:00Z",
+}, close=False, accounted_upload=0, accounted_download=0)
+gens = conn.execute(
+    "SELECT generation, event_id, upload_bytes FROM connections "
+    "WHERE connection_id='c-open' ORDER BY generation"
+).fetchall()
+assert len(gens) == 2, gens
+assert gens[0][0] == 0 and gens[0][2] == 12345, gens
+assert gens[1][0] == 1 and gens[1][2] == 0, gens
+assert gens[1][1] > gens[0][1], gens
+try:
+    conn.execute(
+        """
+        INSERT INTO connections(
+          connection_id, generation, user_id, node_id, started_at, last_seen_at
+        ) VALUES ('c-open', 0, 'u-alice', 'n1',
+                  '2026-08-14T10:00:00Z', '2026-08-14T10:00:00Z')
+        """
+    )
+    raise AssertionError("expected UNIQUE(connection_id, generation) violation")
+except sqlite3.IntegrityError:
+    pass
+
+# AUTOINCREMENT: delete a row, insert same connection_id new generation → event_id
+# is strictly greater (no reuse).
+deleted_id = closed_row[3]
+max_id = conn.execute("SELECT MAX(event_id) FROM connections").fetchone()[0]
+conn.execute("DELETE FROM connections WHERE connection_id='c-closed'")
+conn.commit()
+mod.upsert_connection(conn, {
+    "connection_id": "c-closed",
+    "generation": 1,
+    "node_id": "n1",
+    "user_id": "u-bob",
+    "user_tag": "bob",
+    "destination_host": "closed.example",
+    "destination_ip": "198.51.100.9",
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 0,
+    "download_bytes": 0,
+    "started_at": "2026-08-14T12:00:00Z",
+    "ts": "2026-08-14T12:00:00Z",
+}, close=False)
+new_id = conn.execute(
+    "SELECT event_id, generation, instance_id FROM connections "
+    "WHERE connection_id='c-closed'"
+).fetchone()
+assert new_id[0] > max_id and new_id[0] != deleted_id, (new_id, max_id, deleted_id)
+assert new_id[1] == 1 and new_id[2] is None, new_id
+conn.close()
+
+# Empty DB via open_db is schema 3 with poll_baseline.
+fresh = mod.open_db(empty_db)
+assert mod.meta_get(fresh, "schema_version") == "3"
+fresh_cols = [r[1] for r in fresh.execute("PRAGMA table_info(connections)").fetchall()]
+assert "event_id" in fresh_cols and "generation" in fresh_cols
+assert "instance_id" in fresh_cols, fresh_cols
+fresh_tables = {
+    r[0]
+    for r in fresh.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+}
+assert "poll_baseline" in fresh_tables, fresh_tables
+fresh.close()
+PY
+if (( schema3_rc == 0 )); then
+  pass "schema 2 to 3 preserves accounted bytes"
+  pass "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
+  pass "open_db empty database is schema 3"
+else
+  fail "schema 2 to 3 preserves accounted bytes"
+  fail "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
+  fail "open_db empty database is schema 3"
+fi
+
 # D1: rollup crash-safety (injected INSERT failure must not commit an empty table)
 # and retention×rollup ordering with 90/90 defaults.
 d1_rc=0
@@ -935,10 +1166,10 @@ for i in range(100):
     conn.execute(
         """
         INSERT INTO connections(
-          connection_id, node_id, user_id, user_tag, destination_host, destination_ip,
+          connection_id, generation, node_id, user_id, user_tag, destination_host, destination_ip,
           destination_port, network, upload_bytes, download_bytes,
           started_at, closed_at, last_seen_at
-        ) VALUES (?, 'n1', 'u-bob', 'bob', ?, NULL, 443, 'tcp', 1, 2, ?, ?, ?)
+        ) VALUES (?, 0, 'n1', 'u-bob', 'bob', ?, NULL, 443, 'tcp', 1, 2, ?, ?, ?)
         """,
         (f"c-{i}", f"host-{i}.example", ts, ts, ts),
     )
