@@ -1,4 +1,4 @@
-# vincula V0.2.7
+# vincula V0.2.8-dev
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -193,6 +193,16 @@ vcl uninstall --yes
 
 ---
 
+## 身份
+
+现有 UUID `node_id`（`state.json` `node.node_id` / `config.toml` `node_id` / `users.json` credentials / accounting）**就是逻辑节点 ID**，永久冻结。`name` 可改；改 IP / hostname **不**改 `node_id`。**禁止重铸**，也不引入第二套逻辑 ID。
+
+`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。
+
+详见 [`docs/identity.md`](docs/identity.md)。
+
+---
+
 ## 升级
 
 同机重跑安装器：
@@ -200,6 +210,7 @@ vcl uninstall --yes
 - 同版本：校验双平面，不轮换凭据
 - `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7**：保留 Reality / UUID / `user_id` / accounting DB
 - `0.2.6` → `0.2.7`（accounting schema 2→3，不可逆）
+- `0.2.7` → **0.2.8-dev**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
@@ -231,5 +242,5 @@ Source of Truth：`state.json`（节点/REALITY）+ `users.json`（credential UU
 
 ## 明确不做
 
-Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、fleet、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
+Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、完整 fleet 用户开通 / incremental sync / UI（0.2.9+；0.2.8 仅 Fleet Foundation）、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
 全新安装若发现残留路径会拒绝，并在报错中打印确切的 `rm -f` / `rmdir` 清理命令；仍然没有 `vcl recover`。
