@@ -19,6 +19,7 @@ Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍
 
 - `vcl connections`：accountd 非 active 时失败（UNAVAILABLE），不以 SQLite 伪装 live
 - `vcl accounting status`：新鲜度与 coverage；`vcl accounting retention` 只读展示 raw/daily 天数
+- `vincula-accountd.service` 补齐 `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectControlGroups` / `RestrictRealtime`（保持 `User=root`）
 
 ### Accounting correctness
 
