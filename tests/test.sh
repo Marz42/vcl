@@ -764,6 +764,109 @@ else
   fail "retention x rollup keeps recent daily rows at 90/90"
 fi
 
+# F1: tag→user_id hot-reload on users.json mtime change
+f1_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f1-hotreload" <<'PY' || f1_rc=$?
+import importlib.util, json, os, sys, time, urllib.error
+
+mod_path, work = sys.argv[1], sys.argv[2]
+os.makedirs(work, exist_ok=True)
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+users_path = os.path.join(work, "users.json")
+events_path = os.path.join(work, "events.jsonl")
+db_path = os.path.join(work, "acct.db")
+
+bob_only = {
+    "schema_version": 2,
+    "users": [
+        {
+            "user_id": "u-bob",
+            "tag": "bob",
+            "display_name": "Bob",
+            "department": "",
+            "enabled": True,
+            "created_at": "2026-08-14T00:00:00Z",
+            "credentials": [],
+        }
+    ],
+}
+with open(users_path, "w", encoding="utf-8") as f:
+    json.dump(bob_only, f)
+
+alice_line = (
+    '{"event":"connection_closed","connection_id":"c-alice-1","node_id":"n1",'
+    '"user":"alice","destination_host":"a.example","destination_ip":null,'
+    '"destination_port":443,"network":"tcp","upload_bytes":1,"download_bytes":2,'
+    '"started_at":"2026-08-14T10:00:00Z","closed_at":"2026-08-14T10:00:01Z"}\n'
+)
+alice_line2 = alice_line.replace("c-alice-1", "c-alice-2")
+with open(events_path, "w", encoding="utf-8") as f:
+    f.write(alice_line)
+
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users_path)
+os.environ["VCL_USERS_FILE"] = users_path
+daemon = mod.AccountDaemon(
+    db_path=db_path,
+    events_path=events_path,
+    clash_url="http://127.0.0.1:1/connections",
+    users_path=users_path,
+)
+mod.fetch_clash_connections = lambda *a, **k: (_ for _ in ()).throw(
+    urllib.error.URLError("fake clash unused")
+)
+conn = mod.open_db(db_path)
+daemon._tick(conn)
+n = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
+assert n == 0, n
+
+bob_and_alice = {
+    "schema_version": 2,
+    "users": bob_only["users"]
+    + [
+        {
+            "user_id": "u-alice",
+            "tag": "alice",
+            "display_name": "Alice",
+            "department": "",
+            "enabled": False,
+            "created_at": "2026-08-14T00:00:00Z",
+            "credentials": [],
+        }
+    ],
+}
+# Ensure mtime actually changes even on coarse filesystems.
+time.sleep(0.05)
+with open(users_path, "w", encoding="utf-8") as f:
+    json.dump(bob_and_alice, f)
+os.utime(users_path, None)
+with open(events_path, "a", encoding="utf-8") as f:
+    f.write(alice_line2)
+
+daemon._tick(conn)
+n = conn.execute("SELECT COUNT(*) FROM connections WHERE user_id='u-alice'").fetchone()[0]
+assert n >= 1, n
+assert mod.TAG_TO_USER_ID.get("alice") == "u-alice"
+# Disabled users remain resolvable after full map replace.
+assert mod.resolve_user_id("alice") == "u-alice"
+
+kept = dict(mod.TAG_TO_USER_ID)
+time.sleep(0.05)
+with open(users_path, "w", encoding="utf-8") as f:
+    f.write("{not json")
+os.utime(users_path, None)
+daemon._tick(conn)
+assert mod.TAG_TO_USER_ID == kept, mod.TAG_TO_USER_ID
+conn.close()
+PY
+if (( f1_rc == 0 )); then
+  pass "mtime hot-reload maps new tag after users.json change"
+else
+  fail "mtime hot-reload maps new tag after users.json change"
+fi
+
 # --- 0.2.5 user provisioning offline tests ---
 if command -v python3 >/dev/null 2>&1; then
   PROV_DIR="${TEST_TMP}/provision"

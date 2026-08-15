@@ -24,6 +24,7 @@ Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍
 
 - Daily retention 默认改为 **90** 天，与 raw 对齐（此前文档写 730，但 daily 由 raw 全量重建，有效窗口从未超过约 90 个 UTC 日）
 - `rollup_daily_usage` 先写入临时表再交换，避免重建中途失败留下空表
+- accountd 在 `users.json` mtime 变化时热加载 tag→user_id（含 disabled；坏 JSON 保留旧 map）
 
 ### 迁移
 

@@ -771,6 +771,7 @@ class AccountDaemon:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         raw_retention_days: int = DEFAULT_RAW_RETENTION_DAYS,
         daily_retention_days: int = DEFAULT_DAILY_RETENTION_DAYS,
+        users_path: str = DEFAULT_USERS,
     ) -> None:
         self.db_path = db_path
         self.clash_url = clash_url
@@ -779,11 +780,38 @@ class AccountDaemon:
         self.poll_interval = poll_interval
         self.raw_retention_days = raw_retention_days
         self.daily_retention_days = daily_retention_days
+        self.users_path = users_path
+        self._users_mtime: Optional[float] = None
         self._stop = False
         self._known_open: Dict[str, Dict[str, Any]] = {}
         self._jsonl_offset = 0
         self._prefer_jsonl = False
         self._cycles = 0
+
+    def _reload_tag_map_if_changed(self) -> None:
+        """Replace TAG_TO_USER_ID when users.json mtime changes.
+
+        Full replacement keeps disabled users resolvable (Clash may still
+        have residual connections). Bad JSON keeps the previous map.
+        """
+        global TAG_TO_USER_ID
+        try:
+            mtime = os.stat(self.users_path).st_mtime
+        except OSError:
+            return
+        if self._users_mtime is not None and mtime == self._users_mtime:
+            return
+        try:
+            new_map = load_tag_to_user_id(self.users_path)
+        except SystemExit as exc:
+            LOG.warning(
+                "users.json changed but failed to reload; keeping previous tag map (%s)",
+                exc,
+            )
+            self._users_mtime = mtime
+            return
+        TAG_TO_USER_ID = new_map
+        self._users_mtime = mtime
 
     def request_stop(self, *_args: Any) -> None:
         self._stop = True
@@ -825,6 +853,7 @@ class AccountDaemon:
 
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
+        self._reload_tag_map_if_changed()
         success = False
         if Path(self.events_path).is_file():
             self._prefer_jsonl = True
@@ -876,6 +905,7 @@ def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> Account
         daily_retention_days=settings_int(
             settings, "accounting_daily_retention_days", DEFAULT_DAILY_RETENTION_DAYS
         ),
+        users_path=users_path,
     )
 
 
