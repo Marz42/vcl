@@ -204,7 +204,7 @@ readonly TEST_NODE_ID="6fc96a10-1111-4111-8111-111111111111"
 render_sing_box_config "${TEST_TMP}/config.json" "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_SHORT_ID" 443 www.cloudflare.com
 render_state "${TEST_TMP}/state.json" 203.0.113.10 443 www.cloudflare.com "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" 2026-08-12T00:00:00Z amd64 false false 0 0 /var/lib/sing-box /usr/sbin/nologin "$TEST_NODE_ID" test-node
 render_users "${TEST_TMP}/users.json" "$TEST_UUID" 2026-08-12T00:00:00Z "" "" "$TEST_NODE_ID"
-render_settings "${TEST_TMP}/config.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret 90 730 "$TEST_NODE_ID" test-node
+render_settings "${TEST_TMP}/config.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret 90 90 "$TEST_NODE_ID" test-node
 printf '%s\n' "$(render_vless_uri "$TEST_UUID" 203.0.113.10 443 www.cloudflare.com "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID")" > "${TEST_TMP}/owner.uri"
 render_systemd_unit "${TEST_TMP}/sing-box.service"
 render_helper "${TEST_TMP}/vincula"
@@ -235,6 +235,13 @@ assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
 assert_success "keeps management state private by design" grep -q '^project_version = "0.2.6"$' "${TEST_TMP}/config.toml"
+assert_success "render_settings snapshot has daily retention 90" \
+  grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
+render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
+assert_success "render_settings default daily retention is 90" \
+  grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/settings-ret-default.toml"
+assert_success "render_settings default raw retention is 90" \
+  grep -q '^accounting_raw_retention_days = 90$' "${TEST_TMP}/settings-ret-default.toml"
 assert_equal "reads canonical port from state" "443" "$(json_numeric_field "${TEST_TMP}/state.json" port)"
 assert_success "generated artifacts match canonical state" \
   verify_identity_consistency "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" "${TEST_TMP}/config.json" "${TEST_TMP}/owner.uri" "${TEST_TMP}/users.json"
@@ -642,6 +649,119 @@ if (( rollup_rc == 0 )); then
   pass "event parse + rollup + stale close + poll baseline"
 else
   fail "event parse + rollup + stale close + poll baseline"
+fi
+
+# D1: rollup crash-safety (injected INSERT failure must not commit an empty table)
+# and retention×rollup ordering with 90/90 defaults.
+d1_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/d1-rollup.db" "$SAMPLE_USERS" <<'PY' || d1_rc=$?
+import importlib.util, sqlite3, sys
+from datetime import datetime, timedelta, timezone
+
+mod_path, db, users = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+assert mod.DEFAULT_DAILY_RETENTION_DAYS == 90, mod.DEFAULT_DAILY_RETENTION_DAYS
+assert mod.DEFAULT_RAW_RETENTION_DAYS == 90, mod.DEFAULT_RAW_RETENTION_DAYS
+
+conn = mod.open_db(db)
+mod.upsert_connection(conn, {
+    "connection_id": "keep-1",
+    "node_id": "n1",
+    "user_id": "u-bob",
+    "user_tag": "bob",
+    "destination_host": "keep.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 10,
+    "download_bytes": 20,
+    "started_at": "2026-08-14T09:00:00Z",
+    "closed_at": "2026-08-14T09:01:00Z",
+    "ts": "2026-08-14T09:01:00Z",
+}, close=True)
+mod.rollup_daily_usage(conn)
+conn.commit()
+before = conn.execute("SELECT COUNT(*) FROM daily_usage").fetchone()[0]
+assert before > 0, before
+
+def deny_live_daily_insert(action, table, _column, _dbname, _source):
+    if action == sqlite3.SQLITE_INSERT and table == "daily_usage":
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+conn.set_authorizer(deny_live_daily_insert)
+try:
+    mod.rollup_daily_usage(conn)
+    raise AssertionError("rollup_daily_usage should have failed")
+except sqlite3.DatabaseError as exc:
+    msg = str(exc).lower()
+    assert "not authorized" in msg or "denied" in msg or "authorizer" in msg, exc
+conn.set_authorizer(None)
+conn.commit()
+after = conn.execute("SELECT COUNT(*) FROM daily_usage").fetchone()[0]
+assert after == before and after > 0, (before, after)
+conn.close()
+
+# 100 days of connections + prefilled daily; rollup then apply_retention(90, 90)
+ret_db = db + "-retention"
+conn = mod.open_db(ret_db)
+now = datetime.now(timezone.utc)
+for i in range(100):
+    when = now - timedelta(days=i)
+    day = when.strftime("%Y-%m-%d")
+    ts = when.strftime("%Y-%m-%dT12:00:00Z")
+    conn.execute(
+        """
+        INSERT INTO connections(
+          connection_id, node_id, user_id, user_tag, destination_host, destination_ip,
+          destination_port, network, upload_bytes, download_bytes,
+          started_at, closed_at, last_seen_at
+        ) VALUES (?, 'n1', 'u-bob', 'bob', ?, NULL, 443, 'tcp', 1, 2, ?, ?, ?)
+        """,
+        (f"c-{i}", f"host-{i}.example", ts, ts, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_usage(
+          date, user_id, user_tag, destination_host,
+          upload_bytes, download_bytes, connection_count
+        ) VALUES (?, 'u-bob', 'bob', ?, 1, 2, 1)
+        """,
+        (day, f"host-{i}.example"),
+    )
+conn.commit()
+mod.rollup_daily_usage(conn)
+mod.apply_retention(conn, 90, 90)
+conn.commit()
+daily_n = conn.execute("SELECT COUNT(*) FROM daily_usage").fetchone()[0]
+assert daily_n > 0, daily_n
+dates = [r[0] for r in conn.execute("SELECT date FROM daily_usage ORDER BY date").fetchall()]
+cutoff_date = datetime.fromtimestamp(now.timestamp() - 90 * 86400, timezone.utc).strftime("%Y-%m-%d")
+assert min(dates) >= cutoff_date, (min(dates), cutoff_date)
+today = now.strftime("%Y-%m-%d")
+assert today in dates or (now - timedelta(days=1)).strftime("%Y-%m-%d") in dates, dates[-3:]
+old_ts = (now - timedelta(days=99)).strftime("%Y-%m-%dT12:00:00Z")
+old_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE last_seen_at = ?", (old_ts,)
+).fetchone()[0]
+assert old_n == 0, old_n
+recent_ts = (now - timedelta(days=1)).strftime("%Y-%m-%dT12:00:00Z")
+recent_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE last_seen_at = ?", (recent_ts,)
+).fetchone()[0]
+assert recent_n == 1, recent_n
+conn.close()
+PY
+if (( d1_rc == 0 )); then
+  pass "rollup failure does not empty daily_usage"
+  pass "retention x rollup keeps recent daily rows at 90/90"
+else
+  fail "rollup failure does not empty daily_usage"
+  fail "retention x rollup keeps recent daily rows at 90/90"
 fi
 
 # --- 0.2.5 user provisioning offline tests ---

@@ -1669,7 +1669,7 @@ PY
       raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
       daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
       [[ -n "$raw_days" ]] || raw_days=90
-      [[ -n "$daily_days" ]] || daily_days=730
+      [[ -n "$daily_days" ]] || daily_days=90
       printf 'accounting_raw_retention_days:   %s\n' "$raw_days"
       printf 'accounting_daily_retention_days: %s\n' "$daily_days"
       printf 'note: read-only; change via /etc/vincula/config.toml then restart accountd\n'

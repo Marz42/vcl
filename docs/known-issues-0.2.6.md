@@ -12,7 +12,7 @@
 | IP-only destinations | Shown as `[IP only] <ip>`; no reverse DNS |
 | Cross-midnight | Daily rollups use UTC date of `closed_at` (unchanged from 0.2.4) |
 | Live connections | `vcl connections` requires active `vincula-accountd`; SQLite is not shown as live |
-| Retention | Defaults raw 90 / daily 730; `vcl accounting retention` is read-only |
+| Retention | Defaults raw 90 / daily 90; `vcl accounting retention` is read-only |
 
 ## Evidence gaps
 

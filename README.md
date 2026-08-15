@@ -18,7 +18,7 @@ sing-box 固定：1.13.18（不追 latest）
 | 默认 REALITY SNI | `www.cloudflare.com` |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
 | 用户 registry | `users.json` schema 2 |
-| Accounting | SQLite schema 2；raw 90 天 / daily 730 天 |
+| Accounting | SQLite schema 2；raw 90 天 / daily 90 天 |
 
 Gate / 已知限制：[`docs/release-readiness-0.2.6.md`](docs/release-readiness-0.2.6.md) · [`docs/known-issues-0.2.6.md`](docs/known-issues-0.2.6.md)
 

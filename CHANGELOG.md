@@ -20,6 +20,11 @@ Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍
 - `vcl connections`：accountd 非 active 时失败（UNAVAILABLE），不以 SQLite 伪装 live
 - `vcl accounting status`：新鲜度与 coverage；`vcl accounting retention` 只读展示 raw/daily 天数
 
+### Accounting correctness
+
+- Daily retention 默认改为 **90** 天，与 raw 对齐（此前文档写 730，但 daily 由 raw 全量重建，有效窗口从未超过约 90 个 UTC 日）
+- `rollup_daily_usage` 先写入临时表再交换，避免重建中途失败留下空表
+
 ### 迁移
 
 - 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.5` → `0.2.6`

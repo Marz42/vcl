@@ -45,7 +45,7 @@ DEFAULT_SETTINGS = "/etc/vincula/config.toml"
 DEFAULT_USERS = "/etc/vincula/users.json"
 DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
-DEFAULT_DAILY_RETENTION_DAYS = 730
+DEFAULT_DAILY_RETENTION_DAYS = 90
 SCHEMA_VERSION = 2
 
 NODE_ID = "local"
@@ -639,18 +639,7 @@ def apply_poll_delta(
     return known_open
 
 
-def rollup_daily_usage(conn: sqlite3.Connection) -> None:
-    """Rebuild daily_usage from connections (idempotent aggregate).
-
-    Uses UTC date of closed_at when present, else started_at.
-    """
-    conn.execute("DELETE FROM daily_usage")
-    conn.execute(
-        """
-        INSERT INTO daily_usage(
-          date, user_id, user_tag, destination_host,
-          upload_bytes, download_bytes, connection_count
-        )
+_DAILY_USAGE_AGGREGATE_SELECT = """
         SELECT
           substr(COALESCE(closed_at, started_at), 1, 10) AS date,
           user_id,
@@ -665,8 +654,60 @@ def rollup_daily_usage(conn: sqlite3.Connection) -> None:
           COUNT(*)
         FROM connections
         GROUP BY 1, 2, 3, 4
-        """
-    )
+"""
+
+
+def rollup_daily_usage(conn: sqlite3.Connection) -> None:
+    """Rebuild daily_usage from connections (idempotent aggregate).
+
+    Builds into a temp table first, then swaps inside a savepoint so a
+    failed rebuild never leaves daily_usage empty. Uses UTC date of
+    closed_at when present, else started_at.
+    """
+    conn.execute("SAVEPOINT rollup_daily_usage")
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp.daily_usage_rebuild")
+        conn.execute(
+            """
+            CREATE TEMP TABLE daily_usage_rebuild (
+              date TEXT NOT NULL,
+              user_id TEXT NOT NULL,
+              user_tag TEXT,
+              destination_host TEXT NOT NULL,
+              upload_bytes INTEGER NOT NULL DEFAULT 0,
+              download_bytes INTEGER NOT NULL DEFAULT 0,
+              connection_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO daily_usage_rebuild(
+              date, user_id, user_tag, destination_host,
+              upload_bytes, download_bytes, connection_count
+            )
+            """
+            + _DAILY_USAGE_AGGREGATE_SELECT
+        )
+        conn.execute("DELETE FROM daily_usage")
+        conn.execute(
+            """
+            INSERT INTO daily_usage(
+              date, user_id, user_tag, destination_host,
+              upload_bytes, download_bytes, connection_count
+            )
+            SELECT
+              date, user_id, user_tag, destination_host,
+              upload_bytes, download_bytes, connection_count
+            FROM daily_usage_rebuild
+            """
+        )
+        conn.execute("DROP TABLE daily_usage_rebuild")
+        conn.execute("RELEASE rollup_daily_usage")
+    except Exception:
+        conn.execute("ROLLBACK TO rollup_daily_usage")
+        conn.execute("RELEASE rollup_daily_usage")
+        raise
 
 
 def apply_retention(
@@ -772,6 +813,10 @@ class AccountDaemon:
                 self._tick(conn)
             except Exception:  # noqa: BLE001 — keep daemon alive for transient errors
                 LOG.exception("accounting tick failed")
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             deadline = time.monotonic() + self.poll_interval
             while not self._stop and time.monotonic() < deadline:
                 time.sleep(0.2)

@@ -15,7 +15,7 @@ Vincula does **not** ship a patched sing-box binary. Accounting is built on:
 | Operational User × Destination visibility | **Yes** — approximate |
 | `events.jsonl` preferred ingest | **Yes** — when present; still requires out-of-tree producer for full coverage |
 
-Do not treat poll-derived numbers as byte-perfect metering. Product retention defaults remain **raw 90 days** / **daily 730 days** (UTC day boundaries for rollups).
+Do not treat poll-derived numbers as byte-perfect metering. Product retention defaults remain **raw 90 days** / **daily 90 days** (UTC day boundaries for rollups).
 
 ## Clash API polling vs lifecycle events
 

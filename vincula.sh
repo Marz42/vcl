@@ -1013,7 +1013,7 @@ render_settings() {
   local clash_port=${6:-$DEFAULT_CLASH_API_PORT}
   local clash_secret=${7:-}
   local raw_days=${8:-90}
-  local daily_days=${9:-730}
+  local daily_days=${9:-90}
   local node_id=${10:-}
   local node_name=${11:-}
   if [[ -z "$clash_secret" ]]; then
@@ -1601,7 +1601,7 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
   render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name"
   render_settings "$staged_settings" "$server" "$port" "$reality_host" "$arch" \
-    "$clash_port" "$clash_secret" 90 730 "$node_id" "$node_name"
+    "$clash_port" "$clash_secret" 90 90 "$node_id" "$node_name"
   printf '%s\n' "$uri" > "$staged_uri"
   printf '%s\n' "$VINCULA_VERSION" > "$staged_version"
   render_manifest "$staged_manifest" "$arch" "$archive_sha" "$binary_sha"
@@ -2015,7 +2015,7 @@ install_new_node() {
   render_sing_box_config_from_registry "$staged_config" "$staged_users" "$private_key" "$short_id" \
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
   render_settings "$staged_settings" "$server" "$port" "$reality_host" "$arch" \
-    "$clash_port" "$clash_secret" 90 730 "$node_id" "$node_name"
+    "$clash_port" "$clash_secret" 90 90 "$node_id" "$node_name"
   printf '%s\n' "$uri" > "$staged_uri"
   printf '%s  %s\n' "$binary_sha" "$BINARY_PATH" > "$staged_checksum"
   printf '%s\n' "$VINCULA_VERSION" > "$staged_version"
