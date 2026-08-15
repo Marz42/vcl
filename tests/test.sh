@@ -1488,6 +1488,219 @@ else
   fail "retention x rollup keeps recent daily rows at 90/90"
 fi
 
+# TASK 27: retention DELETE is capped at RETENTION_DELETE_BATCH (2000) per
+# table per call; leftover backlog drains across later calls. Open rows and
+# recent closed rows stay. Ingest commit happens before apply_retention.
+ret_batch_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/ret-batch.db" "$SAMPLE_USERS" <<'PY' || ret_batch_rc=$?
+import importlib.util, sqlite3, sys
+from datetime import datetime, timedelta, timezone
+
+mod_path, db, users = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+assert mod.RETENTION_DELETE_BATCH == 2000, mod.RETENTION_DELETE_BATCH
+
+conn = mod.open_db(db)
+now = datetime.now(timezone.utc)
+old_ts = (now - timedelta(days=120)).strftime("%Y-%m-%dT12:00:00Z")
+recent_ts = (now - timedelta(days=1)).strftime("%Y-%m-%dT12:00:00Z")
+old_day = (now - timedelta(days=120)).strftime("%Y-%m-%d")
+recent_day = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+cutoff_iso = datetime.fromtimestamp(
+    now.timestamp() - 90 * 86400, timezone.utc
+).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+n_expired = 5005
+conn.executemany(
+    """
+    INSERT INTO connections(
+      connection_id, generation, node_id, user_id, user_tag, destination_host,
+      destination_ip, destination_port, network, upload_bytes, download_bytes,
+      started_at, closed_at, last_seen_at
+    ) VALUES (?, 0, 'n1', 'u-alice', 'alice', 'old.example', NULL, 443, 'tcp',
+              1, 2, ?, ?, ?)
+    """,
+    [(f"exp-{i}", old_ts, old_ts, old_ts) for i in range(n_expired)],
+)
+# Closed generations past cutoff must go; open rows with old last_seen stay.
+conn.execute(
+    """
+    INSERT INTO connections(
+      connection_id, generation, node_id, user_id, user_tag, destination_host,
+      destination_ip, destination_port, network, upload_bytes, download_bytes,
+      started_at, closed_at, last_seen_at
+    ) VALUES ('open-old', 0, 'n1', 'u-alice', 'alice', 'live.example', NULL, 443,
+              'tcp', 9, 9, ?, NULL, ?)
+    """,
+    (old_ts, old_ts),
+)
+conn.execute(
+    """
+    INSERT INTO connections(
+      connection_id, generation, node_id, user_id, user_tag, destination_host,
+      destination_ip, destination_port, network, upload_bytes, download_bytes,
+      started_at, closed_at, last_seen_at
+    ) VALUES ('recent-closed', 0, 'n1', 'u-alice', 'alice', 'new.example', NULL,
+              443, 'tcp', 3, 4, ?, ?, ?)
+    """,
+    (recent_ts, recent_ts, recent_ts),
+)
+n_daily_expired = 2505
+conn.executemany(
+    """
+    INSERT INTO daily_usage(
+      date, user_id, user_tag, destination_host,
+      upload_bytes, download_bytes, connection_count
+    ) VALUES (?, 'u-alice', 'alice', ?, 1, 2, 1)
+    """,
+    [(old_day, f"old-host-{i}.example") for i in range(n_daily_expired)],
+)
+conn.execute(
+    """
+    INSERT INTO daily_usage(
+      date, user_id, user_tag, destination_host,
+      upload_bytes, download_bytes, connection_count
+    ) VALUES (?, 'u-alice', 'alice', 'recent.example', 1, 2, 1)
+    """,
+    (recent_day,),
+)
+conn.commit()
+
+max_expired_id = conn.execute(
+    "SELECT MAX(event_id) FROM connections "
+    "WHERE last_seen_at < ? AND closed_at IS NOT NULL",
+    (cutoff_iso,),
+).fetchone()[0]
+seq_before = conn.execute(
+    "SELECT seq FROM sqlite_sequence WHERE name='connections'"
+).fetchone()[0]
+assert seq_before >= max_expired_id, (seq_before, max_expired_id)
+
+def expired_conn_n():
+    return conn.execute(
+        "SELECT COUNT(*) FROM connections "
+        "WHERE last_seen_at < ? AND closed_at IS NOT NULL",
+        (cutoff_iso,),
+    ).fetchone()[0]
+
+def expired_daily_n():
+    cutoff_date = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - 90 * 86400, timezone.utc
+    ).strftime("%Y-%m-%d")
+    return conn.execute(
+        "SELECT COUNT(*) FROM daily_usage WHERE date < ?", (cutoff_date,)
+    ).fetchone()[0]
+
+assert expired_conn_n() == n_expired, expired_conn_n()
+assert expired_daily_n() == n_daily_expired, expired_daily_n()
+
+mod.apply_retention(conn, 90, 90)
+assert expired_conn_n() == n_expired - 2000, expired_conn_n()
+assert expired_daily_n() == n_daily_expired - 2000, expired_daily_n()
+open_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='open-old' AND closed_at IS NULL"
+).fetchone()[0]
+assert open_n == 1
+recent_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='recent-closed'"
+).fetchone()[0]
+assert recent_n == 1
+recent_daily = conn.execute(
+    "SELECT COUNT(*) FROM daily_usage WHERE destination_host='recent.example'"
+).fetchone()[0]
+assert recent_daily == 1
+
+mod.apply_retention(conn, 90, 90)
+assert expired_conn_n() == n_expired - 4000, expired_conn_n()
+assert expired_daily_n() == n_daily_expired - 2505, expired_daily_n()
+
+mod.apply_retention(conn, 90, 90)
+assert expired_conn_n() == 0, expired_conn_n()
+assert expired_daily_n() == 0, expired_daily_n()
+open_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='open-old' AND closed_at IS NULL"
+).fetchone()[0]
+assert open_n == 1
+recent_n = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='recent-closed'"
+).fetchone()[0]
+assert recent_n == 1
+
+seq_after = conn.execute(
+    "SELECT seq FROM sqlite_sequence WHERE name='connections'"
+).fetchone()[0]
+assert seq_after == seq_before, (seq_after, seq_before)
+mod.upsert_connection(conn, {
+    "connection_id": "post-retention",
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "after.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 1,
+    "download_bytes": 1,
+    "started_at": recent_ts,
+    "ts": recent_ts,
+}, close=True)
+conn.commit()
+new_id = conn.execute(
+    "SELECT event_id FROM connections WHERE connection_id='post-retention'"
+).fetchone()[0]
+assert new_id > max_expired_id, (new_id, max_expired_id)
+assert new_id > seq_after, (new_id, seq_after)
+conn.close()
+
+# Structural: _tick commits collection before calling apply_retention.
+struct_db = db + "-struct"
+conn = mod.open_db(struct_db)
+order = []
+real_retention = mod.apply_retention
+
+def traced_retention(*a, **k):
+    order.append("retention")
+    return real_retention(*a, **k)
+
+class TraceConn:
+    def __init__(self, inner):
+        self._inner = inner
+    def commit(self):
+        order.append("commit")
+        return self._inner.commit()
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+mod.apply_retention = traced_retention
+mod.fetch_clash_connections = lambda *_a, **_k: []
+daemon = mod.AccountDaemon(
+    db_path=struct_db, clash_url="http://127.0.0.1:1/connections"
+)
+daemon._cycles = 0
+try:
+    daemon._tick(TraceConn(conn))
+finally:
+    mod.apply_retention = real_retention
+assert "commit" in order and "retention" in order, order
+assert order.index("commit") < order.index("retention"), order
+conn.close()
+PY
+if (( ret_batch_rc == 0 )); then
+  pass "retention deletes at most 2000 rows per call"
+  pass "retention backlog drains across calls"
+  pass "retention does not hold collection commit"
+  pass "retention leaves open rows and recent closed rows"
+else
+  fail "retention deletes at most 2000 rows per call"
+  fail "retention backlog drains across calls"
+  fail "retention does not hold collection commit"
+  fail "retention leaves open rows and recent closed rows"
+fi
+
 # F1: tag→user_id hot-reload on users.json mtime change
 f1_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/f1-hotreload" <<'PY' || f1_rc=$?

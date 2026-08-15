@@ -46,6 +46,7 @@ DEFAULT_USERS = "/etc/vincula/users.json"
 DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
+RETENTION_DELETE_BATCH = 2000
 SCHEMA_VERSION = 3
 INT64_MAX = 2**63 - 1
 
@@ -1180,26 +1181,80 @@ def rollup_daily_usage(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _delete_expired_connections_batch(
+    conn: sqlite3.Connection,
+    cutoff_iso: str,
+    limit: int = RETENTION_DELETE_BATCH,
+) -> int:
+    """Delete at most `limit` expired closed connection rows.
+
+    SQLite has no portable DELETE ... LIMIT; select event_id then IN-delete.
+    Open rows (closed_at IS NULL) are never selected.
+    """
+    rows = conn.execute(
+        "SELECT event_id FROM connections "
+        "WHERE last_seen_at < ? AND closed_at IS NOT NULL "
+        "ORDER BY event_id LIMIT ?",
+        (cutoff_iso, limit),
+    ).fetchall()
+    if not rows:
+        return 0
+    ids = [r[0] for r in rows]
+    q = ",".join("?" * len(ids))
+    conn.execute(f"DELETE FROM connections WHERE event_id IN ({q})", ids)
+    return len(ids)
+
+
+def _delete_expired_daily_usage_batch(
+    conn: sqlite3.Connection,
+    cutoff_date: str,
+    limit: int = RETENTION_DELETE_BATCH,
+) -> int:
+    """Delete at most `limit` expired daily_usage rows by primary key."""
+    rows = conn.execute(
+        "SELECT date, user_id, destination_host FROM daily_usage "
+        "WHERE date < ? "
+        "ORDER BY date, user_id, destination_host LIMIT ?",
+        (cutoff_date, limit),
+    ).fetchall()
+    if not rows:
+        return 0
+    keys = [(r[0], r[1], r[2]) for r in rows]
+    conn.executemany(
+        "DELETE FROM daily_usage WHERE date = ? AND user_id = ? AND destination_host = ?",
+        keys,
+    )
+    return len(keys)
+
+
 def apply_retention(
     conn: sqlite3.Connection,
     raw_days: int,
     daily_days: int,
 ) -> None:
+    """Delete expired rows in bounded batches (one transaction per table).
+
+    At most RETENTION_DELETE_BATCH rows per table per call. A leftover
+    backlog drains on later maintenance cycles — this function does not
+    loop until the over-window set is empty. Independent of any fleet
+    cursor (none in 0.2.7).
+    """
     now = datetime.now(timezone.utc)
     if raw_days > 0:
         cutoff = now.timestamp() - raw_days * 86400
         cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        conn.execute(
-            "DELETE FROM connections WHERE last_seen_at < ? AND closed_at IS NOT NULL",
-            (cutoff_iso,),
-        )
+        _delete_expired_connections_batch(conn, cutoff_iso)
+        conn.commit()
     if daily_days > 0:
         cutoff_date = datetime.fromtimestamp(
             now.timestamp() - daily_days * 86400, timezone.utc
         ).strftime("%Y-%m-%d")
-        conn.execute("DELETE FROM daily_usage WHERE date < ?", (cutoff_date,))
+        _delete_expired_daily_usage_batch(conn, cutoff_date)
+        conn.commit()
+    meta_set(conn, "last_retention_at", utc_now_iso())
+    conn.commit()
 
 
 class AccountDaemon:
@@ -1317,8 +1372,10 @@ class AccountDaemon:
 
         if self._cycles == 1 or self._cycles % 720 == 0:
             rollup_daily_usage(conn)
-            apply_retention(conn, self.raw_retention_days, self.daily_retention_days)
             conn.commit()
+            # Retention is its own transaction (and commits internally per
+            # table). A long DELETE must not hold the ingest commit.
+            apply_retention(conn, self.raw_retention_days, self.daily_retention_days)
 
 
 def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> AccountDaemon:
