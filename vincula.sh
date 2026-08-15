@@ -1454,6 +1454,8 @@ migrate_existing_install() {
   local created_user created_group clash_secret clash_port
   local original_host host_changed=0
   local node_id node_name
+  local legacy_inbound_config=0
+  local check_err
 
   log_info "Installed: ${installed_version}"
   log_info "Installer: ${VINCULA_VERSION}"
@@ -1464,7 +1466,9 @@ migrate_existing_install() {
     systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
   fi
 
-  uuid=$(json_quoted_field "$USERS_FILE" uuid)
+  # Credential UUID SoT is users.json (registry); fall back to line-oriented scan / state.
+  uuid=$(owner_active_uuid_from_registry "$USERS_FILE" 2>/dev/null || true)
+  [[ -n "$uuid" ]] || uuid=$(json_quoted_field "$USERS_FILE" uuid)
   [[ -n "$uuid" ]] || uuid=$(json_quoted_field "$STATE_FILE" uuid)
   private_key=$(json_quoted_field "$STATE_FILE" reality_private_key)
   public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
@@ -1474,7 +1478,8 @@ migrate_existing_install() {
   port=$(toml_get "$SETTINGS_FILE" port)
   reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
   arch=$(toml_get "$SETTINGS_FILE" architecture)
-  users_uuid=$(json_quoted_field "$USERS_FILE" uuid)
+  users_uuid=$(owner_active_uuid_from_registry "$USERS_FILE" 2>/dev/null || true)
+  [[ -n "$users_uuid" ]] || users_uuid=$(json_quoted_field "$USERS_FILE" uuid)
   node_id=$(toml_get "$SETTINGS_FILE" node_id || true)
   [[ -n "$node_id" ]] || node_id=$(json_quoted_field "$STATE_FILE" node_id || true)
   node_name=$(toml_get "$SETTINGS_FILE" node_name || true)
@@ -1517,12 +1522,32 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   local installed_sing_box_version
   installed_sing_box_version=$("$BINARY_PATH" version | awk 'NR==1 {print $3}')
   [[ "$installed_sing_box_version" == "$SING_BOX_VERSION" ]] || die "Installed sing-box version ${installed_sing_box_version:-unknown} differs from the pinned version ${SING_BOX_VERSION}."
-  "$BINARY_PATH" check -c "$CONFIG_FILE" >/dev/null
-  systemctl enable sing-box.service >/dev/null
-  if ! systemctl is-active --quiet sing-box.service; then
-    systemctl start sing-box.service
+
+  # sing-box 1.13 removed inbound sniff/domain_strategy. A 0.2.3-era config may fail check
+  # and refuse to stay healthy; migration regenerates config from SoT, so allow continue.
+  check_err=$(mktemp /tmp/vincula-check.XXXXXX)
+  if ! "$BINARY_PATH" check -c "$CONFIG_FILE" >"$check_err" 2>&1; then
+    if grep -qiE 'legacy inbound|removed in sing-box 1\.13|deprecated in sing-box 1\.11' "$check_err"; then
+      legacy_inbound_config=1
+      log_warn "Existing config uses legacy inbound fields removed in sing-box 1.13; migration will regenerate config from canonical state."
+    else
+      cat "$check_err" >&2 || true
+      rm -f -- "$check_err"
+      die "Existing configuration failed sing-box check."
+    fi
   fi
-  wait_for_service "$port" || die "Existing installation did not become healthy. Run 'journalctl -u sing-box.service'."
+  rm -f -- "$check_err"
+
+  systemctl enable sing-box.service >/dev/null
+  if (( legacy_inbound_config == 1 )); then
+    systemctl stop sing-box.service >/dev/null 2>&1 || true
+    log_warn "Skipping pre-migration service health wait (legacy config cannot run on sing-box ${SING_BOX_VERSION})."
+  else
+    if ! systemctl is-active --quiet sing-box.service; then
+      systemctl start sing-box.service
+    fi
+    wait_for_service "$port" || die "Existing installation did not become healthy. Run 'journalctl -u sing-box.service'."
+  fi
   log_ok "Existing vincula ${installed_version} installation verified; identity preserved"
 
   created_user=$(json_bool_field "$STATE_FILE" created_by_vincula)
@@ -1555,7 +1580,8 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   staged_common="${TMP_DIR}/vincula-common.sh"
 
   migrate_users_to_schema2 "$USERS_FILE" "$staged_users" "$node_id"
-  [[ "$(json_quoted_field "$staged_users" uuid)" == "$uuid" ]] || die "Migration attempted to change the owner UUID in users.json."
+  [[ "$(owner_active_uuid_from_registry "$staged_users")" == "$uuid" ]] \
+    || die "Migration attempted to change the owner UUID in users.json."
 
   uri=$(render_vless_uri "$uuid" "$server" "$port" "$reality_host" "$public_key" "$short_id" owner)
   binary_sha=$(sha256sum "$BINARY_PATH" | awk '{print $1}')
@@ -1580,7 +1606,8 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   install -m 0644 "${root}/lib/vincula-common.sh" "$staged_common"
 
 
-  [[ "$(json_quoted_field "$staged_users" uuid)" == "$uuid" ]] || die "Migration attempted to change the UUID."
+  [[ "$(owner_active_uuid_from_registry "$staged_users")" == "$uuid" ]] \
+    || die "Migration attempted to change the UUID."
   [[ "$(json_quoted_field "$staged_state" reality_private_key)" == "$private_key" ]] || die "Migration attempted to change the REALITY private key."
   [[ "$(json_quoted_field "$staged_state" reality_public_key)" == "$public_key" ]] || die "Migration attempted to change the REALITY public key."
   [[ "$(json_quoted_field "$staged_state" reality_short_id)" == "$short_id" ]] || die "Migration attempted to change the REALITY short ID."

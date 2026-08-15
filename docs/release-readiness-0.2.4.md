@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-14  
 **Tree version:** 0.2.4  
-**Automated suite:** `bash tests/test.sh` → **All 207 tests passed** (WSL2)  
-**Live spot-check:** Debian 13 amd64 (2026-08-15) — main path PASS; full matrix incomplete  
-**Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS**
+**Automated suite:** `bash tests/test.sh` → **All 209 tests passed** (WSL2)  
+**Freeze (2026-08-15):** V-MIG / V-RB / V-PY310 **PASS** — see [`freeze-0.2.4.md`](freeze-0.2.4.md)  
+**Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** (freeze candidate; 0.2.4 accepts P0/P1 regression only)
 
 Open gaps: [`known-issues-0.2.4.md`](known-issues-0.2.4.md). RC procedure: [`rc-test-manual-0.2.4.md`](rc-test-manual-0.2.4.md).
 
@@ -65,7 +65,7 @@ This report answers Gate R01–R25 and F01–F15. Status values are only PASS / 
 
 1. Short connections between poll intervals may be missed.
 2. Fresh-install OS matrix (Debian 12/13, Ubuntu 22.04/24.04, arm64) **not executed** in this environment.
-3. End-to-end migration on live nodes (`0.1.5`/`0.2.x` → `0.2.4` + forced rollback) **not executed**.
+3. Freeze gates: 0.2.3-shaped → 0.2.4 migration + forced rollback **PASS** on Debian 13; broader `0.1.5`/`0.2.0`–`0.2.2` live matrix still **not executed**. See [`freeze-0.2.4.md`](freeze-0.2.4.md).
 4. Several F0x items need a real systemd + sing-box host → marked UNKNOWN.
 5. `vincula-event.schema.json` is install-time JSON validated + documentation; **not** runtime-enforced on every event.
 6. Accountd runs as **root** (required for `0600` settings/DB); unit hardened but not unprivileged.
@@ -504,35 +504,33 @@ Release blocking: NO
 | `bash -n` installer/helper | PASS |
 | `python3 -m py_compile lib/vincula-accountd.py` | PASS |
 | `scripts/gen-release-lock.sh` | PASS |
-| Fresh install Debian 13 amd64 | **PASS** (2026-08-15 spot-check; post sniff + user-mutation fixes) |
-| Fresh install Debian 12 / Ubuntu 22.04 / 24.04 / arm64 | **UNKNOWN** |
-| Migration `0.1.5`/`0.2.0`/`0.2.2`/`0.2.3` → `0.2.4` + forced rollback | **UNKNOWN** |
-| Live REALITY client + accounting (owner) on Debian 13 | **PASS** (spot-check) |
-| user add / rotate / disable on Debian 13 | **PASS** (after helper fix) |
+| Fresh install Debian 13 amd64 | **PASS** |
+| Migration 0.2.3-shaped → 0.2.4 (legacy sniff P0) | **PASS** (Debian 13 freeze) |
+| Forced migration rollback | **PASS** (Debian 13 freeze) |
+| Ubuntu 22.04 Python 3.10 `py_compile` | **PASS** (Docker) |
+| Fresh install Debian 12 / Ubuntu 22.04·24.04 full systemd / arm64 | **UNKNOWN** / PARTIAL |
 | Reboot dual-plane | **UNKNOWN** |
-| Full F01–F15 | **PARTIAL** (see known-issues) |
+| Full F01–F15 | **PARTIAL** |
 
 ---
 
 ## 11. Remaining P1/P2
 
-见 [`known-issues-0.2.4.md`](known-issues-0.2.4.md)。摘要：
+见 [`known-issues-0.2.4.md`](known-issues-0.2.4.md) 与 [`freeze-0.2.4.md`](freeze-0.2.4.md)。
 
-- P0/RC：补 migration + forced rollback；至少再一台 Ubuntu 22.04
-- P1：剩余故障注入、reboot、bootstrap 篡改、Python 3.10 实机
-- P2：非 root accountd、runtime JSON Schema、Reliable Accounting
+- 0.2.4 冻结后仅 P0/P1 regression
+- 多 OS / reboot / bootstrap / 剩余 F 注入 → 文档债或 0.2.4.x
 
 ---
 
 ## 12. Release recommendation
 
-**READY WITH DOCUMENTED LIMITATIONS**
+**READY WITH DOCUMENTED LIMITATIONS** (freeze candidate)
 
 Justification:
 
-- P0 生命周期与数据模型修复已在树内；单元测试 207 PASS。
-- Debian 13 实机主路径与用户生命周期 spot-check PASS。
-- Accounting 仍为 **approximate**（产品限制）。
-- OS 矩阵 / migration rollback / 完整 F 注入等仍有 UNKNOWN → **不得** `READY FOR RC`。
+- Freeze gates V-MIG / V-RB / V-PY310 PASS with evidence.
+- Migration P0 for sing-box 1.13 legacy inbound is in tree.
+- Broader OS matrix and some fault injections remain UNKNOWN → not unqualified READY FOR RC without those, unless product accepts documented limitations as sufficient for RC.
 
-Before promoting to RC: follow [`rc-test-manual-0.2.4.md`](rc-test-manual-0.2.4.md), close items in [`known-issues-0.2.4.md`](known-issues-0.2.4.md), re-score UNKNOWN → PASS/FAIL, then update this document’s recommendation.
+Policy: **0.2.4 only accepts P0/P1 regression fixes** after tag `v0.2.4`.

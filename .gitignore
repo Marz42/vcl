@@ -23,9 +23,9 @@ Thumbs.db
 .vscode/
 *.code-workspace
 
-# Test / evidence artifacts
+# Test / evidence artifacts (keep docs/evidence/ notes in-repo)
 /tmp/
-evidence/
+/evidence/
 **/vcl-rc-evidence/
 *.log
 
@@ -42,3 +42,8 @@ agent-tools/
 
 # Deploy staging copy (build from repo root + gen-release-lock.sh)
 /release/
+
+# Reconstructed / packed freeze artifacts
+/artifacts/
+*.tgz
+/tmp/

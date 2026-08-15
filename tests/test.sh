@@ -240,7 +240,12 @@ assert_failure "detects UUID drift between URI and state" \
   verify_identity_consistency "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" "${TEST_TMP}/config.json" "${TEST_TMP}/owner.uri.bad" "${TEST_TMP}/users.json"
 printf '%s\n' "$(render_vless_uri "$TEST_UUID" 203.0.113.10 443 www.cloudflare.com "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID")" > "${TEST_TMP}/owner.uri"
 assert_success "helper documents vcl verify" grep -q 'vcl verify' "${TEST_TMP}/vincula"
-assert_success "helper documents vcl user add" grep -q 'vcl user add' "${TEST_TMP}/vincula"
+assert_success "migration tolerates legacy inbound check failure" \
+  grep -q 'legacy inbound fields removed in sing-box 1.13' "${PROJECT_DIR}/vincula.sh"
+assert_success "migration uses owner_active_uuid_from_registry" \
+  grep -q 'owner_active_uuid_from_registry "\$USERS_FILE"' "${PROJECT_DIR}/vincula.sh"
+assert_success "migration skips health wait for legacy config" \
+  grep -q 'Skipping pre-migration service health wait' "${PROJECT_DIR}/vincula.sh"
 assert_failure "helper must not reassign readonly USERS_FILE" \
   grep -q 'USERS_FILE=$staged_users' "${PROJECT_DIR}/bin/vincula"
 assert_success "user_mutation_apply passes staged users path" \

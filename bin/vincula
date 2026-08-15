@@ -1501,11 +1501,11 @@ PY
 }
 
 cmd_stats() {
-  local json=0 days=1 user_tag="" department="" top=0 mode="summary"
+  local json=0 days=1 user_tag="" department="" top=0 mode="summary" day_offset=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json=1; shift ;;
-      --today) days=1; shift ;;
+      --today) days=1; day_offset=0; shift ;;
       --days)
         [[ $# -ge 2 ]] || die "stats --days requires N"
         days=$2
@@ -1520,6 +1520,13 @@ cmd_stats() {
         ;;
       today)
         days=1
+        day_offset=0
+        mode="summary"
+        shift
+        ;;
+      yesterday)
+        days=1
+        day_offset=1
         mode="summary"
         shift
         ;;
@@ -1540,6 +1547,7 @@ cmd_stats() {
 vcl stats — traffic analytics (UTC days)
 
   vcl stats today
+  vcl stats yesterday
   vcl stats --days N
   vcl stats user <tag> [--today] [--days N] [--top N]
   vcl stats department <name> [--days N]
@@ -1559,14 +1567,15 @@ HELP
 
   require_python3 || die "python3 is required for stats."
   warn_if_accounting_stale
-  python3 - "$ACCOUNTING_DB_FILE" "$USERS_FILE" "$days" "$user_tag" "$department" "$top" "$json" "$mode" <<'PY'
+  python3 - "$ACCOUNTING_DB_FILE" "$USERS_FILE" "$days" "$user_tag" "$department" "$top" "$json" "$mode" "$day_offset" <<'PY'
 import json, sqlite3, sys
 from datetime import datetime, timezone, timedelta
 
-db, users_path, days, user_tag, department, top, as_json, mode = sys.argv[1:9]
+db, users_path, days, user_tag, department, top, as_json, mode, day_offset = sys.argv[1:10]
 days = int(days)
 top = int(top)
 as_json = as_json == "1"
+day_offset = int(day_offset)
 
 def human(n):
     n = float(int(n or 0))
@@ -1576,7 +1585,7 @@ def human(n):
         n /= 1024.0
     return f"{int(n)} B"
 
-end = datetime.now(timezone.utc).date()
+end = datetime.now(timezone.utc).date() - timedelta(days=day_offset)
 start = end - timedelta(days=days - 1)
 start_s, end_s = start.isoformat(), end.isoformat()
 

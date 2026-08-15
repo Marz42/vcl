@@ -6,6 +6,8 @@
 
 Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / 迁移 / 校验保证；收敛数据模型与 packaging integrity。本版本**不新增** stats/功能面。
 
+**Freeze (2026-08-15):** 门禁 V-MIG / V-RB / V-PY310 PASS；此后 **只接受 P0/P1 regression fix**。见 `docs/freeze-0.2.4.md`。
+
 ### 生命周期（P0）
 
 - `enable_accountd_service` 硬失败：`systemctl enable --now` + `wait_for_accountd_healthy`（is-active、DB/`schema_version=2`、Clash API Bearer 成功；无 secret / 错 secret 必须失败）后才允许 `INSTALL_COMMITTED=1`
@@ -52,6 +54,9 @@ Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / �
 
 - sing-box **1.13** 已移除 inbound 遗留字段：生成配置不再写 `inbounds[].sniff`，改为 `route.rules` 的 `"action": "sniff"`；`auth_user` 路由改为 `"action": "route"` + `outbound`（见 [migration](https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions)）
 - `vcl user add|rotate|…`：`user_mutation_apply` 不再对 `readonly USERS_FILE` 赋值；改为把 staged `users.json` 路径显式传给 `render_config_from_registry` / `regenerate_owner_uri`
+- 实现 `vcl stats yesterday`（usage 已文档化但此前未接解析）
+- **Freeze P0：** migration 对 sing-box 1.13 legacy inbound（`sniff`）预检失败时警告并继续，跳过旧 config health wait，从 SoT 重生配置；owner UUID 经 `owner_active_uuid_from_registry`
+- Debian 13：0.2.3-shaped → 0.2.4 migration + 强制 rollback PASS；Ubuntu 22.04 Docker：Python 3.10.12 `py_compile` PASS
 - Debian 13 amd64 实机：主路径 / Clash 鉴权 / owner 记账 / user 生命周期部分 PASS；完整 RC 矩阵仍见 `docs/known-issues-0.2.4.md`
 
 ## 0.2.3

@@ -28,11 +28,12 @@ VLESS + REALITY + xtls-rprx-vision + TCP
 
 sing-box 的官方下载 URL、文件大小和 SHA-256 同时记录在 [`sing-box.lock`](sing-box.lock) 与 `vincula.sh` 中。脚本不会查询或安装新版本。
 
-Release gate 现状见 [`docs/release-readiness-0.2.4.md`](docs/release-readiness-0.2.4.md)（当前：**READY WITH DOCUMENTED LIMITATIONS**）。  
+Release gate 现状见 [`docs/release-readiness-0.2.4.md`](docs/release-readiness-0.2.4.md)（当前：**READY WITH DOCUMENTED LIMITATIONS**，freeze candidate）。  
+**冻结记录 / 政策：** [`docs/freeze-0.2.4.md`](docs/freeze-0.2.4.md) — **0.2.4 只接受 P0/P1 regression fix**。  
 **现存问题清单：** [`docs/known-issues-0.2.4.md`](docs/known-issues-0.2.4.md)。  
-要升到 **READY FOR RC**，按 [`docs/rc-test-manual-0.2.4.md`](docs/rc-test-manual-0.2.4.md) 在真实 systemd 主机上补齐矩阵并回填证据。
+RC 手册：[`docs/rc-test-manual-0.2.4.md`](docs/rc-test-manual-0.2.4.md)。
 
-Debian 13 amd64 上已实机验证主路径（Clash 鉴权、owner 流量记账、user add/rotate/disable、同版本 verify 等）；多 OS / migration rollback / 完整故障注入仍缺，详见已知问题文档。
+Debian 13 已验证主路径、0.2.3-shaped migration、强制 rollback；Ubuntu 22.04 容器验证 Python 3.10 `py_compile`。多 OS / reboot 等仍见已知问题。
 
 ## 推荐安装方式
 
@@ -224,8 +225,10 @@ lib/vincula-accountd.service
 lib/vincula-event.schema.json
 docs/accounting-reliability.md
 docs/release-readiness-0.2.4.md
+docs/freeze-0.2.4.md
 docs/rc-test-manual-0.2.4.md
 docs/known-issues-0.2.4.md
+docs/evidence/0.2.4-freeze/README.md
 scripts/gen-release-lock.sh
 scripts/rc-remote-run.sh
 scripts/rc-remote-phase2.sh
