@@ -345,6 +345,22 @@ assert_success "connections fail when accountd inactive" \
   grep -q 'UNAVAILABLE: vincula-accountd' "${PROJECT_DIR}/bin/vincula"
 assert_success "gen-release-lock includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "gen-release-lock includes vincula-bootstrap.sh" \
+  grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "release.lock includes vincula-bootstrap.sh" \
+  grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/release.lock"
+assert_success "verify_sibling_release_lock warns when lock is missing" \
+  awk '/^verify_sibling_release_lock\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'release.lock not found'
+nolock_dir="${TEST_TMP}/missing-release-lock"
+mkdir -p "$nolock_dir"
+cp "${PROJECT_DIR}/vincula.sh" "${nolock_dir}/vincula.sh"
+nolock_rc=0
+nolock_err=$(bash -c 'source "$1"' _ "${nolock_dir}/vincula.sh" 2>&1 >/dev/null) || nolock_rc=$?
+if (( nolock_rc == 0 )) && [[ "$nolock_err" == *"release.lock not found"* ]]; then
+  pass "missing release.lock prints WARN and continues"
+else
+  fail "missing release.lock prints WARN and continues (rc=${nolock_rc}, err=${nolock_err})"
+fi
 assert_success "build-release includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
@@ -419,6 +435,16 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.2.6" \
+  grep -q 'Vincula-Version: 0.2.6' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit has ProtectKernelTunables" \
+  grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit has ProtectKernelModules" \
+  grep -q '^ProtectKernelModules=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit has ProtectControlGroups" \
+  grep -q '^ProtectControlGroups=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit has RestrictRealtime" \
+  grep -q '^RestrictRealtime=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "python3 can compile vincula-accountd" \
   python3 -m py_compile "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_success "event schema file exists" \
