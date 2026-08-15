@@ -1021,11 +1021,13 @@ render_settings() {
   local daily_days=${9:-90}
   local node_id=${10:-}
   local node_name=${11:-}
+  local cycle_start=${12:-1}
   if [[ -z "$clash_secret" ]]; then
     clash_secret=$(generate_clash_api_secret)
   fi
   [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
   [[ -n "$node_name" ]] || node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
+  [[ -n "$cycle_start" ]] || cycle_start=1
   cat > "$output" <<EOF
 project_version = "${VINCULA_VERSION}"
 sing_box_version = "${SING_BOX_VERSION}"
@@ -1041,6 +1043,7 @@ clash_api_port = ${clash_port}
 clash_api_secret = "${clash_secret}"
 accounting_raw_retention_days = ${raw_days}
 accounting_daily_retention_days = ${daily_days}
+billing_cycle_start_day = ${cycle_start}
 EOF
 }
 
@@ -1606,11 +1609,13 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   [[ -n "$clash_port" ]] || clash_port=$DEFAULT_CLASH_API_PORT
   validate_port "$clash_port" || die "Stored clash_api_port is invalid."
   [[ -n "$clash_secret" ]] || clash_secret=$(generate_clash_api_secret)
+  cycle_start=$(toml_get "$SETTINGS_FILE" billing_cycle_start_day || true)
+  [[ -n "$cycle_start" ]] || cycle_start=1
   render_sing_box_config_from_registry "$staged_config" "$staged_users" "$private_key" "$short_id" \
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
   render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name"
   render_settings "$staged_settings" "$server" "$port" "$reality_host" "$arch" \
-    "$clash_port" "$clash_secret" 90 90 "$node_id" "$node_name"
+    "$clash_port" "$clash_secret" 90 90 "$node_id" "$node_name" "$cycle_start"
   printf '%s\n' "$uri" > "$staged_uri"
   printf '%s\n' "$VINCULA_VERSION" > "$staged_version"
   render_manifest "$staged_manifest" "$arch" "$archive_sha" "$binary_sha"
