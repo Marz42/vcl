@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.2.5
+# vincula v0.2.6
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.2.5"
+readonly VINCULA_VERSION="0.2.6"
 readonly SING_BOX_VERSION="1.13.18"
 readonly SING_BOX_AMD64_SHA256="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
 readonly SING_BOX_ARM64_SHA256="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
@@ -36,6 +36,7 @@ readonly LIB_DIR="/usr/local/lib/vincula"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly VAR_LIB_VINCULA="/var/lib/vincula"
 readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
@@ -144,7 +145,7 @@ load_vincula_common || true
 
 usage() {
   cat <<'USAGE'
-vincula v0.2.5
+vincula v0.2.6
 
 Usage:
   sudo bash vincula.sh
@@ -156,9 +157,9 @@ Optional environment overrides:
   VCL_PORT=443                 Listening port
   VCL_REALITY_HOST=example.com REALITY handshake server and SNI
 
-The normal installation path is non-interactive. Existing vincula v0.2.5
+The normal installation path is non-interactive. Existing vincula v0.2.6
 credentials are preserved when the script is run again. Older 0.1.x and
-0.2.0–0.2.4 installations are migrated in place without rotating UUID or REALITY keys.
+0.2.0–0.2.5 installations are migrated in place without rotating UUID or REALITY keys.
 Use 'vcl uninstall' to remove a Vincula-managed installation.
 USAGE
 }
@@ -191,6 +192,7 @@ rollback_install() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$ACCOUNTING_DB_FILE" \
@@ -240,6 +242,7 @@ rollback_migration() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -248,7 +251,7 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
@@ -481,7 +484,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1072,6 +1075,7 @@ file=${MANIFEST_FILE}
 file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
+file=${STATS_PY}
 file=${EVENT_SCHEMA_FILE}
 file=${ACCOUNTD_UNIT}
 file=${ACCOUNTING_DB_FILE}
@@ -1237,7 +1241,7 @@ render_systemd_unit() {
   local output=$1
   cat > "$output" <<'UNIT'
 # Managed-By: vincula
-# Vincula-Version: 0.2.5
+# Vincula-Version: 0.2.6
 [Unit]
 Description=sing-box (managed by vincula)
 Documentation=https://sing-box.sagernet.org/
@@ -1368,6 +1372,7 @@ preflight_clean_install() {
     "$INSTALL_MANIFEST_FILE" \
     "$MANIFEST_FILE" \
     "$ACCOUNTD_PY" \
+    "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$VAR_LIB_VINCULA" \
     "$ACCOUNTING_DB_FILE" \
@@ -1423,6 +1428,7 @@ EOF
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -1700,7 +1706,7 @@ verify_existing_install() {
   fi
 
   printf '\n[Accounting Plane]\n'
-  if [[ -f "$ACCOUNTD_PY" && -f "$EVENT_SCHEMA_FILE" ]]; then
+  if [[ -f "$ACCOUNTD_PY" && -f "$EVENT_SCHEMA_FILE" && -f "$STATS_PY" ]]; then
     log_ok "accountd artifact"
   else
     log_warn "accountd artifact"
@@ -1806,7 +1812,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.2.4 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.2.5 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {
@@ -1823,19 +1829,23 @@ wait_for_service() {
 
 
 install_accountd_artifacts() {
-  local root staged_unit staged_py staged_schema
+  local root staged_unit staged_py staged_stats staged_schema
   root=$(installer_root) || die "Cannot locate installer directory for accounting artifacts."
   staged_py="${TMP_DIR}/vincula-accountd.py"
+  staged_stats="${TMP_DIR}/vincula-stats.py"
   staged_unit="${TMP_DIR}/vincula-accountd.service"
   staged_schema="${TMP_DIR}/vincula-event.schema.json"
   [[ -f "${root}/lib/vincula-accountd.py" ]] || die "Missing ${root}/lib/vincula-accountd.py"
+  [[ -f "${root}/lib/vincula-stats.py" ]] || die "Missing ${root}/lib/vincula-stats.py"
   [[ -f "${root}/lib/vincula-accountd.service" ]] || die "Missing ${root}/lib/vincula-accountd.service"
   [[ -f "${root}/lib/vincula-event.schema.json" ]] || die "Missing ${root}/lib/vincula-event.schema.json"
   install -m 0644 "${root}/lib/vincula-accountd.py" "$staged_py"
+  install -m 0644 "${root}/lib/vincula-stats.py" "$staged_stats"
   install -m 0644 "${root}/lib/vincula-accountd.service" "$staged_unit"
   install -m 0644 "${root}/lib/vincula-event.schema.json" "$staged_schema"
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
+  atomic_install "$staged_stats" "$STATS_PY" 0644 root root
   atomic_install "$staged_schema" "$EVENT_SCHEMA_FILE" 0644 root root
   atomic_install "$staged_unit" "$ACCOUNTD_UNIT" 0644 root root
   # Create empty DB file ownership marker (daemon initializes schema).
@@ -1847,9 +1857,11 @@ install_accountd_artifacts() {
 
 validate_accounting_artifacts() {
   [[ -f "$ACCOUNTD_PY" ]] || die "Missing accounting daemon ${ACCOUNTD_PY}"
+  [[ -f "$STATS_PY" ]] || die "Missing stats helper ${STATS_PY}"
   [[ -f "$EVENT_SCHEMA_FILE" ]] || die "Missing event schema ${EVENT_SCHEMA_FILE}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
   python3 -m py_compile "$ACCOUNTD_PY" || die "vincula-accountd.py failed py_compile"
+  python3 -m py_compile "$STATS_PY" || die "vincula-stats.py failed py_compile"
   python3 -m json.tool "$EVENT_SCHEMA_FILE" >/dev/null || die "vincula-event.schema.json is not valid JSON"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"

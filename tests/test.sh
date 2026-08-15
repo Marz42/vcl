@@ -103,7 +103,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.2.5" \
+assert_equal "runs when read from standard input" "vincula 0.2.6" \
   "$(bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -122,7 +122,8 @@ assert_success "migrates from 0.2.1" is_supported_upgrade_from 0.2.1
 assert_success "migrates from 0.2.2" is_supported_upgrade_from 0.2.2
 assert_success "migrates from 0.2.3" is_supported_upgrade_from 0.2.3
 assert_success "migrates from 0.2.4" is_supported_upgrade_from 0.2.4
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.2.5
+assert_success "migrates from 0.2.5" is_supported_upgrade_from 0.2.5
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.2.6
 assert_failure "does not migrate 0.3.0" is_supported_upgrade_from 0.3.0
 
 assert_success "accepts owner tag" is_valid_user_tag owner
@@ -233,7 +234,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.2.5"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.2.6"$' "${TEST_TMP}/config.toml"
 assert_equal "reads canonical port from state" "443" "$(json_numeric_field "${TEST_TMP}/state.json" port)"
 assert_success "generated artifacts match canonical state" \
   verify_identity_consistency "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" "${TEST_TMP}/config.json" "${TEST_TMP}/owner.uri" "${TEST_TMP}/users.json"
@@ -327,6 +328,18 @@ assert_success "helper rejects uninstall --force" grep -q 'uninstall --force is 
 assert_success "helper documents vcl connections" grep -q 'vcl connections' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl stats" grep -q 'vcl stats today' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl accounting status" grep -q 'vcl accounting status' "${TEST_TMP}/vincula"
+assert_success "helper documents stats month" grep -q 'vcl stats today|yesterday|--days N|--month' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents stats top" grep -q 'vcl stats top users|departments|hosts' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents stats host" grep -q 'vcl stats host' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents accounting retention" grep -q 'vcl accounting retention' "${PROJECT_DIR}/bin/vincula"
+assert_success "connections fail when accountd inactive" \
+  grep -q 'UNAVAILABLE: vincula-accountd' "${PROJECT_DIR}/bin/vincula"
+assert_success "gen-release-lock includes vincula-stats.py" \
+  grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "build-release includes vincula-stats.py" \
+  grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/build-release.sh"
+assert_success "python3 can compile vincula-stats" \
+  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
 assert_success "helper notes polling is not exact billing" grep -q 'Polling ≠ exact billing' "${TEST_TMP}/vincula"
 
 uninstall_fn=$(awk '
@@ -470,6 +483,8 @@ assert_success "settings include clash_api_secret" \
   grep -q '^clash_api_secret = ' "${TEST_TMP}/config.toml"
 assert_success "install.manifest lists vincula-accountd.py" \
   grep -q 'vincula-accountd.py' "${TEST_TMP}/install.manifest"
+assert_success "install.manifest lists vincula-stats.py" \
+  grep -q 'vincula-stats.py' "${TEST_TMP}/install.manifest"
 assert_success "install.manifest lists vincula-accountd.service" \
   grep -q 'vincula-accountd.service' "${TEST_TMP}/install.manifest"
 
@@ -868,6 +883,160 @@ PY
   assert_success "helper documents user set" grep -q 'vcl user set' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper warns on user mutation restart" \
     grep -q 'applying user changes restarts sing-box' "${PROJECT_DIR}/bin/vincula"
+fi
+
+# --- 0.2.6 accounting UX / vincula-stats.py ---
+if command -v python3 >/dev/null 2>&1; then
+  STATS_DIR="${TEST_TMP}/stats026"
+  mkdir -p "$STATS_DIR"
+  python3 - "$STATS_DIR" "${PROJECT_DIR}/lib/vincula-stats.py" <<'PY'
+import json, os, sqlite3, subprocess, sys, time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+base = Path(sys.argv[1])
+stats_py = sys.argv[2]
+db = base / "accounting.db"
+users = base / "users.json"
+today = datetime.now(timezone.utc).date()
+yesterday = today - timedelta(days=1)
+today_s, yday_s = today.isoformat(), yesterday.isoformat()
+
+users.write_text(json.dumps({
+    "schema_version": 2,
+    "users": [
+        {"user_id": "u-alice", "tag": "alice", "display_name": "Alice", "department": "Engineering"},
+        {"user_id": "u-bob", "tag": "bob", "display_name": "Bob", "department": "Sales"},
+        {"user_id": "u-carol", "tag": "carol", "display_name": "Carol", "department": "Engineering"},
+    ],
+}), encoding="utf-8")
+
+conn = sqlite3.connect(db)
+conn.executescript("""
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE daily_usage (
+  date TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT NOT NULL,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  connection_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (date, user_id, destination_host)
+);
+""")
+conn.execute("INSERT INTO meta(key,value) VALUES('last_success_at', ?)", (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),))
+rows = [
+    (today_s, "u-alice", "alice", "github.com", 100, 1000, 2),
+    (today_s, "u-alice", "alice", "203.0.113.10", 50, 50, 1),
+    (today_s, "u-bob", "bob", "github.com", 200, 2000, 3),
+    (yday_s, "u-carol", "carol", "example.com", 10, 90, 1),
+    (yday_s, "u-alice", "alice", "example.com", 5, 5, 1),
+]
+conn.executemany(
+    "INSERT INTO daily_usage VALUES (?,?,?,?,?,?,?)",
+    rows,
+)
+conn.commit()
+conn.close()
+
+def run(*extra):
+    cmd = [
+        sys.executable, stats_py,
+        "--db", str(db), "--users", str(users),
+        "--collector-state", "active",
+        "--last-success-at", "2026-08-15T00:00:00Z",
+        *extra,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+# today window
+out = run("--mode", "summary", "--days", "1", "--day-offset", "0", "--format", "json")
+data = json.loads(out.stdout)
+assert data["meta"]["accounting_mode"].startswith("approximate"), data["meta"]
+assert data["meta"]["period_start"] == today_s and data["meta"]["period_end"] == today_s
+tags = {r["tag"] for r in data["rows"]}
+assert "alice" in tags and "bob" in tags and "carol" not in tags, tags
+
+# yesterday window
+out = run("--mode", "summary", "--days", "1", "--day-offset", "1", "--format", "json")
+data = json.loads(out.stdout)
+assert data["meta"]["period_start"] == yday_s
+tags = {r["tag"] for r in data["rows"]}
+assert "carol" in tags and "bob" not in tags, tags
+
+# department current attribution (alice+carol Engineering)
+out = run("--mode", "department", "--department", "Engineering", "--days", "30", "--format", "json")
+data = json.loads(out.stdout)
+tags = {r["tag"] for r in data["rows"]}
+assert tags == {"alice", "carol"}, tags
+assert all(r["department"] == "Engineering" for r in data["rows"])
+
+# host + IP-only label
+out = run("--mode", "top_hosts", "--days", "30", "--format", "json")
+data = json.loads(out.stdout)
+labels = {r["host_label"] for r in data["rows"]}
+assert any(l.startswith("[IP only]") for l in labels), labels
+assert "github.com" in {r["destination_host"] for r in data["rows"]}
+
+out = run("--mode", "host", "--host", "GitHub.COM.", "--days", "30", "--format", "json")
+data = json.loads(out.stdout)
+assert sum(r["total_bytes"] for r in data["rows"]) == 100 + 1000 + 200 + 2000
+
+# top users
+out = run("--mode", "top_users", "--days", "30", "--limit", "10", "--format", "json")
+data = json.loads(out.stdout)
+assert data["rows"][0]["total_bytes"] >= data["rows"][-1]["total_bytes"]
+assert data["meta"]["accounting_mode"]
+
+# csv raw integers
+csv_path = base / "out.csv"
+run("--mode", "summary", "--days", "30", "--format", "csv", "--csv-file", str(csv_path))
+text = csv_path.read_text(encoding="utf-8")
+assert "upload_bytes" in text and "18.4" not in text and "GiB" not in text
+assert "100" in text or "1050" in text
+mode = oct(csv_path.stat().st_mode & 0o777)
+assert mode == "0o600", mode
+
+# json accounting_mode
+out = run("--mode", "summary", "--days", "1", "--format", "json")
+assert "approximate" in json.loads(out.stdout)["meta"]["accounting_mode"]
+
+# 100k rows performance
+conn = sqlite3.connect(db)
+batch = []
+for i in range(100_000):
+    batch.append((
+        today_s,
+        f"u-{i % 500}",
+        f"user{i % 500}",
+        f"host{i}.example",
+        i % 100,
+        (i % 100) * 10,
+        1,
+    ))
+t0 = time.perf_counter()
+conn.executemany(
+    "INSERT INTO daily_usage(date,user_id,user_tag,destination_host,upload_bytes,download_bytes,connection_count) VALUES (?,?,?,?,?,?,?)",
+    batch,
+)
+conn.commit()
+conn.close()
+t1 = time.perf_counter()
+out = run("--mode", "top_users", "--days", "1", "--limit", "20", "--format", "json")
+t2 = time.perf_counter()
+data = json.loads(out.stdout)
+assert len(data["rows"]) <= 20
+assert sum(r["total_bytes"] for r in data["rows"]) > 0
+assert (t2 - t1) < 30.0, f"top_users took {t2 - t1:.2f}s (insert {t1 - t0:.2f}s)"
+print("stats-ok")
+PY
+  stats_rc=$?
+  if (( stats_rc == 0 )); then
+    pass "vincula-stats today/yesterday/dept/host/top/csv/json/100k"
+  else
+    fail "vincula-stats today/yesterday/dept/host/top/csv/json/100k"
+  fi
 fi
 
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then

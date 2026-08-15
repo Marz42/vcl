@@ -1,4 +1,4 @@
-# vincula V0.2.5
+# vincula V0.2.6
 
 `vincula` 是面向自有 Debian/Ubuntu VPS 的最小化 sing-box bootstrap。V0.2 仍只部署一种固定协议：
 
@@ -6,13 +6,13 @@
 VLESS + REALITY + xtls-rprx-vision + TCP
 ```
 
-目标工作流：在干净 VPS 上执行一次安装脚本，得到可导入客户端的 VLESS URI；再用 `vcl user` 管理内部用户身份与 credential（含批量导入）；用本机 accounting 观察 User × Destination × Traffic。脚本不安装面板、不申请证书、不修改防火墙，也不追踪 sing-box `latest`。
+目标工作流：在干净 VPS 上执行一次安装脚本，得到可导入客户端的 VLESS URI；再用 `vcl user` 管理内部用户身份与 credential（含批量导入）；用本机 accounting / `vcl stats` 观察 User × Destination × Traffic（**approximate**）。脚本不安装面板、不申请证书、不修改防火墙，也不追踪 sing-box `latest`。
 
 ## 当前实现基线
 
-| 项目 | V0.2.5 固定值 |
+| 项目 | V0.2.6 固定值 |
 | --- | --- |
-| vincula | 0.2.5 |
+| vincula | 0.2.6 |
 | sing-box | 1.13.18 stable |
 | OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
 | Architecture | amd64、arm64 |
@@ -23,12 +23,14 @@ VLESS + REALITY + xtls-rprx-vision + TCP
 | node_id | 永久 UUID（禁止 `"local"`）；`node_name` 默认可变 hostname |
 | Clash API | `127.0.0.1` only（默认 9090 + secret） |
 | Accounting | `vincula-accountd` → SQLite schema 2（主键 `user_id`） |
+| Stats | `vincula-stats.py`；部门按 **当前** users.json 归属 |
 | Retention | raw 90 天 / daily 730 天（**产品决策**） |
 | Accounting 声明 | **approximate polling**；Reliable Accounting **未完成** |
 
 sing-box 的官方下载 URL、文件大小和 SHA-256 同时记录在 [`sing-box.lock`](sing-box.lock) 与 `vincula.sh` 中。脚本不会查询或安装新版本。
 
-**0.2.5 gate：** [`docs/release-readiness-0.2.5.md`](docs/release-readiness-0.2.5.md) / [`docs/known-issues-0.2.5.md`](docs/known-issues-0.2.5.md) — User Provisioning API 冻结候选。  
+**0.2.6 gate：** [`docs/release-readiness-0.2.6.md`](docs/release-readiness-0.2.6.md) / [`docs/known-issues-0.2.6.md`](docs/known-issues-0.2.6.md) — Accounting UX。  
+**0.2.5：** [`docs/release-readiness-0.2.5.md`](docs/release-readiness-0.2.5.md) — User Provisioning API。  
 **0.2.4 freeze（基线）：** [`docs/freeze-0.2.4.md`](docs/freeze-0.2.4.md)。  
 产物构建：`bash scripts/build-release.sh` → `dist/`（勿手改）。
 
@@ -48,6 +50,7 @@ vincula.sh
 bin/vincula
 lib/vincula-common.sh
 lib/vincula-accountd.py
+lib/vincula-stats.py
 lib/vincula-accountd.service
 lib/vincula-event.schema.json
 release.lock
@@ -63,7 +66,7 @@ sudo bash vincula.sh
 发布 tarball 可用 [`vincula-bootstrap.sh`](vincula-bootstrap.sh)：
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-0.2.5.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-0.2.6.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -167,7 +170,11 @@ vcl user export [--credentials] [--output FILE]
 vcl user verify
 vcl connections
 vcl accounting status
+vcl accounting retention
 vcl stats today
+vcl stats yesterday
+vcl stats --month
+vcl stats top users --days 7
 vcl uninstall
 vcl uninstall --yes
 vcl version
@@ -179,10 +186,12 @@ vcl version
 
 `vcl check` 只做二进制 SHA-256 与 `sing-box check`。
 
+`vcl stats` 使用 UTC 窗口与 **current department attribution**；输出声明 approximate / Clash polling。详见 [`docs/release-readiness-0.2.6.md`](docs/release-readiness-0.2.6.md)。
+
 ## 重复执行与迁移
 
 - 同版本重跑：双平面校验，不轮换凭据。
-- 已安装 `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.4`：显式 migration 到 0.2.5，保持 Reality keys / short ID / owner credential UUID；若 `node_id` 缺失或为 `local` 则生成永久 UUID 并同步 credentials。
+- 已安装 `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.5`：显式 migration 到 0.2.6，保持 Reality keys / short ID / owner credential UUID；若 `node_id` 缺失或为 `local` 则生成永久 UUID 并同步 credentials。
 - known-bad REALITY target 必须显式 `VCL_REALITY_HOST=` 才能在迁移时更换。
 - 不支持降级或跨未知版本。
 - Fresh install 若机器上已有 `/var/lib/vincula` 或 accounting 文件会直接拒绝（需先 `vcl uninstall` 或人工清理；本版不提供 `vcl recover`）。
@@ -228,9 +237,12 @@ release.lock
 bin/vincula
 lib/vincula-common.sh
 lib/vincula-accountd.py
+lib/vincula-stats.py
 lib/vincula-accountd.service
 lib/vincula-event.schema.json
 docs/accounting-reliability.md
+docs/release-readiness-0.2.6.md
+docs/known-issues-0.2.6.md
 docs/release-readiness-0.2.5.md
 docs/known-issues-0.2.5.md
 docs/release-readiness-0.2.4.md
@@ -244,7 +256,7 @@ CHANGELOG.md
 
 ```bash
 bash -n vincula.sh bin/vincula lib/vincula-common.sh
-python3 -m py_compile lib/vincula-accountd.py
+python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py
 bash tests/test.sh
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh

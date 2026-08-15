@@ -2,6 +2,29 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.2.6
+
+Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍为 **approximate / Clash polling**（非计费级）。
+
+### Stats CLI
+
+- `vcl stats today|yesterday|--days N|--month`（UTC）
+- `vcl stats user|department|host …` 与 `vcl stats top users|departments|hosts [--limit N]`
+- `--json` / `--csv FILE`（原始整数字节）；单路径 `lib/vincula-stats.py`
+- 部门分析使用 **current attribution**（`usage.user_id` → 当前 `users.json` department）
+- IP-only 目标保留并标注 `[IP only] <ip>`；不丢弃
+- 报告含 accounting mode / collector / freshness / hostname·IP coverage
+
+### 运维
+
+- `vcl connections`：accountd 非 active 时失败（UNAVAILABLE），不以 SQLite 伪装 live
+- `vcl accounting status`：新鲜度与 coverage；`vcl accounting retention` 只读展示 raw/daily 天数
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.5` → `0.2.6`
+- 无 DB schema bump（仍为 schema_version=2）
+
 ## 0.2.5
 
 User provisioning & lifecycle：批量导入/导出、metadata、verify，以及 disable/enable/rotate 运维闭环。本版本**不新增** stats/analytics（留给 0.2.6）。

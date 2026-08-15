@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.2.5
+# Vincula-Version: 0.2.6
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.2.5"
+readonly VINCULA_VERSION="0.2.6"
 readonly STATE_DIR="/etc/vincula"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -24,6 +24,7 @@ readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
+readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly VAR_LIB_VINCULA="/var/lib/vincula"
 readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
 readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
@@ -95,13 +96,14 @@ Usage:
   vcl user import FILE [--dry-run] [--output FILE] [--include-uuid]
   vcl user export [--credentials] [--output FILE] [--include-uuid]
   vcl user verify
-  vcl connections      Recent/current connection accounting rows
+  vcl connections      Recent connection rows (requires active accountd)
   vcl accounting status
-  vcl stats today      Per-user traffic for today (UTC)
-  vcl stats yesterday
-  vcl stats user <tag> [--today] [--days N] [--top N]
-  vcl stats department <name> [--days N]
-  vcl stats --days N   Aggregate traffic over N days
+  vcl accounting retention
+  vcl stats today|yesterday|--days N|--month
+  vcl stats user TAG ...
+  vcl stats department NAME ...
+  vcl stats host HOST ...
+  vcl stats top users|departments|hosts [--limit N]
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -111,6 +113,7 @@ Notes:
   Domain identified = destination_host from SNI/sniff when available.
   IP-only rows have no reverse-DNS guessing (destination_host may be empty).
   Polling ≠ exact billing: Clash API accounting is approximate; short flows may be missed.
+  Department stats use current attribution from users.json (not historical department).
 USAGE
 }
 
@@ -497,7 +500,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$STATS_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -520,6 +523,7 @@ Refusing destructive uninstall."
     "file=${SYSTEMD_UNIT}" \
     "file=${COMMON_FILE}" \
     "file=${ACCOUNTD_PY}" \
+    "file=${STATS_PY}" \
     "file=${EVENT_SCHEMA_FILE}" \
     "file=${ACCOUNTD_UNIT}"; do
     grep -qxF "$expected" "$INSTALL_MANIFEST_FILE" \
@@ -740,6 +744,7 @@ cmd_uninstall() {
     "$CHECKSUM_FILE" \
     "$LOCK_FILE" \
     "$ACCOUNTD_PY" \
+    "$STATS_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTING_DB_FILE" \
     "$EVENTS_JSONL_FILE" \
@@ -1576,11 +1581,12 @@ cmd_accounting() {
   case "$sub" in
     status)
       [[ $# == 0 ]] || die "usage: vcl accounting status"
-      local acc_state clash_port
+      local acc_state clash_port last_ok host_pct ip_pct
       acc_state=$(systemctl is-active vincula-accountd.service 2>/dev/null || true)
       clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
       [[ -n "$clash_port" ]] || clash_port=9090
       printf 'vincula-accountd:   %s\n' "${acc_state:-unknown}"
+      printf 'accounting mode:    approximate / Clash polling\n'
       printf 'clash_api:          127.0.0.1:%s (localhost only)\n' "$clash_port"
       printf 'accounting.db:      %s\n' "$ACCOUNTING_DB_FILE"
       printf 'events.jsonl:       %s\n' "$EVENTS_JSONL_FILE"
@@ -1593,26 +1599,132 @@ cmd_accounting() {
       if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
         python3 - "$ACCOUNTING_DB_FILE" <<'PY'
 import sqlite3, sys
+from datetime import datetime, timezone
+db = sys.argv[1]
 try:
-    conn = sqlite3.connect(sys.argv[1])
+    conn = sqlite3.connect(db)
 except sqlite3.Error as exc:
     print(f"db:                 unavailable ({exc})")
     raise SystemExit(0)
-open_n = conn.execute("SELECT COUNT(*) FROM connections WHERE closed_at IS NULL").fetchone()[0]
-total = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
-print(f"connections open:   {open_n}")
-print(f"connections total:  {total}")
+try:
+    open_n = conn.execute("SELECT COUNT(*) FROM connections WHERE closed_at IS NULL").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
+    print(f"connections open:   {open_n}")
+    print(f"connections total:  {total}")
+except sqlite3.Error:
+    print("connections:        (schema unavailable)")
+row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+last = row[0] if row else ""
+print(f"last_success_at:    {last or '(none)'}")
+if last:
+    ts = last[:-1] + "+00:00" if last.endswith("Z") else last
+    try:
+        when = datetime.fromisoformat(ts)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - when).total_seconds()
+        if age < 60:
+            fresh = f"{int(age)} seconds ago"
+        elif age < 3600:
+            fresh = f"{int(age // 60)} minutes ago"
+        elif age < 86400:
+            fresh = f"{int(age // 3600)} hours ago"
+        else:
+            fresh = f"{int(age // 86400)} days ago"
+        print(f"freshness:          {fresh}")
+    except ValueError:
+        print("freshness:          unknown")
+# Coverage from daily_usage (all rows)
+try:
+    rows = conn.execute(
+        "SELECT destination_host, SUM(connection_count) FROM daily_usage GROUP BY 1"
+    ).fetchall()
+except sqlite3.Error:
+    rows = []
+host_n = ip_n = 0
+import ipaddress
+for dest, cnt in rows:
+    dest = dest or ""
+    cnt = int(cnt or 0)
+    try:
+        ipaddress.ip_address(dest)
+        ip_n += cnt
+    except ValueError:
+        if dest and dest != "(unknown)":
+            host_n += cnt
+total_c = host_n + ip_n
+if total_c > 0:
+    print(f"hostname_coverage:  {100.0 * host_n / total_c:.1f}%")
+    print(f"ip_only_coverage:   {100.0 * ip_n / total_c:.1f}%")
+else:
+    print("hostname_coverage:  n/a")
+    print("ip_only_coverage:   n/a")
 conn.close()
 PY
       fi
       ;;
+    retention)
+      [[ $# == 0 ]] || die "usage: vcl accounting retention"
+      local raw_days daily_days
+      raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
+      daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
+      [[ -n "$raw_days" ]] || raw_days=90
+      [[ -n "$daily_days" ]] || daily_days=730
+      printf 'accounting_raw_retention_days:   %s\n' "$raw_days"
+      printf 'accounting_daily_retention_days: %s\n' "$daily_days"
+      printf 'note: read-only; change via /etc/vincula/config.toml then restart accountd\n'
+      ;;
     "")
-      die "usage: vcl accounting status"
+      die "usage: vcl accounting status|retention"
       ;;
     *)
-      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status'."
+      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status|retention'."
       ;;
   esac
+}
+
+resolve_stats_py() {
+  if [[ -f "$STATS_PY" ]]; then
+    printf '%s\n' "$STATS_PY"
+    return 0
+  fi
+  local src root
+  src=${BASH_SOURCE[0]-}
+  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$root" && -f "${root}/lib/vincula-stats.py" ]]; then
+      printf '%s\n' "${root}/lib/vincula-stats.py"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+accounting_collector_state() {
+  local st
+  st=$(systemctl is-active vincula-accountd.service 2>/dev/null || true)
+  case "$st" in
+    active) printf 'active\n' ;;
+    inactive|failed|activating|deactivating) printf 'inactive\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+accounting_last_success_at() {
+  if [[ ! -r "$ACCOUNTING_DB_FILE" ]]; then
+    printf '\n'
+    return 0
+  fi
+  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+    print(row[0] if row else "")
+    conn.close()
+except Exception:
+    print("")
+PY
 }
 
 warn_if_accounting_stale() {
@@ -1655,7 +1767,11 @@ cmd_connections() {
   local limit=${1:-30}
   [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "connections limit must be a positive integer."
   require_python3 || die "python3 is required for connections."
-  warn_if_accounting_stale
+  local acc_state
+  acc_state=$(systemctl is-active vincula-accountd.service 2>/dev/null || true)
+  if [[ "$acc_state" != "active" ]]; then
+    die "UNAVAILABLE: vincula-accountd is ${acc_state:-unknown}; live connections require an active collector (refusing to show SQLite as live)."
+  fi
   python3 - "$ACCOUNTING_DB_FILE" "$limit" <<'PY'
 import sqlite3, sys
 db, limit = sys.argv[1], int(sys.argv[2])
@@ -1687,35 +1803,49 @@ PY
 }
 
 cmd_stats() {
-  local json=0 days=1 user_tag="" department="" top=0 mode="summary" day_offset=0
+  local fmt="table" days=1 day_offset=0 month=0 mode="summary"
+  local user_tag="" department="" host="" limit=20 top_compat=0 csv_file=""
+  local stats_py collector_state last_success
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --json) json=1; shift ;;
-      --today) days=1; day_offset=0; shift ;;
+      --json) fmt="json"; shift ;;
+      --csv)
+        [[ $# -ge 2 ]] || die "stats --csv requires FILE"
+        csv_file=$2
+        fmt="csv"
+        shift 2
+        ;;
+      --today) days=1; day_offset=0; month=0; shift ;;
       --days)
         [[ $# -ge 2 ]] || die "stats --days requires N"
         days=$2
         [[ "$days" =~ ^[1-9][0-9]*$ ]] || die "stats --days N must be a positive integer"
+        month=0
+        shift 2
+        ;;
+      --month)
+        month=1
+        shift
+        ;;
+      --limit)
+        [[ $# -ge 2 ]] || die "stats --limit requires N"
+        limit=$2
+        [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "stats --limit N must be a positive integer"
         shift 2
         ;;
       --top)
+        # Compat: on user mode, --top N means top destinations with limit N
         [[ $# -ge 2 ]] || die "stats --top requires N"
-        top=$2
-        [[ "$top" =~ ^[1-9][0-9]*$ ]] || die "stats --top N must be a positive integer"
+        top_compat=$2
+        [[ "$top_compat" =~ ^[1-9][0-9]*$ ]] || die "stats --top N must be a positive integer"
+        limit=$top_compat
         shift 2
         ;;
       today)
-        days=1
-        day_offset=0
-        mode="summary"
-        shift
-        ;;
+        days=1; day_offset=0; month=0; mode="summary"; shift ;;
       yesterday)
-        days=1
-        day_offset=1
-        mode="summary"
-        shift
-        ;;
+        days=1; day_offset=1; month=0; mode="summary"; shift ;;
       user)
         [[ $# -ge 2 ]] || die "stats user requires <tag>"
         user_tag=$2
@@ -1728,20 +1858,39 @@ cmd_stats() {
         mode="department"
         shift 2
         ;;
+      host)
+        [[ $# -ge 2 ]] || die "stats host requires <host>"
+        host=$2
+        mode="host"
+        shift 2
+        ;;
+      top)
+        [[ $# -ge 2 ]] || die "stats top requires users|departments|hosts"
+        case "$2" in
+          users) mode="top_users" ;;
+          departments) mode="top_departments" ;;
+          hosts) mode="top_hosts" ;;
+          *) die "stats top requires users|departments|hosts" ;;
+        esac
+        shift 2
+        ;;
       -h|--help)
         cat <<'HELP'
-vcl stats — traffic analytics (UTC days)
+vcl stats — traffic analytics (UTC)
 
   vcl stats today
   vcl stats yesterday
   vcl stats --days N
-  vcl stats user <tag> [--today] [--days N] [--top N]
-  vcl stats department <name> [--days N]
-  Optional: --json
+  vcl stats --month
+  vcl stats user <tag> [--today] [--days N] [--month] [--top N]
+  vcl stats department <name> [--days N] [--month]
+  vcl stats host <host> [--days N] [--month]
+  vcl stats top users|departments|hosts [--days N] [--month] [--limit N]
+  Optional: --json | --csv FILE
 
-Domain identified = sniffed/SNI host when present.
-IP-only = destination shown as IP; no reverse DNS.
-Accounting may be approximate under Clash API polling.
+Accounting mode: approximate / Clash polling.
+Department analytics use current users.json attribution.
+IP-only destinations are labeled [IP only] <ip> (never dropped).
 HELP
         return 0
         ;;
@@ -1751,118 +1900,36 @@ HELP
     esac
   done
 
+  # Compat: user + --top N → top destinations for that user
+  if [[ "$mode" == "user" && "$top_compat" -gt 0 ]]; then
+    mode="top_hosts"
+  fi
+
   require_python3 || die "python3 is required for stats."
+  stats_py=$(resolve_stats_py) || die "Missing vincula-stats.py (expected ${STATS_PY})."
   warn_if_accounting_stale
-  python3 - "$ACCOUNTING_DB_FILE" "$USERS_FILE" "$days" "$user_tag" "$department" "$top" "$json" "$mode" "$day_offset" <<'PY'
-import json, sqlite3, sys
-from datetime import datetime, timezone, timedelta
+  collector_state=$(accounting_collector_state)
+  last_success=$(accounting_last_success_at)
 
-db, users_path, days, user_tag, department, top, as_json, mode, day_offset = sys.argv[1:10]
-days = int(days)
-top = int(top)
-as_json = as_json == "1"
-day_offset = int(day_offset)
+  local -a args=(
+    "$stats_py"
+    --db "$ACCOUNTING_DB_FILE"
+    --users "$USERS_FILE"
+    --mode "$mode"
+    --days "$days"
+    --day-offset "$day_offset"
+    --month "$month"
+    --limit "$limit"
+    --format "$fmt"
+    --collector-state "$collector_state"
+    --last-success-at "$last_success"
+  )
+  [[ -n "$user_tag" ]] && args+=(--user "$user_tag")
+  [[ -n "$department" ]] && args+=(--department "$department")
+  [[ -n "$host" ]] && args+=(--host "$host")
+  [[ -n "$csv_file" ]] && args+=(--csv-file "$csv_file")
 
-def human(n):
-    n = float(int(n or 0))
-    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if n < 1024.0 or u == "TiB":
-            return f"{int(n)} {u}" if u == "B" else f"{n:.1f} {u}"
-        n /= 1024.0
-    return f"{int(n)} B"
-
-end = datetime.now(timezone.utc).date() - timedelta(days=day_offset)
-start = end - timedelta(days=days - 1)
-start_s, end_s = start.isoformat(), end.isoformat()
-
-dept_tags = None
-if department:
-    try:
-        with open(users_path, encoding="utf-8") as f:
-            data = json.load(f)
-        dept_tags = [
-            u.get("tag") for u in data.get("users", [])
-            if (u.get("department") or "") == department and u.get("tag")
-        ]
-    except (OSError, json.JSONDecodeError):
-        dept_tags = []
-
-try:
-    conn = sqlite3.connect(db)
-except sqlite3.Error as exc:
-    print(f"ERROR: cannot open accounting DB: {exc}", file=sys.stderr)
-    raise SystemExit(1)
-conn.row_factory = sqlite3.Row
-
-# Ensure rollup exists for older DBs
-try:
-    conn.execute("SELECT 1 FROM daily_usage LIMIT 1")
-except sqlite3.Error:
-    print("(daily_usage missing — run vincula-accountd once)")
-    raise SystemExit(0)
-
-if mode == "user" and top > 0:
-    sql = (
-        "SELECT destination_host AS dest, SUM(upload_bytes) AS up, SUM(download_bytes) AS down, "
-        "SUM(connection_count) AS cnt FROM daily_usage "
-        "WHERE date >= ? AND date <= ? AND user_tag = ? "
-        "GROUP BY 1 ORDER BY (up+down) DESC LIMIT ?"
-    )
-    rows = conn.execute(sql, (start_s, end_s, user_tag, top)).fetchall()
-    if as_json:
-        print(json.dumps([dict(r) for r in rows], indent=2))
-    else:
-        print(f"Top destinations for {user_tag} ({start_s} .. {end_s} UTC)")
-        print(f"{'DESTINATION':<40} {'UPLOAD':>12} {'DOWNLOAD':>12} {'CONNS':>8}")
-        for r in rows:
-            print(f"{(r['dest'] or '(unknown)')[:40]:<40} {human(r['up']):>12} {human(r['down']):>12} {r['cnt']:>8}")
-elif mode in ("summary", "user", "department"):
-    sql = (
-        "SELECT user_tag, SUM(upload_bytes) AS up, SUM(download_bytes) AS down, "
-        "SUM(connection_count) AS cnt FROM daily_usage "
-        "WHERE date >= ? AND date <= ?"
-    )
-    params = [start_s, end_s]
-    if user_tag:
-        sql += " AND user_tag = ?"
-        params.append(user_tag)
-    if dept_tags is not None:
-        if not dept_tags:
-            rows = []
-        else:
-            ph = ",".join("?" * len(dept_tags))
-            sql += f" AND user_tag IN ({ph})"
-            params.extend(dept_tags)
-            sql += " GROUP BY user_tag ORDER BY (up+down) DESC"
-            rows = conn.execute(sql, params).fetchall()
-    else:
-        sql += " GROUP BY user_tag ORDER BY (up+down) DESC"
-        rows = conn.execute(sql, params).fetchall()
-    if dept_tags is not None and dept_tags:
-        pass
-    elif dept_tags is not None and not dept_tags:
-        rows = []
-    if as_json:
-        print(json.dumps([dict(r) for r in rows], indent=2))
-    else:
-        label = f"{start_s} .. {end_s} UTC"
-        if department:
-            print(f"Department {department} ({label})")
-        elif user_tag:
-            print(f"User {user_tag} ({label})")
-        else:
-            print(f"Traffic by user ({label})")
-        print(f"{'USER':<20} {'UPLOAD':>12} {'DOWNLOAD':>12} {'TOTAL':>12} {'CONNS':>8}")
-        for r in rows:
-            total = int(r["up"] or 0) + int(r["down"] or 0)
-            print(
-                f"{r['user_tag']:<20} {human(r['up']):>12} {human(r['down']):>12} "
-                f"{human(total):>12} {r['cnt']:>8}"
-            )
-        if not rows:
-            print("(no daily_usage rows yet)")
-conn.close()
-PY
+  python3 "${args[@]}"
 }
 
 cmd_link() {
