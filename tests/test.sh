@@ -813,17 +813,23 @@ row = conn.execute(
 ).fetchone()
 assert row[0] == 0 and row[1] == 0, row
 
-# close=False must clear closed_at on a wrongly closed still-alive row
+# Closed generation must not be reopened by later first sight (D6/D8):
+# old row stays closed with preserved bytes; a new generation is baseline-only.
 conn.execute(
     "UPDATE connections SET closed_at = ? WHERE connection_id = 'p-restart'",
     ("2026-08-14T11:05:30Z",),
 )
 known_reopen = {}
 known_reopen = mod.apply_poll_delta(conn, live_restart2, known_reopen)
-row = conn.execute(
-    "SELECT upload_bytes, download_bytes, closed_at FROM connections WHERE connection_id='p-restart'"
-).fetchone()
-assert row[0] == 5500 and row[1] == 8100 and row[2] is None, row
+rows = conn.execute(
+    "SELECT generation, upload_bytes, download_bytes, closed_at FROM connections "
+    "WHERE connection_id='p-restart' ORDER BY generation"
+).fetchall()
+assert len(rows) == 2, rows
+assert rows[0][0] == 0 and rows[0][1] == 5500 and rows[0][2] == 8100, rows
+assert rows[0][3] is not None, rows
+assert rows[1][0] == 1 and rows[1][1] == 0 and rows[1][2] == 0, rows
+assert rows[1][3] is None, rows
 
 # live set: keep still-alive open rows; close only ids absent from Clash
 mod.upsert_connection(conn, {
@@ -845,9 +851,10 @@ n_live = mod.close_stale_open_connections(
 )
 assert n_live == 1, n_live
 row = conn.execute(
-    "SELECT closed_at FROM connections WHERE connection_id='p-restart'"
+    "SELECT closed_at FROM connections "
+    "WHERE connection_id='p-restart' AND closed_at IS NULL"
 ).fetchone()
-assert row[0] is None, row
+assert row is not None and row[0] is None, row
 row = conn.execute(
     "SELECT closed_at, upload_bytes FROM connections WHERE connection_id='p-stale-live'"
 ).fetchone()
@@ -1098,6 +1105,274 @@ else
   fail "schema 2 to 3 preserves accounted bytes"
   fail "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
   fail "open_db empty database is schema 3"
+fi
+
+# D7/D8: durable poll_baseline, generation reset, commit-then-cache.
+d7_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/d7-baseline.db" "$SAMPLE_USERS" <<'PY' || d7_rc=$?
+import importlib.util, sqlite3, sys
+
+mod_path, db, users = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+def live_ev(cid, up, dn, ts="2026-08-14T12:00:00Z", **extra):
+    ev = {
+        "connection_id": cid,
+        "node_id": "n1",
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "destination_host": "d.example",
+        "destination_ip": None,
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": up,
+        "download_bytes": dn,
+        "started_at": "2026-08-14T11:00:00Z",
+        "ts": ts,
+    }
+    ev.update(extra)
+    return ev
+
+conn = mod.open_db(db)
+
+# TASK 22: write baseline → reload → fields match; closed generation stays out of cache.
+mod.upsert_connection(conn, live_ev("c-reload", 0, 0), close=False,
+                      accounted_upload=40, accounted_download=60, generation=0)
+mod.upsert_poll_baseline(conn, "c-reload", 0, 100, 200, 40, 60, "2026-08-14T12:00:00Z")
+mod.upsert_connection(conn, live_ev("c-closed-gen", 0, 0, generation=0), close=True,
+                      accounted_upload=7, accounted_download=8, generation=0)
+mod.upsert_poll_baseline(conn, "c-closed-gen", 0, 1, 2, 7, 8, "2026-08-14T12:00:00Z")
+known = mod.reload_known_open_from_db(conn)
+assert "c-reload" in known and "c-closed-gen" not in known, known.keys()
+st = known["c-reload"]
+assert st["generation"] == 0 and st["raw_up"] == 100 and st["raw_dn"] == 200, st
+assert st["acc_up"] == 40 and st["acc_dn"] == 60, st
+assert st["ev"]["user_id"] == "u-alice", st["ev"]
+
+# TASK 23: two generations → two event_id; updating open gen does not touch closed bytes.
+mod.upsert_connection(conn, live_ev("c-gens", 0, 0), close=True,
+                      accounted_upload=111, accounted_download=222, generation=0)
+ok_closed = mod.upsert_connection(conn, live_ev("c-gens", 0, 0), close=False,
+                                  accounted_upload=0, accounted_download=0, generation=0)
+assert ok_closed is False
+mod.upsert_connection(conn, live_ev("c-gens", 0, 0), close=False,
+                      accounted_upload=0, accounted_download=0, generation=1)
+mod.upsert_connection(conn, live_ev("c-gens", 0, 0, ts="2026-08-14T12:01:00Z"), close=False,
+                      accounted_upload=15, accounted_download=25, generation=1)
+gens = conn.execute(
+    "SELECT generation, event_id, upload_bytes, download_bytes, closed_at "
+    "FROM connections WHERE connection_id='c-gens' ORDER BY generation"
+).fetchall()
+assert len(gens) == 2, gens
+assert gens[0][0] == 0 and gens[0][2] == 111 and gens[0][3] == 222, gens
+assert gens[0][4] is not None, gens
+assert gens[1][0] == 1 and gens[1][2] == 15 and gens[1][3] == 25, gens
+assert gens[1][4] is None, gens
+assert gens[1][1] > gens[0][1], gens
+
+# TASK 24: same-generation monotonic delta via durable baseline.
+known = {}
+known = mod.apply_poll_delta(conn, [live_ev("c-mono", 1000, 2000, ts="2026-08-14T12:10:00Z")], known)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation FROM connections WHERE connection_id='c-mono'"
+).fetchone()
+assert row[0] == 0 and row[1] == 0 and row[2] == 0, row
+base = mod.load_poll_baseline(conn, "c-mono")
+assert base["raw_up"] == 1000 and base["acc_up"] == 0 and base["generation"] == 0, base
+# Empty cache still continues from DB baseline (not first-sight zeroing).
+known = mod.apply_poll_delta(
+    conn, [live_ev("c-mono", 1500, 2600, ts="2026-08-14T12:10:05Z")], {}
+)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation FROM connections WHERE connection_id='c-mono'"
+).fetchone()
+assert row[0] == 500 and row[1] == 600 and row[2] == 0, row
+assert known["c-mono"]["acc_up"] == 500 and known["c-mono"]["generation"] == 0, known["c-mono"]
+
+# TASK 24: counter drop → new generation, no negative, old row bytes preserved.
+known = mod.apply_poll_delta(
+    conn, [live_ev("c-mono", 10, 20, ts="2026-08-14T12:10:10Z")], known
+)
+rows = conn.execute(
+    "SELECT generation, upload_bytes, download_bytes, closed_at FROM connections "
+    "WHERE connection_id='c-mono' ORDER BY generation"
+).fetchall()
+assert len(rows) == 2, rows
+assert rows[0][0] == 0 and rows[0][1] == 500 and rows[0][2] == 600, rows
+assert rows[0][3] is not None, rows
+assert rows[1][0] == 1 and rows[1][1] == 0 and rows[1][2] == 0, rows
+assert rows[1][3] is None, rows
+assert rows[1][1] >= 0 and rows[1][2] >= 0
+base = mod.load_poll_baseline(conn, "c-mono")
+assert base["generation"] == 1 and base["raw_up"] == 10 and base["acc_up"] == 0, base
+# Next poll on the new generation is a positive delta only.
+known = mod.apply_poll_delta(
+    conn, [live_ev("c-mono", 20, 30, ts="2026-08-14T12:10:15Z")], known
+)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes FROM connections "
+    "WHERE connection_id='c-mono' AND generation=1"
+).fetchone()
+assert row[0] == 10 and row[1] == 10, row
+old = conn.execute(
+    "SELECT upload_bytes, download_bytes, closed_at FROM connections "
+    "WHERE connection_id='c-mono' AND generation=0"
+).fetchone()
+assert old[0] == 500 and old[1] == 600 and old[2] is not None, old
+
+# TASK 24: unknown active with large Clash counters → baseline only (new gen if closed exists).
+known_unknown = mod.apply_poll_delta(
+    conn, [live_ev("c-gens", 999999, 888888, ts="2026-08-14T12:11:00Z")], {}
+)
+# c-gens gen 1 is still open without a matching baseline → 1a keep 15/25.
+row = conn.execute(
+    "SELECT generation, upload_bytes, download_bytes, closed_at FROM connections "
+    "WHERE connection_id='c-gens' AND closed_at IS NULL"
+).fetchone()
+assert row[0] == 1 and row[1] == 15 and row[2] == 25, row
+# Brand-new id with huge counters: accounted 0.
+known_unknown = mod.apply_poll_delta(
+    conn, [live_ev("c-unknown", 999999, 888888, ts="2026-08-14T12:11:00Z")], {}
+)
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation FROM connections WHERE connection_id='c-unknown'"
+).fetchone()
+assert row[0] == 0 and row[1] == 0 and row[2] == 0, row
+base = mod.load_poll_baseline(conn, "c-unknown")
+assert base["raw_up"] == 999999 and base["acc_up"] == 0, base
+
+# Closed-only connection_id: new generation, never overwrite the closed row.
+known_unknown = mod.apply_poll_delta(
+    conn, [live_ev("c-closed-gen", 5000, 6000, ts="2026-08-14T12:11:30Z")], {}
+)
+rows = conn.execute(
+    "SELECT generation, upload_bytes, download_bytes, closed_at FROM connections "
+    "WHERE connection_id='c-closed-gen' ORDER BY generation"
+).fetchall()
+assert len(rows) == 2, rows
+assert rows[0][0] == 0 and rows[0][1] == 7 and rows[0][2] == 8 and rows[0][3] is not None, rows
+assert rows[1][0] == 1 and rows[1][1] == 0 and rows[1][2] == 0 and rows[1][3] is None, rows
+
+# Invalid counters are skipped (no huge/negative delta).
+before = conn.execute(
+    "SELECT upload_bytes FROM connections WHERE connection_id='c-unknown'"
+).fetchone()[0]
+mod.apply_poll_delta(conn, [live_ev("c-unknown", 2**63, 0)], known_unknown)
+mod.apply_poll_delta(conn, [live_ev("c-unknown", -1, 0)], known_unknown)
+after = conn.execute(
+    "SELECT upload_bytes, generation FROM connections WHERE connection_id='c-unknown'"
+).fetchone()
+assert after[0] == before and after[1] == 0, after
+
+# TASK 25: commit failure → cache reloaded from DB, uncommitted delta discarded.
+mod.upsert_connection(conn, live_ev("c-fail", 0, 0), close=False,
+                      accounted_upload=100, accounted_download=100, generation=0)
+mod.upsert_poll_baseline(conn, "c-fail", 0, 50, 50, 100, 100, "2026-08-14T12:20:00Z")
+conn.commit()
+known = mod.reload_known_open_from_db(conn)
+new_known = mod.apply_poll_delta(
+    conn, [live_ev("c-fail", 80, 80, ts="2026-08-14T12:20:05Z")], known
+)
+assert new_known["c-fail"]["acc_up"] == 130, new_known["c-fail"]
+
+class FailCommit:
+    def __init__(self, inner):
+        self._inner = inner
+    def commit(self):
+        raise sqlite3.DatabaseError("injected")
+    def rollback(self):
+        return self._inner.rollback()
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+holder = {"known": {"c-fail": {"acc_up": 999}}}
+def setter(k):
+    holder["known"] = k
+try:
+    mod.commit_accounting(FailCommit(conn), new_known, setter)
+    raise AssertionError("expected commit failure")
+except sqlite3.DatabaseError as exc:
+    assert "injected" in str(exc)
+assert holder["known"]["c-fail"]["acc_up"] == 100, holder["known"]["c-fail"]
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes FROM connections WHERE connection_id='c-fail'"
+).fetchone()
+assert row[0] == 100 and row[1] == 100, row
+base = mod.load_poll_baseline(conn, "c-fail")
+assert base["raw_up"] == 50 and base["acc_up"] == 100, base
+
+# TASK 25 via _tick: daemon cache must not keep the failed transaction's delta.
+daemon = mod.AccountDaemon(db_path=db, clash_url="http://127.0.0.1:1/connections")
+daemon._known_open = mod.reload_known_open_from_db(conn)
+assert daemon._known_open["c-fail"]["acc_up"] == 100
+
+def fake_fetch(*_a, **_k):
+    return [live_ev("c-fail", 80, 80, ts="2026-08-14T12:20:10Z")]
+mod.fetch_clash_connections = fake_fetch
+
+class TickFailConn:
+    def __init__(self, inner):
+        self._inner = inner
+        self._n = 0
+    def commit(self):
+        self._n += 1
+        if self._n == 1:
+            raise sqlite3.DatabaseError("injected-tick")
+        return self._inner.commit()
+    def rollback(self):
+        return self._inner.rollback()
+    def execute(self, *a, **k):
+        return self._inner.execute(*a, **k)
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+try:
+    daemon._tick(TickFailConn(conn))
+    raise AssertionError("expected _tick commit failure")
+except sqlite3.DatabaseError as exc:
+    assert "injected-tick" in str(exc)
+assert daemon._known_open["c-fail"]["acc_up"] == 100, daemon._known_open["c-fail"]
+row = conn.execute(
+    "SELECT upload_bytes FROM connections WHERE connection_id='c-fail'"
+).fetchone()
+assert row[0] == 100, row
+
+# TASK 26: startup loads known_open from poll_baseline; next poll is delta-only.
+fresh = mod.AccountDaemon(db_path=db, clash_url="http://127.0.0.1:1/connections")
+fresh._known_open = mod.reload_known_open_from_db(conn)
+assert fresh._known_open["c-fail"]["raw_up"] == 50, fresh._known_open["c-fail"]
+assert fresh._known_open["c-fail"]["acc_up"] == 100, fresh._known_open["c-fail"]
+assert fresh._known_open["c-fail"]["generation"] == 0
+mod.fetch_clash_connections = lambda *_a, **_k: [
+    live_ev("c-fail", 55, 55, ts="2026-08-14T12:21:00Z")
+]
+# Successful _tick: commit then cache. Bump cycles so we skip rollup/retention.
+fresh._cycles = 2
+fresh._tick(conn)
+assert fresh._known_open["c-fail"]["acc_up"] == 105, fresh._known_open["c-fail"]
+row = conn.execute(
+    "SELECT upload_bytes, download_bytes, generation FROM connections WHERE connection_id='c-fail'"
+).fetchone()
+assert row[0] == 105 and row[1] == 105 and row[2] == 0, row
+conn.close()
+PY
+if (( d7_rc == 0 )); then
+  pass "reload_known_open_from_db matches poll_baseline"
+  pass "same-generation monotonic delta"
+  pass "counter reset opens new generation without negative delta"
+  pass "unknown active connection is baseline only"
+  pass "commit failure reloads cache from DB"
+  pass "startup loads known_open from poll_baseline"
+else
+  fail "reload_known_open_from_db matches poll_baseline"
+  fail "same-generation monotonic delta"
+  fail "counter reset opens new generation without negative delta"
+  fail "unknown active connection is baseline only"
+  fail "commit failure reloads cache from DB"
+  fail "startup loads known_open from poll_baseline"
 fi
 
 # D1: rollup crash-safety (injected INSERT failure must not commit an empty table)

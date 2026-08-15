@@ -13,9 +13,11 @@ Clash API poll is the only production collector.
 Daily rollups use the UTC calendar date of closed_at (or started_at if
 still open during rebuild). Day boundaries are UTC.
 
-Poll baseline: first sight of a connection stores Clash counters as
-baseline with zero accounted delta. A counter decrease starts a new
-generation (new baseline). Only positive deltas are accumulated.
+Durable poll_baseline is the source of per-connection counters. The
+in-memory known_open map is a cache: read DB → calculate delta → write
+SQLite → COMMIT → then refresh the cache (D7). A counter decrease
+starts a new generation (baseline only, never a negative delta). Closed
+generations are never overwritten (D6/D8).
 
 Stdlib only: sqlite3, json, urllib, datetime, logging, time, signal,
 pathlib — no pip packages. Targets Python 3.10+.
@@ -35,7 +37,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_DB_PATH = "/var/lib/vincula/accounting.db"
 DEFAULT_CLASH_URL = "http://127.0.0.1:9090/connections"
@@ -45,6 +47,7 @@ DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
 SCHEMA_VERSION = 3
+INT64_MAX = 2**63 - 1
 
 NODE_ID = "local"
 TAG_TO_USER_ID: Dict[str, str] = {}
@@ -519,6 +522,245 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _row_get(row: Any, key: str, index: int) -> Any:
+    if isinstance(row, sqlite3.Row):
+        return row[key]
+    return row[index]
+
+
+def require_nonneg_int(value: Any, name: str) -> int:
+    """Reject bool, non-int, negatives, and values above signed int64 (D8)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be a non-negative int")
+    if value < 0 or value > INT64_MAX:
+        raise ValueError(f"{name} out of range")
+    return value
+
+
+def _event_counter(ev: Dict[str, Any], key: str) -> int:
+    raw = ev.get(key)
+    if raw is None:
+        raw = 0
+    return require_nonneg_int(raw, key)
+
+
+def load_poll_baseline(conn: sqlite3.Connection, cid: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT connection_id, generation, last_upload_counter, last_download_counter,
+               accounted_upload, accounted_download, last_seen_at
+        FROM poll_baseline WHERE connection_id = ?
+        """,
+        (cid,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "connection_id": str(_row_get(row, "connection_id", 0)),
+        "generation": int(_row_get(row, "generation", 1)),
+        "raw_up": int(_row_get(row, "last_upload_counter", 2)),
+        "raw_dn": int(_row_get(row, "last_download_counter", 3)),
+        "acc_up": int(_row_get(row, "accounted_upload", 4)),
+        "acc_dn": int(_row_get(row, "accounted_download", 5)),
+        "last_seen_at": _row_get(row, "last_seen_at", 6),
+    }
+
+
+def upsert_poll_baseline(
+    conn: sqlite3.Connection,
+    cid: str,
+    generation: int,
+    raw_up: int,
+    raw_dn: int,
+    acc_up: int,
+    acc_dn: int,
+    last_seen_at: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO poll_baseline(
+          connection_id, generation, last_upload_counter, last_download_counter,
+          accounted_upload, accounted_download, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(connection_id) DO UPDATE SET
+          generation = excluded.generation,
+          last_upload_counter = excluded.last_upload_counter,
+          last_download_counter = excluded.last_download_counter,
+          accounted_upload = excluded.accounted_upload,
+          accounted_download = excluded.accounted_download,
+          last_seen_at = excluded.last_seen_at
+        """,
+        (cid, generation, raw_up, raw_dn, acc_up, acc_dn, last_seen_at),
+    )
+
+
+def delete_poll_baseline(conn: sqlite3.Connection, cid: str) -> None:
+    conn.execute("DELETE FROM poll_baseline WHERE connection_id = ?", (cid,))
+
+
+def prune_closed_poll_baselines(conn: sqlite3.Connection) -> None:
+    """Drop baseline rows whose (connection_id, generation) is not open."""
+    conn.execute(
+        """
+        DELETE FROM poll_baseline
+        WHERE NOT EXISTS (
+            SELECT 1 FROM connections c
+            WHERE c.connection_id = poll_baseline.connection_id
+              AND c.generation = poll_baseline.generation
+              AND c.closed_at IS NULL
+        )
+        """
+    )
+
+
+def _make_cache_entry(
+    ev: Dict[str, Any],
+    *,
+    raw_up: int,
+    raw_dn: int,
+    acc_up: int,
+    acc_dn: int,
+    generation: int,
+) -> Dict[str, Any]:
+    stored = dict(ev)
+    stored["generation"] = generation
+    return {
+        "ev": stored,
+        "raw_up": raw_up,
+        "raw_dn": raw_dn,
+        "acc_up": acc_up,
+        "acc_dn": acc_dn,
+        "generation": generation,
+    }
+
+
+def reload_known_open_from_db(conn: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """Rebuild the known_open cache from open poll_baseline generations."""
+    rows = conn.execute(
+        """
+        SELECT
+          b.connection_id AS connection_id,
+          b.generation AS generation,
+          b.last_upload_counter AS raw_up,
+          b.last_download_counter AS raw_dn,
+          b.accounted_upload AS acc_up,
+          b.accounted_download AS acc_dn,
+          b.last_seen_at AS last_seen_at,
+          c.user_id AS user_id,
+          c.node_id AS node_id,
+          c.user_tag AS user_tag,
+          c.started_at AS started_at,
+          c.destination_host AS destination_host,
+          c.destination_ip AS destination_ip,
+          c.destination_port AS destination_port,
+          c.network AS network
+        FROM poll_baseline AS b
+        INNER JOIN connections AS c
+          ON c.connection_id = b.connection_id
+         AND c.generation = b.generation
+        WHERE c.closed_at IS NULL
+        """
+    ).fetchall()
+    known: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        cid = str(_row_get(row, "connection_id", 0))
+        generation = int(_row_get(row, "generation", 1))
+        raw_up = int(_row_get(row, "raw_up", 2))
+        raw_dn = int(_row_get(row, "raw_dn", 3))
+        acc_up = int(_row_get(row, "acc_up", 4))
+        acc_dn = int(_row_get(row, "acc_dn", 5))
+        ev = {
+            "connection_id": cid,
+            "generation": generation,
+            "node_id": _row_get(row, "node_id", 8),
+            "user_id": _row_get(row, "user_id", 7),
+            "user_tag": _row_get(row, "user_tag", 9),
+            "destination_host": _row_get(row, "destination_host", 11),
+            "destination_ip": _row_get(row, "destination_ip", 12),
+            "destination_port": _row_get(row, "destination_port", 13),
+            "network": _row_get(row, "network", 14),
+            "upload_bytes": raw_up,
+            "download_bytes": raw_dn,
+            "started_at": _row_get(row, "started_at", 10),
+            "ts": _row_get(row, "last_seen_at", 6),
+        }
+        known[cid] = _make_cache_entry(
+            ev,
+            raw_up=raw_up,
+            raw_dn=raw_dn,
+            acc_up=acc_up,
+            acc_dn=acc_dn,
+            generation=generation,
+        )
+    return known
+
+
+def _max_generation(conn: sqlite3.Connection, cid: str) -> Optional[int]:
+    row = conn.execute(
+        "SELECT MAX(generation) FROM connections WHERE connection_id = ?",
+        (cid,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _open_connection_row(conn: sqlite3.Connection, cid: str) -> Any:
+    return conn.execute(
+        """
+        SELECT event_id, connection_id, generation, user_id, node_id, user_tag,
+               started_at, last_seen_at, closed_at, destination_host, destination_ip,
+               destination_port, network, upload_bytes, download_bytes
+        FROM connections
+        WHERE connection_id = ? AND closed_at IS NULL
+        ORDER BY generation DESC
+        LIMIT 1
+        """,
+        (cid,),
+    ).fetchone()
+
+
+def _durable_prev_state(conn: sqlite3.Connection, cid: str) -> Optional[Dict[str, Any]]:
+    """Read poll_baseline only when its generation is still open (D7)."""
+    baseline = load_poll_baseline(conn, cid)
+    if baseline is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT closed_at, user_id, node_id, user_tag, started_at,
+               destination_host, destination_ip, destination_port, network
+        FROM connections
+        WHERE connection_id = ? AND generation = ?
+        """,
+        (cid, baseline["generation"]),
+    ).fetchone()
+    if row is None or _row_get(row, "closed_at", 0) is not None:
+        return None
+    ev = {
+        "connection_id": cid,
+        "generation": baseline["generation"],
+        "user_id": _row_get(row, "user_id", 1),
+        "node_id": _row_get(row, "node_id", 2),
+        "user_tag": _row_get(row, "user_tag", 3),
+        "started_at": _row_get(row, "started_at", 4),
+        "destination_host": _row_get(row, "destination_host", 5),
+        "destination_ip": _row_get(row, "destination_ip", 6),
+        "destination_port": _row_get(row, "destination_port", 7),
+        "network": _row_get(row, "network", 8),
+        "upload_bytes": baseline["raw_up"],
+        "download_bytes": baseline["raw_dn"],
+        "ts": baseline["last_seen_at"],
+    }
+    return _make_cache_entry(
+        ev,
+        raw_up=baseline["raw_up"],
+        raw_dn=baseline["raw_dn"],
+        acc_up=baseline["acc_up"],
+        acc_dn=baseline["acc_dn"],
+        generation=baseline["generation"],
+    )
+
+
 def upsert_connection(
     conn: sqlite3.Connection,
     ev: Dict[str, Any],
@@ -526,7 +768,14 @@ def upsert_connection(
     *,
     accounted_upload: Optional[int] = None,
     accounted_download: Optional[int] = None,
-) -> None:
+    generation: Optional[int] = None,
+) -> bool:
+    """Insert or update one (connection_id, generation) row.
+
+    Closed generations are never updated (D6). Returns False when the
+    target generation already has closed_at set and this call would have
+    been an UPDATE — caller should open a new generation.
+    """
     now = ev.get("ts") or utc_now_iso()
     closed_at = ev.get("closed_at") if close or ev.get("event") in (
         "connection_close",
@@ -535,6 +784,8 @@ def upsert_connection(
     ) else None
     if close and not closed_at:
         closed_at = now
+    if not close:
+        closed_at = None
 
     upload = (
         int(accounted_upload)
@@ -547,7 +798,8 @@ def upsert_connection(
         else int(ev.get("download_bytes") or 0)
     )
     user_id = ev.get("user_id") or resolve_user_id(str(ev["user_tag"]))
-    generation = int(ev.get("generation", 0))
+    if generation is None:
+        generation = int(ev.get("generation", 0))
 
     conn.execute(
         """
@@ -567,6 +819,7 @@ def upsert_connection(
           download_bytes = excluded.download_bytes,
           closed_at = excluded.closed_at,
           last_seen_at = excluded.last_seen_at
+        WHERE connections.closed_at IS NULL
         """,
         (
             ev["connection_id"],
@@ -586,6 +839,8 @@ def upsert_connection(
             now,
         ),
     )
+    changed = conn.execute("SELECT changes()").fetchone()[0]
+    return int(changed) > 0
 
 
 def close_stale_open_connections(
@@ -647,108 +902,211 @@ def apply_poll_delta(
     live: Iterable[Dict[str, Any]],
     known_open: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-    """Track open connections with baseline/delta accounting; close vanished ids.
+    """Write generation-aware deltas to SQLite; return the next cache snapshot.
 
-    known_open[cid] holds:
-      ev            — last normalized event
-      raw_up/raw_dn — last Clash counters (baseline for next delta)
-      acc_up/acc_dn — accumulated positive deltas written to DB
+    Does not mutate known_open and does not commit. Caller must COMMIT then
+    assign the returned dict (D7). Counters come from durable poll_baseline,
+    not from the in-memory cache.
     """
     live_map: Dict[str, Dict[str, Any]] = {ev["connection_id"]: ev for ev in live}
+    new_known: Dict[str, Dict[str, Any]] = {}
+
     for cid, ev in live_map.items():
-        raw_up = int(ev.get("upload_bytes") or 0)
-        raw_dn = int(ev.get("download_bytes") or 0)
-        prev = known_open.get(cid)
-        if prev is None:
-            existing = conn.execute(
-                "SELECT upload_bytes, download_bytes, closed_at FROM connections "
-                "WHERE connection_id = ?",
-                (cid,),
-            ).fetchone()
-            if existing is not None:
-                # Restart / empty cache: keep already-accounted bytes. Baseline
-                # on the current Clash counters (downtime increment abandoned).
-                acc_up = int(
-                    existing["upload_bytes"]
-                    if isinstance(existing, sqlite3.Row)
-                    else existing[0]
-                )
-                acc_dn = int(
-                    existing["download_bytes"]
-                    if isinstance(existing, sqlite3.Row)
-                    else existing[1]
-                )
-                upsert_connection(
-                    conn,
-                    ev,
-                    close=False,
-                    accounted_upload=acc_up,
-                    accounted_download=acc_dn,
-                )
-                known_open[cid] = {
-                    "ev": ev,
-                    "raw_up": raw_up,
-                    "raw_dn": raw_dn,
-                    "acc_up": acc_up,
-                    "acc_dn": acc_dn,
-                }
-                continue
-            # True first sight: baseline only, zero accounted delta.
-            state = {
-                "ev": ev,
-                "raw_up": raw_up,
-                "raw_dn": raw_dn,
-                "acc_up": 0,
-                "acc_dn": 0,
-            }
-            upsert_connection(
-                conn, ev, close=False, accounted_upload=0, accounted_download=0
-            )
-            known_open[cid] = state
+        try:
+            raw_up = _event_counter(ev, "upload_bytes")
+            raw_dn = _event_counter(ev, "download_bytes")
+        except ValueError as exc:
+            LOG.warning("skip connection %s: invalid counters (%s)", cid, exc)
+            kept = _durable_prev_state(conn, cid) or known_open.get(cid)
+            if kept is not None:
+                new_known[cid] = kept
             continue
 
+        now = ev.get("ts") or utc_now_iso()
+        prev = _durable_prev_state(conn, cid)
+
+        if prev is None:
+            open_row = _open_connection_row(conn, cid)
+            if open_row is not None:
+                # Migrated / restart without baseline: keep DB bytes (1a).
+                generation = int(_row_get(open_row, "generation", 2))
+                acc_up = int(_row_get(open_row, "upload_bytes", 13))
+                acc_dn = int(_row_get(open_row, "download_bytes", 14))
+                new_known[cid] = _write_open_state(
+                    conn,
+                    ev,
+                    cid,
+                    generation=generation,
+                    raw_up=raw_up,
+                    raw_dn=raw_dn,
+                    acc_up=acc_up,
+                    acc_dn=acc_dn,
+                    now=now,
+                )
+                continue
+            max_gen = _max_generation(conn, cid)
+            generation = 0 if max_gen is None else max_gen + 1
+            # Unknown active (no open row): baseline only, accounted 0.
+            new_known[cid] = _write_open_state(
+                conn,
+                ev,
+                cid,
+                generation=generation,
+                raw_up=raw_up,
+                raw_dn=raw_dn,
+                acc_up=0,
+                acc_dn=0,
+                now=now,
+            )
+            continue
+
+        generation = int(prev["generation"])
         prev_raw_up = int(prev["raw_up"])
         prev_raw_dn = int(prev["raw_dn"])
         acc_up = int(prev["acc_up"])
         acc_dn = int(prev["acc_dn"])
 
         if raw_up < prev_raw_up or raw_dn < prev_raw_dn:
-            # Counter decrease = new generation; reset baseline, no delta.
-            prev_raw_up = raw_up
-            prev_raw_dn = raw_dn
-            delta_up = 0
-            delta_dn = 0
-        else:
-            delta_up = raw_up - prev_raw_up
-            delta_dn = raw_dn - prev_raw_dn
+            # D8: current < previous → close this generation, open the next.
+            _close_generation(conn, prev, now)
+            generation = generation + 1
+            new_known[cid] = _write_open_state(
+                conn,
+                ev,
+                cid,
+                generation=generation,
+                raw_up=raw_up,
+                raw_dn=raw_dn,
+                acc_up=0,
+                acc_dn=0,
+                now=now,
+            )
+            continue
 
-        acc_up += max(0, delta_up)
-        acc_dn += max(0, delta_dn)
-        upsert_connection(
-            conn, ev, close=False, accounted_upload=acc_up, accounted_download=acc_dn
+        acc_up += raw_up - prev_raw_up
+        acc_dn += raw_dn - prev_raw_dn
+        new_known[cid] = _write_open_state(
+            conn,
+            ev,
+            cid,
+            generation=generation,
+            raw_up=raw_up,
+            raw_dn=raw_dn,
+            acc_up=acc_up,
+            acc_dn=acc_dn,
+            now=now,
         )
-        known_open[cid] = {
-            "ev": ev,
-            "raw_up": raw_up,
-            "raw_dn": raw_dn,
-            "acc_up": acc_up,
-            "acc_dn": acc_dn,
-        }
 
-    vanished = [cid for cid in list(known_open) if cid not in live_map]
-    for cid in vanished:
-        state = known_open.pop(cid)
-        last = dict(state["ev"])
-        last["event"] = "connection_close"
-        last["ts"] = utc_now_iso()
+    tracked = set(known_open)
+    for row in conn.execute("SELECT connection_id FROM poll_baseline"):
+        tracked.add(str(_row_get(row, "connection_id", 0)))
+    now_close = utc_now_iso()
+    for cid in tracked:
+        if cid in live_map:
+            continue
+        state = _durable_prev_state(conn, cid) or known_open.get(cid)
+        if state is None:
+            delete_poll_baseline(conn, cid)
+            continue
+        _close_generation(conn, state, now_close)
+
+    prune_closed_poll_baselines(conn)
+    return new_known
+
+
+def _write_open_state(
+    conn: sqlite3.Connection,
+    ev: Dict[str, Any],
+    cid: str,
+    *,
+    generation: int,
+    raw_up: int,
+    raw_dn: int,
+    acc_up: int,
+    acc_dn: int,
+    now: str,
+) -> Dict[str, Any]:
+    ev_w = dict(ev)
+    ev_w["generation"] = generation
+    ev_w["ts"] = now
+    landed = upsert_connection(
+        conn,
+        ev_w,
+        close=False,
+        accounted_upload=acc_up,
+        accounted_download=acc_dn,
+        generation=generation,
+    )
+    if not landed:
+        # Target generation is already closed: never overwrite (D6 sentinel).
+        max_gen = _max_generation(conn, cid)
+        generation = (0 if max_gen is None else max_gen) + 1
+        ev_w["generation"] = generation
+        acc_up = 0
+        acc_dn = 0
         upsert_connection(
             conn,
-            last,
-            close=True,
-            accounted_upload=int(state["acc_up"]),
-            accounted_download=int(state["acc_dn"]),
+            ev_w,
+            close=False,
+            accounted_upload=0,
+            accounted_download=0,
+            generation=generation,
         )
-    return known_open
+    upsert_poll_baseline(
+        conn, cid, generation, raw_up, raw_dn, acc_up, acc_dn, now
+    )
+    return _make_cache_entry(
+        ev_w,
+        raw_up=raw_up,
+        raw_dn=raw_dn,
+        acc_up=acc_up,
+        acc_dn=acc_dn,
+        generation=generation,
+    )
+
+
+def _close_generation(
+    conn: sqlite3.Connection,
+    state: Dict[str, Any],
+    now: str,
+) -> None:
+    last = dict(state["ev"])
+    cid = str(last["connection_id"])
+    generation = int(state["generation"])
+    last["event"] = "connection_close"
+    last["ts"] = now
+    last["generation"] = generation
+    upsert_connection(
+        conn,
+        last,
+        close=True,
+        accounted_upload=int(state["acc_up"]),
+        accounted_download=int(state["acc_dn"]),
+        generation=generation,
+    )
+    delete_poll_baseline(conn, cid)
+
+
+def commit_accounting(
+    conn: sqlite3.Connection,
+    new_known: Dict[str, Dict[str, Any]],
+    setter: Callable[[Dict[str, Dict[str, Any]]], None],
+) -> None:
+    """COMMIT durable writes, then refresh the in-memory cache (D7).
+
+    On commit failure: ROLLBACK and reload known_open from poll_baseline.
+    Never treat memory as committed before COMMIT succeeds.
+    """
+    try:
+        conn.commit()
+    except sqlite3.Error:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        setter(reload_known_open_from_db(conn))
+        raise
+    setter(new_known)
 
 
 _DAILY_USAGE_AGGREGATE_SELECT = """
@@ -868,6 +1226,9 @@ class AccountDaemon:
         self._last_live_ids: Optional[List[str]] = None
         self._cycles = 0
 
+    def _set_known_open(self, known: Dict[str, Dict[str, Any]]) -> None:
+        self._known_open = known
+
     def _reload_tag_map_if_changed(self) -> None:
         """Replace TAG_TO_USER_ID when users.json mtime changes.
 
@@ -898,6 +1259,7 @@ class AccountDaemon:
 
     def run(self) -> int:
         conn = open_db(self.db_path)
+        self._known_open = reload_known_open_from_db(conn)
         LOG.info("polling Clash API at %s (approximate accounting)", self.clash_url)
 
         signal.signal(signal.SIGTERM, self.request_stop)
@@ -918,38 +1280,45 @@ class AccountDaemon:
         conn.close()
         return 0
 
-    def _poll_clash(self, conn: sqlite3.Connection) -> bool:
+    def _poll_clash(
+        self, conn: sqlite3.Connection
+    ) -> Tuple[bool, Optional[Dict[str, Dict[str, Any]]]]:
         try:
             live = fetch_clash_connections(self.clash_url, self.clash_secret)
             live_ids = [ev["connection_id"] for ev in live]
             self._last_live_ids = live_ids
-            self._known_open = apply_poll_delta(conn, live, self._known_open)
+            new_known = apply_poll_delta(conn, live, self._known_open)
             closed = close_stale_open_connections(conn, live_ids)
+            prune_closed_poll_baselines(conn)
             if closed:
                 LOG.info(
                     "marked %s stale open connection(s) closed (absent from Clash snapshot)",
                     closed,
                 )
-            return True
+            return True, new_known
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             LOG.warning("Clash API poll failed: %s", exc)
-            return False
+            return False, None
 
-    def _collect(self, conn: sqlite3.Connection) -> bool:
+    def _collect(
+        self, conn: sqlite3.Connection
+    ) -> Tuple[bool, Optional[Dict[str, Dict[str, Any]]]]:
         """Clash API poll is the only production collector."""
         return self._poll_clash(conn)
 
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
         self._reload_tag_map_if_changed()
-        success = self._collect(conn)
+        success, new_known = self._collect(conn)
         if success:
             meta_set(conn, "last_success_at", utc_now_iso())
+            # COMMIT collect first, then refresh cache. Never assign cache before COMMIT.
+            commit_accounting(conn, new_known or {}, self._set_known_open)
 
         if self._cycles == 1 or self._cycles % 720 == 0:
             rollup_daily_usage(conn)
             apply_retention(conn, self.raw_retention_days, self.daily_retention_days)
-        conn.commit()
+            conn.commit()
 
 
 def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> AccountDaemon:
@@ -1022,6 +1391,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         daemon.db_path = args.db
     if args.once:
         conn = open_db(daemon.db_path)
+        daemon._known_open = reload_known_open_from_db(conn)
         daemon._tick(conn)
         if daemon._last_live_ids is not None:
             closed = close_stale_open_connections(conn, daemon._last_live_ids)
@@ -1030,6 +1400,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "marked %s stale open connection(s) closed (absent from Clash snapshot)",
                     closed,
                 )
+            prune_closed_poll_baselines(conn)
             conn.commit()
         conn.close()
         return 0
