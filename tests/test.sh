@@ -242,6 +242,15 @@ assert_success "render_settings default daily retention is 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/settings-ret-default.toml"
 assert_success "render_settings default raw retention is 90" \
   grep -q '^accounting_raw_retention_days = 90$' "${TEST_TMP}/settings-ret-default.toml"
+assert_success "render_settings snapshot has billing_cycle_start_day 1" \
+  grep -q '^billing_cycle_start_day = 1$' "${TEST_TMP}/config.toml"
+assert_success "render_settings default billing_cycle_start_day is 1" \
+  grep -q '^billing_cycle_start_day = 1$' "${TEST_TMP}/settings-ret-default.toml"
+render_settings "${TEST_TMP}/settings-cycle.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret 90 90 "$TEST_NODE_ID" test-node 5
+assert_success "render_settings honors explicit billing_cycle_start_day" \
+  grep -q '^billing_cycle_start_day = 5$' "${TEST_TMP}/settings-cycle.toml"
+assert_success "migrate reads existing billing_cycle_start_day" \
+  grep -q 'toml_get "$SETTINGS_FILE" billing_cycle_start_day' "${PROJECT_DIR}/vincula.sh"
 assert_equal "reads canonical port from state" "443" "$(json_numeric_field "${TEST_TMP}/state.json" port)"
 assert_success "generated artifacts match canonical state" \
   verify_identity_consistency "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" "${TEST_TMP}/config.json" "${TEST_TMP}/owner.uri" "${TEST_TMP}/users.json"
@@ -341,6 +350,11 @@ assert_success "helper documents stats month" grep -q 'vcl stats today|yesterday
 assert_success "helper documents stats top" grep -q 'vcl stats top users|departments|hosts' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents stats host" grep -q 'vcl stats host' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper documents accounting retention" grep -q 'vcl accounting retention' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents accounting cycle" grep -q 'vcl accounting cycle' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents accounting cycle --set" grep -q 'vcl accounting cycle --set N' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents stats --date" grep -q 'vcl stats --date YYYY-MM-DD' "${PROJECT_DIR}/bin/vincula"
+assert_success "stats --month help mentions billing cycle start" \
+  grep -q '从账期起始日(默认每月1日)到今天' "${PROJECT_DIR}/bin/vincula"
 assert_success "connections fail when accountd inactive" \
   grep -q 'UNAVAILABLE: vincula-accountd' "${PROJECT_DIR}/bin/vincula"
 assert_success "gen-release-lock includes vincula-stats.py" \
@@ -1459,6 +1473,194 @@ PY
   else
     fail "vincula-stats today/yesterday/dept/host/top/csv/json/100k"
   fi
+
+  # Absolute dates, billing cycle windows, argparse exclusivity (frozen UTC clock).
+  DATE_DIR="${TEST_TMP}/stats-dates"
+  mkdir -p "$DATE_DIR"
+  if python3 - "$DATE_DIR" "${PROJECT_DIR}/lib/vincula-stats.py" <<'PY'
+import io, json, os, sqlite3, subprocess, sys
+from datetime import date
+from pathlib import Path
+
+base = Path(sys.argv[1])
+stats_py = sys.argv[2]
+os.environ["VINCULA_STATS_NOW"] = "2026-08-15"
+
+import importlib.util
+spec = importlib.util.spec_from_file_location("vstats", stats_py)
+mod = importlib.util.module_from_spec(spec)
+sys.modules["vstats"] = mod
+spec.loader.exec_module(mod)
+
+assert mod.period_for_month(0, 1) == ("2026-08-01", "2026-08-15")
+assert mod.period_for_month(0, 5) == ("2026-08-05", "2026-08-15")
+assert mod.period_for_days(1, 0) == ("2026-08-15", "2026-08-15")
+assert mod.period_for_days(1, 1) == ("2026-08-14", "2026-08-14")
+assert mod.period_for_days(7, 0) == ("2026-08-09", "2026-08-15")
+os.environ["VINCULA_STATS_NOW"] = "2026-08-03"
+assert mod.period_for_month(0, 5) == ("2026-07-05", "2026-08-03")
+assert mod.period_for_month(0, 1) == ("2026-08-01", "2026-08-03")
+os.environ["VINCULA_STATS_NOW"] = "2026-08-15"
+
+db = base / "accounting.db"
+users = base / "users.json"
+users.write_text(json.dumps({
+    "schema_version": 2,
+    "users": [{"user_id": "u-alice", "tag": "alice", "display_name": "Alice", "department": "Engineering"}],
+}), encoding="utf-8")
+conn = sqlite3.connect(db)
+conn.executescript("""
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE daily_usage (
+  date TEXT NOT NULL, user_id TEXT NOT NULL, user_tag TEXT,
+  destination_host TEXT NOT NULL, upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0, connection_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (date, user_id, destination_host)
+);
+""")
+conn.execute("INSERT INTO meta(key,value) VALUES('last_success_at','2026-08-15T00:00:00Z')")
+conn.executemany(
+    "INSERT INTO daily_usage VALUES (?,?,?,?,?,?,?)",
+    [
+        ("2026-08-15", "u-alice", "alice", "today.example", 1, 1, 1),
+        ("2026-08-05", "u-alice", "alice", "cycle.example", 2, 2, 1),
+        ("2026-08-01", "u-alice", "alice", "month.example", 4, 4, 1),
+        ("2026-07-20", "u-alice", "alice", "july.example", 8, 8, 1),
+    ],
+)
+conn.commit()
+conn.close()
+
+def run(*extra, check=True):
+    cmd = [
+        sys.executable, stats_py,
+        "--db", str(db), "--users", str(users),
+        "--collector-state", "active",
+        "--last-success-at", "2026-08-15T00:00:00Z",
+        "--format", "json",
+        *extra,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+out = run("--mode", "summary", "--date", "2026-08-15")
+data = json.loads(out.stdout)
+assert data["meta"]["period_start"] == "2026-08-15" and data["meta"]["period_end"] == "2026-08-15"
+assert data["rows"] and data["rows"][0]["total_bytes"] == 2
+out = run("--mode", "top_hosts", "--date", "2026-08-15")
+hosts = {r["destination_host"] for r in json.loads(out.stdout)["rows"]}
+assert hosts == {"today.example"}, hosts
+
+out = run("--mode", "summary", "--from", "2026-08-01", "--to", "2026-08-05")
+data = json.loads(out.stdout)
+assert data["meta"]["period_start"] == "2026-08-01" and data["meta"]["period_end"] == "2026-08-05"
+assert data["rows"][0]["total_bytes"] == 12
+out = run("--mode", "top_hosts", "--from", "2026-08-01", "--to", "2026-08-05")
+hosts = {r["destination_host"] for r in json.loads(out.stdout)["rows"]}
+assert hosts == {"cycle.example", "month.example"}, hosts
+
+# regression: default start_day=1 month/days/today/yesterday identical to calendar windows
+out = run("--mode", "summary", "--month", "1")
+data = json.loads(out.stdout)
+assert data["meta"]["period_start"] == "2026-08-01" and data["meta"]["period_end"] == "2026-08-15"
+out = run("--mode", "summary", "--days", "1", "--day-offset", "0")
+assert json.loads(out.stdout)["meta"]["period_start"] == "2026-08-15"
+out = run("--mode", "summary", "--days", "1", "--day-offset", "1")
+assert json.loads(out.stdout)["meta"]["period_start"] == "2026-08-14"
+assert json.loads(run("--mode", "summary", "--days", "7").stdout)["meta"]["period_start"] == "2026-08-09"
+
+out = run("--mode", "summary", "--month", "1", "--cycle-start", "5")
+data = json.loads(out.stdout)
+assert data["meta"]["period_start"] == "2026-08-05" and data["meta"]["period_end"] == "2026-08-15"
+out = run("--mode", "top_hosts", "--month", "1", "--cycle-start", "5")
+hosts = {r["destination_host"] for r in json.loads(out.stdout)["rows"]}
+assert "month.example" not in hosts and "cycle.example" in hosts and "today.example" in hosts, hosts
+
+# missing --cycle-start ≡ 1
+out = run("--mode", "summary", "--month", "1")
+assert json.loads(out.stdout)["meta"]["period_start"] == "2026-08-01"
+
+# invalid toml/CLI cycle-start → fallback 1 + warning
+out = run("--mode", "summary", "--month", "1", "--cycle-start", "0", check=False)
+assert out.returncode == 0, out.stderr
+assert "falling back to 1" in out.stderr
+assert json.loads(out.stdout)["meta"]["period_start"] == "2026-08-01"
+out = run("--mode", "summary", "--month", "1", "--cycle-start", "29", check=False)
+assert out.returncode == 0 and "falling back to 1" in out.stderr
+out = run("--mode", "summary", "--month", "1", "--cycle-start", "abc", check=False)
+assert out.returncode == 0 and "falling back to 1" in out.stderr
+
+# exclusivity
+out = run("--mode", "summary", "--date", "2026-08-15", "--month", "1", check=False)
+assert out.returncode != 0
+out = run("--mode", "summary", "--date", "2026-08-15", "--days", "3", check=False)
+assert out.returncode != 0
+out = run("--mode", "summary", "--from", "2026-08-01", check=False)
+assert out.returncode != 0 and "must both be given" in out.stderr
+out = run("--mode", "summary", "--to", "2026-08-15", check=False)
+assert out.returncode != 0 and "must both be given" in out.stderr
+out = run("--mode", "summary", "--from", "2026-08-15", "--to", "2026-08-01", check=False)
+assert out.returncode != 0
+
+print("dates-ok")
+PY
+  then
+    pass "vincula-stats --date/--from/--to and billing cycle windows"
+  else
+    fail "vincula-stats --date/--from/--to and billing cycle windows"
+  fi
+fi
+
+# toml_set round-trip preserves clash_api_secret and other keys
+TOML_RT="${TEST_TMP}/toml-roundtrip.toml"
+cat > "$TOML_RT" <<'EOF'
+project_version = "0.2.6"
+clash_api_secret = "keep-this-secret"
+port = 443
+accounting_raw_retention_days = 90
+EOF
+assert_success "toml_set appends billing_cycle_start_day" toml_set "$TOML_RT" billing_cycle_start_day 5
+assert_equal "toml_set billing_cycle_start_day is 5" "5" "$(toml_get "$TOML_RT" billing_cycle_start_day)"
+assert_equal "toml_set preserves clash_api_secret" "keep-this-secret" "$(toml_get "$TOML_RT" clash_api_secret)"
+assert_equal "toml_set preserves port" "443" "$(toml_get "$TOML_RT" port)"
+assert_success "toml_set replaces existing billing_cycle_start_day" toml_set "$TOML_RT" billing_cycle_start_day 12
+assert_equal "toml_set billing_cycle_start_day updated to 12" "12" "$(toml_get "$TOML_RT" billing_cycle_start_day)"
+assert_equal "toml_set still preserves clash_api_secret after replace" "keep-this-secret" "$(toml_get "$TOML_RT" clash_api_secret)"
+
+# vcl accounting cycle --set via cmd_accounting (skip require_root/require_install)
+acct_root="${TEST_TMP}/acct-cli"
+mkdir -p "${acct_root}/bin"
+ln -sfn "${PROJECT_DIR}/lib" "${acct_root}/lib"
+sed -e 's|^readonly SETTINGS_FILE=.*|SETTINGS_FILE="${VCL_SETTINGS_FILE}"|' \
+    -e 's|^main "$@"$|cmd_accounting "$@"|' \
+    -e 's|candidates=("$COMMON_FILE")|candidates=()|' \
+    "${PROJECT_DIR}/bin/vincula" > "${acct_root}/bin/vincula"
+chmod +x "${acct_root}/bin/vincula"
+CYCLE_TOML="${TEST_TMP}/cycle.toml"
+cat > "$CYCLE_TOML" <<'EOF'
+project_version = "0.2.6"
+clash_api_secret = "cycle-secret"
+port = 443
+EOF
+cycle_cli() {
+  VCL_SETTINGS_FILE="$CYCLE_TOML" "${acct_root}/bin/vincula" "$@"
+}
+cycle_out=$(cycle_cli cycle)
+assert_equal "missing billing_cycle_start_day prints 1" "billing_cycle_start_day = 1" "$cycle_out"
+cycle_out=$(cycle_cli cycle --set 5)
+assert_equal "vcl accounting cycle --set 5 prints value" "billing_cycle_start_day = 5" "$cycle_out"
+assert_equal "vcl accounting cycle --set 5 persists" "5" "$(toml_get "$CYCLE_TOML" billing_cycle_start_day)"
+assert_equal "cycle --set 5 preserves clash_api_secret" "cycle-secret" "$(toml_get "$CYCLE_TOML" clash_api_secret)"
+cycle_out=$(cycle_cli cycle)
+assert_equal "vcl accounting cycle prints persisted 5" "billing_cycle_start_day = 5" "$cycle_out"
+assert_failure "vcl accounting cycle --set 0 fails" cycle_cli cycle --set 0
+assert_failure "vcl accounting cycle --set 29 fails" cycle_cli cycle --set 29
+assert_failure "vcl accounting cycle --set abc fails" cycle_cli cycle --set abc
+assert_equal "failed --set leaves persisted 5" "5" "$(toml_get "$CYCLE_TOML" billing_cycle_start_day)"
+set0_err=$(cycle_cli cycle --set 0 2>&1) || true
+if [[ "$set0_err" == *"must be an integer from 1 to 28"* ]]; then
+  pass "cycle --set 0 error mentions 1 to 28"
+else
+  fail "cycle --set 0 error mentions 1 to 28 (got '${set0_err}')"
 fi
 
 if [[ "${VCL_INTEGRATION:-0}" == "1" ]]; then
