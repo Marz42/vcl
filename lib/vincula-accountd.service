@@ -1,0 +1,27 @@
+# Managed-By: vincula
+# Vincula-Version: 0.2.4
+[Unit]
+Description=vincula local accounting daemon
+Documentation=file:///usr/local/lib/vincula/vincula-accountd.py
+After=sing-box.service network-online.target
+Wants=sing-box.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/lib/vincula/vincula-accountd.py
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vincula
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

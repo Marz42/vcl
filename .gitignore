@@ -1,0 +1,44 @@
+# Git ignore for Vincula
+
+# Secrets / local env
+.env
+.env.*
+*.pem
+id_rsa*
+*askpass*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Test / evidence artifacts
+/tmp/
+evidence/
+**/vcl-rc-evidence/
+*.log
+
+# Release archives (keep sources + release.lock; ignore packed tarballs)
+*.tar.gz
+*.tar.gz.sha256
+!vincula.sh.sha256
+
+# Local scratch
+*.bak
+*.tmp
+.cursor/
+agent-tools/
+
+# Deploy staging copy (build from repo root + gen-release-lock.sh)
+/release/

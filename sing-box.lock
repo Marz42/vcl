@@ -1,0 +1,22 @@
+# vincula V0.1 sing-box supply-chain lock
+# Source repository: https://github.com/SagerNet/sing-box
+# Release: https://github.com/SagerNet/sing-box/releases/tag/v1.13.18
+# Release metadata marked immutable by GitHub.
+
+version = "1.13.18"
+
+[[asset]]
+os = "linux"
+arch = "amd64"
+filename = "sing-box-1.13.18-linux-amd64.tar.gz"
+url = "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz"
+sha256 = "d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
+size = 23922330
+
+[[asset]]
+os = "linux"
+arch = "arm64"
+filename = "sing-box-1.13.18-linux-arm64.tar.gz"
+url = "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-arm64.tar.gz"
+sha256 = "a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
+size = 22118643

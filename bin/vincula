@@ -1,0 +1,1731 @@
+#!/usr/bin/env bash
+# Managed-By: vincula
+# Vincula-Version: 0.2.4
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly VINCULA_VERSION="0.2.4"
+readonly STATE_DIR="/etc/vincula"
+readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
+readonly STATE_FILE="${STATE_DIR}/state.json"
+readonly USERS_FILE="${STATE_DIR}/users.json"
+readonly URI_FILE="${STATE_DIR}/owner.uri"
+readonly VERSION_FILE="${STATE_DIR}/VERSION"
+readonly CHECKSUM_FILE="${STATE_DIR}/sing-box.binary.sha256"
+readonly INSTALL_MANIFEST_FILE="${STATE_DIR}/install.manifest"
+readonly CONFIG_FILE="/etc/sing-box/config.json"
+readonly SING_BOX_DIR="/etc/sing-box"
+readonly BINARY_PATH="/usr/local/bin/sing-box"
+readonly HELPER_PATH="/usr/local/bin/vincula"
+readonly HELPER_ALIAS_PATH="/usr/local/bin/vcl"
+readonly LIB_DIR="/usr/local/lib/vincula"
+readonly LOCK_FILE="${LIB_DIR}/sing-box.lock"
+readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
+readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
+readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
+readonly VAR_LIB_VINCULA="/var/lib/vincula"
+readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
+readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
+readonly SERVICE_USER="sing-box"
+readonly SERVICE_GROUP="sing-box"
+readonly VAR_LIB_SING_BOX="/var/lib/sing-box"
+readonly BACKUP_ROOT="/var/backups/vincula"
+readonly BACKUP_MARKER=".vincula-backup"
+readonly COMMON_FILE="${LIB_DIR}/vincula-common.sh"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+refuse_uninstall() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 2
+}
+
+load_vincula_common() {
+  local candidates=("$COMMON_FILE")
+  local src=${BASH_SOURCE[0]-}
+  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    local root
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$root" ]]; then
+      candidates+=("${root}/lib/vincula-common.sh")
+    fi
+  fi
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "$c" ]]; then
+      # shellcheck disable=SC1091
+      source "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_vincula_common || die "Missing vincula-common.sh (expected ${COMMON_FILE})."
+
+usage() {
+  cat <<'USAGE'
+vincula management helper
+
+vincula and vcl are equivalent.
+
+Usage:
+  vcl info             Show non-secret node information
+  vcl status           Check service, port, and listener ownership
+  vcl check            Fast static checks (binary SHA-256 and config syntax)
+  vcl verify           Check canonical state against generated artifacts
+  vcl diagnose         Runtime, network, and REALITY self-test diagnostics
+  vcl restart          Validate and restart sing-box
+  vcl logs             Show recent journal entries (default: 100)
+  vcl logs 200         Show the last 200 journal entries
+  vcl logs -f          Follow journal output
+  vcl link             Print the owner VLESS URI
+  vcl user add <tag> [--display-name NAME] [--department DEPT]
+  vcl user remove <tag>
+  vcl user disable <tag>
+  vcl user enable <tag>
+  vcl user rotate <tag>
+  vcl user list
+  vcl user show <tag>
+  vcl user link <tag>
+  vcl connections      Recent/current connection accounting rows
+  vcl accounting status
+  vcl stats today      Per-user traffic for today (UTC)
+  vcl stats yesterday
+  vcl stats user <tag> [--today] [--days N] [--top N]
+  vcl stats department <name> [--days N]
+  vcl stats --days N   Aggregate traffic over N days
+  vcl uninstall        Remove this Vincula-managed installation
+  vcl uninstall --yes  Uninstall without interactive confirmation
+  vcl version          Print vincula and sing-box versions
+  vcl help             Show this help
+
+Notes:
+  Domain identified = destination_host from SNI/sniff when available.
+  IP-only rows have no reverse-DNS guessing (destination_host may be empty).
+  Polling ≠ exact billing: Clash API accounting is approximate; short flows may be missed.
+USAGE
+}
+
+require_root() {
+  local invoked
+  invoked=$(basename -- "${0:-vcl}")
+  (( EUID == 0 )) || die "Run this command as root (for example: sudo ${invoked} $*)."
+}
+
+require_install() {
+  [[ -f "$VERSION_FILE" && -x "$BINARY_PATH" && -f "$CONFIG_FILE" ]] || die "vincula installation is incomplete."
+}
+
+curl_supports_socks5_hostname() {
+  curl --help all 2>&1 | grep -q -- '--socks5-hostname'
+}
+
+toml_value() {
+  local key=$1
+  awk -F' = ' -v key="$key" '$1 == key {value=$2; gsub(/^"|"$/, "", value); print value; exit}' "$SETTINGS_FILE"
+}
+
+port_is_listening() {
+  local port=$1
+  ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .
+}
+
+ss_line_is_sing_box_pid() {
+  local line=$1 pid=$2
+  [[ "$line" == *'"sing-box"'* ]] || return 1
+  [[ "$line" == *"pid=${pid},"* || "$line" == *"pid=${pid})"* ]]
+}
+
+port_owned_by_sing_box() {
+  local port=$1 main_pid line
+  main_pid=$(systemctl show -p MainPID --value sing-box.service 2>/dev/null || true)
+  [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  while IFS= read -r line; do
+    ss_line_is_sing_box_pid "$line" "$main_pid" && return 0
+  done < <(ss -H -ltnp "sport = :${port}" 2>/dev/null || true)
+  return 1
+}
+
+host_resolves() {
+  local host=$1
+  getent ahosts "$host" >/dev/null 2>&1
+}
+
+tcp_443_reachable() {
+  local host=$1 ip
+  ip=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1; exit}')
+  [[ -n "$ip" ]] || return 1
+  timeout 5 bash -c "echo >/dev/tcp/${ip}/443" >/dev/null 2>&1
+}
+
+https_reachable() {
+  local host=$1
+  curl --silent --show-error --noproxy '*' \
+    --proto '=https' --tlsv1.2 \
+    --connect-timeout 5 --max-time 10 \
+    --output /dev/null --head \
+    "https://${host}/" >/dev/null 2>&1
+}
+
+ipv4_outbound_available() {
+  timeout 5 bash -c 'echo >/dev/tcp/1.1.1.1/443' >/dev/null 2>&1
+}
+
+dns_resolution_working() {
+  getent ahosts www.cloudflare.com >/dev/null 2>&1
+}
+
+pick_free_tcp_port() {
+  local port attempt
+  for (( attempt = 0; attempt < 30; attempt++ )); do
+    port=$((32768 + RANDOM % 20000))
+    if ! ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_local_listen() {
+  local port=$1 remaining
+  for (( remaining = 0; remaining < 15; remaining++ )); do
+    ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q . && return 0
+    sleep 1
+  done
+  return 1
+}
+
+render_self_test_server_config() {
+  local output=$1 uuid=$2 private_key=$3 short_id=$4 port=$5 reality_host=$6
+  cat > "$output" <<EOF
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-selftest-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${port},
+      "users": [
+        {
+          "name": "selftest",
+          "uuid": "${uuid}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${reality_host}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "${reality_host}",
+            "server_port": 443
+          },
+          "private_key": "${private_key}",
+          "short_id": "${short_id}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_self_test_client_config() {
+  local output=$1 uuid=$2 public_key=$3 short_id=$4 server_port=$5 socks_port=$6 reality_host=$7
+  cat > "$output" <<EOF
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${socks_port}
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-out",
+      "server": "127.0.0.1",
+      "server_port": ${server_port},
+      "uuid": "${uuid}",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "${reality_host}",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "${public_key}",
+          "short_id": "${short_id}"
+        }
+      }
+    }
+  ]
+}
+EOF
+}
+
+run_reality_self_test() {
+  local binary=$1 uuid=$2 private_key=$3 public_key=$4 short_id=$5 reality_host=$6
+  (
+    set -Eeuo pipefail
+    umask 077
+    work_dir=""
+    owned_temp=0
+    server_pid=0
+    client_pid=0
+    cleanup() {
+      if [[ "${server_pid:-0}" -gt 0 ]]; then
+        kill "$server_pid" >/dev/null 2>&1 || true
+      fi
+      if [[ "${client_pid:-0}" -gt 0 ]]; then
+        kill "$client_pid" >/dev/null 2>&1 || true
+      fi
+      if [[ "${server_pid:-0}" -gt 0 ]]; then
+        wait "$server_pid" >/dev/null 2>&1 || true
+      fi
+      if [[ "${client_pid:-0}" -gt 0 ]]; then
+        wait "$client_pid" >/dev/null 2>&1 || true
+      fi
+      if [[ "${owned_temp:-0}" -eq 1 && -n "${work_dir:-}" && "$work_dir" == /tmp/vincula-selftest.* && -d "$work_dir" ]]; then
+        rm -rf --one-file-system -- "$work_dir"
+      fi
+    }
+    trap cleanup EXIT
+
+    work_dir=$(mktemp -d /tmp/vincula-selftest.XXXXXXXX)
+    owned_temp=1
+
+    curl_supports_socks5_hostname || {
+      printf 'ERROR: curl does not support SOCKS5; REALITY self-test cannot run.\n' >&2
+      exit 1
+    }
+
+    server_port=$(pick_free_tcp_port) || exit 1
+    socks_port=$(pick_free_tcp_port) || exit 1
+    [[ "$server_port" != "$socks_port" ]] || socks_port=$(pick_free_tcp_port)
+
+    server_json="${work_dir}/server.json"
+    client_json="${work_dir}/client.json"
+    server_log="${work_dir}/server.log"
+    client_log="${work_dir}/client.log"
+    render_self_test_server_config "$server_json" "$uuid" "$private_key" "$short_id" "$server_port" "$reality_host"
+    render_self_test_client_config "$client_json" "$uuid" "$public_key" "$short_id" "$server_port" "$socks_port" "$reality_host"
+    "$binary" check -c "$server_json" >/dev/null
+    "$binary" check -c "$client_json" >/dev/null
+
+    "$binary" run -c "$server_json" >"$server_log" 2>&1 &
+    server_pid=$!
+    wait_local_listen "$server_port" || {
+      cat "$server_log" >&2 || true
+      exit 1
+    }
+
+    "$binary" run -c "$client_json" >"$client_log" 2>&1 &
+    client_pid=$!
+    wait_local_listen "$socks_port" || {
+      cat "$client_log" >&2 || true
+      exit 1
+    }
+
+    http_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+      --connect-timeout 5 --max-time 20 \
+      --socks5-hostname "127.0.0.1:${socks_port}" \
+      --proto '=https' --tlsv1.2 \
+      --head "https://${reality_host}/" || true)
+    if [[ "$http_code" =~ ^[23][0-9][0-9]$ || "$http_code" == "403" || "$http_code" == "404" ]]; then
+      exit 0
+    fi
+    printf 'ERROR: REALITY end-to-end self-test failed for %s (HTTP status %s).\n' "$reality_host" "${http_code:-none}" >&2
+    cat "$server_log" >&2 || true
+    cat "$client_log" >&2 || true
+    exit 1
+  )
+}
+
+wait_healthy() {
+  local port=$1 remaining
+  for (( remaining = 0; remaining < 15; remaining++ )); do
+    if systemctl is-active --quiet sing-box.service && port_is_listening "$port" && port_owned_by_sing_box "$port"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+is_uninstall_affirmative() {
+  case "$1" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+unit_has_vincula_marker() {
+  local unit_file=$1
+  [[ -f "$unit_file" ]] || return 1
+  grep -q '^# Managed-By: vincula$' "$unit_file"
+}
+
+helper_has_vincula_marker() {
+  local helper_file=$1
+  [[ -f "$helper_file" ]] || return 1
+  grep -q '^# Managed-By: vincula$' "$helper_file" \
+    && grep -q 'readonly VINCULA_VERSION=' "$helper_file"
+}
+
+service_account_flag() {
+  local state_file=$1 field=$2
+  local value
+  [[ -f "$state_file" ]] || return 1
+  value=$(json_bool_field "$state_file" "$field")
+  [[ "$value" == true ]]
+}
+
+remove_managed_file() {
+  local path=$1
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return 0
+  fi
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    printf '! %s is a directory; not removing with file deletion.\n' "$path"
+    return 0
+  fi
+  rm -f -- "$path"
+  printf '✓ Removed %s\n' "$path"
+}
+
+remove_managed_symlink() {
+  local path=$1 expected_target=$2
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return 0
+  fi
+  if [[ ! -L "$path" ]]; then
+    printf '! %s is not a Vincula symlink; preserved.\n' "$path"
+    return 1
+  fi
+  if [[ "$(readlink -- "$path")" != "$expected_target" ]]; then
+    printf '! %s points elsewhere; preserved.\n' "$path"
+    return 1
+  fi
+  rm -f -- "$path"
+  printf '✓ Removed %s\n' "$path"
+}
+
+remove_directory_if_empty() {
+  local dir=$1
+  if [[ ! -e "$dir" && ! -L "$dir" ]]; then
+    return 0
+  fi
+  if [[ -L "$dir" || ! -d "$dir" ]]; then
+    printf '! %s is not a directory; preserved.\n' "$dir"
+    return 1
+  fi
+  if rmdir -- "$dir" 2>/dev/null; then
+    printf '✓ Removed %s\n' "$dir"
+    return 0
+  fi
+  printf '! %s contains unmanaged files; directory preserved.\n' "$dir"
+  return 1
+}
+
+verify_binary_matches_checksum() {
+  local checksum_file=$1
+  [[ -f "$checksum_file" ]] || return 1
+  sha256sum --check --status "$checksum_file"
+}
+
+verify_uninstall_preflight() {
+  local line kind value expected
+  [[ -f "$VERSION_FILE" ]] || refuse_uninstall "Vincula VERSION is missing; refusing destructive uninstall."
+  [[ -f "$STATE_FILE" ]] || refuse_uninstall "state.json is missing; refusing destructive uninstall."
+  [[ -f "$INSTALL_MANIFEST_FILE" ]] || refuse_uninstall "install.manifest is missing; refusing destructive uninstall."
+  [[ -f "$CHECKSUM_FILE" ]] || refuse_uninstall "sing-box checksum is missing; refusing destructive uninstall."
+  [[ -f "$LOCK_FILE" ]] || refuse_uninstall "sing-box lock is missing; refusing destructive uninstall."
+  [[ -f "$HELPER_PATH" ]] || refuse_uninstall "Vincula helper is missing; refusing destructive uninstall."
+  [[ -f "$SYSTEMD_UNIT" ]] || refuse_uninstall "systemd unit is missing; refusing destructive uninstall."
+
+  grep -q '^project=vincula$' "$INSTALL_MANIFEST_FILE" \
+    || refuse_uninstall "install.manifest is not a Vincula ownership record; refusing destructive uninstall."
+
+  helper_has_vincula_marker "$HELPER_PATH" \
+    || refuse_uninstall "${HELPER_PATH} is not a Vincula helper; refusing destructive uninstall."
+
+  unit_has_vincula_marker "$SYSTEMD_UNIT" \
+    || refuse_uninstall "systemd unit is missing the Vincula ownership marker; refusing destructive uninstall."
+
+  if ! verify_binary_matches_checksum "$CHECKSUM_FILE"; then
+    refuse_uninstall "/usr/local/bin/sing-box no longer matches the binary
+installed by Vincula.
+
+The installation may have been modified outside Vincula.
+
+Refusing destructive uninstall."
+  fi
+
+  while IFS= read -r line; do
+    kind=${line%%=*}
+    value=${line#*=}
+    case "$kind" in
+      file|symlink)
+        case "$value" in
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
+        esac
+        ;;
+    esac
+  done < "$INSTALL_MANIFEST_FILE"
+
+  for expected in \
+    "file=${BINARY_PATH}" \
+    "file=${HELPER_PATH}" \
+    "symlink=${HELPER_ALIAS_PATH}" \
+    "file=${CONFIG_FILE}" \
+    "file=${STATE_FILE}" \
+    "file=${USERS_FILE}" \
+    "file=${SETTINGS_FILE}" \
+    "file=${URI_FILE}" \
+    "file=${CHECKSUM_FILE}" \
+    "file=${VERSION_FILE}" \
+    "file=${INSTALL_MANIFEST_FILE}" \
+    "file=${LOCK_FILE}" \
+    "file=${SYSTEMD_UNIT}" \
+    "file=${COMMON_FILE}" \
+    "file=${ACCOUNTD_PY}" \
+    "file=${EVENT_SCHEMA_FILE}" \
+    "file=${ACCOUNTD_UNIT}"; do
+    grep -qxF "$expected" "$INSTALL_MANIFEST_FILE" \
+      || refuse_uninstall "install.manifest is missing ${expected}; refusing destructive uninstall."
+  done
+}
+
+is_vincula_backup_dir() {
+  local dir=$1
+  [[ -d "$dir" ]] || return 1
+  if [[ -f "${dir}/${BACKUP_MARKER}" ]]; then
+    grep -q '^project=vincula$' "${dir}/${BACKUP_MARKER}" || return 1
+    grep -Eq '^type=(migration-backup|mutation-backup)$' "${dir}/${BACKUP_MARKER}" || return 1
+    return 0
+  fi
+  [[ -f "${dir}/state.json" ]] || return 1
+  grep -q '"project_version"' "${dir}/state.json" || return 1
+  grep -q '"reality_private_key"' "${dir}/state.json" || return 1
+}
+
+passwd_identity_matches() {
+  local expected_uid=$1 expected_gid=$2 expected_home=$3 expected_shell=$4
+  local actual_uid=$5 actual_gid=$6 actual_home=$7 actual_shell=$8
+  [[ "$expected_uid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$expected_gid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -n "$expected_home" && -n "$expected_shell" ]] || return 1
+  [[ "$expected_uid" == "$actual_uid" && "$expected_gid" == "$actual_gid" && "$expected_home" == "$actual_home" && "$expected_shell" == "$actual_shell" ]]
+}
+
+stop_runtime_for_uninstall() {
+  local main_pid
+  if systemctl cat vincula-accountd.service >/dev/null 2>&1; then
+    systemctl disable vincula-accountd.service >/dev/null 2>&1 || true
+    systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
+    printf '✓ vincula-accountd.service stopped and disabled\n'
+  fi
+  if systemctl cat sing-box.service >/dev/null 2>&1; then
+    systemctl disable sing-box.service >/dev/null 2>&1 || true
+    if ! systemctl stop sing-box.service >/dev/null 2>&1; then
+      refuse_uninstall "Failed to stop sing-box.service; no files were removed."
+    fi
+  else
+    printf '! sing-box.service is not loadable; continuing.\n'
+  fi
+  if systemctl is-active --quiet sing-box.service 2>/dev/null; then
+    refuse_uninstall "sing-box.service is still active; no files were removed."
+  fi
+  main_pid=$(systemctl show -p MainPID --value sing-box.service 2>/dev/null || true)
+  if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]; then
+    refuse_uninstall "sing-box.service still has MainPID ${main_pid}; no files were removed."
+  fi
+  printf '✓ sing-box.service stopped and disabled\n'
+}
+
+remove_vincula_backups() {
+  local dir preserved_any=0
+  if [[ ! -d "$BACKUP_ROOT" ]]; then
+    return 0
+  fi
+  shopt -s nullglob
+  for dir in "$BACKUP_ROOT"/*; do
+    if [[ -d "$dir" ]] && is_vincula_backup_dir "$dir"; then
+      rm -rf --one-file-system -- "$dir"
+      printf '✓ Removed migration backup %s\n' "$dir"
+    elif [[ -e "$dir" || -L "$dir" ]]; then
+      printf '! %s is not a Vincula migration backup; preserved.\n' "$dir"
+      preserved_any=1
+    fi
+  done
+  shopt -u nullglob
+  if rmdir -- "$BACKUP_ROOT" 2>/dev/null; then
+    printf '✓ Removed %s\n' "$BACKUP_ROOT"
+  elif [[ -d "$BACKUP_ROOT" ]]; then
+    printf '! %s contains unmanaged files; directory preserved.\n' "$BACKUP_ROOT"
+    preserved_any=1
+  fi
+  return "$preserved_any"
+}
+
+remove_service_account_if_owned() {
+  local created_user=$1 created_group=$2 expected_uid=$3 expected_gid=$4 expected_home=$5 expected_shell=$6
+  local entry actual_uid actual_gid actual_home actual_shell members
+  if [[ "$created_user" != true ]]; then
+    printf '! sing-box system account was not created by Vincula and was preserved\n'
+    return 1
+  fi
+  if ! entry=$(getent passwd "$SERVICE_USER"); then
+    printf '! sing-box service user is already absent\n'
+    return 0
+  fi
+  actual_uid=$(cut -d: -f3 <<< "$entry")
+  actual_gid=$(cut -d: -f4 <<< "$entry")
+  actual_home=$(cut -d: -f6 <<< "$entry")
+  actual_shell=$(cut -d: -f7 <<< "$entry")
+  if ! passwd_identity_matches "$expected_uid" "$expected_gid" "$expected_home" "$expected_shell" \
+      "$actual_uid" "$actual_gid" "$actual_home" "$actual_shell"; then
+    printf '! service account identity changed; preserved\n'
+    return 1
+  fi
+  if ! userdel "$SERVICE_USER" >/dev/null 2>&1; then
+    printf '! Could not remove service user %s; preserved.\n' "$SERVICE_USER"
+    return 1
+  fi
+  printf '✓ Removed service user %s\n' "$SERVICE_USER"
+  if [[ "$created_group" != true ]]; then
+    printf '✓ Vincula-created service account removed\n'
+    return 0
+  fi
+  if ! getent group "$SERVICE_GROUP" >/dev/null; then
+    printf '✓ Vincula-created service account removed\n'
+    return 0
+  fi
+  members=$(getent group "$SERVICE_GROUP" | cut -d: -f4)
+  if [[ -n "$members" ]]; then
+    printf '! %s group is still in use; preserved.\n' "$SERVICE_GROUP"
+    return 1
+  fi
+  if getent passwd | awk -F: -v gid="$expected_gid" '$4 == gid { found=1 } END { exit found ? 0 : 1 }'; then
+    printf '! %s group is still in use; preserved.\n' "$SERVICE_GROUP"
+    return 1
+  fi
+  if groupdel "$SERVICE_GROUP" >/dev/null 2>&1; then
+    printf '✓ Removed service group %s\n' "$SERVICE_GROUP"
+  else
+    printf '! %s group is still in use; preserved.\n' "$SERVICE_GROUP"
+    return 1
+  fi
+  printf '✓ Vincula-created service account removed\n'
+  return 0
+}
+
+post_uninstall_verify() {
+  if systemctl cat sing-box.service >/dev/null 2>&1; then
+    die "Post-uninstall verification failed: sing-box.service is still loadable."
+  fi
+  if systemctl is-active --quiet sing-box.service 2>/dev/null; then
+    die "Post-uninstall verification failed: sing-box.service is still active."
+  fi
+  [[ ! -e "$BINARY_PATH" && ! -L "$BINARY_PATH" ]] \
+    || die "Post-uninstall verification failed: ${BINARY_PATH} still exists."
+  [[ ! -e "$HELPER_PATH" && ! -L "$HELPER_PATH" ]] \
+    || die "Post-uninstall verification failed: ${HELPER_PATH} still exists."
+  if [[ -L "$HELPER_ALIAS_PATH" ]] && [[ "$(readlink -- "$HELPER_ALIAS_PATH")" == "$HELPER_PATH" ]]; then
+    die "Post-uninstall verification failed: Vincula vcl symlink still exists."
+  fi
+  [[ ! -e "$VERSION_FILE" && ! -L "$VERSION_FILE" ]] \
+    || die "Post-uninstall verification failed: ${VERSION_FILE} still exists."
+  [[ ! -e "$INSTALL_MANIFEST_FILE" && ! -L "$INSTALL_MANIFEST_FILE" ]] \
+    || die "Post-uninstall verification failed: ${INSTALL_MANIFEST_FILE} still exists."
+}
+
+cmd_uninstall() {
+  local skip_confirm=${1:-0}
+  local preserved=0
+  local answer created_user=false created_group=false
+  local expected_uid expected_gid expected_home expected_shell
+  local path
+
+  verify_uninstall_preflight
+  if service_account_flag "$STATE_FILE" created_by_vincula; then
+    created_user=true
+  fi
+  if service_account_flag "$STATE_FILE" group_created_by_vincula; then
+    created_group=true
+  fi
+  expected_uid=$(json_numeric_field "$STATE_FILE" uid)
+  expected_gid=$(json_numeric_field "$STATE_FILE" gid)
+  expected_home=$(json_quoted_field "$STATE_FILE" home)
+  expected_shell=$(json_quoted_field "$STATE_FILE" shell)
+
+  if (( skip_confirm == 0 )); then
+    printf 'Vincula uninstall\n\n'
+    printf 'The following Vincula-managed resources will be removed:\n\n'
+    printf '  sing-box.service\n'
+    printf '  vincula-accountd.service\n'
+    printf '  %s\n' "$BINARY_PATH"
+    printf '  %s\n' "$HELPER_PATH"
+    printf '  %s\n' "$HELPER_ALIAS_PATH"
+    printf '  %s/*\n' "$LIB_DIR"
+    printf '  %s\n' "$CONFIG_FILE"
+    printf '  %s/*\n' "$STATE_DIR"
+    printf '  %s\n' "$BACKUP_ROOT"
+    printf '  managed sing-box service account\n'
+    printf '\nThe current node credentials will be permanently removed.\n'
+    printf 'Historical accounting data (accounting.db / events.jsonl) will be permanently removed.\n\n'
+    printf 'Continue? [y/N]: '
+    if ! read -r answer; then
+      answer=""
+    fi
+    if ! is_uninstall_affirmative "$answer"; then
+      printf 'Uninstall cancelled.\n'
+      exit 0
+    fi
+    printf '\n'
+  fi
+
+  stop_runtime_for_uninstall
+
+  if [[ -f "$ACCOUNTD_UNIT" || -L "$ACCOUNTD_UNIT" ]]; then
+    rm -f -- "$ACCOUNTD_UNIT"
+    printf '✓ Removed %s\n' "$ACCOUNTD_UNIT"
+  fi
+  if [[ -f "$SYSTEMD_UNIT" || -L "$SYSTEMD_UNIT" ]]; then
+    rm -f -- "$SYSTEMD_UNIT"
+    printf '✓ Removed %s\n' "$SYSTEMD_UNIT"
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl reset-failed sing-box.service >/dev/null 2>&1 || true
+  systemctl reset-failed vincula-accountd.service >/dev/null 2>&1 || true
+  printf '✓ systemd unit removed\n'
+
+  for path in \
+    "$CONFIG_FILE" \
+    "$URI_FILE" \
+    "$USERS_FILE" \
+    "$SETTINGS_FILE" \
+    "$STATE_FILE" \
+    "$CHECKSUM_FILE" \
+    "$LOCK_FILE" \
+    "$ACCOUNTD_PY" \
+    "$EVENT_SCHEMA_FILE" \
+    "$ACCOUNTING_DB_FILE" \
+    "$EVENTS_JSONL_FILE" \
+    "$COMMON_FILE"; do
+    remove_managed_file "$path"
+  done
+  printf '✓ Vincula-managed sing-box configuration removed\n'
+
+  if ! remove_managed_symlink "$HELPER_ALIAS_PATH" "$HELPER_PATH"; then
+    preserved=1
+  fi
+  remove_managed_file "$HELPER_PATH"
+  printf '✓ Vincula helper removed\n'
+
+  remove_managed_file "$BINARY_PATH"
+  printf '✓ sing-box binary removed\n'
+
+  remove_managed_file "$VERSION_FILE"
+  remove_managed_file "$INSTALL_MANIFEST_FILE"
+  printf '✓ Vincula state removed\n'
+
+  if ! remove_vincula_backups; then
+    preserved=1
+  fi
+
+  if ! remove_directory_if_empty "$SING_BOX_DIR"; then
+    preserved=1
+  fi
+  if ! remove_directory_if_empty "$STATE_DIR"; then
+    preserved=1
+  fi
+  if ! remove_directory_if_empty "$LIB_DIR"; then
+    preserved=1
+  fi
+  if ! remove_directory_if_empty "$VAR_LIB_SING_BOX"; then
+    preserved=1
+  fi
+  if ! remove_directory_if_empty "$VAR_LIB_VINCULA"; then
+    preserved=1
+  fi
+
+  if remove_service_account_if_owned "$created_user" "$created_group" \
+      "$expected_uid" "$expected_gid" "$expected_home" "$expected_shell"; then
+    :
+  else
+    preserved=1
+  fi
+
+  post_uninstall_verify
+  printf '✓ No managed installation remains\n'
+  printf '✓ Post-uninstall verification passed\n\n'
+
+  if (( preserved == 1 )); then
+    printf 'Vincula has been removed.\n'
+    printf 'Some unmanaged resources were intentionally preserved.\n'
+  else
+    printf 'Vincula has been completely removed.\n\n'
+    printf 'The system is ready for a clean Vincula installation.\n'
+  fi
+}
+
+cmd_info() {
+  local service_state
+  service_state=$(systemctl is-active sing-box.service 2>/dev/null || true)
+  printf 'vincula:            %s\n' "$(< "$VERSION_FILE")"
+  printf 'sing-box:           %s\n' "$($BINARY_PATH version | awk 'NR==1 {print $3}')"
+  printf 'architecture:       %s\n' "$(toml_value architecture)"
+  printf 'server:             %s\n' "$(toml_value server)"
+  printf 'port:               %s\n' "$(toml_value port)"
+  printf 'REALITY server/SNI: %s\n' "$(toml_value reality_server_name)"
+  printf 'service:            %s\n' "${service_state:-unknown}"
+}
+
+cmd_status() {
+  local port active=0 listening=0 owned=0
+  port=$(toml_value port)
+  if systemctl is-active --quiet sing-box.service; then
+    printf '✓ sing-box.service active\n'
+    active=1
+  else
+    printf '✗ sing-box.service inactive\n' >&2
+  fi
+  if port_is_listening "$port"; then
+    printf '✓ TCP %s listening\n' "$port"
+    listening=1
+  else
+    printf '✗ TCP %s not listening\n' "$port" >&2
+  fi
+  if port_owned_by_sing_box "$port"; then
+    printf '✓ TCP %s owned by sing-box\n' "$port"
+    owned=1
+  else
+    printf '✗ TCP %s not owned by sing-box\n' "$port" >&2
+  fi
+  (( active == 1 && listening == 1 && owned == 1 ))
+}
+
+cmd_check() {
+  if sha256sum --check --status "$CHECKSUM_FILE"; then
+    printf '✓ sing-box binary SHA-256 verified\n'
+  else
+    die "sing-box binary SHA-256 mismatch."
+  fi
+  "$BINARY_PATH" check -c "$CONFIG_FILE"
+  printf '✓ sing-box configuration valid\n'
+}
+
+cmd_verify() {
+  local fail=0
+  printf '[Node identity]\n\n'
+  verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" || fail=1
+  printf '\n[Users]\n\n'
+  verify_users_in_config "$USERS_FILE" "$CONFIG_FILE" || fail=1
+  printf '\n[Accounting Plane]\n\n'
+  if [[ -f "$ACCOUNTD_PY" ]]; then
+    printf '✓ accountd artifact\n'
+  else
+    printf '✗ accountd artifact\n'
+    fail=1
+  fi
+  if [[ -f "$ACCOUNTD_UNIT" ]] && grep -q '^# Managed-By: vincula$' "$ACCOUNTD_UNIT"; then
+    printf '✓ accountd unit\n'
+  else
+    printf '✗ accountd unit\n'
+    fail=1
+  fi
+  if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then
+    printf '✓ accountd service active\n'
+  else
+    printf '✗ accountd service active\n'
+    fail=1
+  fi
+  if [[ -r "$ACCOUNTING_DB_FILE" ]]; then
+    printf '✓ SQLite database readable\n'
+  else
+    printf '✗ SQLite database readable\n'
+    fail=1
+  fi
+  (( fail == 0 ))
+}
+
+cmd_diagnose() {
+  local fail=0 port reality_host advertised uuid private_key public_key short_id actual_version
+  local d_green d_red d_yellow d_reset
+  if [[ -t 1 ]]; then
+    d_green=$'\033[32m'
+    d_red=$'\033[31m'
+    d_yellow=$'\033[33m'
+    d_reset=$'\033[0m'
+  else
+    d_green=""
+    d_red=""
+    d_yellow=""
+    d_reset=""
+  fi
+
+  diag_ok() { printf '%s✓%s %s\n' "$d_green" "$d_reset" "$1"; }
+  diag_fail() { printf '%s✗%s %s\n' "$d_red" "$d_reset" "$1"; fail=1; }
+  diag_unknown() { printf '%s?%s %s\n' "$d_yellow" "$d_reset" "$1"; }
+
+  port=$(toml_value port)
+  reality_host=$(toml_value reality_server_name)
+  advertised=$(toml_value server)
+  actual_version=$("$BINARY_PATH" version 2>/dev/null | awk 'NR==1 {print $3}')
+  uuid=$(owner_active_uuid_from_registry "$USERS_FILE")
+  private_key=$(json_quoted_field "$STATE_FILE" reality_private_key)
+  public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+
+  printf 'Vincula diagnostics\n'
+
+  printf '\n[Installation]\n'
+  if [[ -f "$VERSION_FILE" && -f "$STATE_FILE" && -f "$SETTINGS_FILE" ]]; then
+    diag_ok "vincula state present"
+  else
+    diag_fail "vincula state present"
+  fi
+  if [[ -n "$actual_version" ]]; then
+    diag_ok "sing-box ${actual_version}"
+  else
+    diag_fail "sing-box version unavailable"
+  fi
+  if sha256sum --check --status "$CHECKSUM_FILE"; then
+    diag_ok "binary SHA-256 verified"
+  else
+    diag_fail "binary SHA-256 verified"
+  fi
+
+  printf '\n[Configuration]\n'
+  if "$BINARY_PATH" check -c "$CONFIG_FILE" >/dev/null 2>&1; then
+    diag_ok "sing-box check"
+  else
+    diag_fail "sing-box check"
+  fi
+  if grep -q '"type": "vless"' "$CONFIG_FILE"; then
+    diag_ok "VLESS inbound present"
+  else
+    diag_fail "VLESS inbound present"
+  fi
+  if grep -q '"flow": "xtls-rprx-vision"' "$CONFIG_FILE"; then
+    diag_ok "xtls-rprx-vision configured"
+  else
+    diag_fail "xtls-rprx-vision configured"
+  fi
+  if grep -q '"reality"' "$CONFIG_FILE"; then
+    diag_ok "Reality configured"
+  else
+    diag_fail "Reality configured"
+  fi
+
+  printf '\n[Service]\n'
+  if systemctl is-active --quiet sing-box.service; then
+    diag_ok "systemd active"
+  else
+    diag_fail "systemd active"
+  fi
+  if [[ -n "$port" ]] && port_is_listening "$port"; then
+    diag_ok "TCP ${port} listening"
+  else
+    diag_fail "TCP ${port:-?} listening"
+  fi
+  if [[ -n "$port" ]] && port_owned_by_sing_box "$port"; then
+    diag_ok "listener owned by sing-box"
+  else
+    diag_fail "listener owned by sing-box"
+  fi
+
+  printf '\n[Reality target]\n'
+  if [[ -n "$reality_host" ]] && host_resolves "$reality_host"; then
+    diag_ok "${reality_host} resolves"
+  else
+    diag_fail "${reality_host:-REALITY host} resolves"
+  fi
+  if [[ -n "$reality_host" ]] && tcp_443_reachable "$reality_host"; then
+    diag_ok "TCP ${reality_host}:443 reachable"
+  else
+    diag_fail "TCP ${reality_host:-REALITY host}:443 reachable"
+  fi
+  if [[ -n "$reality_host" ]] && https_reachable "$reality_host"; then
+    diag_ok "HTTPS/TLS handshake reachable"
+  else
+    diag_fail "HTTPS/TLS handshake reachable"
+  fi
+  if [[ -n "$uuid" && -n "$private_key" && -n "$public_key" && -n "$short_id" && -n "$reality_host" ]] \
+    && run_reality_self_test "$BINARY_PATH" "$uuid" "$private_key" "$public_key" "$short_id" "$reality_host"; then
+    diag_ok "REALITY end-to-end self-test"
+  else
+    diag_fail "REALITY end-to-end self-test"
+  fi
+
+  printf '\n[Network]\n'
+  if ipv4_outbound_available; then
+    diag_ok "outbound IPv4 available"
+  else
+    diag_fail "outbound IPv4 available"
+  fi
+  if dns_resolution_working; then
+    diag_ok "DNS resolution working"
+  else
+    diag_fail "DNS resolution working"
+  fi
+
+  printf '\n[Client]\n'
+  if [[ -s "$URI_FILE" ]]; then
+    diag_ok "URI exists"
+  else
+    diag_fail "URI exists"
+  fi
+  if [[ -n "$advertised" ]]; then
+    diag_ok "advertised server: ${advertised}"
+  else
+    diag_fail "advertised server missing"
+  fi
+  if [[ -n "$reality_host" ]]; then
+    diag_ok "SNI: ${reality_host}"
+  else
+    diag_fail "SNI missing"
+  fi
+
+  printf '\n[External]\n'
+  diag_unknown "Cloud firewall / Internet → VPS reachability cannot be tested locally"
+
+  printf '\nOverall:\n'
+  if (( fail == 0 )); then
+    printf 'PASS\n'
+  else
+    printf 'FAIL\n'
+    return 1
+  fi
+}
+
+cmd_restart() {
+  local port
+  port=$(toml_value port)
+  cmd_check
+  systemctl restart sing-box.service
+  if wait_healthy "$port"; then
+    printf '✓ sing-box restarted and TCP %s is owned by sing-box\n' "$port"
+  else
+    journalctl -u sing-box.service -n 30 --no-pager >&2 || true
+    die "sing-box did not become healthy after restart."
+  fi
+}
+
+cmd_logs() {
+  local arg=${1:-}
+  case "$arg" in
+    "")
+      journalctl -u sing-box.service -n 100 --no-pager
+      ;;
+    -f|--follow)
+      journalctl -u sing-box.service -n 100 -f
+      ;;
+    *)
+      if [[ ! "$arg" =~ ^[1-9][0-9]*$ ]] || (( 10#$arg > 5000 )); then
+        die "Use 'vcl logs', 'vcl logs <1-5000>', or 'vcl logs -f'."
+      fi
+      journalctl -u sing-box.service -n "$arg" --no-pager
+      ;;
+  esac
+}
+
+
+node_id_from_settings() {
+  local node_id
+  node_id=$(toml_get "$SETTINGS_FILE" node_id || true)
+  [[ -n "$node_id" ]] || node_id=$(json_quoted_field "$STATE_FILE" node_id || true)
+  [[ -n "$node_id" && "$node_id" != "local" ]] || die "node_id missing from config.toml; re-run installer migration."
+  printf '%s\n' "$node_id"
+}
+
+write_mutation_backup_marker() {
+  local dir=$1
+  cat > "${dir}/${BACKUP_MARKER}" <<EOF
+project=vincula
+type=mutation-backup
+version=${VINCULA_VERSION}
+source_version=${VINCULA_VERSION}
+EOF
+  chmod 0600 "${dir}/${BACKUP_MARKER}"
+}
+
+backup_user_mutation() {
+  local name path
+  USER_MUTATION_BACKUP="${BACKUP_ROOT}/mutation-$(date -u +'%Y%m%dT%H%M%SZ')"
+  install -d -o root -g root -m 0700 "$BACKUP_ROOT"
+  install -d -o root -g root -m 0700 "$USER_MUTATION_BACKUP"
+  for path in "$CONFIG_FILE" "$USERS_FILE" "$URI_FILE" "$STATE_FILE" "$SETTINGS_FILE"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      name=$(basename -- "$path")
+      cp -a -- "$path" "${USER_MUTATION_BACKUP}/${name}"
+    fi
+  done
+  write_mutation_backup_marker "$USER_MUTATION_BACKUP"
+}
+
+restore_user_mutation() {
+  local name path mode owner group
+  [[ -n "${USER_MUTATION_BACKUP:-}" && -d "$USER_MUTATION_BACKUP" ]] || return 1
+  for name in config.json users.json owner.uri state.json config.toml; do
+    if [[ -f "${USER_MUTATION_BACKUP}/${name}" ]]; then
+      case "$name" in
+        config.json) path=$CONFIG_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
+        users.json) path=$USERS_FILE; mode=0600; owner=root; group=root ;;
+        owner.uri) path=$URI_FILE; mode=0600; owner=root; group=root ;;
+        state.json) path=$STATE_FILE; mode=0600; owner=root; group=root ;;
+        config.toml) path=$SETTINGS_FILE; mode=0600; owner=root; group=root ;;
+        *) continue ;;
+      esac
+      install -m "$mode" -o "$owner" -g "$group" "${USER_MUTATION_BACKUP}/${name}" "$path"
+    fi
+  done
+  systemctl restart sing-box.service >/dev/null 2>&1 || true
+}
+
+atomic_install_file() {
+  local src=$1 dest=$2 mode=$3 owner=$4 group=$5
+  local tmp
+  tmp="${dest}.new.$$"
+  install -m "$mode" -o "$owner" -g "$group" "$src" "$tmp"
+  mv -f -- "$tmp" "$dest"
+}
+
+render_config_from_registry() {
+  local output=$1
+  local users_src=${2:-$USERS_FILE}
+  local private_key short_id port reality_host listen clash_port clash_secret
+  private_key=$(json_quoted_field "$STATE_FILE" reality_private_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
+  [[ -n "$reality_host" ]] || reality_host=$(json_quoted_field "$STATE_FILE" reality_server_name)
+  listen=$(toml_get "$SETTINGS_FILE" listen || true)
+  [[ -n "$listen" ]] || listen=$(json_quoted_field "$STATE_FILE" listen || true)
+  [[ -n "$listen" ]] || listen="0.0.0.0"
+  clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
+  [[ -n "$clash_port" ]] || clash_port=9090
+  clash_secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
+  [[ -n "$clash_secret" ]] || clash_secret=""
+  render_sing_box_config_accounting "$output" "$users_src" "$private_key" "$short_id" \
+    "$port" "$reality_host" "$listen" "$clash_port" "$clash_secret" true
+}
+
+regenerate_owner_uri() {
+  local output=$1
+  local users_src=${2:-$USERS_FILE}
+  local uuid server port reality_host public_key short_id
+  uuid=$(owner_active_uuid_from_registry "$users_src")
+  server=$(toml_get "$SETTINGS_FILE" server)
+  [[ -n "$server" ]] || server=$(json_quoted_field "$STATE_FILE" server)
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
+  [[ -n "$reality_host" ]] || reality_host=$(json_quoted_field "$STATE_FILE" reality_server_name)
+  public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+  render_vless_uri "$uuid" "$server" "$port" "$reality_host" "$public_key" "$short_id" owner > "$output"
+}
+
+commit_user_mutation() {
+  local staged_users=$1 staged_config=$2 staged_uri=$3 staged_state=${4:-}
+  local port
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+
+  "$BINARY_PATH" check -c "$staged_config" >/dev/null
+  atomic_install_file "$staged_config" "$CONFIG_FILE" 0640 root "$SERVICE_GROUP"
+  atomic_install_file "$staged_users" "$USERS_FILE" 0600 root root
+  atomic_install_file "$staged_uri" "$URI_FILE" 0600 root root
+  if [[ -n "$staged_state" && -f "$staged_state" ]]; then
+    atomic_install_file "$staged_state" "$STATE_FILE" 0600 root root
+  fi
+  systemctl restart sing-box.service
+  if ! wait_healthy "$port"; then
+    restore_user_mutation || true
+    die "sing-box did not become healthy after user mutation; restore attempted from ${USER_MUTATION_BACKUP:-unknown}."
+  fi
+}
+
+user_mutation_apply() {
+  local staged_users=$1
+  local staged_dir staged_config staged_uri staged_state owner_uuid
+  staged_dir=$(dirname -- "$staged_users")
+  staged_config="${staged_dir}/config.json"
+  staged_uri="${staged_dir}/owner.uri"
+  staged_state="${staged_dir}/state.json"
+
+  # USERS_FILE is readonly; pass staged path explicitly (do not reassign).
+  render_config_from_registry "$staged_config" "$staged_users"
+  regenerate_owner_uri "$staged_uri" "$staged_users"
+  owner_uuid=$(owner_active_uuid_from_registry "$staged_users")
+  : "${owner_uuid:?owner uuid missing from staged registry}"
+
+  cp -a -- "$STATE_FILE" "$staged_state"
+  # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
+
+  commit_user_mutation "$staged_users" "$staged_config" "$staged_uri" "$staged_state"
+  rm -rf --one-file-system -- "$staged_dir"
+  printf '✓ user registry updated\n'
+}
+
+cmd_user_add() {
+  local tag=$1
+  shift
+  local display_name="" department=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --display-name)
+        [[ $# -ge 2 ]] || die "user add: --display-name requires a value."
+        display_name=$2
+        shift 2
+        ;;
+      --department)
+        [[ $# -ge 2 ]] || die "user add: --department requires a value."
+        department=$2
+        shift 2
+        ;;
+      *)
+        die "user add: unknown option ${1}."
+        ;;
+    esac
+  done
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  [[ -n "$display_name" ]] || display_name=$tag
+  local node_id uuid staged_dir staged_users
+  node_id=$(node_id_from_settings)
+  uuid=$("$BINARY_PATH" generate uuid)
+  [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
+
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  cp -a -- "$USERS_FILE" "$staged_users"
+  if ! users_registry_mutate "$staged_users" add "$tag" "$display_name" "$department" "$uuid" "$node_id"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "failed to add user ${tag}."
+  fi
+  user_mutation_apply "$staged_users"
+  printf 'User %s added.\n' "$tag"
+}
+
+cmd_user_remove() {
+  local tag=$1
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  [[ "$tag" != owner ]] || die "refusing to remove the owner user."
+  local staged_dir staged_users
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  cp -a -- "$USERS_FILE" "$staged_users"
+  if ! users_registry_mutate "$staged_users" remove "$tag"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "failed to remove user ${tag}."
+  fi
+  user_mutation_apply "$staged_users"
+  printf 'User %s removed.\n' "$tag"
+}
+
+cmd_user_disable() {
+  local tag=$1
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  local staged_dir staged_users
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  cp -a -- "$USERS_FILE" "$staged_users"
+  if ! users_registry_mutate "$staged_users" disable "$tag"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "failed to disable user ${tag}."
+  fi
+  user_mutation_apply "$staged_users"
+  printf 'User %s disabled.\n' "$tag"
+}
+
+cmd_user_enable() {
+  local tag=$1
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  local staged_dir staged_users
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  cp -a -- "$USERS_FILE" "$staged_users"
+  if ! users_registry_mutate "$staged_users" enable "$tag"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "failed to enable user ${tag}."
+  fi
+  user_mutation_apply "$staged_users"
+  printf 'User %s enabled.\n' "$tag"
+}
+
+cmd_user_rotate() {
+  local tag=$1
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  local node_id uuid staged_dir staged_users
+  node_id=$(node_id_from_settings)
+  uuid=$("$BINARY_PATH" generate uuid)
+  [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
+  USER_MUTATION_BACKUP=""
+  backup_user_mutation
+  staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
+  staged_users="${staged_dir}/users.json"
+  cp -a -- "$USERS_FILE" "$staged_users"
+  if ! users_registry_mutate "$staged_users" rotate "$tag" "$uuid" "$node_id"; then
+    rm -rf --one-file-system -- "$staged_dir"
+    die "failed to rotate user ${tag}."
+  fi
+  user_mutation_apply "$staged_users"
+  printf 'User %s credential rotated.\n' "$tag"
+}
+
+cmd_user_list() {
+  users_registry_list "$USERS_FILE"
+}
+
+cmd_user_show() {
+  local tag=$1
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  users_registry_show "$USERS_FILE" "$tag"
+}
+
+cmd_user_link() {
+  local tag=$1
+  local uuid server port reality_host public_key short_id
+  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+  uuid=$(active_uuid_for_tag "$USERS_FILE" "$tag")
+  server=$(toml_get "$SETTINGS_FILE" server)
+  [[ -n "$server" ]] || server=$(json_quoted_field "$STATE_FILE" server)
+  port=$(toml_get "$SETTINGS_FILE" port)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  reality_host=$(toml_get "$SETTINGS_FILE" reality_server_name)
+  [[ -n "$reality_host" ]] || reality_host=$(json_quoted_field "$STATE_FILE" reality_server_name)
+  public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+  render_vless_uri "$uuid" "$server" "$port" "$reality_host" "$public_key" "$short_id" "$tag"
+}
+
+cmd_user() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    add)
+      [[ $# -ge 1 ]] || die "usage: vcl user add <tag> [--display-name NAME] [--department DEPT]"
+      cmd_user_add "$@"
+      ;;
+    remove)
+      [[ $# == 1 ]] || die "usage: vcl user remove <tag>"
+      cmd_user_remove "$1"
+      ;;
+    disable)
+      [[ $# == 1 ]] || die "usage: vcl user disable <tag>"
+      cmd_user_disable "$1"
+      ;;
+    enable)
+      [[ $# == 1 ]] || die "usage: vcl user enable <tag>"
+      cmd_user_enable "$1"
+      ;;
+    rotate)
+      [[ $# == 1 ]] || die "usage: vcl user rotate <tag>"
+      cmd_user_rotate "$1"
+      ;;
+    list)
+      [[ $# == 0 ]] || die "user list takes no arguments."
+      cmd_user_list
+      ;;
+    show)
+      [[ $# == 1 ]] || die "usage: vcl user show <tag>"
+      cmd_user_show "$1"
+      ;;
+    link)
+      [[ $# == 1 ]] || die "usage: vcl user link <tag>"
+      cmd_user_link "$1"
+      ;;
+    ""|help|-h|--help)
+      printf 'Usage: vcl user add|remove|disable|enable|rotate|list|show|link ...\n'
+      ;;
+    *)
+      die "Unknown user subcommand: ${sub}. Run 'vcl help'."
+      ;;
+  esac
+}
+
+
+cmd_accounting() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    status)
+      [[ $# == 0 ]] || die "usage: vcl accounting status"
+      local acc_state clash_port
+      acc_state=$(systemctl is-active vincula-accountd.service 2>/dev/null || true)
+      clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
+      [[ -n "$clash_port" ]] || clash_port=9090
+      printf 'vincula-accountd:   %s\n' "${acc_state:-unknown}"
+      printf 'clash_api:          127.0.0.1:%s (localhost only)\n' "$clash_port"
+      printf 'accounting.db:      %s\n' "$ACCOUNTING_DB_FILE"
+      printf 'events.jsonl:       %s\n' "$EVENTS_JSONL_FILE"
+      printf 'note:               polling ≠ exact billing\n'
+      if [[ -f "$EVENTS_JSONL_FILE" ]]; then
+        printf 'ingest:             events.jsonl preferred when present\n'
+      else
+        printf 'ingest:             Clash API poll (no events.jsonl yet)\n'
+      fi
+      if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
+        python3 - "$ACCOUNTING_DB_FILE" <<'PY'
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+except sqlite3.Error as exc:
+    print(f"db:                 unavailable ({exc})")
+    raise SystemExit(0)
+open_n = conn.execute("SELECT COUNT(*) FROM connections WHERE closed_at IS NULL").fetchone()[0]
+total = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
+print(f"connections open:   {open_n}")
+print(f"connections total:  {total}")
+conn.close()
+PY
+      fi
+      ;;
+    "")
+      die "usage: vcl accounting status"
+      ;;
+    *)
+      die "Unknown accounting subcommand: ${sub}. Use 'vcl accounting status'."
+      ;;
+  esac
+}
+
+warn_if_accounting_stale() {
+  # R24: never present SQLite rows as live when the collector is down/stale.
+  local acc_state last_ok
+  acc_state=$(systemctl is-active vincula-accountd.service 2>/dev/null || true)
+  if [[ "$acc_state" != "active" ]]; then
+    printf 'WARNING: accounting subsystem unavailable (vincula-accountd is %s). Showing stored SQLite data only — not a live view.\n' "${acc_state:-unknown}" >&2
+    return 0
+  fi
+  if [[ ! -r "$ACCOUNTING_DB_FILE" ]]; then
+    printf 'WARNING: accounting.db unreadable; stats may be incomplete.\n' >&2
+    return 0
+  fi
+  last_ok=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+from datetime import datetime, timezone
+conn = sqlite3.connect(sys.argv[1])
+row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+conn.close()
+if not row:
+    print("missing")
+    raise SystemExit(0)
+ts = row[0]
+if ts.endswith("Z"):
+    ts = ts[:-1] + "+00:00"
+when = datetime.fromisoformat(ts)
+if when.tzinfo is None:
+    when = when.replace(tzinfo=timezone.utc)
+age = (datetime.now(timezone.utc) - when).total_seconds()
+print("stale" if age > 300 else "ok")
+PY
+)
+  if [[ "$last_ok" == "missing" || "$last_ok" == "stale" ]]; then
+    printf 'WARNING: accounting data may be stale (collector last_success_at %s / >5m). Not a real-time view.\n' "${last_ok}" >&2
+  fi
+}
+
+cmd_connections() {
+  local limit=${1:-30}
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "connections limit must be a positive integer."
+  require_python3 || die "python3 is required for connections."
+  warn_if_accounting_stale
+  python3 - "$ACCOUNTING_DB_FILE" "$limit" <<'PY'
+import sqlite3, sys
+db, limit = sys.argv[1], int(sys.argv[2])
+try:
+    conn = sqlite3.connect(db)
+except sqlite3.Error as exc:
+    print(f"ERROR: cannot open accounting DB: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+conn.row_factory = sqlite3.Row
+rows = conn.execute(
+    """
+    SELECT connection_id, user_tag, destination_host, destination_ip,
+           upload_bytes, download_bytes, started_at, closed_at, last_seen_at
+    FROM connections
+    ORDER BY COALESCE(closed_at, last_seen_at) DESC
+    LIMIT ?
+    """,
+    (limit,),
+).fetchall()
+print(f"{'USER':<16} {'DEST':<28} {'UP':>10} {'DOWN':>10} {'CLOSED':<20}")
+for r in rows:
+    dest = r["destination_host"] or r["destination_ip"] or "(unknown)"
+    closed = r["closed_at"] or "(open)"
+    print(f"{r['user_tag']:<16} {dest[:28]:<28} {r['upload_bytes']:>10} {r['download_bytes']:>10} {closed:<20}")
+if not rows:
+    print("(no connection rows yet — approximate accounting starts after traffic)")
+conn.close()
+PY
+}
+
+cmd_stats() {
+  local json=0 days=1 user_tag="" department="" top=0 mode="summary"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --today) days=1; shift ;;
+      --days)
+        [[ $# -ge 2 ]] || die "stats --days requires N"
+        days=$2
+        [[ "$days" =~ ^[1-9][0-9]*$ ]] || die "stats --days N must be a positive integer"
+        shift 2
+        ;;
+      --top)
+        [[ $# -ge 2 ]] || die "stats --top requires N"
+        top=$2
+        [[ "$top" =~ ^[1-9][0-9]*$ ]] || die "stats --top N must be a positive integer"
+        shift 2
+        ;;
+      today)
+        days=1
+        mode="summary"
+        shift
+        ;;
+      user)
+        [[ $# -ge 2 ]] || die "stats user requires <tag>"
+        user_tag=$2
+        mode="user"
+        shift 2
+        ;;
+      department)
+        [[ $# -ge 2 ]] || die "stats department requires <name>"
+        department=$2
+        mode="department"
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'HELP'
+vcl stats — traffic analytics (UTC days)
+
+  vcl stats today
+  vcl stats --days N
+  vcl stats user <tag> [--today] [--days N] [--top N]
+  vcl stats department <name> [--days N]
+  Optional: --json
+
+Domain identified = sniffed/SNI host when present.
+IP-only = destination shown as IP; no reverse DNS.
+Accounting may be approximate under Clash API polling.
+HELP
+        return 0
+        ;;
+      *)
+        die "Unknown stats argument: $1. Try 'vcl stats --help'."
+        ;;
+    esac
+  done
+
+  require_python3 || die "python3 is required for stats."
+  warn_if_accounting_stale
+  python3 - "$ACCOUNTING_DB_FILE" "$USERS_FILE" "$days" "$user_tag" "$department" "$top" "$json" "$mode" <<'PY'
+import json, sqlite3, sys
+from datetime import datetime, timezone, timedelta
+
+db, users_path, days, user_tag, department, top, as_json, mode = sys.argv[1:9]
+days = int(days)
+top = int(top)
+as_json = as_json == "1"
+
+def human(n):
+    n = float(int(n or 0))
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024.0 or u == "TiB":
+            return f"{int(n)} {u}" if u == "B" else f"{n:.1f} {u}"
+        n /= 1024.0
+    return f"{int(n)} B"
+
+end = datetime.now(timezone.utc).date()
+start = end - timedelta(days=days - 1)
+start_s, end_s = start.isoformat(), end.isoformat()
+
+dept_tags = None
+if department:
+    try:
+        with open(users_path, encoding="utf-8") as f:
+            data = json.load(f)
+        dept_tags = [
+            u.get("tag") for u in data.get("users", [])
+            if (u.get("department") or "") == department and u.get("tag")
+        ]
+    except (OSError, json.JSONDecodeError):
+        dept_tags = []
+
+try:
+    conn = sqlite3.connect(db)
+except sqlite3.Error as exc:
+    print(f"ERROR: cannot open accounting DB: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+conn.row_factory = sqlite3.Row
+
+# Ensure rollup exists for older DBs
+try:
+    conn.execute("SELECT 1 FROM daily_usage LIMIT 1")
+except sqlite3.Error:
+    print("(daily_usage missing — run vincula-accountd once)")
+    raise SystemExit(0)
+
+if mode == "user" and top > 0:
+    sql = (
+        "SELECT destination_host AS dest, SUM(upload_bytes) AS up, SUM(download_bytes) AS down, "
+        "SUM(connection_count) AS cnt FROM daily_usage "
+        "WHERE date >= ? AND date <= ? AND user_tag = ? "
+        "GROUP BY 1 ORDER BY (up+down) DESC LIMIT ?"
+    )
+    rows = conn.execute(sql, (start_s, end_s, user_tag, top)).fetchall()
+    if as_json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+    else:
+        print(f"Top destinations for {user_tag} ({start_s} .. {end_s} UTC)")
+        print(f"{'DESTINATION':<40} {'UPLOAD':>12} {'DOWNLOAD':>12} {'CONNS':>8}")
+        for r in rows:
+            print(f"{(r['dest'] or '(unknown)')[:40]:<40} {human(r['up']):>12} {human(r['down']):>12} {r['cnt']:>8}")
+elif mode in ("summary", "user", "department"):
+    sql = (
+        "SELECT user_tag, SUM(upload_bytes) AS up, SUM(download_bytes) AS down, "
+        "SUM(connection_count) AS cnt FROM daily_usage "
+        "WHERE date >= ? AND date <= ?"
+    )
+    params = [start_s, end_s]
+    if user_tag:
+        sql += " AND user_tag = ?"
+        params.append(user_tag)
+    if dept_tags is not None:
+        if not dept_tags:
+            rows = []
+        else:
+            ph = ",".join("?" * len(dept_tags))
+            sql += f" AND user_tag IN ({ph})"
+            params.extend(dept_tags)
+            sql += " GROUP BY user_tag ORDER BY (up+down) DESC"
+            rows = conn.execute(sql, params).fetchall()
+    else:
+        sql += " GROUP BY user_tag ORDER BY (up+down) DESC"
+        rows = conn.execute(sql, params).fetchall()
+    if dept_tags is not None and dept_tags:
+        pass
+    elif dept_tags is not None and not dept_tags:
+        rows = []
+    if as_json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+    else:
+        label = f"{start_s} .. {end_s} UTC"
+        if department:
+            print(f"Department {department} ({label})")
+        elif user_tag:
+            print(f"User {user_tag} ({label})")
+        else:
+            print(f"Traffic by user ({label})")
+        print(f"{'USER':<20} {'UPLOAD':>12} {'DOWNLOAD':>12} {'TOTAL':>12} {'CONNS':>8}")
+        for r in rows:
+            total = int(r["up"] or 0) + int(r["down"] or 0)
+            print(
+                f"{r['user_tag']:<20} {human(r['up']):>12} {human(r['down']):>12} "
+                f"{human(total):>12} {r['cnt']:>8}"
+            )
+        if not rows:
+            print("(no daily_usage rows yet)")
+conn.close()
+PY
+}
+
+cmd_link() {
+  [[ -r "$URI_FILE" ]] || die "Owner URI is missing."
+  cat "$URI_FILE"
+}
+
+cmd_version() {
+  printf 'vincula %s\n' "$VINCULA_VERSION"
+  if [[ -x "$BINARY_PATH" ]]; then
+    "$BINARY_PATH" version | head -n 1
+  fi
+}
+
+main() {
+  local command=${1:-help}
+  shift || true
+  case "$command" in
+    help|-h|--help) usage ;;
+    version|-V|--version) cmd_version ;;
+    uninstall)
+      require_root uninstall
+      case "${1:-}" in
+        "")
+          cmd_uninstall 0
+          ;;
+        --yes)
+          [[ $# == 1 ]] || die "uninstall --yes takes no extra arguments."
+          cmd_uninstall 1
+          ;;
+        --force)
+          die "vcl uninstall --force is not supported."
+          ;;
+        *)
+          die "Unknown uninstall option: ${1}. Use 'vcl uninstall' or 'vcl uninstall --yes'."
+          ;;
+      esac
+      ;;
+    *)
+      require_root "$command"
+      require_install
+      case "$command" in
+        info) [[ $# == 0 ]] || die "info takes no arguments."; cmd_info ;;
+        status) [[ $# == 0 ]] || die "status takes no arguments."; cmd_status ;;
+        check) [[ $# == 0 ]] || die "check takes no arguments."; cmd_check ;;
+        verify) [[ $# == 0 ]] || die "verify takes no arguments."; cmd_verify ;;
+        diagnose) [[ $# == 0 ]] || die "diagnose takes no arguments."; cmd_diagnose ;;
+        restart) [[ $# == 0 ]] || die "restart takes no arguments."; cmd_restart ;;
+        logs) [[ $# -le 1 ]] || die "logs accepts at most one argument."; cmd_logs "${1:-}" ;;
+        link) [[ $# == 0 ]] || die "link takes no arguments."; cmd_link ;;
+        user) cmd_user "$@" ;;
+        connections) cmd_connections "${1:-30}" ;;
+        accounting) cmd_accounting "$@" ;;
+        stats) cmd_stats "$@" ;;
+        *) die "Unknown command: ${command}. Run 'vcl help'." ;;
+      esac
+      ;;
+  esac
+}
+
+main "$@"
