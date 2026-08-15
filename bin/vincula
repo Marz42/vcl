@@ -77,9 +77,10 @@ vincula and vcl are equivalent.
 
 Usage:
   vcl info             Show non-secret node information
-  vcl status           Check service, port, and listener ownership
+  vcl identity [--json]  Show node_id, instance_id, node_name, version, and schema versions
+  vcl status [--json]  Check service, port, and listener ownership
   vcl check            Fast static checks (binary SHA-256 and config syntax)
-  vcl verify           Check canonical state against generated artifacts
+  vcl verify [--json]  Check canonical state against generated artifacts
   vcl diagnose         Runtime, network, and REALITY self-test diagnostics
   vcl restart          Validate and restart sing-box
   vcl logs             Show recent journal entries (default: 100)
@@ -829,26 +830,177 @@ cmd_info() {
   printf 'service:            %s\n' "${service_state:-unknown}"
 }
 
+cli_utc_now() {
+  date -u +'%Y-%m-%dT%H:%M:%SZ'
+}
+
+cli_require_json_flag() {
+  local cmd=$1
+  shift
+  case "${1:-}" in
+    "") return 0 ;;
+    --json) [[ $# == 1 ]] || die "${cmd} --json takes no extra arguments." ;;
+    *) die "${cmd} accepts only --json." ;;
+  esac
+}
+
+accounting_schema_version() {
+  if [[ ! -r "$ACCOUNTING_DB_FILE" ]]; then
+    printf '\n'
+    return 0
+  fi
+  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    conn.close()
+    print(row[0] if row else "")
+except Exception:
+    print("")
+PY
+}
+
+accounting_heartbeat_age_seconds() {
+  if [[ ! -r "$ACCOUNTING_DB_FILE" ]]; then
+    printf '\n'
+    return 0
+  fi
+  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+from datetime import datetime, timezone
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+    conn.close()
+except Exception:
+    print("")
+    raise SystemExit(0)
+if not row or not row[0]:
+    print("")
+    raise SystemExit(0)
+ts = str(row[0]).strip()
+if ts.endswith("Z"):
+    ts = ts[:-1] + "+00:00"
+try:
+    when = datetime.fromisoformat(ts)
+except ValueError:
+    print("")
+    raise SystemExit(0)
+if when.tzinfo is None:
+    when = when.replace(tzinfo=timezone.utc)
+print(int((datetime.now(timezone.utc) - when).total_seconds()))
+PY
+}
+
+cmd_identity() {
+  cli_require_json_flag identity "$@"
+  local as_json=0
+  [[ "${1:-}" == --json ]] && as_json=1
+
+  local node_id node_name instance_id utc_now
+  local state_schema users_schema accounting_schema
+  node_id=$(toml_value node_id)
+  node_name=$(toml_value node_name)
+  instance_id=$(json_quoted_field "$STATE_FILE" instance_id || true)
+  utc_now=$(cli_utc_now)
+  state_schema=$(json_numeric_field "$STATE_FILE" schema_version || true)
+  users_schema=$(json_numeric_field "$USERS_FILE" schema_version || true)
+  accounting_schema=$(accounting_schema_version)
+
+  if (( as_json == 1 )); then
+    python3 - "$VINCULA_VERSION" "${node_id:-}" "${instance_id:-}" "${node_name:-}" "$utc_now" <<'PY'
+import json, sys
+version, node_id, instance_id, node_name, utc_now = sys.argv[1:6]
+doc = {
+    "schema_version": 1,
+    "vincula_version": version,
+    "node_id": node_id,
+    "instance_id": instance_id or None,
+    "node_name": node_name,
+    "utc_now": utc_now,
+}
+print(json.dumps(doc, ensure_ascii=False, indent=2))
+PY
+    [[ -n "$instance_id" ]]
+    return
+  fi
+
+  printf 'node_id:            %s\n' "${node_id}"
+  printf 'instance_id:        %s\n' "${instance_id}"
+  printf 'node_name:          %s\n' "${node_name}"
+  printf 'vincula_version:    %s\n' "$VINCULA_VERSION"
+  printf 'state_schema:       %s\n' "${state_schema}"
+  printf 'users_schema:       %s\n' "${users_schema}"
+  printf 'accounting_schema:  %s\n' "${accounting_schema}"
+  printf 'utc_now:            %s\n' "$utc_now"
+  [[ -n "$instance_id" ]]
+}
+
 cmd_status() {
+  cli_require_json_flag status "$@"
+  local as_json=0
+  [[ "${1:-}" == --json ]] && as_json=1
+
   local port active=0 listening=0 owned=0
+  local acc_active=0 heartbeat heartbeat_age
   port=$(toml_value port)
   if systemctl is-active --quiet sing-box.service; then
-    printf '✓ sing-box.service active\n'
+    (( as_json == 1 )) || printf '✓ sing-box.service active\n'
     active=1
   else
-    printf '✗ sing-box.service inactive\n' >&2
+    (( as_json == 1 )) || printf '✗ sing-box.service inactive\n' >&2
   fi
   if port_is_listening "$port"; then
-    printf '✓ TCP %s listening\n' "$port"
+    (( as_json == 1 )) || printf '✓ TCP %s listening\n' "$port"
     listening=1
   else
-    printf '✗ TCP %s not listening\n' "$port" >&2
+    (( as_json == 1 )) || printf '✗ TCP %s not listening\n' "$port" >&2
   fi
   if port_owned_by_sing_box "$port"; then
-    printf '✓ TCP %s owned by sing-box\n' "$port"
+    (( as_json == 1 )) || printf '✓ TCP %s owned by sing-box\n' "$port"
     owned=1
   else
-    printf '✗ TCP %s not owned by sing-box\n' "$port" >&2
+    (( as_json == 1 )) || printf '✗ TCP %s not owned by sing-box\n' "$port" >&2
+  fi
+
+  if (( as_json == 1 )); then
+    if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then
+      acc_active=1
+    fi
+    heartbeat=$(accounting_last_success_status "$ACCOUNTING_DB_FILE" || true)
+    heartbeat_age=$(accounting_heartbeat_age_seconds)
+    python3 - "$active" "$listening" "$owned" "$acc_active" "${heartbeat:-unreadable}" "${heartbeat_age:-}" <<'PY'
+import json, sys
+
+def flag(value):
+    return value == "1"
+
+active, listening, owned, acc_active = [flag(v) for v in sys.argv[1:5]]
+heartbeat = sys.argv[5] or "unreadable"
+age_raw = sys.argv[6]
+age = int(age_raw) if age_raw not in ("",) else None
+proxy_ok = active and listening and owned
+accounting_ok = acc_active and heartbeat == "fresh"
+doc = {
+    "ok": proxy_ok and accounting_ok,
+    "proxy": {
+        "ok": proxy_ok,
+        "sing_box_active": active,
+        "port_listening": listening,
+        "port_owned": owned,
+    },
+    "accounting": {
+        "ok": accounting_ok,
+        "service_active": acc_active,
+        "heartbeat": heartbeat,
+        "heartbeat_age_seconds": age,
+    },
+}
+print(json.dumps(doc, ensure_ascii=False, indent=2))
+raise SystemExit(0 if doc["ok"] else 1)
+PY
+    return
   fi
   (( active == 1 && listening == 1 && owned == 1 ))
 }
@@ -864,6 +1016,11 @@ cmd_check() {
 }
 
 cmd_verify() {
+  cli_require_json_flag verify "$@"
+  if [[ "${1:-}" == --json ]]; then
+    cmd_verify_json
+    return
+  fi
   local fail=0
   printf '[Node identity]\n\n'
   verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" || fail=1
@@ -872,6 +1029,91 @@ cmd_verify() {
   printf '\n[Accounting Plane]\n\n'
   cmd_verify_accounting_plane || fail=1
   (( fail == 0 ))
+}
+
+cmd_verify_json() {
+  local node_id instance_id utc_now identity_ok=0
+  local proxy_ok=0 active=0 listening=0 owned=0
+  local port accountd_py service_active=0 raw_days daily_days
+  local plane_json uuid_re
+  uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  node_id=$(toml_value node_id)
+  instance_id=$(json_quoted_field "$STATE_FILE" instance_id || true)
+  utc_now=$(cli_utc_now)
+  if [[ "$node_id" =~ $uuid_re && "$instance_id" =~ $uuid_re && "$instance_id" != "$node_id" ]]; then
+    identity_ok=1
+  fi
+
+  port=$(toml_value port)
+  if systemctl is-active --quiet sing-box.service; then
+    active=1
+  fi
+  if port_is_listening "$port"; then
+    listening=1
+  fi
+  if port_owned_by_sing_box "$port"; then
+    owned=1
+  fi
+  if (( active == 1 && listening == 1 && owned == 1 )); then
+    proxy_ok=1
+  fi
+
+  if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then
+    service_active=1
+  fi
+  raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
+  daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
+  [[ -n "$raw_days" ]] || raw_days=90
+  [[ -n "$daily_days" ]] || daily_days=90
+  accountd_py=$(resolve_accountd_py) || accountd_py="$ACCOUNTD_PY"
+  plane_json=""
+  if [[ -f "$accountd_py" ]]; then
+    plane_json=$(python3 - "$accountd_py" "$ACCOUNTING_DB_FILE" "$service_active" "$raw_days" "$daily_days" <<'PY'
+import importlib.util, json, sys
+mod_path, db, active, raw, daily = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+checks = mod.accounting_plane_checks(
+    db,
+    service_active=active == "1",
+    raw_days=int(raw),
+    daily_days=int(daily),
+)
+out = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+print(json.dumps({"ok": all(item["ok"] for item in out), "checks": out}, ensure_ascii=False))
+PY
+) || plane_json=""
+  fi
+  if [[ -z "$plane_json" ]]; then
+    plane_json='{"ok": false, "checks": [{"name": "accounting plane checker", "ok": false, "detail": "missing"}]}'
+  fi
+
+  python3 - "$identity_ok" "${node_id:-}" "${instance_id:-}" "$proxy_ok" "$utc_now" "$plane_json" <<'PY'
+import json, sys
+identity_ok = sys.argv[1] == "1"
+node_id = sys.argv[2]
+instance_id = sys.argv[3] or None
+proxy_ok = sys.argv[4] == "1"
+utc_now = sys.argv[5]
+accounting = json.loads(sys.argv[6])
+doc = {
+    "ok": bool(identity_ok and proxy_ok and accounting.get("ok")),
+    "identity": {
+        "ok": identity_ok,
+        "node_id": node_id,
+        "instance_id": instance_id,
+    },
+    "proxy": {"ok": proxy_ok},
+    "accounting": {
+        "ok": bool(accounting.get("ok")),
+        "checks": accounting.get("checks") or [],
+    },
+    "utc_now": utc_now,
+}
+print(json.dumps(doc, ensure_ascii=False, indent=2))
+raise SystemExit(0 if doc["ok"] else 1)
+PY
 }
 
 cmd_verify_accounting_plane() {
@@ -2256,9 +2498,19 @@ main() {
       require_install
       case "$command" in
         info) [[ $# == 0 ]] || die "info takes no arguments."; cmd_info ;;
-        status) [[ $# == 0 ]] || die "status takes no arguments."; cmd_status ;;
+        identity)
+          [[ $# -le 1 ]] || die "identity accepts only --json."
+          cmd_identity "$@"
+          ;;
+        status)
+          [[ $# -le 1 ]] || die "status accepts only --json."
+          cmd_status "$@"
+          ;;
         check) [[ $# == 0 ]] || die "check takes no arguments."; cmd_check ;;
-        verify) [[ $# == 0 ]] || die "verify takes no arguments."; cmd_verify ;;
+        verify)
+          [[ $# -le 1 ]] || die "verify accepts only --json."
+          cmd_verify "$@"
+          ;;
         diagnose) [[ $# == 0 ]] || die "diagnose takes no arguments."; cmd_diagnose ;;
         restart) [[ $# == 0 ]] || die "restart takes no arguments."; cmd_restart ;;
         logs) [[ $# -le 1 ]] || die "logs accepts at most one argument."; cmd_logs "${1:-}" ;;

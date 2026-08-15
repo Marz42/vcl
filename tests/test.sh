@@ -366,6 +366,139 @@ assert_success "helper documents diagnose" grep -q 'vcl diagnose' "${TEST_TMP}/v
 assert_success "diagnose reports untestable external reachability" grep -q 'cannot be tested locally' "${TEST_TMP}/vincula"
 assert_success "diagnose includes REALITY self-test" grep -q 'REALITY end-to-end self-test' "${TEST_TMP}/vincula"
 assert_success "helper status checks listener ownership" grep -q 'owned by sing-box' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl identity" grep -q 'vcl identity' "${PROJECT_DIR}/bin/vincula"
+identity_src=$(awk '/^cmd_identity\(\)/,/^cmd_status\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
+if [[ "$identity_src" == *'json_quoted_field "$STATE_FILE" instance_id'* ]]; then
+  pass "cmd_identity reads instance_id from state.json"
+else
+  fail "cmd_identity reads instance_id from state.json"
+fi
+main_src=$(awk '/^main\(\)/ {p=1} p' "${PROJECT_DIR}/bin/vincula")
+if printf '%s\n' "$main_src" | grep -A12 '^        status)' | grep -q -- '--json'; then
+  pass "status accepts --json in dispatch"
+else
+  fail "status accepts --json in dispatch"
+fi
+if printf '%s\n' "$main_src" | grep -A12 '^        verify)' | grep -q -- '--json'; then
+  pass "verify accepts --json in dispatch"
+else
+  fail "verify accepts --json in dispatch"
+fi
+if printf '%s\n' "$main_src" | grep -A12 '^        identity)' | grep -q -- '--json'; then
+  pass "identity accepts --json in dispatch"
+else
+  fail "identity accepts --json in dispatch"
+fi
+assert_success "identity-sample.json is valid JSON" \
+  python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+  "${PROJECT_DIR}/tests/fixtures/identity-sample.json"
+ident_json_rc=0
+ident_json_out=$(python3 - "${TEST_TMP}/state.json" "${PROJECT_DIR}/tests/fixtures/identity-sample.json" "$TEST_NODE_ID" "$TEST_INSTANCE_ID" "$VINCULA_VERSION" <<'PY'
+import json, sys
+state_path, sample_path, node_id, instance_id, version = sys.argv[1:6]
+state = json.load(open(state_path, encoding="utf-8"))
+sample = json.load(open(sample_path, encoding="utf-8"))
+ident_keys = ["schema_version", "vincula_version", "node_id", "instance_id", "node_name", "utc_now"]
+status_keys = ["ok", "proxy", "accounting"]
+status_proxy = ["ok", "sing_box_active", "port_listening", "port_owned"]
+status_acct = ["ok", "service_active", "heartbeat", "heartbeat_age_seconds"]
+verify_keys = ["ok", "identity", "proxy", "accounting", "utc_now"]
+rows = []
+
+def record(name, ok, detail=""):
+    rows.append(("PASS" if ok else "FAIL", name, detail))
+
+record("state.json schema_version is 2 for identity assembly", state.get("schema_version") == 2, str(state.get("schema_version")))
+node = state.get("node") or {}
+record("assembled node_id is UUID", node.get("node_id") == node_id, str(node.get("node_id")))
+record("assembled instance_id is UUID", node.get("instance_id") == instance_id, str(node.get("instance_id")))
+record("assembled instance_id is not node_id", node.get("instance_id") != node.get("node_id"), "")
+assembled = {
+    "schema_version": 1,
+    "vincula_version": version,
+    "node_id": node.get("node_id"),
+    "instance_id": node.get("instance_id"),
+    "node_name": node.get("node_name"),
+    "utc_now": "2026-08-16T00:00:00Z",
+}
+record("identity JSON assembly has frozen keys", list(assembled) == ident_keys, ",".join(assembled))
+record("identity JSON schema_version is contract 1", assembled["schema_version"] == 1, "")
+record("identity-sample.json has frozen keys", list(sample) == ident_keys, ",".join(sample))
+record("identity-sample.json schema_version is 1", sample.get("schema_version") == 1, str(sample.get("schema_version")))
+record("identity-sample.json instance_id is not node_id", sample.get("instance_id") != sample.get("node_id"), "")
+record("identity-sample.json node_name is lax", sample.get("node_name") == "lax", str(sample.get("node_name")))
+record("identity-sample.json vincula_version matches tree", sample.get("vincula_version") == version, str(sample.get("vincula_version")))
+
+status_doc = {
+    "ok": True,
+    "proxy": {
+        "ok": True,
+        "sing_box_active": True,
+        "port_listening": True,
+        "port_owned": True,
+    },
+    "accounting": {
+        "ok": True,
+        "service_active": True,
+        "heartbeat": "fresh",
+        "heartbeat_age_seconds": 12,
+    },
+}
+record("status --json top-level keys", list(status_doc) == status_keys, ",".join(status_doc))
+record("status --json proxy keys", list(status_doc["proxy"]) == status_proxy, ",".join(status_doc["proxy"]))
+record("status --json accounting keys", list(status_doc["accounting"]) == status_acct, ",".join(status_doc["accounting"]))
+record(
+    "status --json heartbeat enum includes fresh",
+    status_doc["accounting"]["heartbeat"] in ("fresh", "stale", "missing", "unreadable"),
+    status_doc["accounting"]["heartbeat"],
+)
+
+verify_doc = {
+    "ok": True,
+    "identity": {"ok": True, "node_id": node_id, "instance_id": instance_id},
+    "proxy": {"ok": True},
+    "accounting": {"ok": True, "checks": [{"name": "heartbeat", "ok": True, "detail": "fresh"}]},
+    "utc_now": "2026-08-16T00:00:00Z",
+}
+record("verify --json top-level keys", list(verify_doc) == verify_keys, ",".join(verify_doc))
+record("verify --json identity keys", list(verify_doc["identity"]) == ["ok", "node_id", "instance_id"], "")
+record("verify --json proxy keys", list(verify_doc["proxy"]) == ["ok"], "")
+record("verify --json accounting has checks array", isinstance(verify_doc["accounting"]["checks"], list), "")
+check = verify_doc["accounting"]["checks"][0]
+record("verify --json check keys", list(check) == ["name", "ok", "detail"], ",".join(check))
+
+for status, name, detail in rows:
+    print(f"{status}\t{name}\t{detail}")
+sys.exit(0 if all(s == "PASS" for s, _, _ in rows) else 1)
+PY
+) || ident_json_rc=$?
+if [[ -z "$ident_json_out" ]]; then
+  fail "identity/status/verify JSON contract fixtures produced output"
+else
+  while IFS=$'\t' read -r ident_status ident_name ident_detail; do
+    [[ -n "$ident_status" ]] || continue
+    if [[ "$ident_status" == "PASS" ]]; then
+      pass "$ident_name"
+    else
+      fail "${ident_name} (${ident_detail})"
+    fi
+  done <<< "$ident_json_out"
+fi
+if (( ident_json_rc != 0 )) && [[ -z "$ident_json_out" ]]; then
+  fail "identity/status/verify JSON contract python exited ${ident_json_rc}"
+fi
+status_src=$(awk '/^cmd_status\(\)/,/^cmd_check\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
+if [[ "$status_src" == *'sing_box_active'* && "$status_src" == *'heartbeat_age_seconds'* && "$status_src" == *'accounting_last_success_status'* ]]; then
+  pass "cmd_status --json emits proxy and accounting heartbeat keys"
+else
+  fail "cmd_status --json emits proxy and accounting heartbeat keys"
+fi
+verify_json_src=$(awk '/^cmd_verify_json\(\)/,/^cmd_verify_accounting_plane\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
+if [[ "$verify_json_src" == *'"checks"'* && "$verify_json_src" == *'utc_now'* && "$verify_json_src" == *'accounting_plane_checks'* ]]; then
+  pass "cmd_verify --json emits identity proxy accounting checks"
+else
+  fail "cmd_verify --json emits identity proxy accounting checks"
+fi
 assert_success "unit is labeled as vincula-managed" grep -q 'managed by vincula' "${TEST_TMP}/sing-box.service"
 assert_success "unit checks config before start" grep -q '^ExecStartPre=/usr/local/bin/sing-box check -c /etc/sing-box/config.json$' "${TEST_TMP}/sing-box.service"
 assert_success "unit has Managed-By ownership marker" unit_has_vincula_marker "${TEST_TMP}/sing-box.service"
