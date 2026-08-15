@@ -1,5 +1,5 @@
 # Managed-By: vincula
-# Vincula-Version: 0.2.7
+# Vincula-Version: 0.2.8-dev
 [Unit]
 Description=vincula local accounting daemon
 Documentation=file:///usr/local/lib/vincula/vincula-accountd.py
