@@ -1167,7 +1167,7 @@ assert len(gens) == 2, gens
 assert gens[0][0] == 0 and gens[0][2] == 12445, gens
 assert gens[1][0] == 1 and gens[1][2] == 0, gens
 assert gens[1][1] > gens[0][1], gens
-assert gens[0][3] is None and gens[1][3] is None, gens
+assert gens[0][3] is None, gens  # migrated generation stays NULL on UPDATE/INSERT of other gens
 try:
     conn.execute(
         """
@@ -1207,7 +1207,7 @@ new_id = conn.execute(
     "WHERE connection_id='c-closed'"
 ).fetchone()
 assert new_id[0] > max_id and new_id[0] != deleted_id, (new_id, max_id, deleted_id)
-assert new_id[1] == 1 and new_id[2] is None, new_id
+assert new_id[1] == 1, new_id
 conn.close()
 
 # Empty DB via open_db is schema 3 with poll_baseline.
@@ -1227,12 +1227,145 @@ if (( schema3_rc == 0 )); then
   pass "schema 2 to 3 preserves accounted bytes"
   pass "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
   pass "open_db empty database is schema 3"
-  pass "D5 instance_id stays NULL after migrate and upsert"
+  pass "D5 historical instance_id stays NULL after migrate"
 else
   fail "schema 2 to 3 preserves accounted bytes"
   fail "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
   fail "open_db empty database is schema 3"
-  fail "D5 instance_id stays NULL after migrate and upsert"
+  fail "D5 historical instance_id stays NULL after migrate"
+fi
+
+# D5 split: new INSERT stamps instance_id from state.json; UPDATE never overwrites.
+d5_stamp_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" \
+  "${TEST_TMP}/d5-stamp.db" "${TEST_TMP}/state.json" "${TEST_TMP}/config.toml" \
+  "$TEST_INSTANCE_ID" "$TEST_NODE_ID" "${TEST_TMP}/d5-state" <<'PY' || d5_stamp_rc=$?
+import importlib.util, json, os, sqlite3, sys
+from pathlib import Path
+
+mod_path, db, state_path, settings_path, iid, nid, fixtures = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.DEFAULT_STATE == "/etc/vincula/state.json"
+assert mod.load_instance_id(state_path) == iid
+assert mod.load_instance_id("/no/such/vincula-state.json") is None
+
+fx = Path(fixtures)
+fx.mkdir(parents=True, exist_ok=True)
+
+schema1 = fx / "schema1.json"
+schema1.write_text(json.dumps({
+    "schema_version": 1,
+    "node": {"node_id": nid, "node_name": "old"},
+}), encoding="utf-8")
+assert mod.load_instance_id(str(schema1)) is None
+
+bad = fx / "bad-uuid.json"
+bad.write_text(json.dumps({
+    "schema_version": 2,
+    "node": {"node_id": nid, "instance_id": "not-a-uuid"},
+}), encoding="utf-8")
+assert mod.load_instance_id(str(bad)) is None
+
+copied = fx / "copied.json"
+copied.write_text(json.dumps({
+    "schema_version": 2,
+    "node": {"node_id": nid, "instance_id": nid},
+}), encoding="utf-8")
+assert mod.load_instance_id(str(copied)) is None
+
+os.environ["VCL_STATE_FILE"] = state_path
+os.environ["VCL_USERS_FILE"] = str(Path(settings_path).with_name("users.json"))
+mod.build_daemon_from_settings(settings_path)
+assert mod.INSTANCE_ID == iid
+
+conn = mod.open_db(db)
+
+def ev(cid, up=0, dn=0, generation=0):
+    return {
+        "connection_id": cid,
+        "generation": generation,
+        "node_id": "n1",
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "destination_host": "stamp.example",
+        "destination_ip": None,
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": up,
+        "download_bytes": dn,
+        "started_at": "2026-08-16T00:00:00Z",
+        "ts": "2026-08-16T00:00:01Z",
+    }
+
+mod.INSTANCE_ID = iid
+mod.upsert_connection(conn, ev("c-new"), close=False, accounted_upload=0, accounted_download=0)
+row = conn.execute(
+    "SELECT instance_id, generation FROM connections WHERE connection_id='c-new'"
+).fetchone()
+assert row[0] == iid and row[1] == 0, row
+
+other = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+mod.INSTANCE_ID = other
+mod.upsert_connection(
+    conn, ev("c-new", up=10, dn=20), close=False,
+    accounted_upload=10, accounted_download=20,
+)
+row = conn.execute(
+    "SELECT instance_id, upload_bytes, download_bytes FROM connections "
+    "WHERE connection_id='c-new' AND generation=0"
+).fetchone()
+assert row[0] == iid, row
+assert row[1] == 10 and row[2] == 20, row
+
+mod.INSTANCE_ID = None
+mod.upsert_connection(conn, ev("c-hist"), close=False, accounted_upload=1, accounted_download=1)
+row = conn.execute(
+    "SELECT instance_id FROM connections WHERE connection_id='c-hist' AND generation=0"
+).fetchone()
+assert row[0] is None, row
+mod.INSTANCE_ID = iid
+mod.upsert_connection(
+    conn, ev("c-hist", up=2, dn=2), close=False,
+    accounted_upload=2, accounted_download=2,
+)
+row = conn.execute(
+    "SELECT instance_id, upload_bytes FROM connections "
+    "WHERE connection_id='c-hist' AND generation=0"
+).fetchone()
+assert row[0] is None and row[1] == 2, row
+
+mod.upsert_connection(
+    conn, ev("c-hist", generation=1), close=False,
+    accounted_upload=0, accounted_download=0, generation=1,
+)
+gens = conn.execute(
+    "SELECT generation, instance_id FROM connections "
+    "WHERE connection_id='c-hist' ORDER BY generation"
+).fetchall()
+assert len(gens) == 2, gens
+assert gens[0][0] == 0 and gens[0][1] is None, gens[0]
+assert gens[1][0] == 1 and gens[1][1] == iid, gens[1]
+
+mod.INSTANCE_ID = mod.load_instance_id(str(copied))
+assert mod.INSTANCE_ID is None
+mod.upsert_connection(conn, ev("c-copy"), close=False, accounted_upload=0, accounted_download=0)
+row = conn.execute(
+    "SELECT instance_id FROM connections WHERE connection_id='c-copy'"
+).fetchone()
+assert row[0] is None, row
+conn.close()
+PY
+if (( d5_stamp_rc == 0 )); then
+  pass "D5 new INSERT stamps instance_id from state.json"
+  pass "D5 UPDATE does not overwrite instance_id"
+  pass "load_instance_id refuses node_id copy and missing state"
+else
+  fail "D5 new INSERT stamps instance_id from state.json"
+  fail "D5 UPDATE does not overwrite instance_id"
+  fail "load_instance_id refuses node_id copy and missing state"
 fi
 
 # D7/D8: durable poll_baseline, generation reset, commit-then-cache.

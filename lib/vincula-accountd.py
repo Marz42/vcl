@@ -20,7 +20,7 @@ starts a new generation (baseline only, never a negative delta). Closed
 generations are never overwritten (D6/D8).
 
 Stdlib only: sqlite3, json, urllib, datetime, logging, time, signal,
-pathlib — no pip packages. Targets Python 3.10+.
+pathlib, re — no pip packages. Targets Python 3.10+.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -42,7 +43,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 DEFAULT_DB_PATH = "/var/lib/vincula/accounting.db"
 DEFAULT_CLASH_URL = "http://127.0.0.1:9090/connections"
 DEFAULT_SETTINGS = "/etc/vincula/config.toml"
+DEFAULT_STATE = "/etc/vincula/state.json"
 DEFAULT_USERS = "/etc/vincula/users.json"
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
@@ -52,6 +57,7 @@ INT64_MAX = 2**63 - 1
 HEARTBEAT_MAX_AGE_SECONDS = 300
 
 NODE_ID = "local"
+INSTANCE_ID: Optional[str] = None  # state.json node.instance_id; None → SQL NULL
 TAG_TO_USER_ID: Dict[str, str] = {}
 
 LOG = logging.getLogger("vincula-accountd")
@@ -183,6 +189,38 @@ def settings_int(settings: Dict[str, str], key: str, default: int) -> int:
 def clash_url_from_settings(settings: Dict[str, str]) -> str:
     port = settings_int(settings, "clash_api_port", 9090)
     return f"http://127.0.0.1:{port}/connections"
+
+
+def load_instance_id(state_path: str) -> Optional[str]:
+    """Read node.instance_id from state.json. Missing or invalid → None.
+
+    Never copies node_id (D5). Old installs may lack the field until migrate;
+    that is SQL NULL, not a crash.
+    """
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        LOG.warning("state.json unreadable at %s: %s", state_path, exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    node = data.get("node")
+    if not isinstance(node, dict):
+        return None
+    raw = node.get("instance_id")
+    if not isinstance(raw, str) or not _UUID_RE.fullmatch(raw):
+        return None
+    sibling = node.get("node_id")
+    if raw == sibling:
+        LOG.error(
+            "refusing instance_id that equals node_id in %s (D5 copy forbidden)",
+            state_path,
+        )
+        return None
+    return raw
 
 
 def load_tag_to_user_id(users_path: str) -> Dict[str, str]:
@@ -826,7 +864,7 @@ def upsert_connection(
         (
             ev["connection_id"],
             generation,
-            None,  # instance_id untracked (D5); never copy node_id
+            INSTANCE_ID or None,  # instance_id from state.json SoT on INSERT only; never copy node_id
             ev.get("node_id") or NODE_ID,
             user_id,
             ev.get("user_tag"),
@@ -1722,11 +1760,12 @@ class AccountDaemon:
 
 
 def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> AccountDaemon:
-    global NODE_ID, TAG_TO_USER_ID
+    global NODE_ID, TAG_TO_USER_ID, INSTANCE_ID
     settings = parse_toml_simple(settings_path)
     NODE_ID = settings.get("node_id") or NODE_ID
     users_path = os.environ.get("VCL_USERS_FILE", DEFAULT_USERS)
     TAG_TO_USER_ID = load_tag_to_user_id(users_path)
+    INSTANCE_ID = load_instance_id(os.environ.get("VCL_STATE_FILE", DEFAULT_STATE))
     clash_url = clash_url_from_settings(settings)
     secret = (
         os.environ.get("VCL_CLASH_API_SECRET")
@@ -1759,6 +1798,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--settings",
         default=DEFAULT_SETTINGS,
         help="path to config.toml",
+    )
+    parser.add_argument(
+        "--state",
+        default=DEFAULT_STATE,
+        help="path to state.json (node.instance_id source of truth)",
     )
     parser.add_argument(
         "--users",
@@ -1820,6 +1864,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     os.environ.setdefault("VCL_USERS_FILE", args.users)
+    os.environ.setdefault("VCL_STATE_FILE", args.state)
     daemon = build_daemon_from_settings(args.settings)
     if args.db:
         daemon.db_path = args.db
