@@ -100,6 +100,7 @@ Usage:
   vcl accounting status
   vcl accounting retention
   vcl stats today|yesterday|--days N|--month
+  vcl stats --date YYYY-MM-DD | --from YYYY-MM-DD --to YYYY-MM-DD
   vcl stats user TAG ...
   vcl stats department NAME ...
   vcl stats host HOST ...
@@ -1814,6 +1815,7 @@ cmd_stats() {
   local fmt="table" days=1 day_offset=0 month=0 mode="summary"
   local user_tag="" department="" host="" limit=20 top_compat=0 csv_file=""
   local stats_py collector_state last_success
+  local date_arg="" from_arg="" to_arg="" window=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1824,17 +1826,52 @@ cmd_stats() {
         fmt="csv"
         shift 2
         ;;
-      --today) days=1; day_offset=0; month=0; shift ;;
+      --today)
+        [[ -z "$window" || "$window" == "days" ]] || die "stats --today cannot be combined with --${window}"
+        window=days
+        days=1; day_offset=0; month=0; shift
+        ;;
       --days)
         [[ $# -ge 2 ]] || die "stats --days requires N"
+        [[ -z "$window" || "$window" == "days" ]] || die "stats --days cannot be combined with --${window}"
+        window=days
         days=$2
         [[ "$days" =~ ^[1-9][0-9]*$ ]] || die "stats --days N must be a positive integer"
         month=0
         shift 2
         ;;
       --month)
+        [[ -z "$window" || "$window" == "month" ]] || die "stats --month cannot be combined with --${window}"
+        window=month
         month=1
         shift
+        ;;
+      --date)
+        [[ $# -ge 2 ]] || die "stats --date requires YYYY-MM-DD"
+        [[ -z "$window" || "$window" == "date" ]] || die "stats --date cannot be combined with --${window}"
+        window=date
+        date_arg=$2
+        [[ "$date_arg" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "stats --date must be YYYY-MM-DD"
+        month=0
+        shift 2
+        ;;
+      --from)
+        [[ $# -ge 2 ]] || die "stats --from requires YYYY-MM-DD"
+        [[ -z "$window" || "$window" == "from" ]] || die "stats --from cannot be combined with --${window}"
+        window=from
+        from_arg=$2
+        [[ "$from_arg" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "stats --from must be YYYY-MM-DD"
+        month=0
+        shift 2
+        ;;
+      --to)
+        [[ $# -ge 2 ]] || die "stats --to requires YYYY-MM-DD"
+        [[ -z "$window" || "$window" == "from" ]] || die "stats --to cannot be combined with --${window}"
+        window=from
+        to_arg=$2
+        [[ "$to_arg" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "stats --to must be YYYY-MM-DD"
+        month=0
+        shift 2
         ;;
       --limit)
         [[ $# -ge 2 ]] || die "stats --limit requires N"
@@ -1851,8 +1888,12 @@ cmd_stats() {
         shift 2
         ;;
       today)
+        [[ -z "$window" || "$window" == "days" ]] || die "stats today cannot be combined with --${window}"
+        window=days
         days=1; day_offset=0; month=0; mode="summary"; shift ;;
       yesterday)
+        [[ -z "$window" || "$window" == "days" ]] || die "stats yesterday cannot be combined with --${window}"
+        window=days
         days=1; day_offset=1; month=0; mode="summary"; shift ;;
       user)
         [[ $# -ge 2 ]] || die "stats user requires <tag>"
@@ -1890,11 +1931,14 @@ vcl stats — traffic analytics (UTC)
   vcl stats yesterday
   vcl stats --days N
   vcl stats --month
+  vcl stats --date YYYY-MM-DD
+  vcl stats --from YYYY-MM-DD --to YYYY-MM-DD
   vcl stats user <tag> [--today] [--days N] [--month] [--top N]
   vcl stats department <name> [--days N] [--month]
   vcl stats host <host> [--days N] [--month]
   vcl stats top users|departments|hosts [--days N] [--month] [--limit N]
   Optional: --json | --csv FILE
+  Windows are UTC days; --date/--from/--to cannot be combined with --days or --month.
 
 Accounting mode: approximate / Clash polling.
 Department analytics use current users.json attribution.
@@ -1913,6 +1957,10 @@ HELP
     mode="top_hosts"
   fi
 
+  if [[ -n "$from_arg" || -n "$to_arg" ]]; then
+    [[ -n "$from_arg" && -n "$to_arg" ]] || die "stats --from and --to must both be given"
+  fi
+
   require_python3 || die "python3 is required for stats."
   stats_py=$(resolve_stats_py) || die "Missing vincula-stats.py (expected ${STATS_PY})."
   warn_if_accounting_stale
@@ -1924,14 +1972,19 @@ HELP
     --db "$ACCOUNTING_DB_FILE"
     --users "$USERS_FILE"
     --mode "$mode"
-    --days "$days"
     --day-offset "$day_offset"
-    --month "$month"
     --limit "$limit"
     --format "$fmt"
     --collector-state "$collector_state"
     --last-success-at "$last_success"
   )
+  if [[ -n "$date_arg" ]]; then
+    args+=(--date "$date_arg")
+  elif [[ -n "$from_arg" ]]; then
+    args+=(--from "$from_arg" --to "$to_arg")
+  else
+    args+=(--days "$days" --month "$month")
+  fi
   [[ -n "$user_tag" ]] && args+=(--user "$user_tag")
   [[ -n "$department" ]] && args+=(--department "$department")
   [[ -n "$host" ]] && args+=(--host "$host")

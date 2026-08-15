@@ -45,8 +45,17 @@ class Result:
     warning: Optional[str] = None
 
 
-def utc_today(day_offset: int = 0) -> date:
-    return datetime.now(timezone.utc).date() - timedelta(days=day_offset)
+def utc_today(day_offset: int = 0, now: Optional[date] = None) -> date:
+    """UTC calendar date, optionally shifted by day_offset.
+
+    Clock injection (tests): pass now=, or set VINCULA_STATS_NOW=YYYY-MM-DD.
+    """
+    if now is None:
+        env = os.environ.get("VINCULA_STATS_NOW", "").strip()
+        now = date.fromisoformat(env) if env else datetime.now(timezone.utc).date()
+    elif isinstance(now, datetime):
+        now = now.date()
+    return now - timedelta(days=day_offset)
 
 
 def period_for_days(days: int, day_offset: int) -> Tuple[str, str]:
@@ -60,6 +69,15 @@ def period_for_month(day_offset: int) -> Tuple[str, str]:
     end = utc_today(day_offset)
     start = end.replace(day=1)
     return start.isoformat(), end.isoformat()
+
+
+def period_for_range(start: Any, end: Any) -> Tuple[str, str]:
+    """Inclusive UTC day window [start, end] as YYYY-MM-DD strings."""
+    start_d = start if isinstance(start, date) and not isinstance(start, datetime) else date.fromisoformat(str(start))
+    end_d = end if isinstance(end, date) and not isinstance(end, datetime) else date.fromisoformat(str(end))
+    if end_d < start_d:
+        raise ValueError("period end is before start")
+    return start_d.isoformat(), end_d.isoformat()
 
 
 def normalize_host(host: Optional[str]) -> Optional[str]:
@@ -267,8 +285,12 @@ def query(
     limit: int,
     collector_state: str,
     last_success_at: str,
+    range_start: str = "",
+    range_end: str = "",
 ) -> Result:
-    if month:
+    if range_start:
+        start, end = period_for_range(range_start, range_end or range_start)
+    elif month:
         start, end = period_for_month(day_offset)
     else:
         start, end = period_for_days(days, day_offset)
@@ -645,7 +667,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "top_hosts",
         ),
     )
-    p.add_argument("--days", type=int, default=1)
+    window = p.add_mutually_exclusive_group()
+    window.add_argument("--days", type=int)
+    window.add_argument("--date", metavar="YYYY-MM-DD")
+    window.add_argument("--from", dest="from_date", metavar="YYYY-MM-DD")
+    p.add_argument("--to", dest="to_date", metavar="YYYY-MM-DD")
     p.add_argument("--day-offset", type=int, default=0)
     p.add_argument("--month", type=int, choices=(0, 1), default=0)
     p.add_argument("--user", default="")
@@ -665,14 +691,32 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    if args.days < 1:
+    if args.days is not None and args.days < 1:
         print("ERROR: --days must be >= 1", file=sys.stderr)
         return 1
+    if (args.from_date is None) != (args.to_date is None):
+        print("ERROR: --from and --to must both be given", file=sys.stderr)
+        return 1
+    if (args.date or args.from_date) and args.month:
+        print("ERROR: --date/--from/--to cannot be combined with --month", file=sys.stderr)
+        return 1
+
+    range_start = ""
+    range_end = ""
+    try:
+        if args.date:
+            range_start, range_end = period_for_range(args.date, args.date)
+        elif args.from_date:
+            range_start, range_end = period_for_range(args.from_date, args.to_date)
+    except ValueError as exc:
+        print(f"ERROR: invalid date window: {exc}", file=sys.stderr)
+        return 1
+
     result = query(
         db_path=args.db,
         users_path=args.users,
         mode=args.mode,
-        days=args.days,
+        days=args.days if args.days is not None else 1,
         day_offset=args.day_offset,
         month=bool(args.month),
         user_tag=args.user,
@@ -681,6 +725,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         limit=args.limit,
         collector_state=args.collector_state,
         last_success_at=args.last_success_at or "",
+        range_start=range_start,
+        range_end=range_end,
     )
     if args.format == "json":
         render_json(result)
