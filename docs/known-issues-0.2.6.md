@@ -18,7 +18,7 @@
 
 | Gap | Notes |
 | --- | --- |
-| Live 0.2.5→0.2.6 migration on RC host | Code allowlists 0.2.5; re-confirm on VPS |
+| Live 0.2.5→0.2.6 migration on RC host | **PASS**（Debian 13；含 reboot + forced rollback；见 `docs/evidence/0.2.4-0.2.6-live/`） |
 | Reboot / full OS matrix | Inherits 0.2.4/0.2.5 gaps |
 | Reliable Accounting | Explicitly out of scope for 0.2.6 |
 

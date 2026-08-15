@@ -46,6 +46,11 @@ agent-tools/
 # Generated release artifacts (never edit by hand)
 /dist/
 
+# Live RC credential exports / bulky host mirrors (keep SUMMARY.md only)
+**/creds.csv
+**/credentials.csv
+docs/evidence/**/remote-copy/
+
 # Reconstructed / packed freeze artifacts
 /artifacts/
 *.tgz

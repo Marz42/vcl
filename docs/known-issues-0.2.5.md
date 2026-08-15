@@ -21,7 +21,7 @@ User Provisioning API 冻结候选。只接受 P0/P1 regression。Stats/analytic
 
 | 项 | 说明 |
 | --- | --- |
-| Live 0.2.4→0.2.5 migration 证据 | 需 RC 主机补跑；代码允许 0.2.4 源 |
+| Live 0.2.4→0.2.5 migration 证据 | **PASS**（Debian 13 `104.194.90.172`，见 `docs/evidence/0.2.4-0.2.6-live/`） |
 | Reboot / 完整 OS 矩阵 | 沿用 0.2.4 缺口 |
 | `--skip-existing` on import | P1，未做 |
 | `user list --json` / department filter | P1，未做 |

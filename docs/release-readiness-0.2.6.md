@@ -2,7 +2,7 @@
 
 **Tree version:** 0.2.6  
 **Focus:** Accounting UX (query / export / health visibility)  
-**Companion:** [`known-issues-0.2.6.md`](known-issues-0.2.6.md) · Spec: [`../V0.2.5-V0.2.6_dev_spec.md`](../V0.2.5-V0.2.6_dev_spec.md) Part II.
+**Companion:** [`known-issues-0.2.6.md`](known-issues-0.2.6.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](specs/V0.2.5-V0.2.6_dev_spec.md) Part II.
 
 ## Scope
 
@@ -25,7 +25,7 @@
 | --- | --- |
 | Offline unit suite (`tests/test.sh`) | **247 PASS** (WSL) |
 | Packaging (`gen-release-lock` + `build-release`) | Includes `vincula-stats.py` |
-| Live 0.2.5→0.2.6 migration | Allowlist covered; live host matrix optional |
+| Live 0.2.5→0.2.6 migration | **PASS** (Debian 13 live chain + rollback) |
 | Approximate accounting declaration | Required in all report surfaces |
 
 ## Release recommendation

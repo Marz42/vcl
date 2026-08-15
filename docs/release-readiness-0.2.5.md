@@ -4,7 +4,7 @@
 **Date:** 2026-08-15  
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** (User Provisioning API freeze candidate)
 
-Companion: [`known-issues-0.2.5.md`](known-issues-0.2.5.md) · Spec: [`../V0.2.5-V0.2.6_dev_spec.md`](../V0.2.5-V0.2.6_dev_spec.md) Part I.
+Companion: [`known-issues-0.2.5.md`](known-issues-0.2.5.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](specs/V0.2.5-V0.2.6_dev_spec.md) Part I.
 
 ## Scope delivered
 
@@ -32,8 +32,8 @@ Companion: [`known-issues-0.2.5.md`](known-issues-0.2.5.md) · Spec: [`../V0.2.5
 | disable/enable/rotate | PASS |
 | 100-user invariant + verify | PASS (offline in `tests/test.sh`) |
 | accounting identity continuity | PASS by design (no user_id rebuild on migrate) |
-| migration 0.2.4→0.2.5 | **PARTIAL** — allowlist + preserve paths unit-covered; live host matrix not re-run this gate |
-| reboot / uninstall-reinstall | **UNKNOWN** on fresh 0.2.5 tree (inherits 0.2.4 baseline; re-confirm on RC host) |
+| migration 0.2.4→0.2.5 | **PASS** — live Debian 13 upgrade chain 2026-08-15 |
+| reboot / uninstall-reinstall | **PASS** on same host (see 0.2.4–0.2.6 live evidence) |
 
 ## Explicit non-goals (still out)
 
