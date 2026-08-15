@@ -1120,6 +1120,26 @@ JSON
     python3 -c 'import json,sys; a=json.load(open(sys.argv[1], encoding="utf-8")); b=json.load(open(sys.argv[2], encoding="utf-8")); raise SystemExit(0 if a==b else 1)' \
       "${PROV_DIR}/cfg-before-set.json" "${PROV_DIR}/cfg-after-set.json"
 
+  cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-o1.json"
+  rm_rc=0
+  rm_err=$(users_registry_mutate "${PROV_DIR}/users-o1.json" remove alice 2>&1) || rm_rc=$?
+  if (( rm_rc != 0 )) && [[ "$rm_err" == *"unknown action"* ]]; then
+    pass "users_registry_mutate remove is unknown action"
+  else
+    fail "users_registry_mutate remove is unknown action (rc=${rm_rc} err=${rm_err})"
+  fi
+  assert_success "remove action does not purge alice" \
+    grep -q '"tag": "alice"' "${PROV_DIR}/users-o1.json"
+  assert_success "users_registry_mutate add still works" \
+    users_registry_mutate "${PROV_DIR}/users-o1.json" add bob "Bob" qa \
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc" "$NODE_ID"
+  assert_success "users_registry_mutate disable still works" \
+    users_registry_mutate "${PROV_DIR}/users-o1.json" disable bob
+  assert_success "users_registry_mutate enable still works" \
+    users_registry_mutate "${PROV_DIR}/users-o1.json" enable bob
+  assert_success "users_registry_mutate set still works after remove deletion" \
+    users_registry_mutate "${PROV_DIR}/users-o1.json" set bob "Bobby" qa
+
   list_out=$(users_registry_list "${PROV_DIR}/users.json")
   if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" != *"ACTIVE_UUID"* ]]; then
     pass "users_registry_list uses human STATUS format without UUID"
@@ -1283,6 +1303,8 @@ PY
     grep -q 'user-remove-bob-still-listed' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
   assert_failure "RC CLI coverage must not assert remove success" \
     grep -q 'user-remove-bob-gone' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
+  assert_failure "users_registry_mutate has no remove action" \
+    grep -q 'action == "remove"' "${PROJECT_DIR}/lib/vincula-common.sh"
 fi
 
 # --- 0.2.6 accounting UX / vincula-stats.py ---

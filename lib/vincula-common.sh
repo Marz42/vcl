@@ -456,7 +456,7 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 }
 
-# Mutate schema 2 users registry. action: add|remove|disable|enable|rotate|set
+# Mutate schema 2 users registry. action: add|disable|enable|rotate|set
 # Extra env/args via python argv.
 users_registry_mutate() {
   local users_file=$1 action=$2
@@ -507,16 +507,6 @@ if action == "add":
             "revoked_at": None,
         }],
     })
-elif action == "remove":
-    tag, = args
-    user = find(tag)
-    if not user:
-        raise SystemExit(f"user not found: {tag}")
-    if tag == "owner":
-        raise SystemExit("refusing to remove the owner user")
-    if user.get("enabled") and enabled_count() <= 1:
-        raise SystemExit("refusing to remove the last enabled user")
-    users[:] = [u for u in users if u.get("tag") != tag]
 elif action == "disable":
     tag, = args
     user = find(tag)
