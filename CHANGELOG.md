@@ -2,6 +2,18 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.2.7-dev
+
+Stability & Audit Foundation（WIP）。
+
+- 吸收 27 个未发版提交为 0.2.7-dev 基线；禁止再发分叉的 0.2.6
+- 升级源加入 0.2.6
+- D18：仅当源 ≤0.2.6 且 daily=730 才改为 90
+- schema 3 / generation / poll_baseline（后续提交）
+- JSONL A2：删除生产 ingest（后续提交）
+- `vcl audit` / Accounting Plane checker（后续提交）
+- retention DELETE 分批 2000（后续提交）
+
 ## 0.2.6
 
 Accounting UX：统一查询/结果模型、导出与健康可见性。记账仍为 **approximate / Clash polling**（非计费级）。

@@ -1,4 +1,4 @@
-# vincula V0.2.6
+# vincula V0.2.7-dev
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -18,7 +18,7 @@ sing-box 固定：1.13.18（不追 latest）
 | 默认 REALITY SNI | `www.cloudflare.com` |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
 | 用户 registry | `users.json` schema 2 |
-| Accounting | SQLite schema 2；raw 90 天 / daily 90 天 |
+| Accounting | schema 2（0.2.7 将迁到 3）；raw 90 天 / daily 90 天 |
 
 Gate / 已知限制：[`docs/release-readiness-0.2.6.md`](docs/release-readiness-0.2.6.md) · [`docs/known-issues-0.2.6.md`](docs/known-issues-0.2.6.md)
 
@@ -52,7 +52,7 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-0.2.6/  与  dist/vincula-0.2.6.tar.gz (+ .sha256)
+# → dist/vincula-0.2.7-dev/  与  dist/vincula-0.2.7-dev.tar.gz (+ .sha256)
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -77,7 +77,7 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-0.2.6.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-0.2.7-dev.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -191,7 +191,8 @@ vcl uninstall --yes
 同机重跑安装器：
 
 - 同版本：校验双平面，不轮换凭据
-- `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.5` → **0.2.6**：保留 Reality / UUID / `user_id` / accounting DB
+- `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7-dev**：保留 Reality / UUID / `user_id` / accounting DB
+- `0.2.6` → `0.2.7-dev`
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 

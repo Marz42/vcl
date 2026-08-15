@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.2.6
+# vincula v0.2.7-dev
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.2.6"
+readonly VINCULA_VERSION="0.2.7-dev"
 readonly SING_BOX_VERSION="1.13.18"
 readonly SING_BOX_AMD64_SHA256="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
 readonly SING_BOX_ARM64_SHA256="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
@@ -148,7 +148,7 @@ load_vincula_common || true
 
 usage() {
   cat <<'USAGE'
-vincula v0.2.6
+vincula v0.2.7-dev
 
 Usage:
   sudo bash vincula.sh
@@ -160,9 +160,9 @@ Optional environment overrides:
   VCL_PORT=443                 Listening port
   VCL_REALITY_HOST=example.com REALITY handshake server and SNI
 
-The normal installation path is non-interactive. Existing vincula v0.2.6
+The normal installation path is non-interactive. Existing vincula v0.2.7-dev
 credentials are preserved when the script is run again. Older 0.1.x and
-0.2.0–0.2.5 installations are migrated in place without rotating UUID or REALITY keys.
+0.2.0–0.2.6 installations are migrated in place without rotating UUID or REALITY keys.
 Use 'vcl uninstall' to remove a Vincula-managed installation.
 USAGE
 }
@@ -489,9 +489,23 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+migrate_legacy_daily_retention() {
+  # stdin unused. Args: source_version current_daily
+  # stdout: new daily integer. Return 0 always.
+  # If migrated 730→90, print the log line to stderr (log_info).
+  local source=$1 current_daily=$2
+  [[ -n "$current_daily" ]] || current_daily=90
+  if is_supported_upgrade_from "$source" && [[ "$current_daily" == "730" ]]; then
+    log_info "Migrated legacy default daily retention 730 → 90." >&2
+    printf '%s\n' 90
+    return 0
+  fi
+  printf '%s\n' "$current_daily"
 }
 
 print_local_success() {
@@ -1249,7 +1263,7 @@ render_systemd_unit() {
   local output=$1
   cat > "$output" <<'UNIT'
 # Managed-By: vincula
-# Vincula-Version: 0.2.6
+# Vincula-Version: 0.2.7-dev
 [Unit]
 Description=sing-box (managed by vincula)
 Documentation=https://sing-box.sagernet.org/
@@ -1614,8 +1628,13 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   render_sing_box_config_from_registry "$staged_config" "$staged_users" "$private_key" "$short_id" \
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
   render_state "$staged_state" "$server" "$port" "$reality_host" "$uuid" "$private_key" "$public_key" "$short_id" "$installed_at" "$arch" "$created_user" "$created_group" "${SERVICE_UID:-0}" "${SERVICE_GID:-0}" "${SERVICE_HOME:-/var/lib/sing-box}" "${SERVICE_SHELL:-/usr/sbin/nologin}" "$node_id" "$node_name"
+  raw_days=$(toml_get "$SETTINGS_FILE" accounting_raw_retention_days || true)
+  [[ -n "$raw_days" ]] || raw_days=90
+  daily_days=$(toml_get "$SETTINGS_FILE" accounting_daily_retention_days || true)
+  [[ -n "$daily_days" ]] || daily_days=90
+  daily_days=$(migrate_legacy_daily_retention "$installed_version" "$daily_days")
   render_settings "$staged_settings" "$server" "$port" "$reality_host" "$arch" \
-    "$clash_port" "$clash_secret" 90 90 "$node_id" "$node_name" "$cycle_start"
+    "$clash_port" "$clash_secret" "$raw_days" "$daily_days" "$node_id" "$node_name" "$cycle_start"
   printf '%s\n' "$uri" > "$staged_uri"
   printf '%s\n' "$VINCULA_VERSION" > "$staged_version"
   render_manifest "$staged_manifest" "$arch" "$archive_sha" "$binary_sha"
@@ -1806,7 +1825,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.2.5 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.2.6 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {
