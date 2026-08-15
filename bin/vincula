@@ -114,6 +114,7 @@ Notes:
   IP-only rows have no reverse-DNS guessing (destination_host may be empty).
   Polling ≠ exact billing: Clash API accounting is approximate; short flows may be missed.
   Department stats use current attribution from users.json (not historical department).
+  Config-affecting user changes restart sing-box; metadata-only user set does not.
 USAGE
 }
 
@@ -1201,11 +1202,16 @@ user_mutation_apply() {
   owner_uuid=$(owner_active_uuid_from_registry "$staged_users")
   : "${owner_uuid:?owner uuid missing from staged registry}"
 
-  cp -a -- "$STATE_FILE" "$staged_state"
-  # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
-
-  printf 'WARNING: applying user changes restarts sing-box; existing connections may drop briefly.\n' >&2
-  commit_user_mutation "$staged_users" "$staged_config" "$staged_uri" "$staged_state"
+  # Byte-compare rendered artifacts. Metadata-only set leaves config/uri unchanged
+  # (add/disable/enable/rotate change users or UUIDs and take the full path).
+  if cmp -s -- "$staged_config" "$CONFIG_FILE" && cmp -s -- "$staged_uri" "$URI_FILE"; then
+    atomic_install_file "$staged_users" "$USERS_FILE" 0600 root root
+  else
+    cp -a -- "$STATE_FILE" "$staged_state"
+    # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
+    printf 'WARNING: applying user changes restarts sing-box; existing connections may drop briefly.\n' >&2
+    commit_user_mutation "$staged_users" "$staged_config" "$staged_uri" "$staged_state"
+  fi
   rm -rf --one-file-system -- "$staged_dir"
   printf '✓ user registry updated\n'
 }

@@ -145,7 +145,7 @@ vcl user verify
 导入 CSV 最少一列 `tag`，可选 `display_name,department`。全量校验后一次提交，失败则零变更。  
 `user remove` / purge / delete **不支持**（请用 `disable`）。
 
-用户变更会 **restart sing-box**（连接可能短暂中断）。
+仅会影响代理配置的用户变更才会 **restart sing-box**（连接可能短暂中断）；仅改 metadata 的 `user set` 不重启。
 
 ### 流量（0.2.6+，UTC，approximate）
 

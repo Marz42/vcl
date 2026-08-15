@@ -1102,12 +1102,23 @@ JSON
   assert_failure "users_registry_verify fails when config has extra inbound user" \
     users_registry_verify "${PROV_DIR}/users.json" "${PROV_DIR}/config-bad.json"
 
+  render_sing_box_config_accounting \
+    "${PROV_DIR}/cfg-before-set.json" "${PROV_DIR}/users.json" \
+    "$TEST_PRIVATE_KEY" "$TEST_SHORT_ID" 443 www.cloudflare.com \
+    0.0.0.0 9090 "$TEST_SECRET" true
   assert_success "users_registry_mutate set updates metadata" \
     users_registry_mutate "${PROV_DIR}/users.json" set alice "Alice Chen" Engineering
   assert_equal "set updates display_name" "Alice Chen" \
     "$(users_registry_field "${PROV_DIR}/users.json" alice display_name)"
   assert_equal "set updates department" "Engineering" \
     "$(users_registry_field "${PROV_DIR}/users.json" alice department)"
+  render_sing_box_config_accounting \
+    "${PROV_DIR}/cfg-after-set.json" "${PROV_DIR}/users.json" \
+    "$TEST_PRIVATE_KEY" "$TEST_SHORT_ID" 443 www.cloudflare.com \
+    0.0.0.0 9090 "$TEST_SECRET" true
+  assert_success "metadata-only set leaves rendered config unchanged" \
+    python3 -c 'import json,sys; a=json.load(open(sys.argv[1], encoding="utf-8")); b=json.load(open(sys.argv[2], encoding="utf-8")); raise SystemExit(0 if a==b else 1)' \
+      "${PROV_DIR}/cfg-before-set.json" "${PROV_DIR}/cfg-after-set.json"
 
   list_out=$(users_registry_list "${PROV_DIR}/users.json")
   if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" != *"ACTIVE_UUID"* ]]; then
@@ -1256,6 +1267,14 @@ PY
   assert_success "helper documents user set" grep -q 'vcl user set' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper warns on user mutation restart" \
     grep -q 'applying user changes restarts sing-box' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents metadata-only user set skips restart" \
+    grep -q 'metadata-only user set does not' "${PROJECT_DIR}/bin/vincula"
+  assert_success "user mutation compares rendered config before restart" \
+    grep -q 'cmp -s -- "$staged_config" "$CONFIG_FILE"' "${PROJECT_DIR}/bin/vincula"
+  assert_success "user mutation compares owner uri before restart" \
+    grep -q 'cmp -s -- "$staged_uri" "$URI_FILE"' "${PROJECT_DIR}/bin/vincula"
+  assert_success "README says metadata-only user set does not restart" \
+    grep -q '仅改 metadata 的 `user set` 不重启' "${PROJECT_DIR}/README.md"
 fi
 
 # --- 0.2.6 accounting UX / vincula-stats.py ---
