@@ -238,15 +238,20 @@ secrets and the physical instance.
 1. verify FILE (mandatory)
 2. refuse if VERSION exists
 3. replacement plan (new instance_id; users whose credentials will rotate)
-4. target safety backup: $BACKUP_ROOT/pre-restore-<UTC>/  marker type=restore-safety
+4. capture sing-box + accountd enabled/active; target safety backup:
+   $BACKUP_ROOT/pre-restore-<UTC>/  marker type=restore-safety
 5. stage canonical files (new instance_id, new Reality, new Clash, new active uuid;
    old active credentials → revoked, no uuid in secretless staging)
-6. render sing-box config.json + owner.uri from staged users+state
-7. validate (syntax, node_id≠instance_id, no empty private key)
-8. stop accountd → atomic install staged files → start sing-box + accountd → health
-9. failure → roll target back from pre-restore-*; never edit FILE; never touch the source node
-10. success → reissue CSV 0600 to --reissue-output
-    (default $BACKUP_ROOT/reissue-<UTC>.csv)
+6. write reissue CSV 0600 to --reissue-output (tmp + fsync); render sing-box
+   config.json from staged users+state; validate (`sing-box check`)
+7. atomic install staged files (canonical, accounting.db, generated config, CSV).
+   VERSION is the commit marker and is written **last**
+8. enable sing-box + accountd → health. Failure → roll target back from
+   pre-restore-* (canonical, DB, generated config, CSV, VERSION, **and** the
+   original service enabled/active snapshot). Never edit FILE; never touch the
+   source node
+9. success → safety marker status=committed
+    (default CSV path $BACKUP_ROOT/reissue-<UTC>.csv)
 ```
 
 Reality keys: `sing-box generate reality-keypair` (same as a new install).

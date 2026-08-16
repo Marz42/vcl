@@ -5482,11 +5482,19 @@ body = src[i:j]
 assert body.index("_load_verified_members") < body.index("_safety_copy_existing"), body[:400]
 assert body.index("preflight_restore") < body.index("_safety_copy_existing")
 assert "verify_archive" in body
+assert "write_reissue_csv" in body
+assert "commit_restore_version" in body
+assert body.index("write_reissue_csv") < body.index("commit_restore_version")
+assert "capture_service_state" in body
+assert "except RestoreError" in body
+assert "rollback_restore" in body
 PY
 then
   pass "apply_restore verifies and preflights before safety backup"
+  pass "apply_restore commits CSV and VERSION inside the rollback transaction"
 else
   fail "apply_restore verifies and preflights before safety backup"
+  fail "apply_restore commits CSV and VERSION inside the rollback transaction"
 fi
 
 if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" "${PROJECT_DIR}/lib/vincula-accountd.py" "${PROJECT_DIR}/tests/fixtures/fake-age" <<'PY'
@@ -5802,6 +5810,7 @@ cli_restore() {
   VCL_STATE_DIR="$restore_fresh" \
   VCL_BACKUP_ROOT="$restore_backups" \
   VCL_ACCOUNTING_DB_FILE="${restore_fresh}/accounting.db" \
+  VCL_CONFIG_FILE="${restore_fresh}/sing-box-config.json" \
   VCL_RESTORE_SKIP_HEALTH=1 \
   VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
   VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
@@ -5895,6 +5904,17 @@ else
 fi
 assert_success "cmd_restore rolls back on injected health failure" \
   grep -q 'VCL_RESTORE_FAIL_AFTER' "${PROJECT_DIR}/bin/vincula"
+cmd_restore_body=$(sed -n '/^cmd_restore()/,/^cmd_link()/p' "${PROJECT_DIR}/bin/vincula")
+if [[ "$cmd_restore_body" == *'restart sing-box'* ]]; then
+  fail "cmd_restore health rollback does not restart sing-box"
+else
+  pass "cmd_restore health rollback does not restart sing-box"
+fi
+assert_success "cmd_restore defers VERSION until after health" \
+  grep -q -- '--defer-version' <<< "$cmd_restore_body"
+rb_src=$(sed -n '/^rollback_restore_target()/,/^cmd_restore()/p' "${PROJECT_DIR}/bin/vincula")
+assert_success "rollback_restore_target invokes backup rollback subcommand" \
+  grep -q 'rollback' <<< "$rb_src"
 
 if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" <<'PY'
 import hashlib, importlib.util, json, os, sqlite3, sys, tarfile
@@ -6085,32 +6105,78 @@ fi
 
 # TASK 32: health inject via CLI rolls back; second restore succeeds
 restore_health="${restore_cli_root}/health"
-mkdir -p "$restore_health"
+mkdir -p "$restore_health" "${restore_cli_root}/health-sys"
 printf '%s\n' '{"keep":"health"}' > "${restore_health}/state.json"
+printf '%s\n' '{"keep":"old-config"}' > "${restore_health}/sing-box-config.json"
+cat > "${restore_cli_root}/health-sys/systemctl" <<'FAKECTL'
+#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+st = Path(__file__).resolve().parent / "state.json"
+data = json.loads(st.read_text(encoding="utf-8")) if st.is_file() else {
+    "sing_enabled": 1, "sing_active": 1, "acct_enabled": 1, "acct_active": 1,
+}
+args = [a for a in sys.argv[1:] if a != "--quiet"]
+cmd = args[0] if args else ""
+unit = args[1] if len(args) > 1 else ""
+en = "sing_enabled" if "sing-box" in unit else "acct_enabled"
+act = "sing_active" if "sing-box" in unit else "acct_active"
+if cmd == "is-enabled":
+    sys.exit(0 if data.get(en) else 1)
+if cmd == "is-active":
+    sys.exit(0 if data.get(act) else 1)
+if cmd == "enable":
+    data[en] = 1
+elif cmd == "disable":
+    data[en] = 0
+elif cmd == "start":
+    data[act] = 1
+elif cmd == "stop":
+    data[act] = 0
+elif cmd in ("daemon-reload", "cat"):
+    st.write_text(json.dumps(data), encoding="utf-8")
+    sys.exit(0)
+st.write_text(json.dumps(data), encoding="utf-8")
+sys.exit(0)
+FAKECTL
+chmod +x "${restore_cli_root}/health-sys/systemctl"
+printf '%s\n' '{"sing_enabled":1,"sing_active":1,"acct_enabled":1,"acct_active":1}' \
+  > "${restore_cli_root}/health-sys/state.json"
 health_before=$(cat "${restore_health}/state.json")
+health_cfg_before=$(cat "${restore_health}/sing-box-config.json")
 health_src_hash=$(sha256sum "${BACKUP_DIR}/restore-src.tar" | awk '{print $1}')
 health_rc=0
 health_err=$(
   VCL_STATE_DIR="$restore_health" \
   VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
   VCL_ACCOUNTING_DB_FILE="${restore_health}/accounting.db" \
+  VCL_CONFIG_FILE="${restore_health}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${restore_cli_root}/health-sys/systemctl" \
   VCL_RESTORE_FAIL_AFTER=health \
   VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
   VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
   VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
   VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
   VCL_RESTORE_CLASH_SECRET="cli-clash" \
-    "${restore_cli_root}/bin/vincula" "${BACKUP_DIR}/restore-src.tar" 2>&1
+    "${restore_cli_root}/bin/vincula" --reissue-output "${restore_cli_root}/health-backups/health-reissue.csv" \
+      "${BACKUP_DIR}/restore-src.tar" 2>&1
 ) || health_rc=$?
 health_src_hash_after=$(sha256sum "${BACKUP_DIR}/restore-src.tar" | awk '{print $1}')
+health_csv_gone=0
+[[ ! -e "${restore_cli_root}/health-backups/health-reissue.csv" ]] && health_csv_gone=1
+health_cfg_now=$(cat "${restore_health}/sing-box-config.json" 2>/dev/null || true)
 if (( health_rc != 0 )) \
    && [[ "$health_err" == *"rolled back"* ]] \
    && [[ "$(cat "${restore_health}/state.json")" == "$health_before" ]] \
    && [[ ! -f "${restore_health}/VERSION" ]] \
+   && [[ "$health_cfg_now" == "$health_cfg_before" ]] \
+   && (( health_csv_gone == 1 )) \
    && [[ "$health_src_hash_after" == "$health_src_hash" ]]; then
   pass "restore health inject rolls back target and leaves source tar unchanged"
+  pass "restore health inject rolls back generated config, reissue CSV, and VERSION"
 else
   fail "restore health inject rolls back target and leaves source tar unchanged (rc=${health_rc} err=${health_err})"
+  fail "restore health inject rolls back generated config, reissue CSV, and VERSION (csv_gone=${health_csv_gone} cfg='${health_cfg_now}')"
 fi
 
 health_ok_rc=0
@@ -6118,6 +6184,8 @@ health_ok_out=$(
   VCL_STATE_DIR="$restore_health" \
   VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
   VCL_ACCOUNTING_DB_FILE="${restore_health}/accounting.db" \
+  VCL_CONFIG_FILE="${restore_health}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${restore_cli_root}/health-sys/systemctl" \
   VCL_RESTORE_SKIP_HEALTH=1 \
   VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
   VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
@@ -6167,6 +6235,219 @@ else
   fail "AC-3.0-06 fixture PASS: restore mints new instance_id"
   fail "AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials"
   fail "AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id"
+fi
+
+# P1-02 / B8: restore is one transaction (csv, version, config, services)
+if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" <<'PY'
+import errno, importlib.util, json, os, stat, sys
+from pathlib import Path
+
+base = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("vbackup", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+restore_src = base / "restore-src.tar"
+src_hash = __import__("hashlib").sha256(restore_src.read_bytes()).hexdigest()
+keys = dict(
+    new_instance_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    new_reality_private="p",
+    new_reality_public="u",
+    new_reality_short_id="deadbeefdeadbeef",
+    new_clash_secret="c",
+)
+
+def install_fake_systemctl(dir_path, initial):
+    dir_path.mkdir(parents=True, exist_ok=True)
+    state = dir_path / "state.json"
+    state.write_text(json.dumps(initial), encoding="utf-8")
+    script = dir_path / "systemctl"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+st = Path(__file__).resolve().parent / "state.json"
+data = json.loads(st.read_text(encoding="utf-8"))
+args = [a for a in sys.argv[1:] if a != "--quiet"]
+cmd = args[0] if args else ""
+unit = args[1] if len(args) > 1 else ""
+en = "sing_enabled" if "sing-box" in unit else "acct_enabled"
+act = "sing_active" if "sing-box" in unit else "acct_active"
+if cmd == "is-enabled":
+    raise SystemExit(0 if data.get(en) else 1)
+if cmd == "is-active":
+    raise SystemExit(0 if data.get(act) else 1)
+if cmd == "enable":
+    data[en] = 1
+elif cmd == "disable":
+    data[en] = 0
+elif cmd == "start":
+    data[act] = 1
+elif cmd == "stop":
+    data[act] = 0
+st.write_text(json.dumps(data), encoding="utf-8")
+raise SystemExit(0)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script, state
+
+def assert_rolled_back(dest, keep_state, csv_path, config_path, keep_config):
+    assert dest.joinpath("state.json").read_bytes() == keep_state
+    assert not dest.joinpath("VERSION").exists()
+    if csv_path is not None:
+        assert not csv_path.exists(), csv_path
+    if config_path is not None and keep_config is not None:
+        assert config_path.read_bytes() == keep_config
+    assert __import__("hashlib").sha256(restore_src.read_bytes()).hexdigest() == src_hash
+
+def retry_ok(dest, dest_db, csv_path):
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+    os.environ.pop("VCL_RESTORE_FAIL_ERRNO", None)
+    result = mod.apply_restore(
+        restore_src, dest, dest_accounting_db=dest_db, reissue_output=csv_path,
+        **keys,
+    )
+    assert result["ok"] is True
+    assert dest.joinpath("VERSION").is_file()
+    assert csv_path.is_file()
+    dest.joinpath("VERSION").unlink()
+    csv_path.unlink()
+    (dest / "state.json").write_bytes(b'{"keep":"retry"}\n')
+
+initial = {"sing_enabled": 1, "sing_active": 1, "acct_enabled": 1, "acct_active": 1}
+ctl, ctl_state = install_fake_systemctl(base / "p102-sys", initial)
+os.environ["VCL_SYSTEMCTL"] = str(ctl)
+
+cases = [
+    ("canonical", "injected_failure"),
+    ("csv", "injected_failure"),
+    ("config", "injected_failure"),
+    ("health", "injected_failure"),
+    ("version", "injected_failure"),
+]
+for boundary, code in cases:
+    dest = base / f"p102-{boundary}"
+    dest.mkdir()
+    keep = b'{"keep":"%s"}\n' % boundary.encode()
+    (dest / "state.json").write_bytes(keep)
+    cfg = dest / "generated-config.json"
+    cfg.write_bytes(b'{"keep":"cfg"}\n')
+    csv_path = dest / "reissue.csv"
+    dest_db = dest / "accounting.db"
+    os.environ["VCL_RESTORE_FAIL_AFTER"] = boundary
+    os.environ.pop("VCL_RESTORE_FAIL_ERRNO", None)
+    try:
+        mod.apply_restore(
+            restore_src, dest, dest_accounting_db=dest_db, reissue_output=csv_path,
+            dest_config_file=cfg, generated_config=b'{"restored":true}\n',
+            manage_services=True, **keys,
+        )
+        raise AssertionError(f"{boundary} inject must fail")
+    except mod.RestoreError as exc:
+        assert exc.code == code, (boundary, exc.code, exc.message)
+    finally:
+        os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+    assert_rolled_back(dest, keep, csv_path, cfg, b'{"keep":"cfg"}\n')
+    after = json.loads(ctl_state.read_text(encoding="utf-8"))
+    assert after == initial, (boundary, after)
+    retry_ok(dest, dest_db, csv_path)
+
+# disk-full on CSV write (ENOSPC inject)
+dest = base / "p102-enospc"
+dest.mkdir()
+keep = b'{"keep":"enospc"}\n'
+(dest / "state.json").write_bytes(keep)
+csv_path = dest / "reissue.csv"
+dest_db = dest / "accounting.db"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "csv"
+os.environ["VCL_RESTORE_FAIL_ERRNO"] = "ENOSPC"
+try:
+    mod.apply_restore(
+        restore_src, dest, dest_accounting_db=dest_db, reissue_output=csv_path,
+        manage_services=True, **keys,
+    )
+    raise AssertionError("ENOSPC csv inject must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "io_error", exc.code
+    assert isinstance(exc.__cause__, OSError)
+    assert exc.__cause__.errno == errno.ENOSPC
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+    os.environ.pop("VCL_RESTORE_FAIL_ERRNO", None)
+assert_rolled_back(dest, keep, csv_path, None, None)
+retry_ok(dest, dest_db, csv_path)
+
+# permission error on VERSION write
+dest = base / "p102-eacces"
+dest.mkdir()
+keep = b'{"keep":"eacces"}\n'
+(dest / "state.json").write_bytes(keep)
+csv_path = dest / "reissue.csv"
+dest_db = dest / "accounting.db"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "version"
+os.environ["VCL_RESTORE_FAIL_ERRNO"] = "EACCES"
+try:
+    mod.apply_restore(
+        restore_src, dest, dest_accounting_db=dest_db, reissue_output=csv_path,
+        manage_services=True, **keys,
+    )
+    raise AssertionError("EACCES version inject must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "io_error", exc.code
+    assert isinstance(exc.__cause__, PermissionError)
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+    os.environ.pop("VCL_RESTORE_FAIL_ERRNO", None)
+assert_rolled_back(dest, keep, csv_path, None, None)
+assert not dest.joinpath("VERSION").exists()
+retry_ok(dest, dest_db, csv_path)
+
+# chmod a-w on the CSV directory (plan disk-full fixture)
+dest = base / "p102-csvdir"
+dest.mkdir()
+keep = b'{"keep":"csvdir"}\n'
+(dest / "state.json").write_bytes(keep)
+csv_dir = dest / "csv-ro"
+csv_dir.mkdir()
+csv_path = csv_dir / "reissue.csv"
+dest_db = dest / "accounting.db"
+csv_dir.chmod(0o555)
+try:
+    mod.apply_restore(
+        restore_src, dest, dest_accounting_db=dest_db, reissue_output=csv_path,
+        manage_services=True, **keys,
+    )
+    if os.geteuid() == 0:
+        dest.joinpath("VERSION").unlink(missing_ok=True)
+        if csv_path.exists():
+            csv_path.unlink()
+        (dest / "state.json").write_bytes(keep)
+    else:
+        raise AssertionError("chmod a-w csv dir must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "io_error", exc.code
+finally:
+    csv_dir.chmod(0o755)
+if os.geteuid() != 0:
+    assert_rolled_back(dest, keep, csv_path, None, None)
+retry_ok(dest, dest_db, csv_path)
+
+os.environ.pop("VCL_SYSTEMCTL", None)
+PY
+then
+  pass "restore FAIL_AFTER=canonical|csv|config|health|version fully rolls back (AC-3.0-12)"
+  pass "restore csv ENOSPC inject leaves no VERSION and no reissue CSV; retry succeeds"
+  pass "restore VERSION EACCES inject rolls back credentials and CSV; retry succeeds"
+  pass "restore chmod a-w CSV dir rolls back; retry succeeds"
+  pass "restore failure restores original sing-box and accountd service state"
+else
+  fail "restore FAIL_AFTER=canonical|csv|config|health|version fully rolls back (AC-3.0-12)"
+  fail "restore csv ENOSPC inject leaves no VERSION and no reissue CSV; retry succeeds"
+  fail "restore VERSION EACCES inject rolls back credentials and CSV; retry succeeds"
+  fail "restore chmod a-w CSV dir rolls back; retry succeeds"
+  fail "restore failure restores original sing-box and accountd service state"
 fi
 
 # P1-06 / B6: operation-level flock mutex

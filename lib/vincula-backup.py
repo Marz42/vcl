@@ -12,7 +12,10 @@ written as plaintext tar.
 
 Restore is fresh-node only: a target with VERSION is refused. Safe mode mints a
 new instance_id and rotates Reality/Clash/VLESS credentials; secrets mode
-reuses those secrets but still mints a new instance_id.
+reuses those secrets but still mints a new instance_id. apply_restore is one
+transaction: canonical files, accounting.db, generated config, reissue CSV,
+and the VERSION commit marker. Failure rolls back those files and the original
+sing-box / accountd enabled+active snapshot captured before mutation.
 
 Accounting snapshots use sqlite3.Connection.backup() so a live WAL writer
 (accountd) is safe. Do not copy live database files.
@@ -25,6 +28,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import errno
 import hashlib
 import io
 import json
@@ -1187,6 +1191,8 @@ def write_reissue_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
             writer.writeheader()
             for row in rows:
                 writer.writerow({key: row.get(key, "") for key in CSV_HEADER})
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, dest)
         os.chmod(dest, 0o600)
@@ -1196,11 +1202,141 @@ def write_reissue_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
         raise
 
 
+def _systemctl_bin() -> str:
+    override = os.environ.get("VCL_SYSTEMCTL", "").strip()
+    return override or "systemctl"
+
+
+def _systemctl_run(args: Sequence[str]) -> int:
+    argv = [_systemctl_bin(), *args]
+    try:
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return 1
+    return int(proc.returncode)
+
+
+def capture_service_state() -> Dict[str, int]:
+    """Snapshot sing-box and accountd enabled/active. Missing units are 0."""
+    return {
+        "sing_enabled": 1 if _systemctl_run(["is-enabled", "--quiet", "sing-box.service"]) == 0 else 0,
+        "sing_active": 1 if _systemctl_run(["is-active", "--quiet", "sing-box.service"]) == 0 else 0,
+        "acct_enabled": 1 if _systemctl_run(["is-enabled", "--quiet", "vincula-accountd.service"]) == 0 else 0,
+        "acct_active": 1 if _systemctl_run(["is-active", "--quiet", "vincula-accountd.service"]) == 0 else 0,
+    }
+
+
+def apply_service_state(state: Mapping[str, Any]) -> None:
+    """Restore enable/active exactly. Do not start a unit that was inactive."""
+    sing_enabled = int(state.get("sing_enabled") or 0)
+    sing_active = int(state.get("sing_active") or 0)
+    acct_enabled = int(state.get("acct_enabled") or 0)
+    acct_active = int(state.get("acct_active") or 0)
+    if sing_enabled:
+        _systemctl_run(["enable", "sing-box.service"])
+    else:
+        _systemctl_run(["disable", "sing-box.service"])
+    if sing_active:
+        _systemctl_run(["start", "sing-box.service"])
+    else:
+        _systemctl_run(["stop", "sing-box.service"])
+    if acct_enabled:
+        _systemctl_run(["enable", "vincula-accountd.service"])
+    else:
+        _systemctl_run(["disable", "vincula-accountd.service"])
+    if acct_active:
+        _systemctl_run(["start", "vincula-accountd.service"])
+    else:
+        _systemctl_run(["stop", "vincula-accountd.service"])
+
+
+def _write_service_state_file(path: Path, state: Mapping[str, Any]) -> None:
+    payload = (
+        f"sing_enabled={int(state.get('sing_enabled') or 0)}\n"
+        f"sing_active={int(state.get('sing_active') or 0)}\n"
+        f"acct_enabled={int(state.get('acct_enabled') or 0)}\n"
+        f"acct_active={int(state.get('acct_active') or 0)}\n"
+    )
+    path.write_text(payload, encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def _read_service_state_file(path: Path) -> Dict[str, int]:
+    out = {
+        "sing_enabled": 0,
+        "sing_active": 0,
+        "acct_enabled": 0,
+        "acct_active": 0,
+    }
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        key = key.strip()
+        if key in out:
+            out[key] = 1 if raw.strip() == "1" else 0
+    return out
+
+
+def _write_restore_journal(safety_dir: Path, journal: Mapping[str, Any]) -> None:
+    path = Path(safety_dir) / "restore-journal.json"
+    path.write_text(json.dumps(journal, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def _read_restore_journal(safety_dir: Path) -> Dict[str, Any]:
+    path = Path(safety_dir) / "restore-journal.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _inject_restore_failure(boundary: str, fail_after: str) -> None:
+    if fail_after != boundary:
+        return
+    errno_name = os.environ.get("VCL_RESTORE_FAIL_ERRNO", "").strip()
+    if errno_name == "ENOSPC":
+        raise OSError(errno.ENOSPC, "No space left on device")
+    if errno_name == "EACCES":
+        raise PermissionError(errno.EACCES, "Permission denied")
+    raise RestoreError(
+        f"restore failure injected after {boundary}", "injected_failure"
+    )
+
+
+def commit_restore_version(
+    dest_state_dir: Path,
+    version: str,
+    safety_dir: Optional[Path] = None,
+) -> None:
+    """Write VERSION (the dest commit marker) and mark the safety tree committed."""
+    dest_state_dir = Path(dest_state_dir)
+    dest_state_dir.mkdir(parents=True, exist_ok=True)
+    text = str(version).rstrip("\n") + "\n"
+    _write_private(dest_state_dir / "VERSION", text.encode("utf-8"))
+    if safety_dir is not None:
+        write_restore_marker(Path(safety_dir), "restore-safety", status="committed")
+
+
 def _write_private(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_bytes(data)
+        with tmp.open("rb") as fh:
+            os.fsync(fh.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, path)
         os.chmod(path, mode)
@@ -1214,6 +1350,8 @@ def _safety_copy_existing(
     dest_state_dir: Path,
     dest_accounting_db: Optional[Path],
     safety_dir: Path,
+    dest_config_file: Optional[Path] = None,
+    service_state: Optional[Mapping[str, Any]] = None,
 ) -> List[str]:
     copied: List[str] = []
     safety_dir.mkdir(parents=True, exist_ok=True)
@@ -1226,6 +1364,11 @@ def _safety_copy_existing(
     if dest_accounting_db is not None and Path(dest_accounting_db).is_file():
         snapshot_sqlite(Path(dest_accounting_db), safety_dir / "accounting.db")
         copied.append("accounting.db")
+    if dest_config_file is not None and Path(dest_config_file).is_file():
+        shutil.copy2(Path(dest_config_file), safety_dir / "config.json")
+        copied.append("config.json")
+    snapshot = dict(service_state) if service_state is not None else capture_service_state()
+    _write_service_state_file(safety_dir / "SERVICE_STATE", snapshot)
     write_restore_marker(safety_dir, "restore-safety")
     return copied
 
@@ -1235,17 +1378,34 @@ def rollback_restore(
     dest_state_dir: Path,
     dest_accounting_db: Optional[Path] = None,
     written: Optional[Sequence[str]] = None,
+    dest_config_file: Optional[Path] = None,
+    csv_path: Optional[Path] = None,
+    service_state: Optional[Mapping[str, Any]] = None,
+    manage_services: Optional[bool] = None,
 ) -> None:
-    """Copy the safety tree back; remove dest files that were not in the backup."""
+    """Copy the safety tree back; remove dest files that were not in the backup.
+
+    Also drops a newly written reissue CSV, restores generated config.json,
+    and reapplies the pre-restore systemd enabled/active snapshot.
+    """
     safety = Path(safety_dir)
     dest_state_dir = Path(dest_state_dir)
-    present = {p.name for p in safety.iterdir() if p.is_file()} if safety.is_dir() else set()
+    journal = _read_restore_journal(safety) if safety.is_dir() else {}
+    written_names = list(written or journal.get("written") or [])
+    if dest_accounting_db is None and journal.get("dest_accounting_db"):
+        dest_accounting_db = Path(str(journal["dest_accounting_db"]))
+    if dest_config_file is None and journal.get("dest_config_file"):
+        dest_config_file = Path(str(journal["dest_config_file"]))
+    if csv_path is None and journal.get("csv_path"):
+        csv_path = Path(str(journal["csv_path"]))
+    if manage_services is None:
+        manage_services = bool(journal.get("manage_services"))
     for name in ("state.json", "users.json", "config.toml", "VERSION", "owner.uri"):
         src = safety / name
         dest = dest_state_dir / name
         if src.is_file():
             _write_private(dest, src.read_bytes(), 0o600)
-        elif name in (written or []) and dest.exists():
+        elif name in written_names and dest.exists():
             dest.unlink()
     if dest_accounting_db is not None:
         db_dest = Path(dest_accounting_db)
@@ -1253,9 +1413,29 @@ def rollback_restore(
         if db_src.is_file():
             snapshot_sqlite(db_src, db_dest)
             os.chmod(db_dest, 0o600)
-        elif "accounting.db" in (written or []) and db_dest.exists():
+        elif "accounting.db" in written_names and db_dest.exists():
             db_dest.unlink()
-    _ = present
+    if dest_config_file is not None:
+        cfg_dest = Path(dest_config_file)
+        cfg_src = safety / "config.json"
+        if cfg_src.is_file():
+            _write_private(cfg_dest, cfg_src.read_bytes(), 0o640)
+        elif "config.json" in written_names and cfg_dest.exists():
+            cfg_dest.unlink()
+    if csv_path is not None:
+        csv_dest = Path(csv_path)
+        if csv_dest.exists():
+            csv_dest.unlink()
+        tmp_csv = csv_dest.with_name(f".{csv_dest.name}.{os.getpid()}.csv.tmp")
+        if tmp_csv.exists():
+            tmp_csv.unlink()
+    snapshot = service_state
+    if snapshot is None:
+        snapshot = _read_service_state_file(safety / "SERVICE_STATE") if safety.is_dir() else {}
+        if journal.get("service_state"):
+            snapshot = journal["service_state"]
+    if manage_services:
+        apply_service_state(snapshot or {})
     if safety.is_dir():
         write_restore_marker(safety, "restore-rollback", status="rolled-back")
 
@@ -1283,6 +1463,8 @@ def apply_restore(
     dest_state_dir: Path,
     *,
     dest_accounting_db: Optional[Path] = None,
+    dest_config_file: Optional[Path] = None,
+    generated_config: Optional[bytes] = None,
     age_identity: Optional[Path] = None,
     include_secrets: bool = False,
     reissue_output: Optional[Path] = None,
@@ -1299,14 +1481,22 @@ def apply_restore(
     reissue_ids: Optional[Mapping[str, Mapping[str, str]]] = None,
     project_version: Optional[str] = None,
     now: Optional[str] = None,
+    defer_version: bool = False,
+    manage_services: bool = False,
+    service_state: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Verify, preflight, safety-backup, stage, and commit dest files.
 
     The first mutation of dest happens after verify_archive and preflight.
-    Failure restores the safety tree and never edits the source archive.
+    Canonical files, accounting.db, generated config, reissue CSV, and the
+    VERSION commit marker share one try/rollback. Failure restores the
+    safety tree, drops the CSV, restores generated config, and reapplies
+    the original sing-box / accountd enabled+active snapshot. Never edits
+    the source archive.
     """
     archive = Path(archive)
     dest_state_dir = Path(dest_state_dir)
+    dest_config_path = Path(dest_config_file) if dest_config_file else None
     verified, members = _load_verified_members(archive, age_identity)
     installed = (dest_state_dir / "VERSION").is_file()
     preflight_restore(
@@ -1365,14 +1555,47 @@ def apply_restore(
         safety_path = dest_state_dir.parent / f"pre-restore-{stamp}"
     else:
         safety_path = Path(safety_dir)
-    copied = _safety_copy_existing(dest_state_dir, dest_accounting_db, safety_path)
+    original_services = dict(service_state) if service_state is not None else capture_service_state()
+    copied = _safety_copy_existing(
+        dest_state_dir,
+        dest_accounting_db,
+        safety_path,
+        dest_config_file=dest_config_path,
+        service_state=original_services,
+    )
 
     fail_after = os.environ.get("VCL_RESTORE_FAIL_AFTER", "").strip()
     if fail_after == "stage":
         write_restore_marker(safety_path, "restore-rollback", status="rolled-back")
         raise RestoreError("restore failure injected after stage", "injected_failure")
 
+    if manage_services and int(original_services.get("acct_active") or 0) == 1:
+        _systemctl_run(["stop", "vincula-accountd.service"])
+
     written: List[str] = []
+    csv_path: Optional[Path] = None
+    journal: Dict[str, Any] = {
+        "written": written,
+        "csv_path": None,
+        "dest_config_file": str(dest_config_path) if dest_config_path else None,
+        "dest_accounting_db": str(dest_accounting_db) if dest_accounting_db else None,
+        "service_state": original_services,
+        "manage_services": bool(manage_services),
+    }
+    _write_restore_journal(safety_path, journal)
+
+    def _rollback() -> None:
+        rollback_restore(
+            safety_path,
+            dest_state_dir,
+            dest_accounting_db,
+            written,
+            dest_config_file=dest_config_path,
+            csv_path=csv_path,
+            service_state=original_services,
+            manage_services=manage_services,
+        )
+
     try:
         dest_state_dir.mkdir(parents=True, exist_ok=True)
         _write_private(dest_state_dir / "state.json", _dumps(plan["state"]))
@@ -1384,13 +1607,6 @@ def apply_restore(
             str(plan["config_toml"]).encode("utf-8"),
         )
         written.append("config.toml")
-        version = (
-            project_version
-            or str(plan["state"].get("project_version") or "")
-            or "0.3.0"
-        )
-        _write_private(dest_state_dir / "VERSION", (version + "\n").encode("utf-8"))
-        written.append("VERSION")
         if plan.get("owner_uri"):
             _write_private(
                 dest_state_dir / "owner.uri",
@@ -1402,29 +1618,64 @@ def apply_restore(
             db_dest.parent.mkdir(parents=True, exist_ok=True)
             _write_private(db_dest, bytes(plan["accounting"]))
             written.append("accounting.db")
+        journal["written"] = list(written)
+        _write_restore_journal(safety_path, journal)
         if fail_after == "install":
-            raise RestoreError(
-                "restore failure injected after install", "injected_failure"
+            fail_after = "canonical"
+        _inject_restore_failure("canonical", fail_after)
+
+        if plan["mode"] == "safe" and plan["reissue_rows"]:
+            if reissue_output is None:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                csv_path = dest_state_dir.parent / f"reissue-{plan['node_id']}-{stamp}.csv"
+            else:
+                csv_path = Path(reissue_output)
+            write_reissue_csv(csv_path, plan["reissue_rows"])
+            written.append("reissue.csv")
+            journal["csv_path"] = str(csv_path)
+            journal["written"] = list(written)
+            _write_restore_journal(safety_path, journal)
+            print(
+                f"WARNING: {csv_path} contains authentication credentials.\n"
+                "Store and distribute it securely.",
+                file=sys.stderr,
             )
+        _inject_restore_failure("csv", fail_after)
+
+        if dest_config_path is not None and generated_config is not None:
+            _write_private(dest_config_path, bytes(generated_config), 0o640)
+            written.append("config.json")
+            journal["written"] = list(written)
+            _write_restore_journal(safety_path, journal)
+        _inject_restore_failure("config", fail_after)
+        if not defer_version:
+            _inject_restore_failure("health", fail_after)
+
+        version = (
+            project_version
+            or str(plan["state"].get("project_version") or "")
+            or "0.3.0"
+        )
+        if not defer_version:
+            if fail_after == "version" and os.environ.get("VCL_RESTORE_FAIL_ERRNO", "").strip() == "EACCES":
+                _inject_restore_failure("version", fail_after)
+            commit_restore_version(dest_state_dir, version, safety_path)
+            written.append("VERSION")
+            journal["written"] = list(written)
+            _write_restore_journal(safety_path, journal)
+            _inject_restore_failure("version", fail_after)
+        else:
+            write_restore_marker(safety_path, "restore-safety", status="pending")
+    except RestoreError:
+        _rollback()
+        raise
+    except OSError as exc:
+        _rollback()
+        raise RestoreError(str(exc), "io_error") from exc
     except Exception:
-        rollback_restore(safety_path, dest_state_dir, dest_accounting_db, written)
+        _rollback()
         raise
 
-    csv_path = None
-    if plan["mode"] == "safe" and plan["reissue_rows"]:
-        if reissue_output is None:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            csv_path = dest_state_dir.parent / f"reissue-{plan['node_id']}-{stamp}.csv"
-        else:
-            csv_path = Path(reissue_output)
-        write_reissue_csv(csv_path, plan["reissue_rows"])
-        print(
-            f"WARNING: {csv_path} contains authentication credentials.\n"
-            "Store and distribute it securely.",
-            file=sys.stderr,
-        )
-
-    write_restore_marker(safety_path, "restore-safety", status="committed")
     _ = copied
     return {
         "schema_version": 1,
@@ -1438,6 +1689,7 @@ def apply_restore(
         "users_reissued": len(plan["reissue_rows"]),
         "safety_backup": str(safety_path),
         "reissue_rows": plan["reissue_rows"],
+        "version_pending": bool(defer_version),
     }
 
 
@@ -1487,6 +1739,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore.add_argument("--apply", action="store_true")
     restore.add_argument("--target-state-dir", default="")
     restore.add_argument("--target-accounting-db", default="")
+    restore.add_argument("--target-config-file", default="")
+    restore.add_argument("--generated-config", default="")
     restore.add_argument("--safety-dir", default="")
     restore.add_argument("--new-instance-id", default="")
     restore.add_argument("--new-reality-private", default="")
@@ -1494,7 +1748,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore.add_argument("--new-reality-short-id", default="")
     restore.add_argument("--new-clash-secret", default="")
     restore.add_argument("--project-version", default="")
+    restore.add_argument("--defer-version", action="store_true")
+    restore.add_argument("--manage-services", action="store_true")
     restore.add_argument("--json", dest="json_flag", action="store_true")
+    rollback = sub.add_parser("rollback", help="roll back a restore from a safety tree")
+    rollback.add_argument("--safety-dir", required=True)
+    rollback.add_argument("--target-state-dir", required=True)
+    rollback.add_argument("--target-accounting-db", default="")
+    rollback.add_argument("--target-config-file", default="")
+    rollback.add_argument("--reissue-output", default="")
+    commit_ver = sub.add_parser(
+        "commit-version", help="write VERSION as the restore commit marker"
+    )
+    commit_ver.add_argument("--target-state-dir", required=True)
+    commit_ver.add_argument("--safety-dir", default="")
+    commit_ver.add_argument("--project-version", default="")
     return parser.parse_args(argv)
 
 
@@ -1571,6 +1839,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
+    if args.command == "rollback":
+        rollback_restore(
+            Path(args.safety_dir),
+            Path(args.target_state_dir),
+            Path(args.target_accounting_db) if args.target_accounting_db else None,
+            dest_config_file=Path(args.target_config_file) if args.target_config_file else None,
+            csv_path=Path(args.reissue_output) if args.reissue_output else None,
+        )
+        return 0
+    if args.command == "commit-version":
+        version = args.project_version or os.environ.get("VINCULA_VERSION") or "0.3.0"
+        safety = Path(args.safety_dir) if args.safety_dir else None
+        try:
+            commit_restore_version(Path(args.target_state_dir), version, safety)
+        except OSError as exc:
+            return _print_restore_failure(
+                RestoreError(str(exc), "io_error"), False
+            )
+        return 0
     if args.command == "restore":
         if not args.target_state_dir:
             print("ERROR: restore requires --target-state-dir DIR.", file=sys.stderr)
@@ -1579,11 +1866,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         db = Path(args.target_accounting_db) if args.target_accounting_db else None
         csv_out = Path(args.reissue_output) if args.reissue_output else None
         safety = Path(args.safety_dir) if args.safety_dir else None
+        cfg = Path(args.target_config_file) if args.target_config_file else None
+        generated = None
+        if args.generated_config:
+            generated = Path(args.generated_config).read_bytes()
         try:
             result = apply_restore(
                 Path(args.file),
                 Path(args.target_state_dir),
                 dest_accounting_db=db,
+                dest_config_file=cfg,
+                generated_config=generated,
                 age_identity=identity,
                 include_secrets=bool(args.include_secrets),
                 reissue_output=csv_out,
@@ -1597,6 +1890,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 new_reality_short_id=args.new_reality_short_id or None,
                 new_clash_secret=args.new_clash_secret or None,
                 project_version=args.project_version or None,
+                defer_version=bool(args.defer_version),
+                manage_services=bool(args.manage_services),
             )
         except RestoreError as exc:
             return _print_restore_failure(exc, bool(args.json_flag))

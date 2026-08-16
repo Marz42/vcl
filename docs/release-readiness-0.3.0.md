@@ -7,6 +7,7 @@
 **Addendum:** 2026-08-16 — B3 / P0-02: controller zip ships audit + backup modules.  
 **Addendum:** 2026-08-16 — B6 / P1-06: operation-level flock mutex on node and controller.  
 **Addendum:** 2026-08-16 — B7 / P1-04: `CURSOR_AHEAD` + strict sync batch validation.  
+**Addendum:** 2026-08-16 — B8 / P1-02: restore is a single atomic transaction.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -71,6 +72,12 @@ Living tree (`0.3.1-dev`): node `vcl audit export --after` returns **CURSOR_AHEA
 
 Living-tree test counts after B7: `bash tests/test.sh` **1066**; standalone `bash tests/test-fleet.sh` **430**.
 
+## Addendum (2026-08-16) — B8 / P1-02 restore is a true transaction
+
+Living tree (`0.3.1-dev`): `apply_restore` stages canonical files, `accounting.db`, generated config, and the reissue CSV, then writes `VERSION` last (the dest commit marker). All of those plus the pre-restore sing-box / accountd enabled+active snapshot share one try/rollback. CLI health/render failure calls the same rollback (config.json, CSV, VERSION, service state); it does **not** `systemctl restart sing-box` on a mixed tree. `VCL_RESTORE_FAIL_AFTER=canonical|csv|config|health|version` (and ENOSPC on CSV / EACCES on VERSION) leave the target fully recoverable; a second restore without the hook succeeds.
+
+Living-tree test counts after B8: `bash tests/test.sh` **1076**; standalone `bash tests/test-fleet.sh` **430**.
+
 ### Freeze-era recommendation (historical)
 
 The following block is the Batch 17-freeze text, retained for the record. It is **not** the current recommendation.
@@ -130,7 +137,7 @@ Evidence strategy = **node unit tests** (`tests/test.sh`) plus **fake-ssh / fake
 | AC-3.0-09 | After replace, historical accounting/audit remains queryable | **PASS** (fixture) | Accounting snapshot restored; `event_id` kept; fleet cursor `last_event_id` kept; no auto reseed | `AC-3.0-09 fixture PASS: restore keeps accounting event_id history`; `AC-3.0-09 replace sync keeps old instance rows and cursor`; reseed keeps `instance_history` | `--from-backup` without final sync may leave a cursor ahead of restored `MAX(event_id)` (`CURSOR_AHEAD` → `--reseed`) or a retention hole (`CURSOR_EXPIRED` → `--reseed`). **B7:** neither case is silent OK | YES (fixture) |
 | AC-3.0-10 | Reissue CSV is correct | **PASS** (fixture) | Header `user,node,old_credential_id,new_credential_id,vless_uri`; 0600; only previously-active users | `AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id` | Operator mishandling 0600 files after copy | YES (fixture) |
 | AC-3.0-11 | After revoke, old credential links fail | **PARTIAL / UNKNOWN** (LIVE-only) | Staged `users.json` / generated inbound `users[].uuid` omit the old uuid (code contract only) | `AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set` — **not PASS**. Live: old URI → new IP:443 fails; new URI succeeds; stop old VPS | Fixture cannot prove a handshake rejection. Old VPS still up ⇒ old IP still accepts old uuid | **No** for `READY WITH DOCUMENTED LIMITATIONS`. Live PASS required to raise `READY FOR RC` |
-| AC-3.0-12 | Failed restore does not silently destroy target or source | **PASS** (fixture) | verify-before-mutate; `pre-restore-*` safety; `VCL_RESTORE_FAIL_AFTER` test hook; fleet replace failure does not rewrite `ssh_host` | `AC-3.0-12 fixture PASS: failed restore does not mutate source or target`; mid-restore safety rollback; fleet restore/verify/backup/scp fail inject | Distributed rollback of a **committed** new-VPS restore is not promised (print `node set` back to old host) | YES (fixture) |
+| AC-3.0-12 | Failed restore does not silently destroy target or source | **PASS** (fixture) | verify-before-mutate; `pre-restore-*` safety; `VCL_RESTORE_FAIL_AFTER` test hook (stage/canonical/csv/config/health/version); fleet replace failure does not rewrite `ssh_host` | `AC-3.0-12 fixture PASS: failed restore does not mutate source or target`; mid-restore safety rollback; **B8** csv/version/health injects roll back CSV, config, VERSION, and service state; fleet restore/verify/backup/scp fail inject | Distributed rollback of a **committed** new-VPS restore is not promised (print `node set` back to old host) | YES (fixture) |
 
 ## Migration path (0.2.9 → 0.3.0)
 
@@ -248,7 +255,9 @@ Freeze verification: `bash -n` on all first-party bash (installer, helper, commo
 | Existing `VERSION` + `vcl restore FILE` | exact overwrite refusal; dest bytes unchanged |
 | `PATH` without age + `--include-secrets` | exact `ERROR: Secret-bearing backup requires age.`; no plaintext secret tar |
 | `VCL_RESTORE_FAIL_AFTER=stage` (after stage, before install) | target equals pre-restore; source tar sha256 unchanged; `pre-restore-*` kept; second restore without hook succeeds |
-| `VCL_RESTORE_FAIL_AFTER=health` | CLI rolls back target; source intact |
+| `VCL_RESTORE_FAIL_AFTER=canonical\|csv\|config\|health\|version` | full rollback: no VERSION (or VERSION removed), no leftover reissue CSV, generated config restored, sing-box/accountd enabled+active restored; re-restore succeeds (P1-02 / B8) |
+| CSV `ENOSPC` / VERSION `EACCES` inject | same recoverable state as above |
+| `VCL_RESTORE_FAIL_AFTER=health` | CLI rolls back target (canonical + config + CSV + services); source intact |
 | `VCL_FAKE_FAIL_RESTORE` / backup-create fail / scp fail / verify-fail `--from-backup` | replace aborts; `fleet.json` `ssh_host` stays old; no new `instance_history` active |
 | `--from-backup` whose `source_node_id` ≠ registry | refused; registry `node_id` / old host unchanged |
 | Replace then cursor gap | `CURSOR_EXPIRED` + `--reseed` guidance; `--reseed` keeps `instance_history` |

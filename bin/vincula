@@ -2889,8 +2889,23 @@ HELP
 }
 
 rollback_restore_target() {
-  local safety=$1 name path
+  local safety=$1 name path backup_py
   [[ -n "$safety" && -d "$safety" ]] || return 1
+  backup_py=$(resolve_backup_py) || backup_py=""
+  if [[ -n "$backup_py" ]]; then
+    local -a rb_args=(
+      "$backup_py" rollback
+      --safety-dir "$safety"
+      --target-state-dir "$STATE_DIR"
+      --target-accounting-db "$ACCOUNTING_DB_FILE"
+      --target-config-file "$CONFIG_FILE"
+    )
+    if [[ -n "${reissue_output:-}" ]]; then
+      rb_args+=(--reissue-output "$reissue_output")
+    fi
+    python3 "${rb_args[@]}" >/dev/null || true
+    return 0
+  fi
   for name in state.json users.json config.toml VERSION owner.uri; do
     if [[ -f "${safety}/${name}" ]]; then
       case "$name" in
@@ -2916,6 +2931,40 @@ rollback_restore_target() {
     install -D -m 0600 "${safety}/accounting.db" "$ACCOUNTING_DB_FILE"
   elif [[ -e "$ACCOUNTING_DB_FILE" ]]; then
     rm -f "$ACCOUNTING_DB_FILE"
+  fi
+  if [[ -f "${safety}/config.json" ]]; then
+    install -D -m 0640 "${safety}/config.json" "$CONFIG_FILE"
+  else
+    rm -f "$CONFIG_FILE"
+  fi
+  if [[ -n "${reissue_output:-}" && -e "$reissue_output" ]]; then
+    rm -f "$reissue_output"
+  fi
+  if [[ -f "${safety}/SERVICE_STATE" ]]; then
+    local sing_enabled=0 sing_active=0 acct_enabled=0 acct_active=0
+    # shellcheck disable=SC1091
+    source "${safety}/SERVICE_STATE" || true
+    local ctl=${VCL_SYSTEMCTL:-systemctl}
+    if (( sing_enabled == 1 )); then
+      "$ctl" enable sing-box.service >/dev/null 2>&1 || true
+    else
+      "$ctl" disable sing-box.service >/dev/null 2>&1 || true
+    fi
+    if (( sing_active == 1 )); then
+      "$ctl" start sing-box.service >/dev/null 2>&1 || true
+    else
+      "$ctl" stop sing-box.service >/dev/null 2>&1 || true
+    fi
+    if (( acct_enabled == 1 )); then
+      "$ctl" enable vincula-accountd.service >/dev/null 2>&1 || true
+    else
+      "$ctl" disable vincula-accountd.service >/dev/null 2>&1 || true
+    fi
+    if (( acct_active == 1 )); then
+      "$ctl" start vincula-accountd.service >/dev/null 2>&1 || true
+    else
+      "$ctl" stop vincula-accountd.service >/dev/null 2>&1 || true
+    fi
   fi
   if [[ -f "${safety}/.vincula-backup" ]]; then
     printf 'status=rolled-back\n' >> "${safety}/.vincula-backup"
@@ -3008,10 +3057,12 @@ cmd_restore() {
     reissue_output="${BACKUP_ROOT}/reissue-${stamp}.csv"
   fi
 
-  if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" != "1" ]]; then
-    if systemctl cat vincula-accountd.service >/dev/null 2>&1; then
-      systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
-    fi
+  local skip_health=0 defer_version=0 manage_services=0
+  if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" == "1" ]]; then
+    skip_health=1
+  else
+    defer_version=1
+    manage_services=1
   fi
 
   local -a args=(
@@ -3020,6 +3071,7 @@ cmd_restore() {
     "$file"
     --target-state-dir "$STATE_DIR"
     --target-accounting-db "$ACCOUNTING_DB_FILE"
+    --target-config-file "$CONFIG_FILE"
     --safety-dir "$safety"
     --reissue-output "$reissue_output"
     --new-instance-id "$instance_id"
@@ -3033,6 +3085,8 @@ cmd_restore() {
   (( include_secrets )) && args+=(--include-secrets)
   [[ -n "$server" ]] && args+=(--server "$server")
   (( json )) && args+=(--json)
+  (( defer_version )) && args+=(--defer-version)
+  (( manage_services )) && args+=(--manage-services)
 
   restore_rc=0
   python3 "${args[@]}" || restore_rc=$?
@@ -3040,15 +3094,17 @@ cmd_restore() {
     return "$restore_rc"
   fi
 
-  if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" == "1" ]]; then
+  if (( skip_health )); then
     return 0
   fi
+
   # Test-only: VCL_RESTORE_FAIL_AFTER=health is not documented in --help.
   if [[ "${VCL_RESTORE_FAIL_AFTER:-}" == "health" ]]; then
     rollback_restore_target "$safety" || true
     die "restore health check failed (injected); rolled back from ${safety}."
   fi
 
+  local ctl=${VCL_SYSTEMCTL:-systemctl}
   install -d -m 0750 "$(dirname -- "$CONFIG_FILE")"
   if ! render_config_from_registry "$CONFIG_FILE" "$USERS_FILE"; then
     rollback_restore_target "$safety" || true
@@ -3060,15 +3116,25 @@ cmd_restore() {
       die "sing-box check failed after restore; rolled back from ${safety}."
     fi
   fi
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now sing-box.service >/dev/null 2>&1 || true
-  systemctl enable --now vincula-accountd.service >/dev/null 2>&1 || true
+  "$ctl" daemon-reload >/dev/null 2>&1 || true
+  "$ctl" enable --now sing-box.service >/dev/null 2>&1 || true
+  "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1 || true
   port=$(toml_get "$SETTINGS_FILE" port || true)
   [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
   if ! wait_healthy "$port"; then
     rollback_restore_target "$safety" || true
-    systemctl restart sing-box.service >/dev/null 2>&1 || true
     die "sing-box did not become healthy after restore; rolled back from ${safety}."
+  fi
+  if ! python3 "$backup_py" commit-version \
+      --target-state-dir "$STATE_DIR" \
+      --safety-dir "$safety" \
+      --project-version "$VINCULA_VERSION"; then
+    rollback_restore_target "$safety" || true
+    die "failed to write VERSION after restore; rolled back from ${safety}."
+  fi
+  if [[ "${VCL_RESTORE_FAIL_AFTER:-}" == "version" ]]; then
+    rollback_restore_target "$safety" || true
+    die "restore VERSION write failed (injected); rolled back from ${safety}."
   fi
 }
 

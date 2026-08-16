@@ -74,6 +74,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P1-05 Clash 200 + bad envelope treated as empty snapshot | B5: `/connections` body must be an object with `connections` a list of objects. `{}` / wrong types / oversized body are protocol errors (no close-all, no `last_success_at` refresh). Legal `{"connections":[]}` still closes stale. Non-int counters are skipped per connection |
 | P1-06 no operation-level mutex (lost updates) | B6: node `flock` on `/run/lock/vincula.lock` (fallback `/var/lock/vincula.lock`) covers user mutations, restore, and `users.json` writers; controller `fcntl` on `$FLEET_HOME/.lock` covers registry mutations and sync/`fleet.db` cursor updates. Timeout 30s → exit 4 `busy: another vincula operation in progress`. flock is fd-based (released on process exit); not a PID file |
 | P1-04 audit cursor silently dropped data | B7: node export `CURSOR_AHEAD` (exit 3) when `after > MAX(event_id)`; fleet sync validates meta/JSONL before import and does not advance a stale cursor. `--from-backup` / kept cursor vs an older restored DB fails closed with `--reseed` |
+| P1-02 restore not a true transaction | B8: CSV, generated config, and VERSION share the apply_restore try/rollback with canonical files and accounting.db. Rollback also restores the pre-restore sing-box / accountd enabled+active snapshot. Health-check failure no longer restarts sing-box on a mixed tree |
 
 ## Related docs
 
