@@ -87,7 +87,7 @@ Usage:
   vcl logs 200         Show the last 200 journal entries
   vcl logs -f          Follow journal output
   vcl link             Print the owner VLESS URI
-  vcl user add <tag> [--display-name NAME] [--department DEPT]
+  vcl user add <tag> [--user-id UUID] [--display-name NAME] [--department DEPT] [--json]
   vcl user set <tag> --display-name NAME [--department DEPT]
   vcl user disable <tag>
   vcl user enable <tag>
@@ -123,6 +123,7 @@ Notes:
   Polling ≠ exact billing: Clash API accounting is approximate; short flows may be missed.
   Department stats use current attribution from users.json (not historical department).
   Config-affecting user changes restart sing-box; metadata-only user set does not.
+  --user-id is advanced/controller use: inject a fleet-global user_id instead of generating one.
 USAGE
 }
 
@@ -1546,7 +1547,7 @@ user_mutation_apply() {
 cmd_user_add() {
   local tag=$1
   shift
-  local display_name="" department=""
+  local display_name="" department="" user_id="" as_json=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --display-name)
@@ -1559,14 +1560,40 @@ cmd_user_add() {
         department=$2
         shift 2
         ;;
+      --user-id)
+        [[ $# -ge 2 ]] || die "user add: --user-id requires a value."
+        user_id=$2
+        shift 2
+        ;;
+      --json)
+        as_json=1
+        shift
+        ;;
       *)
         die "user add: unknown option ${1}."
         ;;
     esac
   done
-  is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
+
+  emit_user_add_error() {
+    local error=$1 human=$2
+    if (( as_json )); then
+      python3 - "$error" "$user_id" <<'PY'
+import json, sys
+error, uid = sys.argv[1], sys.argv[2]
+doc = {"schema_version": 1, "ok": False, "error": error}
+if uid:
+    doc["user_id"] = uid
+print(json.dumps(doc, ensure_ascii=False))
+PY
+      exit 1
+    fi
+    die "$human"
+  }
+
+  is_valid_user_tag "$tag" || emit_user_add_error invalid_tag "invalid user tag: ${tag}."
   [[ -n "$display_name" ]] || display_name=$tag
-  local node_id uuid staged_dir staged_users user_id credential_id
+  local node_id uuid staged_dir staged_users credential_id vless_uri mutate_err mutate_rc
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
@@ -1576,19 +1603,56 @@ cmd_user_add() {
   staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
   staged_users="${staged_dir}/users.json"
   cp -a -- "$USERS_FILE" "$staged_users"
-  if ! users_registry_mutate "$staged_users" add "$tag" "$display_name" "$department" "$uuid" "$node_id"; then
+  mutate_rc=0
+  mutate_err=$(users_registry_mutate "$staged_users" add "$tag" "$display_name" "$department" "$uuid" "$node_id" "$user_id" 2>&1) || mutate_rc=$?
+  if (( mutate_rc != 0 )); then
     rm -rf --one-file-system -- "$staged_dir"
-    die "failed to add user ${tag}."
+    case "$mutate_err" in
+      *invalid\ user_id*)
+        emit_user_add_error invalid_user_id "invalid user_id: ${user_id}."
+        ;;
+      *user_id\ already\ exists*)
+        emit_user_add_error duplicate_user_id "user_id already exists: ${user_id}."
+        ;;
+      *user\ tag\ already\ exists*)
+        emit_user_add_error duplicate_tag "user tag already exists: ${tag}."
+        ;;
+      *)
+        emit_user_add_error failed "failed to add user ${tag}."
+        ;;
+    esac
   fi
-  user_mutation_apply "$staged_users"
+  if (( as_json )); then
+    user_mutation_apply "$staged_users" >/dev/null
+  else
+    user_mutation_apply "$staged_users"
+  fi
   user_id=$(users_registry_field "$USERS_FILE" "$tag" user_id)
   credential_id=$(users_registry_field "$USERS_FILE" "$tag" active_credential_id)
+  vless_uri=$(cmd_user_link "$tag")
+  if (( as_json )); then
+    python3 - "$tag" "$user_id" "$credential_id" "$vless_uri" <<'PY'
+import json, sys
+tag, user_id, credential_id, vless_uri = sys.argv[1:5]
+print(json.dumps({
+    "schema_version": 1,
+    "ok": True,
+    "tag": tag,
+    "user_id": user_id,
+    "credential_id": credential_id,
+    "vless_uri": vless_uri,
+    "status": "active",
+    "enabled": True,
+}, ensure_ascii=False, indent=2))
+PY
+    return
+  fi
   printf 'Created user: %s\n' "$tag"
   printf 'User ID: %s\n' "$user_id"
   printf 'Credential: %s\n' "$credential_id"
   printf 'Status: active\n'
   printf '\nVLESS URI:\n'
-  cmd_user_link "$tag"
+  printf '%s\n' "$vless_uri"
 }
 
 cmd_user_set() {
@@ -1855,7 +1919,7 @@ cmd_user() {
   shift || true
   case "$sub" in
     add)
-      [[ $# -ge 1 ]] || die "usage: vcl user add <tag> [--display-name NAME] [--department DEPT]"
+      [[ $# -ge 1 ]] || die "usage: vcl user add <tag> [--user-id UUID] [--display-name NAME] [--department DEPT] [--json]"
       cmd_user_add "$@"
       ;;
     set)

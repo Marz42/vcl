@@ -573,12 +573,15 @@ users_registry_mutate() {
   shift 2
   require_python3 || return 1
   python3 - "$users_file" "$action" "$@" <<'PY'
-import json, sys, uuid
+import json, re, sys, uuid
 from datetime import datetime, timezone
 
 path, action = sys.argv[1], sys.argv[2]
 args = sys.argv[3:]
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+USER_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
@@ -598,11 +601,24 @@ def enabled_count():
     return sum(1 for u in users if u.get("enabled"))
 
 if action == "add":
-    tag, display_name, department, vless_uuid, node_id = args
+    if len(args) < 5:
+        raise SystemExit("add requires tag, display_name, department, vless_uuid, node_id")
+    if len(args) > 6:
+        raise SystemExit("add: too many arguments")
+    tag, display_name, department, vless_uuid, node_id = args[:5]
+    explicit_user_id = args[5].strip() if len(args) > 5 else ""
     if find(tag):
         raise SystemExit(f"user tag already exists: {tag}")
+    if not explicit_user_id:
+        user_id = str(uuid.uuid4())
+    else:
+        if not USER_ID_RE.fullmatch(explicit_user_id):
+            raise SystemExit("invalid user_id")
+        if any(u.get("user_id") == explicit_user_id for u in users):
+            raise SystemExit(f"user_id already exists: {explicit_user_id}")
+        user_id = explicit_user_id
     users.append({
-        "user_id": str(uuid.uuid4()),
+        "user_id": user_id,
         "tag": tag,
         "display_name": display_name or tag,
         "department": department or "",
@@ -781,6 +797,9 @@ else:
 users = data.get("users") or []
 ok(f"{len(users)} users")
 
+missing_user_ids = [u.get("tag") or "?" for u in users if not u.get("user_id")]
+if missing_user_ids:
+    bad(f"users missing user_id: {', '.join(missing_user_ids[:5])}")
 user_ids = [u.get("user_id") for u in users if u.get("user_id")]
 tags = [u.get("tag") for u in users if u.get("tag")]
 cred_ids = []

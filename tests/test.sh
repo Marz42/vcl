@@ -2465,6 +2465,46 @@ JSON
   assert_success "users_registry_mutate set still works after remove deletion" \
     users_registry_mutate "${PROV_DIR}/users-o1.json" set bob "Bobby" qa
 
+  cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-uid.json"
+  assert_success "users_registry_mutate add carol with empty user_id" \
+    users_registry_mutate "${PROV_DIR}/users-uid.json" add carol "Carol" eng \
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc" "$NODE_ID" ""
+  carol_uid=$(users_registry_field "${PROV_DIR}/users-uid.json" carol user_id)
+  assert_success "generated carol user_id is UUID" \
+    python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$carol_uid"
+  assert_failure "generated carol user_id is not the tag" test "$carol_uid" = "carol"
+  carol_cid=$(users_registry_field "${PROV_DIR}/users-uid.json" carol active_credential_id)
+  assert_success "generated carol credential_id is UUID" \
+    python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) else 1)' "$carol_cid"
+  assert_failure "credential_id is not user_id" test "$carol_cid" = "$carol_uid"
+
+  USER_A="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  assert_success "users_registry_mutate add dave with explicit user_id" \
+    users_registry_mutate "${PROV_DIR}/users-uid.json" add dave "Dave" ops \
+      "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$NODE_ID" "$USER_A"
+  assert_equal "injected dave user_id is preserved" "$USER_A" \
+    "$(users_registry_field "${PROV_DIR}/users-uid.json" dave user_id)"
+
+  eve_rc=0
+  eve_err=$(users_registry_mutate "${PROV_DIR}/users-uid.json" add eve "Eve" ops \
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" "$NODE_ID" "$USER_A" 2>&1) || eve_rc=$?
+  if (( eve_rc != 0 )) && [[ "$eve_err" == *"user_id already exists"* ]]; then
+    pass "duplicate user_id in same registry is rejected"
+  else
+    fail "duplicate user_id in same registry is rejected (rc=${eve_rc} err=${eve_err})"
+  fi
+  assert_failure "eve was not written after duplicate user_id" \
+    grep -q '"tag": "eve"' "${PROV_DIR}/users-uid.json"
+
+  frank_rc=0
+  frank_err=$(users_registry_mutate "${PROV_DIR}/users-uid.json" add frank "Frank" ops \
+    "ffffffff-ffff-4fff-8fff-ffffffffffff" "$NODE_ID" "not-a-uuid" 2>&1) || frank_rc=$?
+  if (( frank_rc != 0 )) && [[ "$frank_err" == *"invalid user_id"* ]]; then
+    pass "invalid user_id is rejected"
+  else
+    fail "invalid user_id is rejected (rc=${frank_rc} err=${frank_err})"
+  fi
+
   list_out=$(users_registry_list "${PROV_DIR}/users.json")
   if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" != *"ACTIVE_UUID"* ]]; then
     pass "users_registry_list uses human STATUS format without UUID"
@@ -2476,6 +2516,37 @@ JSON
     pass "users_registry_show_human omits raw UUID"
   else
     fail "users_registry_show_human omits raw UUID"
+  fi
+  if [[ "$show_out" == *"User ID:"* && "$show_out" == *"33333333-3333-4333-8333-333333333333"* ]]; then
+    pass "users_registry_show_human surfaces User ID"
+  else
+    fail "users_registry_show_human surfaces User ID"
+  fi
+  if [[ "$show_out" == *"credential_id"* && "$show_out" == *"44444444-4444-4444-8444-444444444444"* ]]; then
+    pass "users_registry_show_human lists credential_id"
+  else
+    fail "users_registry_show_human lists credential_id"
+  fi
+
+  cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-dup-uid.json"
+  python3 - "${PROV_DIR}/users-dup-uid.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+owner = next(u for u in data["users"] if u["tag"] == "owner")
+alice = next(u for u in data["users"] if u["tag"] == "alice")
+alice["user_id"] = owner["user_id"]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+  dup_rc=0
+  dup_out=$(users_registry_verify "${PROV_DIR}/users-dup-uid.json" "${PROV_DIR}/config-ok.json" 2>&1) || dup_rc=$?
+  if (( dup_rc != 0 )) && [[ "$dup_out" == *"user IDs not unique"* ]]; then
+    pass "users_registry_verify catches duplicate user_id"
+  else
+    fail "users_registry_verify catches duplicate user_id (rc=${dup_rc} out=${dup_out})"
   fi
 
   cat > "${PROV_DIR}/import-ok.csv" <<'CSV'
@@ -2610,6 +2681,20 @@ PY
   assert_success "helper documents user export" grep -q 'vcl user export' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper documents user verify" grep -q 'vcl user verify' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper documents user set" grep -q 'vcl user set' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user add --user-id" \
+    grep -q 'vcl user add <tag> \[--user-id UUID\]' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper notes --user-id is advanced/controller" \
+    grep -q 'advanced/controller' "${PROJECT_DIR}/bin/vincula"
+  if awk '/^cmd_user\(\)/,/^cmd_connections\(\)/' "${PROJECT_DIR}/bin/vincula" | grep -q -- '--user-id UUID'; then
+    pass "user add dispatch documents --user-id"
+  else
+    fail "user add dispatch documents --user-id"
+  fi
+  if awk '/^cmd_user_add\(\)/,/^cmd_user_set\(\)/' "${PROJECT_DIR}/bin/vincula" | grep -q -- '--user-id'; then
+    pass "cmd_user_add parses --user-id"
+  else
+    fail "cmd_user_add parses --user-id"
+  fi
   assert_success "helper warns on user mutation restart" \
     grep -q 'applying user changes restarts sing-box' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper documents metadata-only user set skips restart" \
