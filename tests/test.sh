@@ -4189,15 +4189,22 @@ assert_success "backup module uses sqlite3 Connection.backup" \
   grep -q 'src_conn.backup(dest_conn)' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_failure "backup snapshot does not shutil.copyfile the live db" \
   grep -q 'shutil.copyfile' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "fake-age fixture is executable" \
+  test -x "${PROJECT_DIR}/tests/fixtures/fake-age"
+assert_success "fake-age uses python3 shebang" \
+  grep -q '^#!/usr/bin/env python3' "${PROJECT_DIR}/tests/fixtures/fake-age"
+assert_failure "fake-age does not invoke real age" \
+  grep -qE 'subprocess|os[.]system|Popen' "${PROJECT_DIR}/tests/fixtures/fake-age"
 BACKUP_DIR="${TEST_TMP}/backup030"
 mkdir -p "$BACKUP_DIR"
-if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" "${PROJECT_DIR}/lib/vincula-accountd.py" <<'PY'
-import contextlib, importlib.util, io, json, os, sqlite3, stat, sys, tarfile
+if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" "${PROJECT_DIR}/lib/vincula-accountd.py" "${PROJECT_DIR}/tests/fixtures/fake-age" <<'PY'
+import contextlib, hashlib, importlib.util, io, json, os, sqlite3, stat, subprocess, sys, tarfile
 from pathlib import Path
 
 base = Path(sys.argv[1])
 backup_py = sys.argv[2]
 accountd_py = sys.argv[3]
+fake_age = Path(sys.argv[4])
 
 spec_b = importlib.util.spec_from_file_location("vbackup", backup_py)
 mod = importlib.util.module_from_spec(spec_b)
@@ -4541,6 +4548,166 @@ with tarfile.open(archive, "r:") as src, tarfile.open(flag_bad, "w:", format=tar
         dst.addfile(info, __import__("io").BytesIO(data))
 flag_result = mod.verify_manifest(flag_bad)
 assert flag_result.get("ok") is False and flag_result.get("error") == "secret_bearing_unencrypted", flag_result
+
+# missing manifest + unsupported schema
+no_man = base / "no-manifest.tar"
+with tarfile.open(no_man, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    data = members["state.json"]
+    info = tarfile.TarInfo("state.json")
+    info.size = len(data)
+    dst.addfile(info, io.BytesIO(data))
+miss = mod.verify_archive(no_man)
+assert miss.get("ok") is False and miss.get("error") == "missing_manifest", miss
+
+schema_bad = base / "schema99.tar"
+bad_schema = dict(manifest)
+bad_schema["schema_version"] = 99
+with tarfile.open(archive, "r:") as src, tarfile.open(schema_bad, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    for info in src.getmembers():
+        data = src.extractfile(info).read()
+        if info.name == "manifest.json":
+            data = (json.dumps(bad_schema, indent=2) + "\n").encode("utf-8")
+            info.size = len(data)
+        dst.addfile(info, io.BytesIO(data))
+schema_result = mod.verify_archive(schema_bad)
+assert schema_result.get("ok") is False and schema_result.get("error") == "unsupported_schema", schema_result
+
+# TASK 11: fake-age round-trip (argv + stdin/stdout); never requires real age
+assert fake_age.is_file(), fake_age
+recipient = base / "age-recipient.txt"
+recipient.write_text("age1fakevincularecipient\n", encoding="utf-8")
+recip_sha = hashlib.sha256(recipient.read_bytes()).hexdigest()
+identity = base / "age-identity.txt"
+identity.write_text(
+    "AGE-SECRET-KEY-1FAKE\nRECIPIENT_SHA256=%s\n" % recip_sha, encoding="utf-8"
+)
+plain = base / "plain.bin"
+plain.write_bytes(b"hello-vincula")
+enc = base / "plain.bin.age"
+dec = base / "plain.out"
+subprocess.run(
+    [str(fake_age), "-e", "-R", str(recipient), "-o", str(enc), str(plain)],
+    check=True,
+)
+header = enc.read_bytes()
+assert header.startswith(b"VCLFAKEAGE1\n"), header[:20]
+subprocess.run(
+    [str(fake_age), "-d", "-i", str(identity), "-o", str(dec), str(enc)],
+    check=True,
+)
+assert dec.read_bytes() == b"hello-vincula"
+pipe = subprocess.run(
+    [str(fake_age), "-e", "-R", str(recipient)],
+    input=b"stdin-plain",
+    capture_output=True,
+    check=True,
+)
+pipe2 = subprocess.run(
+    [str(fake_age), "-d", "-i", str(identity)],
+    input=pipe.stdout,
+    capture_output=True,
+    check=True,
+)
+assert pipe2.stdout == b"stdin-plain"
+unk = subprocess.run([str(fake_age), "-p"], capture_output=True)
+assert unk.returncode == 1
+
+# secretless still works when age is missing
+old_path = os.environ.get("PATH")
+old_age = os.environ.get("VCL_AGE_BIN")
+os.environ["PATH"] = "/nonexistent"
+os.environ["VCL_AGE_BIN"] = "/nonexistent/not-age"
+secretless_no_age = base / "secretless-no-age.tar"
+r_no_age = mod.create_backup(
+    state_dir, db, include_secrets=False, output=secretless_no_age
+)
+assert r_no_age["ok"] is True and r_no_age["encryption"] == "none"
+
+# TASK 12/13: D17 exact line when --include-secrets and age is missing
+os.environ["VCL_AGE_BIN"] = "age"
+missing_out = base / "must-not-exist.tar"
+missing_age = base / "must-not-exist.tar.age"
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    try:
+        mod.create_backup(
+            state_dir,
+            db,
+            include_secrets=True,
+            output=missing_out,
+            age_recipient=recipient,
+        )
+        raise AssertionError("include-secrets without age must die")
+    except SystemExit:
+        pass
+d17_lines = [ln.strip() for ln in err.getvalue().splitlines()]
+assert "ERROR: Secret-bearing backup requires age." in d17_lines, err.getvalue()
+assert not missing_out.exists()
+assert not missing_age.exists()
+if old_path is None:
+    os.environ.pop("PATH", None)
+else:
+    os.environ["PATH"] = old_path
+if old_age is None:
+    os.environ.pop("VCL_AGE_BIN", None)
+else:
+    os.environ["VCL_AGE_BIN"] = old_age
+
+# TASK 12/13: fake-age round-trip create + verify
+os.environ["VCL_AGE_BIN"] = str(fake_age)
+plain_requested = base / "node-secrets.tar"
+secrets_result = mod.create_backup(
+    state_dir,
+    db,
+    include_secrets=True,
+    output=plain_requested,
+    age_recipient=recipient,
+    created_at=created,
+)
+assert secrets_result["ok"] is True
+assert secrets_result["secret_bearing"] is True
+assert secrets_result["encryption"] == "age"
+assert str(secrets_result["path"]).endswith(".tar.age"), secrets_result["path"]
+secrets_archive = Path(secrets_result["path"])
+assert secrets_archive == base / "node-secrets.tar.age"
+assert secrets_archive.is_file()
+assert not plain_requested.exists(), "plaintext secret-bearing tar must not be written"
+assert stat.S_IMODE(secrets_archive.stat().st_mode) == 0o600
+assert secrets_archive.read_bytes().startswith(b"VCLFAKEAGE1\n")
+
+no_ident = mod.verify_archive(secrets_archive)
+assert no_ident.get("ok") is False and no_ident.get("error") == "age_identity_required", no_ident
+no_ident_m = mod.verify_manifest(secrets_archive)
+assert no_ident_m.get("error") == "age_identity_required", no_ident_m
+
+secrets_ok = mod.verify_archive(secrets_archive, age_identity=identity)
+assert secrets_ok.get("ok") is True, secrets_ok
+assert secrets_ok["secret_bearing"] is True
+assert secrets_ok["encryption"] == "age"
+manifest_ok = mod.verify_manifest(secrets_archive, age_identity=identity)
+assert manifest_ok.get("ok") is True, manifest_ok
+
+dec_tar = base / "secrets-decrypted.tar"
+mod.age_decrypt(secrets_archive, dec_tar, identity)
+with tarfile.open(dec_tar, "r:") as tf:
+    dec_state = json.loads(tf.extractfile("state.json").read())
+    dec_users = json.loads(tf.extractfile("users.json").read())
+    dec_toml = tf.extractfile("config.toml").read().decode("utf-8")
+    dec_manifest = json.loads(tf.extractfile("manifest.json").read())
+assert dec_state["node"]["reality_private_key"] == "sekrit"
+assert [c["uuid"] for u in dec_users["users"] for c in u["credentials"]] == [
+    active_uuid, revoked_uuid,
+]
+assert 'clash_api_secret = "clash-sekrit"' in dec_toml
+assert dec_manifest["secret_bearing"] is True
+assert dec_manifest["encryption"] == "age"
+
+wrong_id = base / "age-identity-wrong.txt"
+wrong_id.write_text(
+    "AGE-SECRET-KEY-1NOPE\nRECIPIENT_SHA256=%s\n" % ("ab" * 32), encoding="utf-8"
+)
+wrong_v = mod.verify_archive(secrets_archive, age_identity=wrong_id)
+assert wrong_v.get("ok") is False, wrong_v
 PY
 then
   pass "secretless backup strips reality_private_key"
@@ -4551,6 +4718,10 @@ then
   pass "backup tar manifest schema 1 with per-file sha256"
   pass "verify_manifest checks sha256 and secret-bearing flag"
   pass "secretless archive is 0600 and not age-encrypted"
+  pass "fake-age encrypt/decrypt round-trip"
+  pass "verify missing_manifest and unsupported_schema"
+  pass "D17 missing age dies with exact ERROR line"
+  pass "include-secrets fake-age archive verifies after decrypt"
 else
   fail "secretless backup strips reality_private_key"
   fail "secretless users keep credential_id history without uuid"
@@ -4560,6 +4731,10 @@ else
   fail "backup tar manifest schema 1 with per-file sha256"
   fail "verify_manifest checks sha256 and secret-bearing flag"
   fail "secretless archive is 0600 and not age-encrypted"
+  fail "fake-age encrypt/decrypt round-trip"
+  fail "verify missing_manifest and unsupported_schema"
+  fail "D17 missing age dies with exact ERROR line"
+  fail "include-secrets fake-age archive verifies after decrypt"
 fi
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then

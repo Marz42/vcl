@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""age stand-in for Vincula tests. Never calls real age.
+
+Selected by VCL_AGE_BIN. Implements `age -e -R` / `age -d -i` / `-o`,
+plus stdin/stdout. Ciphertext is `VCLFAKEAGE1\\n` + SHA-256(recipient file
+bytes) hex + `\\n` + plaintext. Decrypt requires the identity file to contain
+a `RECIPIENT_SHA256=<hex>` line matching that header.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+MAGIC = b"VCLFAKEAGE1\n"
+
+
+def _read_input(infile: str | None) -> bytes:
+    if infile is None or infile == "-":
+        return sys.stdin.buffer.read()
+    return Path(infile).read_bytes()
+
+
+def _write_output(outfile: str | None, data: bytes) -> None:
+    if outfile is None or outfile == "-":
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        return
+    Path(outfile).write_bytes(data)
+
+
+def _parse_argv(argv: list[str]) -> tuple[str, str | None, str | None, str | None, str | None]:
+    encrypt = False
+    decrypt = False
+    recipient: str | None = None
+    identity: str | None = None
+    output: str | None = None
+    positional: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-e", "--encrypt"):
+            encrypt = True
+            i += 1
+            continue
+        if arg in ("-d", "--decrypt"):
+            decrypt = True
+            i += 1
+            continue
+        if arg in ("-R", "--recipients-file"):
+            if i + 1 >= len(argv):
+                raise ValueError("missing recipients file")
+            recipient = argv[i + 1]
+            i += 2
+            continue
+        if arg in ("-i", "--identity"):
+            if i + 1 >= len(argv):
+                raise ValueError("missing identity file")
+            identity = argv[i + 1]
+            i += 2
+            continue
+        if arg in ("-o", "--output"):
+            if i + 1 >= len(argv):
+                raise ValueError("missing output path")
+            output = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-") and arg != "-":
+            raise ValueError(f"unknown argv: {arg}")
+        positional.append(arg)
+        i += 1
+    if encrypt == decrypt:
+        raise ValueError("need exactly one of -e or -d")
+    if len(positional) > 1:
+        raise ValueError("too many input paths")
+    infile = positional[0] if positional else None
+    mode = "encrypt" if encrypt else "decrypt"
+    return mode, recipient, identity, output, infile
+
+
+def _encrypt(recipient: str, infile: str | None, output: str | None) -> None:
+    recip_bytes = Path(recipient).read_bytes()
+    digest = hashlib.sha256(recip_bytes).hexdigest()
+    plain = _read_input(infile)
+    _write_output(output, MAGIC + digest.encode("ascii") + b"\n" + plain)
+
+
+def _decrypt(identity: str, infile: str | None, output: str | None) -> None:
+    data = _read_input(infile)
+    if not data.startswith(MAGIC):
+        raise ValueError("not a fake-age ciphertext")
+    rest = data[len(MAGIC) :]
+    nl = rest.find(b"\n")
+    if nl < 0:
+        raise ValueError("truncated fake-age header")
+    got_hex = rest[:nl].decode("ascii").strip().lower()
+    body = rest[nl + 1 :]
+    expected = None
+    for line in Path(identity).read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("RECIPIENT_SHA256="):
+            expected = stripped.split("=", 1)[1].strip().lower()
+            break
+    if expected is None or expected != got_hex:
+        raise ValueError("recipient fingerprint mismatch")
+    _write_output(output, body)
+
+
+def main(argv: list[str]) -> int:
+    try:
+        mode, recipient, identity, output, infile = _parse_argv(argv)
+        if mode == "encrypt":
+            if not recipient:
+                raise ValueError("encrypt requires -R RECIPIENT_FILE")
+            _encrypt(recipient, infile, output)
+        else:
+            if not identity:
+                raise ValueError("decrypt requires -i IDENTITY_FILE")
+            _decrypt(identity, infile, output)
+    except (OSError, UnicodeError, ValueError):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

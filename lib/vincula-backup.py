@@ -7,7 +7,7 @@ node.reality_private_key, credentials[].uuid, and clash_api_secret.
 They do not require age.
 
 `--include-secrets` keeps those three files verbatim and requires whole-archive
-age encryption (wired in a later batch). Secret-bearing archives are never
+age encryption (`age -e -R` recipient file). Secret-bearing archives are never
 written as plaintext tar.
 
 Accounting snapshots use sqlite3.Connection.backup() so a live WAL writer
@@ -25,7 +25,9 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -38,6 +40,7 @@ BACKUP_SCHEMA_VERSION = 1
 BACKUP_SCHEMA_VERSIONS_READ = (1,)
 AGE_MISSING_MSG = "Secret-bearing backup requires age."
 AGE_RECIPIENT_MSG = "Secret-bearing backup requires --age-recipient FILE."
+AGE_IDENTITY_MSG = "Encrypted backup verify requires --age-identity FILE."
 COMPONENT_NAMES = (
     "state.json",
     "users.json",
@@ -56,6 +59,99 @@ def age_bin() -> str:
     """Return the age binary: $VCL_AGE_BIN if set, otherwise `age`."""
     override = os.environ.get("VCL_AGE_BIN", "").strip()
     return override or "age"
+
+
+class AgeError(RuntimeError):
+    """age subprocess failed."""
+
+
+def age_available() -> bool:
+    """True when the configured age binary exists and is executable."""
+    return shutil.which(age_bin()) is not None
+
+
+def _run_age(argv: Sequence[str], tmp_out: Path) -> None:
+    proc = subprocess.run(
+        argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not tmp_out.is_file():
+        raise AgeError(f"age failed (exit {proc.returncode})")
+
+
+def age_encrypt(src: Path, dst: Path, recipient_file: Path) -> None:
+    """Encrypt src to dst via `age -e -R recipient -o dst src`."""
+    src_path = Path(src)
+    dst_path = Path(dst)
+    recipient = Path(recipient_file)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(f".{dst_path.name}.{os.getpid()}.age.tmp")
+    try:
+        _run_age(
+            [age_bin(), "-e", "-R", str(recipient), "-o", str(tmp), str(src_path)],
+            tmp,
+        )
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dst_path)
+        os.chmod(dst_path, 0o600)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+
+
+def age_decrypt(src: Path, dst: Path, identity_file: Path) -> None:
+    """Decrypt src to dst via `age -d -i identity -o dst src`."""
+    src_path = Path(src)
+    dst_path = Path(dst)
+    identity = Path(identity_file)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(f".{dst_path.name}.{os.getpid()}.tar.tmp")
+    try:
+        _run_age(
+            [age_bin(), "-d", "-i", str(identity), "-o", str(tmp), str(src_path)],
+            tmp,
+        )
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dst_path)
+        os.chmod(dst_path, 0o600)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+
+
+def encrypt_age(tar_bytes: bytes, recipient_file: Path, dest: Path) -> None:
+    """Encrypt tar bytes to dest using the configured age binary."""
+    with tempfile.NamedTemporaryFile(
+        prefix="vincula-age-pt-", suffix=".tar", delete=False
+    ) as fh:
+        fh.write(tar_bytes)
+        src = Path(fh.name)
+    try:
+        age_encrypt(src, dest, recipient_file)
+    finally:
+        src.unlink(missing_ok=True)
+
+
+def decrypt_age(src: Path, identity_file: Path, dest: Path) -> None:
+    """Decrypt an age archive to dest using the configured age binary."""
+    age_decrypt(src, dest, identity_file)
+
+
+def resolve_backup_output(output: Path, include_secrets: bool) -> Path:
+    """Force secret-bearing destinations to a `.tar.age` suffix."""
+    path = Path(output)
+    if not include_secrets:
+        return path
+    name = str(path)
+    if name.endswith(".age"):
+        return path
+    if name.endswith(".tar"):
+        return Path(name + ".age")
+    return Path(name + ".tar.age")
 
 
 def utc_now_iso() -> str:
@@ -397,20 +493,44 @@ def _secret_bearing_consistent(
     return encryption == "none" and not suffix_age
 
 
-def verify_manifest(path: Union[str, Path]) -> Dict[str, Any]:
-    """Parse a backup tar, validate schema 1, sha256, and secret-bearing flags.
+def _load_members(
+    archive: Path, age_identity: Optional[Path]
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, bytes]]]:
+    """Decrypt `.age` if needed, then read tar members.
 
-    Does not decrypt `.age` archives (age wrapping is a later batch).
+    Returns (fail_result, None) or (None, members). Outer path stays `archive`
+    so secret-bearing / suffix checks use the ciphertext name.
     """
-    archive = Path(path)
     if not archive.is_file():
-        return _fail("invalid_archive")
+        return _fail("invalid_archive"), None
     if str(archive).endswith(".age"):
-        return _fail("age_identity_required")
+        if age_identity is None or not Path(age_identity).is_file():
+            return _fail("age_identity_required"), None
+        if not age_available():
+            return _fail("age_required"), None
+        try:
+            with tempfile.TemporaryDirectory(prefix="vincula-age-") as tmp:
+                tar_path = Path(tmp) / "archive.tar"
+                try:
+                    age_decrypt(archive, tar_path, Path(age_identity))
+                except AgeError:
+                    return _fail("failed"), None
+                try:
+                    members = _read_tar_members(tar_path)
+                except (tarfile.TarError, OSError, ValueError):
+                    return _fail("invalid_archive"), None
+        except OSError:
+            return _fail("failed"), None
+        return None, members
     try:
         members = _read_tar_members(archive)
     except (tarfile.TarError, OSError, ValueError):
-        return _fail("invalid_archive")
+        return _fail("invalid_archive"), None
+    return None, members
+
+
+def _verify_members(members: Dict[str, bytes], outer_path: Path) -> Dict[str, Any]:
+    """Steps 2–6: manifest, schema, flag/suffix consistency, sha256, members."""
     if "manifest.json" not in members:
         return _fail("missing_manifest")
     try:
@@ -430,7 +550,7 @@ def verify_manifest(path: Union[str, Path]) -> Dict[str, Any]:
         return _fail("invalid_archive")
     if secret_bearing and encryption != "age":
         return _fail("secret_bearing_unencrypted")
-    if not _secret_bearing_consistent(secret_bearing, encryption, archive):
+    if not _secret_bearing_consistent(secret_bearing, encryption, outer_path):
         if secret_bearing:
             return _fail("secret_bearing_unencrypted")
         return _fail("invalid_archive")
@@ -461,6 +581,55 @@ def verify_manifest(path: Union[str, Path]) -> Dict[str, Any]:
     out = dict(manifest)
     out["ok"] = True
     return out
+
+
+def verify_manifest(
+    path: Union[str, Path], age_identity: Optional[Path] = None
+) -> Dict[str, Any]:
+    """Parse a backup tar (decrypt `.age` first), validate schema 1 and flags."""
+    archive = Path(path)
+    err, members = _load_members(archive, age_identity)
+    if err is not None:
+        return err
+    assert members is not None
+    return _verify_members(members, archive)
+
+
+def _assert_secret_bearing_members(members: Mapping[str, bytes]) -> Optional[str]:
+    """Secrets archives must still contain the three secret sites."""
+    if "state.json" in members:
+        try:
+            state = json.loads(members["state.json"].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "invalid_archive"
+        node = state.get("node") if isinstance(state, dict) else None
+        if not isinstance(node, dict) or not node.get("reality_private_key"):
+            return "invalid_archive"
+    if "users.json" in members:
+        try:
+            users = json.loads(members["users.json"].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "invalid_archive"
+        user_list = users.get("users") if isinstance(users, dict) else None
+        if isinstance(user_list, list) and user_list:
+            has_active_uuid = False
+            for user in user_list:
+                if not isinstance(user, dict):
+                    continue
+                for cred in user.get("credentials") or []:
+                    if (
+                        isinstance(cred, dict)
+                        and cred.get("status") == "active"
+                        and cred.get("uuid")
+                    ):
+                        has_active_uuid = True
+            if not has_active_uuid:
+                return "invalid_archive"
+    if "config.toml" in members:
+        text = members["config.toml"].decode("utf-8", errors="replace")
+        if not CLASH_SECRET_LINE.search(text):
+            return "invalid_archive"
+    return None
 
 
 def _assert_secretless_members(members: Mapping[str, bytes]) -> Optional[str]:
@@ -494,23 +663,21 @@ def _assert_secretless_members(members: Mapping[str, bytes]) -> Optional[str]:
 def verify_archive(
     path: Union[str, Path], age_identity: Optional[Path] = None
 ) -> Dict[str, Any]:
-    """Verify a backup archive. age_identity is reserved for encrypted archives."""
+    """Verify a backup archive (plan §0.4.2 eight steps)."""
     archive = Path(path)
-    if str(archive).endswith(".age"):
-        if age_identity is None:
-            return _fail("age_identity_required")
-        return _fail("age_required")
-    result = verify_manifest(archive)
+    err, members = _load_members(archive, age_identity)
+    if err is not None:
+        return err
+    assert members is not None
+    result = _verify_members(members, archive)
     if not result.get("ok"):
         return result
-    try:
-        members = _read_tar_members(archive)
-    except (tarfile.TarError, OSError, ValueError):
-        return _fail("invalid_archive")
-    if not result.get("secret_bearing"):
+    if result.get("secret_bearing"):
+        bad = _assert_secret_bearing_members(members)
+    else:
         bad = _assert_secretless_members(members)
-        if bad:
-            return _fail(bad)
+    if bad:
+        return _fail(bad)
     return result
 
 
@@ -526,16 +693,17 @@ def create_backup(
 ) -> Dict[str, Any]:
     """Assemble, self-verify, atomically write a 0600 archive.
 
-    include_secrets requires age wrapping and is refused here until that
-    path is wired; this function never writes a plaintext secret-bearing tar.
+    include_secrets requires age wrapping and never writes a plaintext
+    secret-bearing tar. Missing age dies with AGE_MISSING_MSG (D17).
     """
     if include_secrets:
         if not age_recipient:
             _die(AGE_RECIPIENT_MSG)
-        _die(AGE_MISSING_MSG)
+        if not age_available():
+            _die(AGE_MISSING_MSG)
 
     state_dir = Path(state_dir)
-    output = Path(output)
+    output = resolve_backup_output(Path(output), include_secrets)
     when = created_at or utc_now_iso()
     with tempfile.TemporaryDirectory(prefix="vincula-backup-") as tmp:
         tmp_path = Path(tmp)
@@ -544,7 +712,7 @@ def create_backup(
             state_dir,
             parts,
             accounting_db=accounting_db,
-            include_secrets=False,
+            include_secrets=include_secrets,
         )
         included = [name for name in COMPONENT_NAMES if name in components]
         hashes = {name: sha256_file(components[name]) for name in included}
@@ -562,30 +730,48 @@ def create_backup(
                 version = str(state_doc.get("project_version") or "")
         if not version:
             _die("cannot determine vincula_version for manifest")
+        secret_bearing = bool(include_secrets)
+        encryption = "age" if include_secrets else "none"
         manifest = build_manifest(
             vincula_version=version,
             created_at=when,
             source_node_id=source_node_id,
             source_instance_id=source_instance_id,
             included_components=included,
-            secret_bearing=False,
-            encryption="none",
+            secret_bearing=secret_bearing,
+            encryption=encryption,
             hashes=hashes,
         )
         staged = tmp_path / "archive.tar"
         write_tar(staged, components, manifest)
-        verified = verify_archive(staged)
-        if not verified.get("ok"):
-            _die(str(verified.get("error") or "failed"))
-        atomic_replace(staged, output, 0o600)
+        inner = _read_tar_members(staged)
+        checked = _verify_members(inner, output)
+        if not checked.get("ok"):
+            _die(str(checked.get("error") or "failed"))
+        if secret_bearing:
+            bad = _assert_secret_bearing_members(inner)
+        else:
+            bad = _assert_secretless_members(inner)
+        if bad:
+            _die(bad)
+        if include_secrets:
+            encrypted = tmp_path / "archive.tar.age"
+            assert age_recipient is not None
+            try:
+                age_encrypt(staged, encrypted, Path(age_recipient))
+            except AgeError:
+                _die("age encryption failed")
+            atomic_replace(encrypted, output, 0o600)
+        else:
+            atomic_replace(staged, output, 0o600)
 
     archive_hash = sha256_file(output)
     return {
         "schema_version": 1,
         "ok": True,
         "path": str(output),
-        "secret_bearing": False,
-        "encryption": "none",
+        "secret_bearing": secret_bearing,
+        "encryption": encryption,
         "backup_schema_version": BACKUP_SCHEMA_VERSION,
         "source_node_id": source_node_id,
         "source_instance_id": source_instance_id,
@@ -644,7 +830,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif result.get("ok"):
             print(f"Backup OK: {args.file}")
         else:
-            print(f"ERROR: {result.get('error') or 'failed'}", file=sys.stderr)
+            err = str(result.get("error") or "failed")
+            if err == "age_identity_required":
+                msg = AGE_IDENTITY_MSG
+            elif err == "age_required":
+                msg = AGE_MISSING_MSG
+            else:
+                msg = err
+            print(f"ERROR: {msg}", file=sys.stderr)
         return 0 if result.get("ok") else 1
     return 2
 
