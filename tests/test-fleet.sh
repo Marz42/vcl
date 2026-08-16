@@ -2811,6 +2811,410 @@ else
   fail "jsonl rows missing node_id are not stored"
 fi
 
+assert_success "cmd_audit_user is defined" \
+  grep -q 'def cmd_audit_user(' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet audit loads vincula-audit interval-overlap" \
+  grep -q 'interval_overlap_sql' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet stats queries daily_usage" \
+  grep -q 'FROM daily_usage WHERE' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet query skips unlabeled node_id" \
+  grep -q 'LABELED_NODE_SQL' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+audit_help_rc=0
+audit_help=$(fleet audit -h) || audit_help_rc=$?
+if (( audit_help_rc == 0 )) && [[ "$audit_help" == *"interval-overlap"* ]] \
+  && [[ "$audit_help" == *"user_id"* ]]; then
+  pass "audit -h documents interval-overlap and user_id merge"
+else
+  fail "audit -h documents interval-overlap and user_id merge (rc=${audit_help_rc})"
+fi
+
+stats_help_rc=0
+stats_help=$(fleet stats -h) || stats_help_rc=$?
+if (( stats_help_rc == 0 )) && [[ "$stats_help" == *"daily_usage"* ]] \
+  && [[ "$stats_help" == *"by_node"* ]]; then
+  pass "stats -h documents daily_usage and by_node totals"
+else
+  fail "stats -h documents daily_usage and by_node totals (rc=${stats_help_rc})"
+fi
+
+QUERY_FLEET_HOME="${TEST_TMP}/fleet-home-query"
+QUERY_FAKE_STATE="${TEST_TMP}/fake-query-state"
+export VCL_FLEET_HOME="$QUERY_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$QUERY_FAKE_STATE"
+export VCL_FLEET_STATS_NOW="2026-08-16"
+mkdir -p "$VCL_FLEET_HOME" "$VCL_FAKE_STATE_DIR"
+
+assert_success "query-test fleet init" fleet init
+assert_success "query-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "query-test offline add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+
+query_add_rc=0
+fleet user add alice --nodes lax,tokyo --display-name Alice >/dev/null || query_add_rc=$?
+fleet user add bob --node lax --display-name Bob >/dev/null || query_add_rc=$?
+if (( query_add_rc == 0 )); then
+  pass "query-test provisioned alice (lax+tokyo) and bob (lax)"
+else
+  fail "query-test provisioned alice (lax+tokyo) and bob (lax) (rc=${query_add_rc})"
+fi
+
+query_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$VCL_FAKE_STATE_DIR" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" <<'PY' || query_seed_rc=$?
+import importlib.util, json, os, sqlite3, sys
+from pathlib import Path
+
+path, home, state = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+lax_id, tokyo_id = sys.argv[4], sys.argv[5]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+lax_users = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo_users = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+alice_lax = next(u for u in lax_users["users"] if u["tag"] == "alice")
+alice_tokyo = next(u for u in tokyo_users["users"] if u["tag"] == "alice")
+bob = next(u for u in lax_users["users"] if u["tag"] == "bob")
+assert alice_lax["user_id"] == alice_tokyo["user_id"]
+alice_uid = alice_lax["user_id"]
+bob_uid = bob["user_id"]
+(state / "alice_user_id.txt").write_text(alice_uid, encoding="utf-8")
+(state / "bob_user_id.txt").write_text(bob_uid, encoding="utf-8")
+
+lax_inst = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+tokyo_inst = "5ee15d43-5555-4555-8555-555555555555"
+now = "2026-08-16T07:00:00Z"
+
+def row(event_id, connection_id, user_id, tag, node_id, instance_id, started, closed, host, up, down):
+    return {
+        "event_id": event_id,
+        "connection_id": connection_id,
+        "generation": 0,
+        "user_id": user_id,
+        "user_tag": tag,
+        "node_id": node_id,
+        "instance_id": instance_id,
+        "started_at": started,
+        "last_seen_at": closed,
+        "closed_at": closed,
+        "destination_host": host,
+        "destination_ip": "203.0.113.80",
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": up,
+        "download_bytes": down,
+    }
+
+conn = mod.open_fleet_db()
+mod.import_audit_batch(
+    lax_id,
+    lax_inst,
+    [
+        row(1, "lax-alice-1", alice_uid, "alice", lax_id, lax_inst,
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "example.com", 100, 200),
+        row(2, "lax-bob-1", bob_uid, "bob", lax_id, lax_inst,
+            "2026-08-10T12:00:00Z", "2026-08-10T13:00:00Z", "example.com", 10, 10),
+    ],
+    now_iso=now,
+    conn=conn,
+)
+mod.import_audit_batch(
+    tokyo_id,
+    tokyo_inst,
+    [
+        row(1, "tokyo-alice-1", alice_uid, "alice", tokyo_id, tokyo_inst,
+            "2026-08-10T10:00:00Z", "2026-08-10T11:00:00Z", "example.com", 50, 50),
+    ],
+    now_iso=now,
+    conn=conn,
+)
+conn.execute(
+    """
+    INSERT INTO audit_events (
+      node_id, instance_id, event_id, connection_id, generation,
+      user_id, user_tag, started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, imported_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    (
+        "", None, 1, "unlabeled-alice", 0, alice_uid, "alice",
+        "2026-08-10T08:30:00Z", "2026-08-10T08:45:00Z", "2026-08-10T08:45:00Z",
+        "evil.example", "203.0.113.99", 443, "tcp", 99999, 99999, now,
+    ),
+)
+conn.execute(
+    """
+    INSERT INTO daily_usage (
+      date, node_id, instance_id, user_id, user_tag, destination_host,
+      upload_bytes, download_bytes, connection_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    ("2026-08-10", "", None, alice_uid, "alice", "evil.example", 99999, 99999, 1),
+)
+conn.commit()
+conn.close()
+PY
+if (( query_seed_rc == 0 )); then
+  pass "query fixture seeded alice/bob audit_events and unlabeled rows"
+else
+  fail "query fixture seeded alice/bob audit_events and unlabeled rows"
+fi
+
+QUERY_ALICE_UID=$(cat "${VCL_FAKE_STATE_DIR}/alice_user_id.txt")
+QUERY_FROM="2026-08-10T00:00:00Z"
+QUERY_TO="2026-08-11T00:00:00Z"
+
+audit_human_rc=0
+audit_human=$(fleet audit user alice --from "$QUERY_FROM" --to "$QUERY_TO") || audit_human_rc=$?
+if (( audit_human_rc == 0 )) \
+  && grep -q 'TIME NODE INSTANCE DESTINATION TRAFFIC' <<< "$audit_human" \
+  && grep -q ' lax ' <<< "$audit_human" \
+  && grep -q ' tokyo ' <<< "$audit_human" \
+  && ! grep -q 'evil.example' <<< "$audit_human"; then
+  pass "AC-2.9-04 audit user alice human output includes lax and tokyo"
+else
+  fail "AC-2.9-04 audit user alice human output includes lax and tokyo (rc=${audit_human_rc} out=${audit_human})"
+fi
+
+audit_json_rc=0
+audit_json=$(fleet audit user alice --from "$QUERY_FROM" --to "$QUERY_TO" --json) || audit_json_rc=$?
+ac04_rc=0
+python3 - "$audit_json" "$audit_json_rc" "$QUERY_ALICE_UID" \
+  "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" <<'PY' || ac04_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+alice, lax_id, tokyo_id = sys.argv[3], sys.argv[4], sys.argv[5]
+assert doc["schema_version"] == 1
+assert doc["tag"] == "alice"
+assert doc["user_id"] == alice
+assert len(doc["rows"]) == 2, doc["rows"]
+by_node = {row["node"]: row for row in doc["rows"]}
+assert set(by_node) == {"lax", "tokyo"}, by_node
+for name, node_id, inst, traffic, event_id in (
+    ("lax", lax_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", 300, 1),
+    ("tokyo", tokyo_id, "5ee15d43-5555-4555-8555-555555555555", 100, 1),
+):
+    row = by_node[name]
+    assert row["node_id"] == node_id
+    assert row["instance_id"] == inst
+    assert row["instance"] == inst
+    assert row["user_id"] == alice
+    assert row["event_id"] == event_id
+    assert row["traffic"] == traffic
+    assert row["destination"] == "example.com"
+    assert "time" in row
+assert all(row["destination"] != "evil.example" for row in doc["rows"])
+assert all(row["traffic"] < 1000 for row in doc["rows"])
+PY
+if (( ac04_rc == 0 )); then
+  pass "AC-2.9-04 audit merges Alice across lax+tokyo by user_id"
+else
+  fail "AC-2.9-04 audit merges Alice across lax+tokyo by user_id"
+fi
+
+audit_node_json=$(fleet audit user alice --from "$QUERY_FROM" --to "$QUERY_TO" --node lax --json)
+if python3 - "$audit_node_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["node"] == "lax"
+assert len(doc["rows"]) == 1
+assert doc["rows"][0]["node"] == "lax"
+assert doc["rows"][0]["traffic"] == 300
+PY
+then
+  pass "audit --node lax filters to one node"
+else
+  fail "audit --node lax filters to one node"
+fi
+
+audit_window_json=$(fleet audit user alice \
+  --from "2026-08-10T09:00:00Z" --to "2026-08-10T10:00:00Z" --json)
+if python3 - "$audit_window_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert [row["node"] for row in doc["rows"]] == ["lax"], doc["rows"]
+PY
+then
+  pass "audit interval-overlap includes lax closed_at==from and excludes tokyo started_at==to"
+else
+  fail "audit interval-overlap includes lax closed_at==from and excludes tokyo started_at==to"
+fi
+
+stats_user_json_rc=0
+stats_user_json=$(fleet stats user alice --days 30 --json) || stats_user_json_rc=$?
+ac05_user_rc=0
+python3 - "$stats_user_json" "$stats_user_json_rc" "$QUERY_ALICE_UID" <<'PY' || ac05_user_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+alice = sys.argv[3]
+assert doc["schema_version"] == 1
+assert doc["mode"] == "user"
+assert doc["tag"] == "alice"
+assert doc["user_id"] == alice
+assert doc["days"] == 30
+assert doc["from"] == "2026-07-18"
+assert doc["to"] == "2026-08-16"
+assert len(doc["rows"]) == 2, doc["rows"]
+by_node = {row["node"]: row for row in doc["rows"]}
+assert set(by_node) == {"lax", "tokyo"}, by_node
+assert by_node["lax"]["bytes"] == 300
+assert by_node["tokyo"]["bytes"] == 100
+assert by_node["lax"]["user_id"] == alice
+assert by_node["tokyo"]["user_id"] == alice
+assert "node_id" in by_node["lax"] and by_node["lax"]["node_id"]
+assert doc["totals"]["bytes"] == 400
+assert {n["node"] for n in doc["totals"]["by_node"]} == {"lax", "tokyo"}
+for rec in doc["totals"]["by_node"]:
+    assert rec["node"]
+    assert rec["node_id"]
+    assert rec["bytes"] in (300, 100)
+assert doc["totals"]["bytes"] != 400 + 99999 + 99999
+PY
+if (( ac05_user_rc == 0 )); then
+  pass "AC-2.9-05 stats user alice preserves node attribution"
+else
+  fail "AC-2.9-05 stats user alice preserves node attribution"
+fi
+
+stats_human=$(fleet stats user alice --days 30)
+if grep -q 'NODE USER_ID UP DOWN TOTAL CONNECTIONS' <<< "$stats_human" \
+  && grep -q '^lax ' <<< "$stats_human" \
+  && grep -q '^tokyo ' <<< "$stats_human"; then
+  pass "stats user alice human rows are per node"
+else
+  fail "stats user alice human rows are per node (out=${stats_human})"
+fi
+
+stats_top_users=$(fleet stats top users --days 30 --json)
+if python3 - "$stats_top_users" "$QUERY_ALICE_UID" "$(cat "${VCL_FAKE_STATE_DIR}/bob_user_id.txt")" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+alice, bob = sys.argv[2], sys.argv[3]
+assert doc["mode"] == "top_users"
+pairs = {(row["user_id"], row["node"]) for row in doc["rows"]}
+assert (alice, "lax") in pairs
+assert (alice, "tokyo") in pairs
+assert (bob, "lax") in pairs
+assert (alice, "lax") != (alice, "tokyo")
+alice_rows = [row for row in doc["rows"] if row["user_id"] == alice]
+assert len(alice_rows) == 2, alice_rows
+assert {row["node"] for row in alice_rows} == {"lax", "tokyo"}
+assert all("node" in row and row["node"] for row in doc["rows"])
+by_node_names = {n["node"] for n in doc["totals"]["by_node"]}
+assert "lax" in by_node_names and "tokyo" in by_node_names
+PY
+then
+  pass "AC-2.9-05 stats top users keeps (user_id, node) rows"
+else
+  fail "AC-2.9-05 stats top users keeps (user_id, node) rows"
+fi
+
+stats_top_hosts=$(fleet stats top hosts --days 30 --json)
+if python3 - "$stats_top_hosts" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["mode"] == "top_hosts"
+pairs = {(row["destination_host"], row["node"]): row for row in doc["rows"]}
+assert ("example.com", "lax") in pairs
+assert ("example.com", "tokyo") in pairs
+assert pairs[("example.com", "lax")]["bytes"] == 320  # alice 300 + bob 20
+assert pairs[("example.com", "tokyo")]["bytes"] == 100
+assert "evil.example" not in {row["destination_host"] for row in doc["rows"]}
+assert len([row for row in doc["rows"] if row["destination_host"] == "example.com"]) == 2
+PY
+then
+  pass "AC-2.9-05 stats top hosts keeps per-node host rows"
+else
+  fail "AC-2.9-05 stats top hosts keeps per-node host rows"
+fi
+
+stats_node=$(fleet stats node lax --days 30 --json)
+if python3 - "$stats_node" "$QUERY_ALICE_UID" "$(cat "${VCL_FAKE_STATE_DIR}/bob_user_id.txt")" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+alice, bob = sys.argv[2], sys.argv[3]
+assert doc["mode"] == "node"
+assert doc["node"] == "lax"
+assert {row["node"] for row in doc["rows"]} == {"lax"}
+uids = {row["user_id"] for row in doc["rows"]}
+assert alice in uids and bob in uids
+assert all(row["node"] != "tokyo" for row in doc["rows"])
+assert {n["node"] for n in doc["totals"]["by_node"]} == {"lax"}
+PY
+then
+  pass "stats node lax is node-tagged and excludes tokyo"
+else
+  fail "stats node lax is node-tagged and excludes tokyo"
+fi
+
+stats_days1=$(fleet stats user alice --days 1 --json)
+if python3 - "$stats_days1" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["from"] == "2026-08-16"
+assert doc["to"] == "2026-08-16"
+assert doc["rows"] == []
+assert doc["totals"]["bytes"] == 0
+PY
+then
+  pass "stats --days 1 excludes older UTC days"
+else
+  fail "stats --days 1 excludes older UTC days"
+fi
+
+unknown_audit_rc=0
+unknown_audit_err=$(fleet audit user missing --from "$QUERY_FROM" --to "$QUERY_TO" 2>&1) || unknown_audit_rc=$?
+if (( unknown_audit_rc != 0 )) && [[ "$unknown_audit_err" == *"unknown user tag"* ]]; then
+  pass "audit unknown tag dies"
+else
+  fail "audit unknown tag dies (rc=${unknown_audit_rc} err=${unknown_audit_err})"
+fi
+
+days0_rc=0
+days0_err=$(fleet stats user alice --days 0 2>&1) || days0_rc=$?
+if (( days0_rc != 0 )) && [[ "$days0_err" == *"--days"* ]]; then
+  pass "stats --days 0 is rejected"
+else
+  fail "stats --days 0 is rejected (rc=${days0_rc} err=${days0_err})"
+fi
+
+conflict_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" <<'PY' || conflict_rc=$?
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+uid_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+uid_b = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
+for alias, uid in (("lax", uid_a), ("tokyo", uid_b)):
+    path = state / alias / "users.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["users"].append({
+        "user_id": uid,
+        "tag": "eve",
+        "display_name": "Eve",
+        "department": "",
+        "enabled": True,
+        "created_at": "2026-08-16T00:00:00Z",
+        "credentials": [],
+    })
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+conflict_audit_rc=0
+conflict_err=$(fleet audit user eve --from "$QUERY_FROM" --to "$QUERY_TO" 2>&1) || conflict_audit_rc=$?
+if (( conflict_audit_rc != 0 )) && [[ "$conflict_err" == *"conflicting user_id"* ]]; then
+  pass "audit dies on tag user_id conflict across nodes"
+else
+  fail "audit dies on tag user_id conflict across nodes (rc=${conflict_audit_rc} err=${conflict_err})"
+fi
+
+unset VCL_FLEET_STATS_NOW
+
 unset VCL_FAKE_STATE_DIR
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"
 

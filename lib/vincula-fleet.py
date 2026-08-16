@@ -2,8 +2,8 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64, datetime, csv, uuid, sqlite3. OpenSSH via the system
-ssh/ssh.exe binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
+hashlib, base64, datetime, csv, uuid, sqlite3, importlib. OpenSSH via the
+system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
 (VCL_FLEET_SSH_KEYSCAN). No pip, no paramiko, no cryptography package.
 No root, no systemd, no /etc/vincula.
 
@@ -17,6 +17,8 @@ import argparse
 import base64
 import csv
 import hashlib
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -26,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -128,6 +130,9 @@ CREDENTIAL_WARN_TAIL = "contains authentication credentials."
 STATUS_JSON_SCHEMA_VERSION = 1
 VERIFY_JSON_SCHEMA_VERSION = 1
 SYNC_JSON_SCHEMA_VERSION = 1
+AUDIT_JSON_SCHEMA_VERSION = 1
+STATS_JSON_SCHEMA_VERSION = 1
+LABELED_NODE_SQL = "node_id IS NOT NULL AND node_id != ''"
 # D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
 OP_PLANNED = "PLANNED"
 OP_APPLYING = "APPLYING"
@@ -3059,6 +3064,544 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+_AUDIT_MOD: Optional[Any] = None
+
+
+def load_audit_module() -> Any:
+    """Load lib/vincula-audit.py for parse_rfc3339 / interval-overlap SQL."""
+    global _AUDIT_MOD
+    if _AUDIT_MOD is not None:
+        return _AUDIT_MOD
+    path = Path(__file__).resolve().parent / "vincula-audit.py"
+    if not path.is_file():
+        die(f"vincula-audit.py not found: {path}")
+    loader = importlib.machinery.SourceFileLoader("vincula_audit", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        die("cannot load vincula-audit.py")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _AUDIT_MOD = mod
+    return mod
+
+
+def fleet_utc_today() -> date:
+    """UTC calendar date. Tests inject VCL_FLEET_STATS_NOW=YYYY-MM-DD."""
+    env = os.environ.get("VCL_FLEET_STATS_NOW", "").strip()
+    if env:
+        try:
+            return date.fromisoformat(env)
+        except ValueError:
+            die(f"invalid VCL_FLEET_STATS_NOW: {env}")
+    return datetime.now(timezone.utc).date()
+
+
+def stats_date_window(days: int) -> tuple[str, str]:
+    """Inclusive UTC day window ending today: [today-(days-1), today]."""
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1:
+        die("--days must be an integer >= 1")
+    end = fleet_utc_today()
+    start = end - timedelta(days=days - 1)
+    return start.isoformat(), end.isoformat()
+
+
+def node_display_name(registry: dict[str, Any], node_id: Optional[str]) -> str:
+    if not node_id:
+        return "-"
+    node = find_by_node_id(registry, node_id)
+    if node is not None:
+        return str(node["name"])
+    return str(node_id)
+
+
+def instance_display(instance_id: Optional[str]) -> str:
+    text = _optional_text(instance_id)
+    return text if text else "-"
+
+
+def destination_display(
+    host: Optional[str], ip: Optional[str] = None
+) -> str:
+    return _optional_text(host) or _optional_text(ip) or "-"
+
+
+def resolve_fleet_user_id(registry: dict[str, Any], tag: str) -> str:
+    """Resolve TAG to one fleet-global user_id via per-node `vcl user list`.
+
+    Conflicting user_ids across reachable nodes → die (no silent merge).
+    """
+    validate_name(tag)
+    found: dict[str, list[str]] = {}
+    reachable = False
+    for node in _selected_nodes(registry, include_all=False):
+        users, err = _list_users_on_node(node)
+        if err is not None:
+            continue
+        reachable = True
+        for user in users or []:
+            if str(user.get("tag") or "") != tag:
+                continue
+            uid = _optional_text(user.get("user_id"))
+            if not uid:
+                continue
+            found.setdefault(uid, []).append(str(node["name"]))
+    if len(found) > 1:
+        detail = "; ".join(
+            f"{uid} on {','.join(names)}" for uid, names in found.items()
+        )
+        die(f"tag {tag} has conflicting user_id across nodes: {detail}")
+    if len(found) == 1:
+        return next(iter(found))
+    if not reachable:
+        die(f"cannot resolve user {tag}: nodes unreachable")
+    die(f"unknown user tag: {tag}")
+    raise SystemExit(1)
+
+
+def _row_int(row: sqlite3.Row, key: str) -> int:
+    value = row[key]
+    if value is None:
+        return 0
+    return int(value)
+
+
+def query_fleet_audit(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    query_from: str,
+    query_to: str,
+    node_id: Optional[str] = None,
+) -> list[sqlite3.Row]:
+    audit = load_audit_module()
+    where = [
+        audit.interval_overlap_sql(),
+        "user_id = ?",
+        LABELED_NODE_SQL,
+    ]
+    params: list[Any] = [query_to, query_from, user_id]
+    if node_id:
+        where.append("node_id = ?")
+        params.append(node_id)
+    sql = (
+        "SELECT event_id, node_id, instance_id, user_id, user_tag, "
+        "destination_host, destination_ip, destination_port, network, "
+        "upload_bytes, download_bytes, started_at, last_seen_at, closed_at "
+        "FROM audit_events WHERE "
+        + " AND ".join(where)
+        + " ORDER BY started_at ASC, event_id ASC, node_id ASC"
+    )
+    try:
+        return list(conn.execute(sql, params).fetchall())
+    except sqlite3.Error as exc:
+        die(f"fleet audit query failed: {exc}")
+        raise SystemExit(1)
+
+
+def format_audit_table(
+    rows: list[dict[str, Any]], *, query_from: str, query_to: str, tag: str
+) -> str:
+    lines = [
+        f"Window: {query_from} → {query_to} (interval-overlap, UTC)",
+        f"User: {tag}",
+        "TIME NODE INSTANCE DESTINATION TRAFFIC",
+    ]
+    for row in rows:
+        lines.append(
+            f"{row['time']} {row['node']} {row['instance']} "
+            f"{row['destination']} {row['traffic']}"
+        )
+    if not rows:
+        lines.append("(no connections in window)")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_audit_user(args: argparse.Namespace) -> int:
+    tag = args.tag
+    validate_name(tag)
+    registry = load_registry()
+    audit = load_audit_module()
+    query_from = audit.parse_rfc3339(args.query_from)
+    query_to = audit.parse_rfc3339(args.query_to)
+    if query_from > query_to:
+        die("--from must not be after --to")
+    user_id = resolve_fleet_user_id(registry, tag)
+    node_name = (getattr(args, "node", None) or "").strip() or None
+    node_id = None
+    if node_name:
+        validate_name(node_name)
+        node_id = require_node(registry, node_name)["node_id"]
+    conn = open_fleet_db()
+    try:
+        raw_rows = query_fleet_audit(
+            conn,
+            user_id=user_id,
+            query_from=query_from,
+            query_to=query_to,
+            node_id=node_id,
+        )
+    finally:
+        conn.close()
+
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        upload = _row_int(raw, "upload_bytes")
+        download = _row_int(raw, "download_bytes")
+        inst = _optional_text(raw["instance_id"])
+        rows.append(
+            {
+                "time": raw["started_at"],
+                "node": node_display_name(registry, raw["node_id"]),
+                "instance": instance_display(inst),
+                "destination": destination_display(
+                    raw["destination_host"], raw["destination_ip"]
+                ),
+                "traffic": upload + download,
+                "node_id": raw["node_id"],
+                "instance_id": inst,
+                "user_id": raw["user_id"],
+                "event_id": int(raw["event_id"]),
+                "user_tag": raw["user_tag"],
+                "upload_bytes": upload,
+                "download_bytes": download,
+                "started_at": raw["started_at"],
+                "last_seen_at": raw["last_seen_at"],
+                "closed_at": raw["closed_at"],
+            }
+        )
+    if getattr(args, "as_json", False):
+        payload = {
+            "schema_version": AUDIT_JSON_SCHEMA_VERSION,
+            "tag": tag,
+            "user_id": user_id,
+            "from": query_from,
+            "to": query_to,
+            "node": node_name,
+            "rows": rows,
+        }
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        return 0
+    sys.stdout.write(
+        format_audit_table(
+            rows, query_from=query_from, query_to=query_to, tag=tag
+        )
+    )
+    return 0
+
+
+def _stats_row_from_sql(
+    registry: dict[str, Any], raw: sqlite3.Row
+) -> dict[str, Any]:
+    keys = set(raw.keys())
+    upload = _row_int(raw, "upload_bytes")
+    download = _row_int(raw, "download_bytes")
+    node_id = str(raw["node_id"])
+    inst = _optional_text(raw["instance_id"]) if "instance_id" in keys else None
+    tag = _optional_text(raw["user_tag"]) if "user_tag" in keys else None
+    host = None
+    if "destination_host" in keys:
+        host = _optional_text(raw["destination_host"])
+    user_id = _optional_text(raw["user_id"]) if "user_id" in keys else None
+    out: dict[str, Any] = {
+        "node": node_display_name(registry, node_id),
+        "node_id": node_id,
+        "instance_id": inst,
+        "upload_bytes": upload,
+        "download_bytes": download,
+        "bytes": upload + download,
+        "connection_count": _row_int(raw, "connection_count"),
+    }
+    if "user_id" in keys:
+        out["user_id"] = user_id
+    if "user_tag" in keys:
+        out["user_tag"] = tag
+    if "destination_host" in keys:
+        out["destination_host"] = host or "(unknown)"
+    return out
+
+
+def _stats_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_node: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    upload = download = connections = 0
+    for row in rows:
+        nid = str(row["node_id"])
+        upload += int(row["upload_bytes"])
+        download += int(row["download_bytes"])
+        connections += int(row["connection_count"])
+        if nid not in by_node:
+            by_node[nid] = {
+                "node": row["node"],
+                "node_id": nid,
+                "upload_bytes": 0,
+                "download_bytes": 0,
+                "bytes": 0,
+                "connection_count": 0,
+            }
+            order.append(nid)
+        rec = by_node[nid]
+        rec["upload_bytes"] += int(row["upload_bytes"])
+        rec["download_bytes"] += int(row["download_bytes"])
+        rec["bytes"] += int(row["bytes"])
+        rec["connection_count"] += int(row["connection_count"])
+    return {
+        "upload_bytes": upload,
+        "download_bytes": download,
+        "bytes": upload + download,
+        "connection_count": connections,
+        "by_node": [by_node[nid] for nid in order],
+    }
+
+
+def query_daily_grouped(
+    conn: sqlite3.Connection,
+    *,
+    start: str,
+    end: str,
+    group_by: Sequence[str],
+    extra_where: Optional[list[str]] = None,
+    extra_params: Optional[list[Any]] = None,
+) -> list[sqlite3.Row]:
+    where = [LABELED_NODE_SQL, "date >= ?", "date <= ?"]
+    params: list[Any] = [start, end]
+    if extra_where:
+        where.extend(extra_where)
+        params.extend(extra_params or [])
+    grouped = ", ".join(group_by)
+    select_cols = [
+        grouped,
+        "SUM(upload_bytes) AS upload_bytes",
+        "SUM(download_bytes) AS download_bytes",
+        "SUM(connection_count) AS connection_count",
+        "MAX(user_tag) AS user_tag",
+        "MAX(instance_id) AS instance_id",
+    ]
+    sql = (
+        "SELECT "
+        + ", ".join(select_cols)
+        + " FROM daily_usage WHERE "
+        + " AND ".join(where)
+        + f" GROUP BY {grouped} "
+        "ORDER BY SUM(upload_bytes + download_bytes) DESC, "
+        + grouped
+    )
+    try:
+        return list(conn.execute(sql, params).fetchall())
+    except sqlite3.Error as exc:
+        die(f"fleet stats query failed: {exc}")
+        raise SystemExit(1)
+
+
+def _emit_stats(
+    *,
+    mode: str,
+    days: int,
+    start: str,
+    end: str,
+    rows: list[dict[str, Any]],
+    as_json: bool,
+    human_header: str,
+    human_line,
+    extra: Optional[dict[str, Any]] = None,
+) -> int:
+    totals = _stats_totals(rows)
+    if as_json:
+        payload: dict[str, Any] = {
+            "schema_version": STATS_JSON_SCHEMA_VERSION,
+            "mode": mode,
+            "days": days,
+            "from": start,
+            "to": end,
+            "rows": rows,
+            "totals": totals,
+        }
+        if extra:
+            payload.update(extra)
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        return 0
+    lines = [
+        f"Period: {start} → {end} (UTC days, from daily_usage)",
+        human_header,
+    ]
+    for row in rows:
+        lines.append(human_line(row))
+    if not rows:
+        lines.append("(no usage in window)")
+    sys.stdout.write("\n".join(lines) + "\n")
+    return 0
+
+
+def cmd_stats_user(args: argparse.Namespace) -> int:
+    tag = args.tag
+    validate_name(tag)
+    days = args.days
+    start, end = stats_date_window(days)
+    registry = load_registry()
+    user_id = resolve_fleet_user_id(registry, tag)
+    conn = open_fleet_db()
+    try:
+        raw_rows = query_daily_grouped(
+            conn,
+            start=start,
+            end=end,
+            group_by=("node_id", "user_id"),
+            extra_where=["user_id = ?"],
+            extra_params=[user_id],
+        )
+    finally:
+        conn.close()
+    rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
+    rows.sort(key=lambda r: (r["node"], r["node_id"]))
+    return _emit_stats(
+        mode="user",
+        days=days,
+        start=start,
+        end=end,
+        rows=rows,
+        as_json=bool(getattr(args, "as_json", False)),
+        extra={"tag": tag, "user_id": user_id},
+        human_header="NODE USER_ID UP DOWN TOTAL CONNECTIONS",
+        human_line=lambda r: (
+            f"{r['node']} {r['user_id']} {r['upload_bytes']} "
+            f"{r['download_bytes']} {r['bytes']} {r['connection_count']}"
+        ),
+    )
+
+
+def cmd_stats_top_users(args: argparse.Namespace) -> int:
+    days = args.days
+    start, end = stats_date_window(days)
+    registry = load_registry()
+    conn = open_fleet_db()
+    try:
+        raw_rows = query_daily_grouped(
+            conn,
+            start=start,
+            end=end,
+            group_by=("user_id", "node_id"),
+        )
+    finally:
+        conn.close()
+    rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
+    return _emit_stats(
+        mode="top_users",
+        days=days,
+        start=start,
+        end=end,
+        rows=rows,
+        as_json=bool(getattr(args, "as_json", False)),
+        human_header="USER_ID NODE TAG UP DOWN TOTAL CONNECTIONS",
+        human_line=lambda r: (
+            f"{r['user_id']} {r['node']} {r['user_tag'] or '-'} "
+            f"{r['upload_bytes']} {r['download_bytes']} {r['bytes']} "
+            f"{r['connection_count']}"
+        ),
+    )
+
+
+def cmd_stats_top_hosts(args: argparse.Namespace) -> int:
+    days = args.days
+    start, end = stats_date_window(days)
+    registry = load_registry()
+    conn = open_fleet_db()
+    try:
+        raw_rows = query_daily_grouped(
+            conn,
+            start=start,
+            end=end,
+            group_by=("destination_host", "node_id"),
+        )
+    finally:
+        conn.close()
+    rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
+    return _emit_stats(
+        mode="top_hosts",
+        days=days,
+        start=start,
+        end=end,
+        rows=rows,
+        as_json=bool(getattr(args, "as_json", False)),
+        human_header="HOST NODE UP DOWN TOTAL CONNECTIONS",
+        human_line=lambda r: (
+            f"{r['destination_host']} {r['node']} {r['upload_bytes']} "
+            f"{r['download_bytes']} {r['bytes']} {r['connection_count']}"
+        ),
+    )
+
+
+def cmd_stats_node(args: argparse.Namespace) -> int:
+    name = args.name
+    validate_name(name)
+    days = args.days
+    start, end = stats_date_window(days)
+    registry = load_registry()
+    node = require_node(registry, name)
+    conn = open_fleet_db()
+    try:
+        raw_rows = query_daily_grouped(
+            conn,
+            start=start,
+            end=end,
+            group_by=("user_id", "node_id", "destination_host"),
+            extra_where=["node_id = ?"],
+            extra_params=[node["node_id"]],
+        )
+    finally:
+        conn.close()
+    rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
+    return _emit_stats(
+        mode="node",
+        days=days,
+        start=start,
+        end=end,
+        rows=rows,
+        as_json=bool(getattr(args, "as_json", False)),
+        extra={"node": name, "node_id": node["node_id"]},
+        human_header="NODE USER_ID HOST UP DOWN TOTAL CONNECTIONS",
+        human_line=lambda r: (
+            f"{r['node']} {r['user_id']} {r['destination_host']} "
+            f"{r['upload_bytes']} {r['download_bytes']} {r['bytes']} "
+            f"{r['connection_count']}"
+        ),
+    )
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    kind = getattr(args, "stats_command", None)
+    if kind == "user":
+        return cmd_stats_user(args)
+    if kind == "top":
+        top = getattr(args, "stats_top_command", None)
+        if top == "users":
+            return cmd_stats_top_users(args)
+        if top == "hosts":
+            return cmd_stats_top_hosts(args)
+        die("stats top requires users or hosts", 2)
+    if kind == "node":
+        return cmd_stats_node(args)
+    die("stats requires user, top, or node", 2)
+    raise SystemExit(2)
+
+
+def _add_json_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+
+def _add_days_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--days",
+        type=int,
+        required=True,
+        metavar="N",
+        help="inclusive UTC day window ending today (today-(N-1) … today)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
@@ -3382,6 +3925,94 @@ def build_parser() -> argparse.ArgumentParser:
         help="print JSON (schema_version 1)",
     )
 
+    p_audit = sub.add_parser(
+        "audit",
+        help="query synced fleet.db audit_events by user_id",
+        description=(
+            "Merge connection rows across nodes by stable user_id. "
+            "Window is RFC3339 interval-overlap (same predicate as node "
+            "`vcl audit`: started_at < --to AND COALESCE(closed_at, "
+            "last_seen_at) >= --from). Output columns: time node instance "
+            "destination traffic. Rows without node_id are never merged. "
+            "TAG is resolved from per-node user list; conflicting user_id "
+            "is refused."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    audit_sub = p_audit.add_subparsers(dest="audit_command")
+    p_audit_user = audit_sub.add_parser(
+        "user",
+        help="connections for TAG in an RFC3339 window",
+    )
+    p_audit_user.add_argument("tag", help="user tag (resolved to user_id)")
+    p_audit_user.add_argument(
+        "--from",
+        dest="query_from",
+        required=True,
+        metavar="RFC3339",
+        help="window start (connection end inclusive)",
+    )
+    p_audit_user.add_argument(
+        "--to",
+        dest="query_to",
+        required=True,
+        metavar="RFC3339",
+        help="window end (started_at exclusive)",
+    )
+    p_audit_user.add_argument(
+        "--node",
+        dest="node",
+        help="limit to one registry node name",
+    )
+    _add_json_flag(p_audit_user)
+
+    p_stats = sub.add_parser(
+        "stats",
+        help="node-tagged daily_usage totals from fleet.db",
+        description=(
+            "Read daily_usage derived from synced audit_events "
+            "(UTC day of started_at). Not byte-identical with node "
+            "`vcl stats`. Detail rows keep (user_id, node); unlabeled "
+            "node_id is never merged. Combined totals exist only in "
+            "--json totals.by_node."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    stats_sub = p_stats.add_subparsers(dest="stats_command")
+    p_suser = stats_sub.add_parser(
+        "user",
+        help="per-node usage for TAG over --days N",
+    )
+    p_suser.add_argument("tag")
+    _add_days_flag(p_suser)
+    _add_json_flag(p_suser)
+
+    p_stop = stats_sub.add_parser(
+        "top",
+        help="top users or hosts, split by node",
+    )
+    top_sub = p_stop.add_subparsers(dest="stats_top_command")
+    p_top_users = top_sub.add_parser(
+        "users",
+        help="per (user_id, node) totals",
+    )
+    _add_days_flag(p_top_users)
+    _add_json_flag(p_top_users)
+    p_top_hosts = top_sub.add_parser(
+        "hosts",
+        help="per (host, node) totals",
+    )
+    _add_days_flag(p_top_hosts)
+    _add_json_flag(p_top_hosts)
+
+    p_snode = stats_sub.add_parser(
+        "node",
+        help="usage on one registry node over --days N",
+    )
+    p_snode.add_argument("name")
+    _add_days_flag(p_snode)
+    _add_json_flag(p_snode)
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -3405,6 +4036,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "sync":
         return cmd_sync(args)
+    if command == "audit":
+        sub = args.audit_command
+        if sub is None:
+            parser.parse_args(["audit", "--help"])
+            return 2
+        if sub == "user":
+            return cmd_audit_user(args)
+        die(f"unknown audit command: {sub}", 2)
+    if command == "stats":
+        sub = getattr(args, "stats_command", None)
+        if sub is None:
+            parser.parse_args(["stats", "--help"])
+            return 2
+        if sub == "top" and getattr(args, "stats_top_command", None) is None:
+            parser.parse_args(["stats", "top", "--help"])
+            return 2
+        return cmd_stats(args)
     if command == "node":
         sub = args.node_command
         if sub is None:
