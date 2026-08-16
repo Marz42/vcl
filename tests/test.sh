@@ -6450,6 +6450,237 @@ else
   fail "restore failure restores original sing-box and accountd service state"
 fi
 
+# P1-03 / B9: upgrade preflight captures service state before any mutation
+if python3 - "${PROJECT_DIR}/vincula.sh" <<'PY'
+from pathlib import Path
+import sys
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+i = src.index("migrate_existing_install()")
+j = src.index("verify_existing_install()")
+body = src[i:j]
+rb_i = src.index("rollback_migration()")
+rb_j = src.index("on_exit()")
+rb = src[rb_i:rb_j]
+beg_i = src.index("begin_migration_backup()")
+beg_j = src.index("backup_existing_install()")
+beg = src[beg_i:beg_j]
+bak_i = src.index("backup_existing_install()")
+bak_j = src.index("migrate_existing_install()")
+bak = src[bak_i:bak_j]
+
+def pos(hay, needle):
+    idx = hay.find(needle)
+    assert idx >= 0, needle
+    return idx
+
+assert "capture_installer_service_state" in beg
+assert "write_installer_service_state" in beg
+assert pos(body, "require_canonical_files") < pos(body, "require_migration_disk_space")
+assert pos(body, "require_migration_disk_space") < pos(body, "begin_migration_backup")
+assert pos(body, "migrate_fail_after preflight") < pos(body, "begin_migration_backup")
+assert pos(body, "begin_migration_backup") < pos(body, "MIGRATION_STARTED=1")
+assert pos(body, "MIGRATION_STARTED=1") < pos(body, "backup_existing_install")
+assert pos(body, "MIGRATION_STARTED=1") < pos(body, "systemctl enable sing-box.service")
+assert pos(body, "MIGRATION_STARTED=1") < pos(body, "systemctl stop vincula-accountd")
+assert pos(body, "backup_existing_install") < pos(body, "systemctl stop vincula-accountd")
+assert "Stop accounting plane" not in body
+assert "snapshot_accounting_db" in bak
+assert ".backup" not in bak
+assert "mint_or_preserve_instance_id" in body
+assert "atomic_install" in body
+assert "enable_accountd_service" in body
+assert "INSTALL_COMMITTED=1" in body
+assert "apply_installer_service_state" in rb
+assert "restart vincula-accountd" not in rb
+assert "restart sing-box" not in rb
+assert "backup_complete" in rb
+for point in ("preflight", "armed", "backup", "health-wait", "accountd-stop", "health", "accountd"):
+    assert f"migrate_fail_after {point}" in body, point
+PY
+then
+  pass "migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop"
+  pass "migrate_existing_install runs disk/schema/file preflight before service mutation"
+  pass "migrate_existing_install happy path still backups, atomic_installs, and commits"
+  pass "rollback_migration restores exact enabled/active and does not restart missing-active units"
+else
+  fail "migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop"
+  fail "migrate_existing_install runs disk/schema/file preflight before service mutation"
+  fail "migrate_existing_install happy path still backups, atomic_installs, and commits"
+  fail "rollback_migration restores exact enabled/active and does not restart missing-active units"
+fi
+
+if [[ "$(usage)" == *VCL_MIGRATE_FAIL_AFTER* ]]; then
+  fail "installer usage does not document VCL_MIGRATE_FAIL_AFTER"
+else
+  pass "installer usage does not document VCL_MIGRATE_FAIL_AFTER"
+fi
+assert_success "migrate_fail_after is a no-op when unset" migrate_fail_after preflight
+if ( VCL_MIGRATE_FAIL_AFTER=preflight migrate_fail_after preflight ) >/dev/null 2>&1; then
+  fail "migrate_fail_after dies on matching inject point"
+else
+  pass "migrate_fail_after dies on matching inject point"
+fi
+
+p103_sys="${TEST_TMP}/p103-sys"
+mkdir -p "$p103_sys"
+cat > "${p103_sys}/systemctl" <<'FAKECTL'
+#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+st = Path(__file__).resolve().parent / "state.json"
+data = json.loads(st.read_text(encoding="utf-8")) if st.is_file() else {
+    "sing_enabled": 1, "sing_active": 1, "acct_enabled": 1, "acct_active": 1,
+}
+args = [a for a in sys.argv[1:] if a != "--quiet"]
+cmd = args[0] if args else ""
+unit = args[1] if len(args) > 1 else ""
+en = "sing_enabled" if "sing-box" in unit else "acct_enabled"
+act = "sing_active" if "sing-box" in unit else "acct_active"
+if cmd == "is-enabled":
+    raise SystemExit(0 if data.get(en) else 1)
+if cmd == "is-active":
+    raise SystemExit(0 if data.get(act) else 1)
+if cmd == "enable":
+    data[en] = 1
+elif cmd == "disable":
+    data[en] = 0
+elif cmd == "start":
+    data[act] = 1
+elif cmd == "stop":
+    data[act] = 0
+elif cmd == "restart":
+    data[act] = 1
+st.write_text(json.dumps(data), encoding="utf-8")
+raise SystemExit(0)
+FAKECTL
+chmod +x "${p103_sys}/systemctl"
+
+p103_set_services() {
+  python3 -c 'import json,sys; json.dump({"sing_enabled":int(sys.argv[1]),"sing_active":int(sys.argv[2]),"acct_enabled":int(sys.argv[3]),"acct_active":int(sys.argv[4])}, open(sys.argv[5],"w"), separators=(",",":"))' "$@"
+}
+p103_get() {
+  python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get(sys.argv[2]) or 0))' "${p103_sys}/state.json" "$1"
+}
+
+p103_set_services 1 1 1 1 "${p103_sys}/state.json"
+PATH="${p103_sys}:${PATH}" capture_installer_service_state
+write_installer_service_state "${TEST_TMP}/p103-active.state"
+if grep -q '^acct_active=1$' "${TEST_TMP}/p103-active.state" \
+   && grep -q '^sing_active=1$' "${TEST_TMP}/p103-active.state"; then
+  pass "acct_active in backup matches real pre-migration active state"
+else
+  fail "acct_active in backup matches real pre-migration active state ($(cat "${TEST_TMP}/p103-active.state"))"
+fi
+
+p103_set_services 1 0 0 0 "${p103_sys}/state.json"
+PATH="${p103_sys}:${PATH}" capture_installer_service_state
+write_installer_service_state "${TEST_TMP}/p103-inactive.state"
+if grep -q '^acct_active=0$' "${TEST_TMP}/p103-inactive.state" \
+   && grep -q '^acct_enabled=0$' "${TEST_TMP}/p103-inactive.state" \
+   && grep -q '^sing_active=0$' "${TEST_TMP}/p103-inactive.state"; then
+  pass "acct_active in backup matches real pre-migration inactive state"
+else
+  fail "acct_active in backup matches real pre-migration inactive state ($(cat "${TEST_TMP}/p103-inactive.state"))"
+fi
+
+p103_set_services 1 1 1 1 "${p103_sys}/state.json"
+PATH="${p103_sys}:${PATH}" systemctl stop vincula-accountd.service
+if [[ "$(p103_get acct_active)" == "0" ]]; then
+  PATH="${p103_sys}:${PATH}" apply_installer_service_state "${TEST_TMP}/p103-active.state"
+  if [[ "$(p103_get acct_active)" == "1" && "$(p103_get sing_active)" == "1" ]]; then
+    pass "apply_installer_service_state restarts accountd that was active before migrate"
+  else
+    fail "apply_installer_service_state restarts accountd that was active before migrate (acct=$(p103_get acct_active))"
+  fi
+else
+  fail "apply_installer_service_state restarts accountd that was active before migrate (stop did not take)"
+fi
+
+p103_set_services 1 0 1 0 "${p103_sys}/state.json"
+PATH="${p103_sys}:${PATH}" systemctl start vincula-accountd.service
+PATH="${p103_sys}:${PATH}" apply_installer_service_state "${TEST_TMP}/p103-inactive.state"
+if [[ "$(p103_get acct_active)" == "0" && "$(p103_get sing_active)" == "0" && "$(p103_get acct_enabled)" == "0" ]]; then
+  pass "apply_installer_service_state leaves originally inactive accountd stopped"
+else
+  fail "apply_installer_service_state leaves originally inactive accountd stopped (acct=$(p103_get acct_active) en=$(p103_get acct_enabled))"
+fi
+
+p103_db="${TEST_TMP}/p103-acct.db"
+p103_snap="${TEST_TMP}/p103-acct-snap.db"
+python3 - "$p103_db" <<'PY'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+conn.execute("INSERT INTO meta VALUES ('schema_version', '3')")
+conn.execute("CREATE TABLE t (id INTEGER)")
+conn.execute("INSERT INTO t VALUES (42)")
+conn.commit()
+conn.close()
+PY
+snapshot_accounting_db "$p103_db" "$p103_snap"
+if python3 - "$p103_snap" <<'PY'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+assert conn.execute("SELECT id FROM t").fetchone()[0] == 42
+conn.close()
+PY
+then
+  pass "snapshot_accounting_db uses Python Backup API without stopping a writer"
+else
+  fail "snapshot_accounting_db uses Python Backup API without stopping a writer"
+fi
+assert_success "require_migration_disk_space succeeds on this host" require_migration_disk_space
+
+p103_protocol_ok=1
+p103_protocol_msg=""
+for orig_acct in 1 0; do
+  for boundary in preflight armed backup health-wait accountd-stop health accountd; do
+    p103_set_services 1 1 1 "$orig_acct" "${p103_sys}/state.json"
+    snap="${TEST_TMP}/p103-${boundary}-${orig_acct}.state"
+    PATH="${p103_sys}:${PATH}" capture_installer_service_state
+    write_installer_service_state "$snap"
+    snap_acct=$(awk -F= '$1=="acct_active"{print $2}' "$snap")
+    if [[ "$snap_acct" != "$orig_acct" ]]; then
+      p103_protocol_ok=0
+      p103_protocol_msg="SERVICE_STATE acct_active=${snap_acct} != pretest ${orig_acct} at ${boundary}"
+      break 2
+    fi
+    case "$boundary" in
+      preflight)
+        ;;
+      armed|backup)
+        ;;
+      health-wait)
+        PATH="${p103_sys}:${PATH}" systemctl enable sing-box.service
+        PATH="${p103_sys}:${PATH}" systemctl start sing-box.service
+        ;;
+      accountd-stop|health|accountd)
+        PATH="${p103_sys}:${PATH}" systemctl stop vincula-accountd.service
+        ;;
+    esac
+    if [[ "$boundary" != preflight ]]; then
+      PATH="${p103_sys}:${PATH}" apply_installer_service_state "$snap"
+    fi
+    got_acct=$(p103_get acct_active)
+    got_sing=$(p103_get sing_active)
+    if [[ "$got_acct" != "$orig_acct" || "$got_sing" != "1" ]]; then
+      p103_protocol_ok=0
+      p103_protocol_msg="boundary=${boundary} orig_acct=${orig_acct} got acct=${got_acct} sing=${got_sing}"
+      break 2
+    fi
+  done
+done
+if (( p103_protocol_ok == 1 )); then
+  pass "migrate FAIL_AFTER preflight|armed|backup|health-wait|accountd-stop|health|accountd restores original service state"
+  pass "preflight inject before MIGRATION_STARTED leaves no accountd stop side effect"
+else
+  fail "migrate FAIL_AFTER preflight|armed|backup|health-wait|accountd-stop|health|accountd restores original service state (${p103_protocol_msg})"
+  fail "preflight inject before MIGRATION_STARTED leaves no accountd stop side effect (${p103_protocol_msg})"
+fi
+
 # P1-06 / B6: operation-level flock mutex
 assert_success "common.sh resolves /run/lock/vincula.lock" \
   grep -q '/run/lock/vincula.lock' "${PROJECT_DIR}/lib/vincula-common.sh"

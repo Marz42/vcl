@@ -8,6 +8,7 @@
 **Addendum:** 2026-08-16 — B6 / P1-06: operation-level flock mutex on node and controller.  
 **Addendum:** 2026-08-16 — B7 / P1-04: `CURSOR_AHEAD` + strict sync batch validation.  
 **Addendum:** 2026-08-16 — B8 / P1-02: restore is a single atomic transaction.  
+**Addendum:** 2026-08-16 — B9 / P1-03: upgrade preflight captures service state before any mutation.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -77,6 +78,12 @@ Living-tree test counts after B7: `bash tests/test.sh` **1066**; standalone `bas
 Living tree (`0.3.1-dev`): `apply_restore` stages canonical files, `accounting.db`, generated config, and the reissue CSV, then writes `VERSION` last (the dest commit marker). All of those plus the pre-restore sing-box / accountd enabled+active snapshot share one try/rollback. CLI health/render failure calls the same rollback (config.json, CSV, VERSION, service state); it does **not** `systemctl restart sing-box` on a mixed tree. `VCL_RESTORE_FAIL_AFTER=canonical|csv|config|health|version` (and ENOSPC on CSV / EACCES on VERSION) leave the target fully recoverable; a second restore without the hook succeeds.
 
 Living-tree test counts after B8: `bash tests/test.sh` **1076**; standalone `bash tests/test-fleet.sh` **430**.
+
+## Addendum (2026-08-16) — B9 / P1-03 upgrade captures service state before mutation
+
+Living tree (`0.3.1-dev`): `migrate_existing_install` runs file/schema/disk/REALITY/`sing-box check` preflight with no service side effects, then captures sing-box + accountd enabled/active into `SERVICE_STATE` and sets `MIGRATION_STARTED=1` **before** backup or any `systemctl` stop/start. Accounting is snapshotted with Python `sqlite3.Connection.backup()` from the **source-tree** `lib/vincula-backup.py` (accountd stays up). Accountd is stopped only for the file-swap window. `rollback_migration` applies the snapshot exactly (no “unit exists → restart”). `VCL_MIGRATE_FAIL_AFTER=preflight|armed|backup|health-wait|accountd-stop|health|accountd` restores the pretest enabled/active bits.
+
+Living-tree test counts after B9: `bash tests/test.sh` **1091**; standalone `bash tests/test-fleet.sh` **430**.
 
 ### Freeze-era recommendation (historical)
 
@@ -162,7 +169,7 @@ Evidence strategy = **node unit tests** (`tests/test.sh`) plus **fake-ssh / fake
 
 There is **no** automatic `fleet.db` schema 2→1 downgrade. Node-side schemas were not bumped (state 2, users 2, accounting 3), so there is no node DDL to reverse for this milestone.
 
-**Nodes:** restore the `backup_existing_install` backup taken before migrate (core + accounting artifacts + SQLite `.backup` + `SERVICE_STATE`) **and** the matching **0.2.9** installer. Restoring a 0.3.0 tree’s files onto 0.2.9 is the supported rollback path only via that backup, not via a schema downgrade. A 0.3.0 backup archive (`vcl backup create`) is **not** the 0.2.9 rollback vehicle.
+**Nodes:** restore the `backup_existing_install` backup taken before migrate (core + accounting artifacts + Python SQLite Backup API snapshot + `SERVICE_STATE`) **and** the matching **0.2.9** installer. Restoring a 0.3.0 tree’s files onto 0.2.9 is the supported rollback path only via that backup, not via a schema downgrade. A 0.3.0 backup archive (`vcl backup create`) is **not** the 0.2.9 rollback vehicle.
 
 **Workstation:** the controller has no lock chain and no installer. Replace the unpacked zip with the 0.2.9 zip. Schema-2 `fleet.db` is **not** understood by 0.2.9 — restore a pre-upgrade copy of `$FLEET_HOME`. Leaving schema-2 `fleet.db` in place for a 0.2.9 binary is unsupported. That does not roll back nodes.
 
@@ -258,6 +265,7 @@ Freeze verification: `bash -n` on all first-party bash (installer, helper, commo
 | `VCL_RESTORE_FAIL_AFTER=canonical\|csv\|config\|health\|version` | full rollback: no VERSION (or VERSION removed), no leftover reissue CSV, generated config restored, sing-box/accountd enabled+active restored; re-restore succeeds (P1-02 / B8) |
 | CSV `ENOSPC` / VERSION `EACCES` inject | same recoverable state as above |
 | `VCL_RESTORE_FAIL_AFTER=health` | CLI rolls back target (canonical + config + CSV + services); source intact |
+| `VCL_MIGRATE_FAIL_AFTER=preflight\|armed\|backup\|health-wait\|accountd-stop\|health\|accountd` | upgrade inject: accountd/sing-box enabled+active restored to pretest (P1-03 / B9) |
 | `VCL_FAKE_FAIL_RESTORE` / backup-create fail / scp fail / verify-fail `--from-backup` | replace aborts; `fleet.json` `ssh_host` stays old; no new `instance_history` active |
 | `--from-backup` whose `source_node_id` ≠ registry | refused; registry `node_id` / old host unchanged |
 | Replace then cursor gap | `CURSOR_EXPIRED` + `--reseed` guidance; `--reseed` keeps `instance_history` |

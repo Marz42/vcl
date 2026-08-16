@@ -71,7 +71,9 @@ in `.age`, the implementation appends `.tar.age` (a `.tar` suffix becomes
 (read-only URI on the source). Live accountd / WAL is allowed. Do **not**
 `cp` or routinely `scp` the live database. If the source DB is missing, that
 member is omitted (`included_components` without `accounting.db`; verify
-WARNs; AC-3.0-09 does not apply to that archive).
+WARNs; AC-3.0-09 does not apply to that archive). In-place `vincula.sh`
+upgrade uses the same Backup API (source-tree `lib/vincula-backup.py`) and
+does **not** stop accountd to take the migration snapshot.
 
 `VERSION` is the source node’s product line. Restore uses it for
 compatibility checks; it does **not** overwrite the running helper version.

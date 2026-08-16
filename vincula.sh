@@ -236,6 +236,10 @@ rollback_migration() {
   systemctl disable --now sing-box.service >/dev/null 2>&1 || true
 
   local path name
+  local backup_complete=0
+  if [[ -f "${MIGRATION_BACKUP}/${BACKUP_MARKER}" ]]; then
+    backup_complete=1
+  fi
   for path in \
     "$SYSTEMD_UNIT" \
     "$HELPER_ALIAS_PATH" \
@@ -262,7 +266,7 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
@@ -275,29 +279,7 @@ rollback_migration() {
 
   systemctl daemon-reload >/dev/null 2>&1 || true
 
-  local state_file="${MIGRATION_BACKUP}/SERVICE_STATE"
-  local sing_enabled=0 sing_active=0 acct_enabled=0 acct_active=0
-  if [[ -f "$state_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$state_file" || true
-  fi
-  if (( sing_enabled == 1 )); then
-    systemctl enable sing-box.service >/dev/null 2>&1 || true
-  fi
-  if (( sing_active == 1 )); then
-    systemctl start sing-box.service >/dev/null 2>&1 || true
-  fi
-  if (( acct_enabled == 1 )); then
-    systemctl enable vincula-accountd.service >/dev/null 2>&1 || true
-  fi
-  if (( acct_active == 1 )); then
-    systemctl start vincula-accountd.service >/dev/null 2>&1 || true
-  elif [[ -f "$ACCOUNTD_UNIT" ]]; then
-    systemctl restart vincula-accountd.service >/dev/null 2>&1 || true
-  fi
-  if (( sing_active == 1 )) || [[ -f "$SYSTEMD_UNIT" ]]; then
-    systemctl restart sing-box.service >/dev/null 2>&1 || true
-  fi
+  apply_installer_service_state "${MIGRATION_BACKUP}/SERVICE_STATE"
 }
 
 on_exit() {
@@ -1454,27 +1436,119 @@ require_canonical_files() {
   local path
   for path in "$STATE_FILE" "$USERS_FILE" "$SETTINGS_FILE" "$URI_FILE" "$BINARY_CHECKSUM_FILE" "$CONFIG_FILE" "$BINARY_PATH" "$SYSTEMD_UNIT"; do
     [[ -e "$path" ]] || die "Existing vincula installation is incomplete: missing ${path}."
+    [[ -r "$path" ]] || die "Existing vincula installation is unreadable: ${path}."
   done
+}
+
+migrate_fail_after() {
+  local point=$1
+  [[ "${VCL_MIGRATE_FAIL_AFTER:-}" == "$point" ]] || return 0
+  die "injected migrate failure after ${point}"
+}
+
+capture_installer_service_state() {
+  MIG_SING_ENABLED=0
+  MIG_SING_ACTIVE=0
+  MIG_ACCT_ENABLED=0
+  MIG_ACCT_ACTIVE=0
+  if systemctl is-enabled --quiet sing-box.service 2>/dev/null; then MIG_SING_ENABLED=1; fi
+  if systemctl is-active --quiet sing-box.service 2>/dev/null; then MIG_SING_ACTIVE=1; fi
+  if systemctl is-enabled --quiet vincula-accountd.service 2>/dev/null; then MIG_ACCT_ENABLED=1; fi
+  if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then MIG_ACCT_ACTIVE=1; fi
+}
+
+write_installer_service_state() {
+  local dest=$1
+  cat > "$dest" <<EOF
+sing_enabled=${MIG_SING_ENABLED:-0}
+sing_active=${MIG_SING_ACTIVE:-0}
+acct_enabled=${MIG_ACCT_ENABLED:-0}
+acct_active=${MIG_ACCT_ACTIVE:-0}
+EOF
+  chmod 0600 "$dest"
+}
+
+apply_installer_service_state() {
+  local state_file=$1
+  local sing_enabled=0 sing_active=0 acct_enabled=0 acct_active=0
+  if [[ -f "$state_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$state_file" || true
+  fi
+  if (( sing_enabled == 1 )); then
+    systemctl enable sing-box.service >/dev/null 2>&1 || true
+  else
+    systemctl disable sing-box.service >/dev/null 2>&1 || true
+  fi
+  if (( sing_active == 1 )); then
+    systemctl start sing-box.service >/dev/null 2>&1 || true
+  else
+    systemctl stop sing-box.service >/dev/null 2>&1 || true
+  fi
+  if (( acct_enabled == 1 )); then
+    systemctl enable vincula-accountd.service >/dev/null 2>&1 || true
+  else
+    systemctl disable vincula-accountd.service >/dev/null 2>&1 || true
+  fi
+  if (( acct_active == 1 )); then
+    systemctl start vincula-accountd.service >/dev/null 2>&1 || true
+  else
+    systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
+  fi
+}
+
+require_migration_disk_space() {
+  local target=$BACKUP_ROOT need_kb=65536 avail_kb db_kb=0
+  if [[ ! -d "$target" ]]; then
+    target=$(dirname -- "$target")
+  fi
+  [[ -d "$target" ]] || die "Backup filesystem is missing: ${target}."
+  if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
+    db_kb=$(du -k -- "$ACCOUNTING_DB_FILE" 2>/dev/null | awk '{print $1}')
+    [[ "$db_kb" =~ ^[0-9]+$ ]] || db_kb=0
+    need_kb=$((db_kb * 2 + 65536))
+  fi
+  avail_kb=$(df -Pk "$target" | awk 'NR==2 {print $4}')
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || die "Unable to determine free disk space on ${target}."
+  (( avail_kb >= need_kb )) || die "Not enough free disk space for migration backup (need ${need_kb} KiB, have ${avail_kb} KiB)."
+}
+
+snapshot_accounting_db() {
+  local src=$1 dest=$2
+  local root py
+  root=$(installer_root) || die "Cannot locate installer directory for SQLite snapshot."
+  py="${root}/lib/vincula-backup.py"
+  [[ -f "$py" ]] || die "Missing ${py} (source-tree backup module required for live SQLite snapshot)."
+  python3 -c '
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("vincula_backup", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.snapshot_sqlite(Path(sys.argv[2]), Path(sys.argv[3]))
+' "$py" "$src" "$dest" || die "Failed to snapshot accounting database via Python Backup API."
+}
+
+begin_migration_backup() {
+  local installed_version=$1
+  if [[ -z "${MIGRATION_BACKUP:-}" ]]; then
+    MIGRATION_BACKUP="${BACKUP_ROOT}/${installed_version}-$(date -u +'%Y%m%dT%H%M%SZ')"
+  fi
+  install -d -o root -g root -m 0700 "$BACKUP_ROOT"
+  install -d -o root -g root -m 0700 "$MIGRATION_BACKUP"
+  capture_installer_service_state
+  write_installer_service_state "${MIGRATION_BACKUP}/SERVICE_STATE"
 }
 
 backup_existing_install() {
   local installed_version=$1 name path
-  local sing_enabled=0 sing_active=0 acct_enabled=0 acct_active=0
-  MIGRATION_BACKUP="${BACKUP_ROOT}/${installed_version}-$(date -u +'%Y%m%dT%H%M%SZ')"
-  install -d -o root -g root -m 0700 "$BACKUP_ROOT"
-  install -d -o root -g root -m 0700 "$MIGRATION_BACKUP"
-
-  if systemctl is-enabled --quiet sing-box.service 2>/dev/null; then sing_enabled=1; fi
-  if systemctl is-active --quiet sing-box.service 2>/dev/null; then sing_active=1; fi
-  if systemctl is-enabled --quiet vincula-accountd.service 2>/dev/null; then acct_enabled=1; fi
-  if systemctl is-active --quiet vincula-accountd.service 2>/dev/null; then acct_active=1; fi
-  cat > "${MIGRATION_BACKUP}/SERVICE_STATE" <<EOF
-sing_enabled=${sing_enabled}
-sing_active=${sing_active}
-acct_enabled=${acct_enabled}
-acct_active=${acct_active}
-EOF
-  chmod 0600 "${MIGRATION_BACKUP}/SERVICE_STATE"
+  if [[ -z "${MIGRATION_BACKUP:-}" || ! -d "${MIGRATION_BACKUP:-}" ]]; then
+    begin_migration_backup "$installed_version"
+  fi
+  if [[ ! -f "${MIGRATION_BACKUP}/SERVICE_STATE" ]]; then
+    capture_installer_service_state
+    write_installer_service_state "${MIGRATION_BACKUP}/SERVICE_STATE"
+  fi
 
   for path in \
     "$SYSTEMD_UNIT" \
@@ -1503,12 +1577,7 @@ EOF
     fi
   done
   if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
-    if command -v sqlite3 >/dev/null 2>&1; then
-      sqlite3 "$ACCOUNTING_DB_FILE" ".backup '${MIGRATION_BACKUP}/accounting.db'" \
-        || cp -a -- "$ACCOUNTING_DB_FILE" "${MIGRATION_BACKUP}/accounting.db"
-    else
-      cp -a -- "$ACCOUNTING_DB_FILE" "${MIGRATION_BACKUP}/accounting.db"
-    fi
+    snapshot_accounting_db "$ACCOUNTING_DB_FILE" "${MIGRATION_BACKUP}/accounting.db"
   fi
   if [[ ! -e "$HELPER_PATH" && -x /usr/local/bin/sb ]]; then
     cp -a -- /usr/local/bin/sb "${MIGRATION_BACKUP}/sb"
@@ -1532,11 +1601,7 @@ migrate_existing_install() {
   log_info "Installed: ${installed_version}"
   log_info "Installer: ${VINCULA_VERSION}"
   require_canonical_files
-
-  # Stop accounting plane before backup so SQLite is quiescent.
-  if systemctl cat vincula-accountd.service >/dev/null 2>&1; then
-    systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
-  fi
+  require_migration_disk_space
 
   # Credential UUID SoT is users.json (registry); fall back to line-oriented scan / state.
   uuid=$(owner_active_uuid_from_registry "$USERS_FILE" 2>/dev/null || true)
@@ -1612,18 +1677,7 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
     fi
   fi
   rm -f -- "$check_err"
-
-  systemctl enable sing-box.service >/dev/null
-  if (( legacy_inbound_config == 1 )); then
-    systemctl stop sing-box.service >/dev/null 2>&1 || true
-    log_warn "Skipping pre-migration service health wait (legacy config cannot run on sing-box ${SING_BOX_VERSION})."
-  else
-    if ! systemctl is-active --quiet sing-box.service; then
-      systemctl start sing-box.service
-    fi
-    wait_for_service "$port" || die "Existing installation did not become healthy. Run 'journalctl -u sing-box.service'."
-  fi
-  log_ok "Existing vincula ${installed_version} installation verified; identity preserved"
+  migrate_fail_after preflight
 
   created_user=$(json_bool_field "$STATE_FILE" created_by_vincula)
   created_group=$(json_bool_field "$STATE_FILE" group_created_by_vincula)
@@ -1638,9 +1692,25 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
     SERVICE_SHELL=/usr/sbin/nologin
   fi
 
-  backup_existing_install "$installed_version"
-  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+  begin_migration_backup "$installed_version"
   MIGRATION_STARTED=1
+  migrate_fail_after armed
+  backup_existing_install "$installed_version"
+  migrate_fail_after backup
+  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+
+  systemctl enable sing-box.service >/dev/null
+  if (( legacy_inbound_config == 1 )); then
+    systemctl stop sing-box.service >/dev/null 2>&1 || true
+    log_warn "Skipping pre-migration service health wait (legacy config cannot run on sing-box ${SING_BOX_VERSION})."
+  else
+    if ! systemctl is-active --quiet sing-box.service; then
+      systemctl start sing-box.service
+    fi
+    wait_for_service "$port" || die "Existing installation did not become healthy. Run 'journalctl -u sing-box.service'."
+  fi
+  migrate_fail_after health-wait
+  log_ok "Existing vincula ${installed_version} installation verified; identity preserved"
 
   staged_config="${TMP_DIR}/config.json"
   staged_state="${TMP_DIR}/state.json"
@@ -1696,6 +1766,7 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
 
   "$BINARY_PATH" check -c "$staged_config" >/dev/null
   log_ok "Candidate configuration passed sing-box check"
+  migrate_fail_after staged-check
   verify_identity_consistency "$staged_state" "$staged_settings" "$staged_config" "$staged_uri" "$staged_users" >/dev/null \
     || die "Generated artifacts are inconsistent with canonical state."
 
@@ -1706,6 +1777,10 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   fi
 
   install -d -o root -g root -m 0755 "$LIB_DIR"
+  if systemctl cat vincula-accountd.service >/dev/null 2>&1; then
+    systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
+  fi
+  migrate_fail_after accountd-stop
   atomic_install "$staged_config" "$CONFIG_FILE" 0640 root "$SERVICE_GROUP"
   atomic_install "$staged_state" "$STATE_FILE" 0600 root root
   atomic_install "$staged_users" "$USERS_FILE" 0600 root root
@@ -1728,8 +1803,10 @@ VCL_REALITY_HOST=${DEFAULT_REALITY_HOST} ./vincula.sh"
   systemctl daemon-reload
   systemctl restart sing-box.service
   wait_for_service "$port" || die "sing-box did not become healthy after migration."
+  migrate_fail_after health
   install_accountd_artifacts
   validate_accounting_artifacts
+  migrate_fail_after accountd
   enable_accountd_service
 
   INSTALL_COMMITTED=1
