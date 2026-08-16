@@ -1,4 +1,4 @@
-# 身份合同（0.2.8）
+# 身份合同（0.2.9-dev）
 
 `node_id` 是逻辑节点身份，永久冻结。`instance_id` 是一次物理安装。二者均为 UUID，且 **不得相等**。
 
@@ -95,3 +95,51 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
   "utc_now": "<RFC3339 UTC, Z>"
 }
 ```
+
+## Fleet-global `user_id`（0.2.9-dev）
+
+`users.json` schema **仍为 2**（已有 `user_id`）。下列 `schema_version` 是 **CLI JSON 合同**，不是 registry schema。
+
+- 节点本地 `vcl user add TAG`（无 `--user-id`）→ 生成本地 `user_id=UUID()`
+- 控制器 `vcl user add TAG --user-id UUID` → 注入同一 fleet-global `user_id`（advanced/controller）
+- 禁止用 `display_name` 匹配用户；tag 仅 UX
+
+`vcl user list` 人类表增加 `USER_ID` 列（完整 UUID）。`list`/`show` 的 `--json` **不含** VLESS `uuid`；`add`/`rotate` 的 URI 已含 uuid，仅这些命令输出 URI。
+
+### `vcl user add TAG ... --json`（0.2.1）
+
+| 字段 | 说明 |
+| --- | --- |
+| `schema_version` | `1` |
+| `ok` | `true` / `false` |
+| `tag` | 用户 tag |
+| `user_id` | fleet-global 或本节点生成的 UUID |
+| `credential_id` | 本节点新凭据 |
+| `vless_uri` | 含 VLESS uuid 的 URI |
+| `status` | `active` |
+| `enabled` | `true` |
+
+失败：`{"schema_version":1,"ok":false,"error":"..."}`。`error`：`invalid_user_id` \| `duplicate_user_id` \| `duplicate_tag` \| `invalid_tag` \| `failed`。
+
+### `vcl user list --json`（0.2.2）
+
+| 字段 | 说明 |
+| --- | --- |
+| `schema_version` | `1` |
+| `users[].tag` | tag |
+| `users[].display_name` | 显示名 |
+| `users[].department` | 部门 |
+| `users[].user_id` | 稳定 ID |
+| `users[].enabled` | 是否启用 |
+| `users[].active_credential_id` | 当前 active 凭据（非 VLESS uuid） |
+| `users[].credentials` | `{count, active, revoked}` 汇总，不含 secrets |
+
+### `vcl user show TAG --json`（0.2.3）
+
+含 `user_id`、`enabled`、`created_at` 与 `credentials[]`：`credential_id` / `node_id` / `status` / `created_at` / `revoked_at`。凭据对象 **不含** `uuid`。
+
+### `vcl user rotate TAG --json`（0.2.4）
+
+与 add 同形（新 `credential_id` + 新 `vless_uri`；`user_id` 不变）。
+
+`enable` / `disable --json`：`{"schema_version":1,"ok":true,"tag":"...","user_id":"...","enabled":true|false}`。

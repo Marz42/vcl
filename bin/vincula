@@ -89,11 +89,11 @@ Usage:
   vcl link             Print the owner VLESS URI
   vcl user add <tag> [--user-id UUID] [--display-name NAME] [--department DEPT] [--json]
   vcl user set <tag> --display-name NAME [--department DEPT]
-  vcl user disable <tag>
-  vcl user enable <tag>
-  vcl user rotate <tag>
-  vcl user list
-  vcl user show <tag>
+  vcl user disable <tag> [--json]
+  vcl user enable <tag> [--json]
+  vcl user rotate <tag> [--json]
+  vcl user list [--json]
+  vcl user show <tag> [--json]
   vcl user link <tag>
   vcl user import FILE [--dry-run] [--output FILE] [--include-uuid]
   vcl user export [--credentials] [--output FILE] [--include-uuid]
@@ -124,6 +124,7 @@ Notes:
   Department stats use current attribution from users.json (not historical department).
   Config-affecting user changes restart sing-box; metadata-only user set does not.
   --user-id is advanced/controller use: inject a fleet-global user_id instead of generating one.
+  user add/list/show/rotate/enable/disable accept --json (CLI contract schema_version 1).
 USAGE
 }
 
@@ -1704,8 +1705,72 @@ cmd_user_remove() {
   exit 2
 }
 
+emit_user_enabled_json() {
+  local tag=$1 enabled=$2
+  local user_id
+  user_id=$(users_registry_field "$USERS_FILE" "$tag" user_id)
+  python3 - "$tag" "$user_id" "$enabled" <<'PY'
+import json, sys
+tag, user_id, enabled = sys.argv[1:4]
+print(json.dumps({
+    "schema_version": 1,
+    "ok": True,
+    "tag": tag,
+    "user_id": user_id,
+    "enabled": enabled.lower() in ("1", "true", "yes"),
+}, ensure_ascii=False, indent=2))
+PY
+}
+
+emit_user_rotate_json() {
+  local tag=$1 credential_id=$2 vless_uri=$3
+  python3 - "$USERS_FILE" "$tag" "$credential_id" "$vless_uri" <<'PY'
+import json, sys
+path, tag, credential_id, vless_uri = sys.argv[1:5]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+user = next((u for u in data.get("users", []) if u.get("tag") == tag), None)
+if user is None:
+    raise SystemExit(f"user not found: {tag}")
+print(json.dumps({
+    "schema_version": 1,
+    "ok": True,
+    "tag": tag,
+    "user_id": user.get("user_id") or "",
+    "credential_id": credential_id,
+    "vless_uri": vless_uri,
+    "status": "active",
+    "enabled": bool(user.get("enabled")),
+}, ensure_ascii=False, indent=2))
+PY
+}
+
+parse_user_optional_json() {
+  local cmd=$1
+  shift
+  local saw=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        saw=1
+        shift
+        ;;
+      *)
+        die "user ${cmd}: unknown option ${1}."
+        ;;
+    esac
+  done
+  if (( saw )); then
+    return 0
+  fi
+  return 1
+}
+
 cmd_user_disable() {
   local tag=$1
+  shift
+  local as_json=0
+  parse_user_optional_json disable "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   local staged_dir staged_users
   USER_MUTATION_BACKUP=""
@@ -1717,12 +1782,20 @@ cmd_user_disable() {
     rm -rf --one-file-system -- "$staged_dir"
     die "failed to disable user ${tag}."
   fi
+  if (( as_json )); then
+    user_mutation_apply "$staged_users" >/dev/null
+    emit_user_enabled_json "$tag" false
+    return
+  fi
   user_mutation_apply "$staged_users"
   printf 'User %s disabled.\n' "$tag"
 }
 
 cmd_user_enable() {
   local tag=$1
+  shift
+  local as_json=0
+  parse_user_optional_json enable "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   local staged_dir staged_users
   USER_MUTATION_BACKUP=""
@@ -1734,14 +1807,22 @@ cmd_user_enable() {
     rm -rf --one-file-system -- "$staged_dir"
     die "failed to enable user ${tag}."
   fi
+  if (( as_json )); then
+    user_mutation_apply "$staged_users" >/dev/null
+    emit_user_enabled_json "$tag" true
+    return
+  fi
   user_mutation_apply "$staged_users"
   printf 'User %s enabled.\n' "$tag"
 }
 
 cmd_user_rotate() {
   local tag=$1
+  shift
+  local as_json=0
+  parse_user_optional_json rotate "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
-  local node_id uuid staged_dir staged_users
+  local node_id uuid staged_dir staged_users credential_id vless_uri
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
@@ -1754,6 +1835,13 @@ cmd_user_rotate() {
     rm -rf --one-file-system -- "$staged_dir"
     die "failed to rotate user ${tag}."
   fi
+  if (( as_json )); then
+    user_mutation_apply "$staged_users" >/dev/null
+    credential_id=$(users_registry_field "$USERS_FILE" "$tag" active_credential_id)
+    vless_uri=$(cmd_user_link "$tag")
+    emit_user_rotate_json "$tag" "$credential_id" "$vless_uri"
+    return
+  fi
   user_mutation_apply "$staged_users"
   printf 'User %s credential rotated.\n' "$tag"
   printf '\nVLESS URI:\n'
@@ -1761,13 +1849,26 @@ cmd_user_rotate() {
 }
 
 cmd_user_list() {
-  users_registry_list "$USERS_FILE"
+  local as_json=0
+  parse_user_optional_json list "$@" && as_json=1
+  if (( as_json )); then
+    users_registry_list_json "$USERS_FILE"
+  else
+    users_registry_list "$USERS_FILE"
+  fi
 }
 
 cmd_user_show() {
   local tag=$1
+  shift
+  local as_json=0
+  parse_user_optional_json show "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
-  users_registry_show_human "$USERS_FILE" "$tag"
+  if (( as_json )); then
+    users_registry_show_json "$USERS_FILE" "$tag"
+  else
+    users_registry_show_human "$USERS_FILE" "$tag"
+  fi
 }
 
 cmd_user_link() {
@@ -1930,24 +2031,24 @@ cmd_user() {
       cmd_user_remove
       ;;
     disable)
-      [[ $# == 1 ]] || die "usage: vcl user disable <tag>"
-      cmd_user_disable "$1"
+      [[ $# -ge 1 ]] || die "usage: vcl user disable <tag> [--json]"
+      cmd_user_disable "$@"
       ;;
     enable)
-      [[ $# == 1 ]] || die "usage: vcl user enable <tag>"
-      cmd_user_enable "$1"
+      [[ $# -ge 1 ]] || die "usage: vcl user enable <tag> [--json]"
+      cmd_user_enable "$@"
       ;;
     rotate)
-      [[ $# == 1 ]] || die "usage: vcl user rotate <tag>"
-      cmd_user_rotate "$1"
+      [[ $# -ge 1 ]] || die "usage: vcl user rotate <tag> [--json]"
+      cmd_user_rotate "$@"
       ;;
     list)
-      [[ $# == 0 ]] || die "user list takes no arguments."
-      cmd_user_list
+      [[ $# -le 1 ]] || die "usage: vcl user list [--json]"
+      cmd_user_list "$@"
       ;;
     show)
-      [[ $# == 1 ]] || die "usage: vcl user show <tag>"
-      cmd_user_show "$1"
+      [[ $# -ge 1 ]] || die "usage: vcl user show <tag> [--json]"
+      cmd_user_show "$@"
       ;;
     link)
       [[ $# == 1 ]] || die "usage: vcl user link <tag>"

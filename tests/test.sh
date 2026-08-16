@@ -2506,10 +2506,10 @@ JSON
   fi
 
   list_out=$(users_registry_list "${PROV_DIR}/users.json")
-  if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" != *"ACTIVE_UUID"* ]]; then
-    pass "users_registry_list uses human STATUS format without UUID"
+  if [[ "$list_out" == *"TAG"* && "$list_out" == *"STATUS"* && "$list_out" == *"USER_ID"* && "$list_out" == *"33333333-3333-4333-8333-333333333333"* && "$list_out" != *"bbbbbbbb-bbbb"* ]]; then
+    pass "users_registry_list human includes user_id without vless uuid"
   else
-    fail "users_registry_list uses human STATUS format without UUID"
+    fail "users_registry_list human includes user_id without vless uuid"
   fi
   show_out=$(users_registry_show_human "${PROV_DIR}/users.json" alice)
   if [[ "$show_out" == *"Display name:"* && "$show_out" == *"Alice Chen"* && "$show_out" != *"bbbbbbbb-bbbb"* ]]; then
@@ -2526,6 +2526,72 @@ JSON
     pass "users_registry_show_human lists credential_id"
   else
     fail "users_registry_show_human lists credential_id"
+  fi
+
+  users_registry_list_json "${PROV_DIR}/users.json" > "${PROV_DIR}/list.json"
+  users_registry_show_json "${PROV_DIR}/users.json" alice > "${PROV_DIR}/show.json"
+  if python3 - "${PROV_DIR}/list.json" "${PROV_DIR}/show.json" <<'PY'
+import json, sys
+list_path, show_path = sys.argv[1], sys.argv[2]
+list_doc = json.load(open(list_path, encoding="utf-8"))
+show_doc = json.load(open(show_path, encoding="utf-8"))
+assert list_doc.get("schema_version") == 1, list_doc
+assert "users" in list_doc, list_doc
+raw_list = json.dumps(list_doc)
+assert "bbbbbbbb-bbbb" not in raw_list, "list JSON leaked VLESS uuid"
+alice = next(u for u in list_doc["users"] if u["tag"] == "alice")
+assert alice["user_id"] == "33333333-3333-4333-8333-333333333333", alice
+assert alice["display_name"] == "Alice Chen", alice
+assert alice["department"] == "Engineering", alice
+assert alice["enabled"] is True, alice
+assert alice["active_credential_id"] == "44444444-4444-4444-8444-444444444444", alice
+assert alice["credentials"] == {"count": 1, "active": 1, "revoked": 0}, alice
+assert "uuid" not in alice and "vless_uri" not in alice, alice
+assert show_doc.get("schema_version") == 1, show_doc
+assert show_doc["user_id"] == "33333333-3333-4333-8333-333333333333", show_doc
+assert show_doc["tag"] == "alice", show_doc
+assert show_doc["enabled"] is True, show_doc
+raw_show = json.dumps(show_doc)
+assert "bbbbbbbb-bbbb" not in raw_show, "show JSON leaked VLESS uuid"
+for cred in show_doc["credentials"]:
+    assert "uuid" not in cred, cred
+    assert list(cred) == ["credential_id", "node_id", "status", "created_at", "revoked_at"], cred
+    assert cred["credential_id"] == "44444444-4444-4444-8444-444444444444", cred
+    assert cred["status"] == "active", cred
+    assert cred["revoked_at"] is None, cred
+PY
+  then
+    pass "user list/show JSON schema_version 1 includes user_id without vless uuid"
+  else
+    fail "user list/show JSON schema_version 1 includes user_id without vless uuid"
+  fi
+
+  cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-rot.json"
+  assert_success "rotate alice for credential summary JSON" \
+    users_registry_mutate "${PROV_DIR}/users-rot.json" rotate alice \
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc" "$NODE_ID"
+  users_registry_list_json "${PROV_DIR}/users-rot.json" > "${PROV_DIR}/list-rot.json"
+  users_registry_show_json "${PROV_DIR}/users-rot.json" alice > "${PROV_DIR}/show-rot.json"
+  if python3 - "${PROV_DIR}/list-rot.json" "${PROV_DIR}/show-rot.json" <<'PY'
+import json, sys
+list_doc = json.load(open(sys.argv[1], encoding="utf-8"))
+show_doc = json.load(open(sys.argv[2], encoding="utf-8"))
+alice = next(u for u in list_doc["users"] if u["tag"] == "alice")
+assert alice["user_id"] == "33333333-3333-4333-8333-333333333333", alice
+assert alice["credentials"] == {"count": 2, "active": 1, "revoked": 1}, alice
+assert alice["active_credential_id"] != "44444444-4444-4444-8444-444444444444", alice
+assert "cccccccc-cccc" not in json.dumps(list_doc)
+assert "bbbbbbbb-bbbb" not in json.dumps(list_doc)
+assert "bbbbbbbb-bbbb" not in json.dumps(show_doc)
+assert "cccccccc-cccc" not in json.dumps(show_doc)
+statuses = [c["status"] for c in show_doc["credentials"]]
+assert statuses.count("revoked") == 1 and statuses.count("active") == 1, statuses
+assert all("uuid" not in c for c in show_doc["credentials"])
+PY
+  then
+    pass "list/show JSON credential summary after rotate has no vless uuid"
+  else
+    fail "list/show JSON credential summary after rotate has no vless uuid"
   fi
 
   cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-dup-uid.json"
@@ -2695,6 +2761,40 @@ PY
   else
     fail "cmd_user_add parses --user-id"
   fi
+  user_src=$(awk '/^cmd_user\(\)/,/^cmd_accounting\(\)/' "${PROJECT_DIR}/bin/vincula")
+  if printf '%s\n' "$user_src" | grep -A6 '^    list)' | grep -q -- '--json'; then
+    pass "user list dispatch accepts --json"
+  else
+    fail "user list dispatch accepts --json"
+  fi
+  if printf '%s\n' "$user_src" | grep -A6 '^    show)' | grep -q -- '--json'; then
+    pass "user show dispatch accepts --json"
+  else
+    fail "user show dispatch accepts --json"
+  fi
+  if printf '%s\n' "$user_src" | grep -A6 '^    rotate)' | grep -q -- '--json'; then
+    pass "user rotate dispatch accepts --json"
+  else
+    fail "user rotate dispatch accepts --json"
+  fi
+  if printf '%s\n' "$user_src" | grep -A6 '^    enable)' | grep -q -- '--json'; then
+    pass "user enable dispatch accepts --json"
+  else
+    fail "user enable dispatch accepts --json"
+  fi
+  if printf '%s\n' "$user_src" | grep -A6 '^    disable)' | grep -q -- '--json'; then
+    pass "user disable dispatch accepts --json"
+  else
+    fail "user disable dispatch accepts --json"
+  fi
+  assert_success "helper documents user list --json" \
+    grep -q 'vcl user list \[--json\]' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user show --json" \
+    grep -q 'vcl user show <tag> \[--json\]' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper documents user rotate --json" \
+    grep -q 'vcl user rotate <tag> \[--json\]' "${PROJECT_DIR}/bin/vincula"
+  assert_success "helper notes user commands accept --json" \
+    grep -q 'user add/list/show/rotate/enable/disable accept --json' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper warns on user mutation restart" \
     grep -q 'applying user changes restarts sing-box' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper documents metadata-only user set skips restart" \
@@ -2705,6 +2805,10 @@ PY
     grep -q 'cmp -s -- "$staged_uri" "$URI_FILE"' "${PROJECT_DIR}/bin/vincula"
   assert_success "README says metadata-only user set does not restart" \
     grep -q '仅改 metadata 的 `user set` 不重启' "${PROJECT_DIR}/README.md"
+  assert_success "README documents user list --json" \
+    grep -q 'vcl user list --json' "${PROJECT_DIR}/README.md"
+  assert_success "README documents user rotate --json" \
+    grep -q 'vcl user rotate alice --json' "${PROJECT_DIR}/README.md"
   assert_success "RC CLI coverage keeps pre-add remove cleanup" \
     grep -q 'vcl user remove bob 2>/dev/null || true' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
   assert_success "RC CLI coverage expects user remove exit 2" \

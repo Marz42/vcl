@@ -689,6 +689,42 @@ users_registry_show() {
   users_registry_show_human "$users_file" "$tag"
 }
 
+users_registry_show_json() {
+  local users_file=$1 tag=$2
+  require_python3 || return 1
+  python3 - "$users_file" "$tag" <<'PY'
+import json, sys
+
+path, tag = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+for user in data.get("users", []):
+    if user.get("tag") != tag:
+        continue
+    credentials = []
+    for cred in user.get("credentials") or []:
+        credentials.append({
+            "credential_id": cred.get("credential_id") or "",
+            "node_id": cred.get("node_id") or "",
+            "status": cred.get("status") or "",
+            "created_at": cred.get("created_at") or "",
+            "revoked_at": cred.get("revoked_at"),
+        })
+    print(json.dumps({
+        "schema_version": 1,
+        "tag": user.get("tag") or "",
+        "display_name": user.get("display_name") or user.get("tag") or "",
+        "department": user.get("department") or "",
+        "user_id": user.get("user_id") or "",
+        "enabled": bool(user.get("enabled")),
+        "created_at": user.get("created_at") or "",
+        "credentials": credentials,
+    }, ensure_ascii=False, indent=2))
+    raise SystemExit(0)
+raise SystemExit(f"user not found: {tag}")
+PY
+}
+
 users_registry_show_human() {
   local users_file=$1 tag=$2
   require_python3 || return 1
@@ -730,13 +766,50 @@ import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
-print(f"{'TAG':<10} {'NAME':<14} {'DEPARTMENT':<16} STATUS")
+print(f"{'TAG':<10} {'NAME':<14} {'DEPARTMENT':<16} {'STATUS':<10} USER_ID")
 for user in data.get("users", []):
     tag = user.get("tag") or ""
     name = user.get("display_name") or tag
     dept = user.get("department") or "-"
     status = "active" if user.get("enabled") else "disabled"
-    print(f"{tag:<10} {name:<14} {dept:<16} {status}")
+    user_id = user.get("user_id") or "-"
+    print(f"{tag:<10} {name:<14} {dept:<16} {status:<10} {user_id}")
+PY
+}
+
+users_registry_list_json() {
+  local users_file=$1
+  require_python3 || return 1
+  python3 - "$users_file" <<'PY'
+import json, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+
+def active_credential_id(user):
+    for cred in user.get("credentials") or []:
+        if cred.get("status") == "active" and cred.get("credential_id"):
+            return cred["credential_id"]
+    return None
+
+users_out = []
+for user in data.get("users", []):
+    creds = user.get("credentials") or []
+    users_out.append({
+        "tag": user.get("tag") or "",
+        "display_name": user.get("display_name") or user.get("tag") or "",
+        "department": user.get("department") or "",
+        "user_id": user.get("user_id") or "",
+        "enabled": bool(user.get("enabled")),
+        "active_credential_id": active_credential_id(user),
+        "credentials": {
+            "count": len(creds),
+            "active": sum(1 for c in creds if c.get("status") == "active"),
+            "revoked": sum(1 for c in creds if c.get("status") == "revoked"),
+        },
+    })
+print(json.dumps({"schema_version": 1, "users": users_out}, ensure_ascii=False, indent=2))
 PY
 }
 

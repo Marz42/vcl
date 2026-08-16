@@ -133,17 +133,22 @@ vcl link          # owner VLESS URI
 vcl version
 ```
 
-### 用户（0.2.5+）
+### 用户（0.2.5+；`--json` 为 0.2.9-dev）
 
 ```bash
 vcl user add alice --display-name "Alice" --department Sales
+vcl user add alice --user-id UUID --json   # advanced/controller：注入 fleet-global user_id
 vcl user set alice --display-name "Alice Chen" --department Eng
 vcl user list
+vcl user list --json
 vcl user show alice
+vcl user show alice --json
 vcl user link alice
 vcl user disable alice
-vcl user enable alice
+vcl user disable alice --json
+vcl user enable alice --json
 vcl user rotate alice
+vcl user rotate alice --json
 
 vcl user import staff.csv --dry-run
 vcl user import staff.csv --output credentials.csv   # 0600，含 URI
@@ -156,6 +161,8 @@ vcl user verify
 `user remove` / purge / delete **不支持**（请用 `disable`）。
 
 仅会影响代理配置的用户变更才会 **restart sing-box**（连接可能短暂中断）；仅改 metadata 的 `user set` 不重启。
+
+`--json`（CLI 合同 `schema_version` 1，不是 `users.json` schema）给控制器用：`list`/`show` **不含** VLESS uuid；`add`/`rotate` 的 URI 已含 uuid。`users.json` schema **仍为 2**。详见 [`docs/identity.md`](docs/identity.md)。
 
 ### 流量（0.2.6+，UTC，approximate）
 
