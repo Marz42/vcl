@@ -420,6 +420,7 @@ argv_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" <<'PY' || argv_rc=$?
 import importlib.util
 import os
+import shlex
 import sys
 
 path, fake = sys.argv[1], sys.argv[2]
@@ -440,7 +441,9 @@ assert "BatchMode=yes" in argv
 assert "IdentitiesOnly=no" in argv
 assert "root@203.0.113.10" in argv
 assert "--" in argv
-assert argv[argv.index("--") + 1 :] == ["vcl", "identity", "--json"]
+after = argv[argv.index("--") + 1 :]
+assert after == [shlex.join(["vcl", "identity", "--json"])], after
+assert shlex.split(after[0]) == ["vcl", "identity", "--json"]
 assert "StrictHostKeyChecking=no" not in argv
 assert "UserKnownHostsFile=/dev/null" not in " ".join(argv)
 assert not any(arg.startswith("UserKnownHostsFile=") for arg in argv)
@@ -499,6 +502,202 @@ if (( argv_rc == 0 )); then
 else
   fail "ssh_argv/ssh_run use injectable ssh without host-key weakening"
 fi
+
+# P1-01: remote command is one shlex-quoted string; metadata/SSH target validation.
+p101_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" "${TEST_TMP}" <<'PY' || p101_rc=$?
+import importlib.util
+import io
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+path, fake, tmp = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+os.environ["VCL_FLEET_SSH"] = fake
+state = tmp / "p101-fake-state"
+state.mkdir(parents=True, exist_ok=True)
+os.environ["VCL_FAKE_STATE_DIR"] = str(state)
+log_path = tmp / "p101-ssh-argv.jsonl"
+if log_path.exists():
+    log_path.unlink()
+os.environ["VCL_FAKE_SSH_ARGV_LOG"] = str(log_path)
+
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+def last_log():
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert lines, "fake-ssh wrote no argv log"
+    return json.loads(lines[-1])
+
+def expect_die(fn, needle):
+    buf = io.StringIO()
+    old = sys.stderr
+    sys.stderr = buf
+    raised = False
+    try:
+        fn()
+    except SystemExit:
+        raised = True
+    finally:
+        sys.stderr = old
+    err = buf.getvalue()
+    assert raised, needle
+    assert needle in err, (needle, err)
+    return err
+
+# One remote string; spaces stay one argv after POSIX split.
+spaced = ["vcl", "user", "add", "spaced", "--display-name", "Alice Smith", "--json"]
+joined = shlex.join(spaced)
+argv = mod.ssh_argv("203.0.113.10", "root", 22, spaced, batch=True)
+after = argv[argv.index("--") + 1 :]
+assert after == [joined], after
+assert shlex.split(after[0]) == spaced
+assert "Alice Smith" in after[0]
+assert "Alice Smith" in shlex.split(after[0])
+assert "Alice" not in shlex.split(after[0])
+
+proc = mod.ssh_run("203.0.113.10", "root", 22, spaced, batch=True)
+assert proc.returncode == 0, proc.stderr
+logged = last_log()
+assert logged["raw_remote"] == [joined], logged["raw_remote"]
+assert logged["argv"] == spaced, logged["argv"]
+assert logged["argv"].count("Alice Smith") == 1
+assert "Smith" not in logged["argv"] or logged["argv"][logged["argv"].index("Alice Smith")] == "Alice Smith"
+
+# Semicolon / backticks / $() must be quoted so they stay one arg (no injection).
+for payload in ("Alice; id", "Alice`id`", "Alice$(id)", "'; id'"):
+    cmd = ["vcl", "user", "add", "evil", "--display-name", payload, "--json"]
+    argv = mod.ssh_argv("203.0.113.10", "root", 22, cmd, batch=True)
+    after = argv[argv.index("--") + 1 :]
+    assert len(after) == 1, after
+    assert after[0] == shlex.join(cmd)
+    recovered = shlex.split(after[0])
+    assert recovered == cmd, (payload, recovered)
+    assert recovered[recovered.index("--display-name") + 1] == payload
+    assert recovered.count("id") == 0  # `id` never a separate argv token
+
+# Explicit: '; id' is one display_name, not a second command.
+semi = ["vcl", "user", "add", "semi", "--user-id",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "--display-name", "Alice; id", "--json"]
+if log_path.exists():
+    log_path.unlink()
+proc = mod.ssh_run("203.0.113.10", "root", 22, semi, batch=True)
+assert proc.returncode == 0, proc.stderr
+logged = last_log()
+assert logged["argv"] == semi, logged["argv"]
+assert logged["argv"][logged["argv"].index("--display-name") + 1] == "Alice; id"
+assert logged["argv"][-1] == "--json"
+assert "id" not in logged["argv"]  # would be present if '; id' split into a command
+
+# Backticks via fake-ssh exact argv.
+tick = ["vcl", "user", "add", "tick", "--user-id",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "--display-name", "Alice`id`", "--json"]
+if log_path.exists():
+    log_path.unlink()
+proc = mod.ssh_run("203.0.113.10", "root", 22, tick, batch=True)
+assert proc.returncode == 0, proc.stderr
+logged = last_log()
+assert logged["argv"] == tick, logged["argv"]
+assert logged["argv"][logged["argv"].index("--display-name") + 1] == "Alice`id`"
+
+# Empty display_name is valid metadata (omitted from remote argv by caller).
+assert mod.validate_display_name("") == ""
+assert mod.validate_department("") == ""
+assert mod.validate_display_name(None) is None
+
+# Newline / other ASCII controls rejected at the source (no spawn).
+marker = tmp / "p101-spawned"
+wrapper = tmp / "p101-ssh-wrapper"
+wrapper.write_text(
+    "#!/bin/sh\nprintf spawned >\"%s\"\nexec \"%s\" \"$@\"\n" % (marker, fake),
+    encoding="utf-8",
+)
+wrapper.chmod(0o755)
+os.environ["VCL_FLEET_SSH"] = str(wrapper)
+if marker.exists():
+    marker.unlink()
+
+expect_die(lambda: mod.validate_display_name("Alice\nid"), "control characters")
+expect_die(lambda: mod.validate_department("Eng\n"), "control characters")
+expect_die(lambda: mod.validate_display_name("Alice\tid"), "control characters")
+expect_die(
+    lambda: mod.validate_display_name("A" * (mod.USER_METADATA_MAX + 1)),
+    "exceeds",
+)
+
+expect_die(
+    lambda: mod.parse_ssh_target("203.0.113.10;id"),
+    "invalid ssh_host",
+)
+expect_die(
+    lambda: mod.parse_ssh_target("203.0.113.10\nid"),
+    "whitespace or control",
+)
+expect_die(
+    lambda: mod.parse_ssh_target("203.0.113.10", user="root;id"),
+    "invalid ssh_user",
+)
+expect_die(
+    lambda: mod.parse_ssh_target("203.0.113.10", user="root\nid"),
+    "whitespace or control",
+)
+expect_die(
+    lambda: mod.ssh_argv("203.0.113.10;id", "root", 22, ["vcl", "identity"], batch=True),
+    "invalid ssh_host",
+)
+expect_die(
+    lambda: mod.ssh_run("203.0.113.10;id", "root", 22, ["vcl", "identity", "--json"]),
+    "invalid ssh_host",
+)
+assert not marker.exists(), "ssh must not spawn on invalid host"
+
+expect_die(
+    lambda: mod.ssh_run("203.0.113.10", "root;id", 22, ["vcl", "identity", "--json"]),
+    "invalid ssh_user",
+)
+assert not marker.exists(), "ssh must not spawn on invalid user"
+
+# Newline in a remote argv element is quoted (not executed) if it bypasses
+# metadata validation; controller metadata path rejects it first.
+nl_cmd = ["vcl", "user", "add", "nl", "--display-name", "Alice\nid", "--json"]
+expect_die(lambda: mod.provision_user_on_node(
+    {"ssh_host": "203.0.113.10", "ssh_user": "root", "ssh_port": 22, "name": "lax", "node_id": "x"},
+    tag="nl",
+    user_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    display_name="Alice\nid",
+), "control characters")
+assert not marker.exists()
+
+# Legal hosts: IPv4, DNS, IPv6.
+assert mod.validate_ssh_host("203.0.113.10") == "203.0.113.10"
+assert mod.validate_ssh_host("lax.test") == "lax.test"
+assert mod.validate_ssh_host("2001:db8::1") == "2001:db8::1"
+host, user, port = mod.parse_ssh_target("[2001:db8::1]", "ubuntu")
+assert (host, user, port) == ("2001:db8::1", "ubuntu", 22)
+
+# Overlong remote command.
+huge = ["vcl", "x" * (mod.SSH_REMOTE_CMD_MAX_BYTES + 1)]
+expect_die(lambda: mod.ssh_argv("203.0.113.10", "root", 22, huge, batch=True), "exceeds")
+assert not marker.exists()
+PY
+if (( p101_rc == 0 )); then
+  pass "P1-01 ssh_argv quotes remote argv; injection payloads stay one arg"
+  pass "P1-01 fake-ssh records exact quoted argv (spaces/;/backticks)"
+  pass "P1-01 invalid ssh_user/ssh_host die without spawning ssh"
+  pass "P1-01 display_name newline/control chars rejected"
+else
+  fail "P1-01 ssh_argv quotes remote argv; injection payloads stay one arg"
+  fail "P1-01 fake-ssh records exact quoted argv (spaces/;/backticks)"
+  fail "P1-01 invalid ssh_user/ssh_host die without spawning ssh"
+  fail "P1-01 display_name newline/control chars rejected"
+fi
+
+assert_success "fleet.py uses shlex.join for remote SSH commands" \
+  grep -q 'shlex.join' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 assert_failure "fleet.py never sets StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/lib/vincula-fleet.py"
@@ -627,6 +826,7 @@ assert "BatchMode=yes" in argv
 assert "StrictHostKeyChecking=yes" in argv
 assert "StrictHostKeyChecking=no" not in argv
 assert "UserKnownHostsFile=/dev/null" not in " ".join(argv)
+assert argv[argv.index("--") + 1 :] == [__import__("shlex").join(["vcl", "identity", "--json"])]
 
 mismatch = False
 buf = io.StringIO()
@@ -1682,6 +1882,59 @@ ALICE_FLEET_UID=$(cat "${VCL_FAKE_STATE_DIR}/alice_user_id.txt")
 ALICE_LAX_CRED=$(cat "${VCL_FAKE_STATE_DIR}/alice_lax_cred.txt")
 ALICE_TOKYO_CRED=$(cat "${VCL_FAKE_STATE_DIR}/alice_tokyo_cred.txt")
 
+P101_ARGV_LOG="${TEST_TMP}/p101-user-add-argv.jsonl"
+rm -f "$P101_ARGV_LOG"
+export VCL_FAKE_SSH_ARGV_LOG="$P101_ARGV_LOG"
+spaced_add_rc=0
+spaced_add_err=$(fleet user add alice.smith --node lax --display-name "Alice Smith" --department "R&D" 2>&1) || spaced_add_rc=$?
+unset VCL_FAKE_SSH_ARGV_LOG
+if (( spaced_add_rc == 0 )); then
+  pass "P1-01 user add display_name with spaces exits 0"
+else
+  fail "P1-01 user add display_name with spaces exits 0 (rc=${spaced_add_rc} err=${spaced_add_err})"
+fi
+spaced_meta_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$P101_ARGV_LOG" <<'PY' || spaced_meta_rc=$?
+import json, sys
+from pathlib import Path
+state, log_path = Path(sys.argv[1]), Path(sys.argv[2])
+lax = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+user = next(u for u in lax["users"] if u["tag"] == "alice.smith")
+assert user["display_name"] == "Alice Smith", user
+assert user["department"] == "R&D", user
+records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line]
+adds = [r for r in records if r["argv"][:4] == ["vcl", "user", "add", "alice.smith"]]
+assert adds, records
+last = adds[-1]
+assert len(last["raw_remote"]) == 1, last["raw_remote"]
+assert last["argv"][last["argv"].index("--display-name") + 1] == "Alice Smith"
+assert last["argv"][last["argv"].index("--department") + 1] == "R&D"
+assert "Smith" not in last["argv"]
+assert "R&D" in last["argv"]
+PY
+if (( spaced_meta_rc == 0 )); then
+  pass "P1-01 Alice Smith stays one remote argv; stored display_name intact"
+else
+  fail "P1-01 Alice Smith stays one remote argv; stored display_name intact"
+fi
+
+nl_add_rc=0
+nl_add_err=$(fleet user add bad.nl --node lax --display-name $'Alice\nid' 2>&1) || nl_add_rc=$?
+if (( nl_add_rc != 0 )) && [[ "$nl_add_err" == *"control characters"* ]]; then
+  pass "P1-01 user add rejects display_name with newline"
+else
+  fail "P1-01 user add rejects display_name with newline (rc=${nl_add_rc} err=${nl_add_err})"
+fi
+
+evil_host_rc=0
+evil_host_err=$(fleet node add p101evil --host '203.0.113.10;id' --offline \
+  --node-id 44444444-4444-4444-8444-444444444444 2>&1) || evil_host_rc=$?
+if (( evil_host_rc != 0 )) && [[ "$evil_host_err" == *"invalid ssh_host"* ]]; then
+  pass "P1-01 node add rejects ssh_host with semicolon"
+else
+  fail "P1-01 node add rejects ssh_host with semicolon (rc=${evil_host_rc} err=${evil_host_err})"
+fi
+
 add_json_rc=0
 add_json_out=$(fleet user add alice --nodes lax,tokyo --user-id "$ALICE_FLEET_UID" --json) || add_json_rc=$?
 if python3 - "$add_json_out" "$add_json_rc" "$ALICE_FLEET_UID" <<'PY'
@@ -1888,6 +2141,33 @@ cat > "${TEST_TMP}/import-charlie.csv" <<'CSV'
 tag,display_name,department,nodes
 charlie,Charlie,Engineering,"lax,tokyo"
 CSV
+
+cat > "${TEST_TMP}/import-alice-smith.csv" <<'CSV'
+tag,display_name,department,nodes
+alice.smith,Alice Smith,R&D,lax
+CSV
+
+cat > "${TEST_TMP}/import-newline.csv" <<CSV
+tag,display_name,department,nodes
+bad.nl,"Alice
+id",Eng,lax
+CSV
+
+nl_imp_rc=0
+nl_imp_err=$(fleet user import "${TEST_TMP}/import-newline.csv" --dry-run 2>&1) || nl_imp_rc=$?
+if (( nl_imp_rc != 0 )) && [[ "$nl_imp_err" == *"control characters"* ]]; then
+  pass "P1-01 user import rejects display_name with newline"
+else
+  fail "P1-01 user import rejects display_name with newline (rc=${nl_imp_rc} err=${nl_imp_err})"
+fi
+
+smith_dry_rc=0
+smith_dry_out=$(fleet user import "${TEST_TMP}/import-alice-smith.csv" --dry-run) || smith_dry_rc=$?
+if (( smith_dry_rc == 0 )) && [[ "$smith_dry_out" == *"Alice Smith"* ]]; then
+  pass "P1-01 user import dry-run accepts display_name with spaces"
+else
+  fail "P1-01 user import dry-run accepts display_name with spaces (rc=${smith_dry_rc} out=${smith_dry_out})"
+fi
 
 dry_rc=0
 dry_out=$(fleet user import "${TEST_TMP}/import-charlie.csv" --dry-run) || dry_rc=$?

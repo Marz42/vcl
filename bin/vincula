@@ -1601,6 +1601,8 @@ PY
 
   is_valid_user_tag "$tag" || emit_user_add_error invalid_tag "invalid user tag: ${tag}."
   [[ -n "$display_name" ]] || display_name=$tag
+  is_valid_user_metadata "$display_name" || emit_user_add_error invalid_display_name "invalid display_name."
+  is_valid_user_metadata "$department" || emit_user_add_error invalid_department "invalid department."
   local node_id uuid staged_dir staged_users credential_id vless_uri mutate_err mutate_rc
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
@@ -1624,6 +1626,12 @@ PY
         ;;
       *user\ tag\ already\ exists*)
         emit_user_add_error duplicate_tag "user tag already exists: ${tag}."
+        ;;
+      *invalid\ display_name*)
+        emit_user_add_error invalid_display_name "invalid display_name."
+        ;;
+      *invalid\ department*)
+        emit_user_add_error invalid_department "invalid department."
         ;;
       *)
         emit_user_add_error failed "failed to add user ${tag}."
@@ -1693,6 +1701,8 @@ cmd_user_set() {
   cur_dept=$(users_registry_field "$USERS_FILE" "$tag" department)
   (( set_display )) || display_name=$cur_display
   (( set_department )) || department=$cur_dept
+  is_valid_user_metadata "$display_name" || die "invalid display_name."
+  is_valid_user_metadata "$department" || die "invalid department."
 
   USER_MUTATION_BACKUP=""
   backup_user_mutation

@@ -2,10 +2,10 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64, datetime, csv, uuid, sqlite3, importlib. OpenSSH via the
-system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH), ssh-keyscan
-(VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no paramiko, no
-cryptography package. No root, no systemd, no /etc/vincula.
+hashlib, base64, datetime, csv, uuid, sqlite3, importlib, shlex, ipaddress.
+OpenSSH via the system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH),
+ssh-keyscan (VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no
+paramiko, no cryptography package. No root, no systemd, no /etc/vincula.
 
 User-local fleet.json is the node registry. SSH passwords are never
 stored. Targets Python 3.10+.
@@ -20,9 +20,11 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -136,6 +138,15 @@ UUID_RE = re.compile(
 )
 # Same contract as is_valid_user_tag: lowercase alnum / . _ - ; max 32.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+# OpenSSH-safe POSIX username: starts with [a-z_], then [a-z0-9_-]; max 32.
+SSH_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+SSH_USER_MAX = 32
+SSH_HOST_MAX = 253
+SSH_REMOTE_CMD_MAX_BYTES = 8192
+USER_METADATA_MAX = 128
+_HOSTNAME_LABEL_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
 FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
 NODE_KEYS = (
     "node_id",
@@ -906,14 +917,33 @@ def ssh_argv(
     batch: bool,
     extra: list[str] | None = None,
 ) -> list[str]:
-    """Build an OpenSSH argv. Never weakens host-key checking."""
+    """Build an OpenSSH argv. Never weakens host-key checking.
+
+    OpenSSH concatenates operands after the destination into one string
+    for the remote login shell. Passing a single ``shlex.join`` string
+    preserves argv boundaries (spaces, quotes, metacharacters). The
+    remote shell is POSIX even when the local client is Windows OpenSSH.
+    """
+    validate_ssh_user(user)
+    validate_ssh_host(host)
+    if not isinstance(remote_cmd, (list, tuple)) or not remote_cmd:
+        die("remote command must be a non-empty argv list")
+    parts: list[str] = []
+    for part in remote_cmd:
+        if not isinstance(part, str):
+            die("remote command argv must be strings")
+        if "\x00" in part:
+            die("remote command argv must not contain NUL")
+        parts.append(part)
+    remote = shlex.join(parts)
+    if len(remote.encode("utf-8")) > SSH_REMOTE_CMD_MAX_BYTES:
+        die(f"remote command exceeds {SSH_REMOTE_CMD_MAX_BYTES} bytes")
     argv = [ssh_bin(), "-p", str(port)]
     if extra:
         argv.extend(extra)
     if batch:
         argv.extend(["-o", "BatchMode=yes"])
-    argv.extend(["-o", "IdentitiesOnly=no", f"{user}@{host}", "--"])
-    argv.extend(list(remote_cmd))
+    argv.extend(["-o", "IdentitiesOnly=no", f"{user}@{host}", "--", remote])
     _reject_forbidden_ssh_options(argv)
     return argv
 
@@ -1226,6 +1256,75 @@ def _is_forbidden_key(key: str) -> bool:
     return lowered in FORBIDDEN_NODE_KEYS or lowered.endswith("password")
 
 
+def _has_ascii_control(value: str) -> bool:
+    return any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def validate_ssh_user(user: str) -> str:
+    """Reject control chars, whitespace, shell-unsafe, and overlong users."""
+    if not isinstance(user, str) or not user:
+        die("invalid ssh_user: empty")
+    if _has_ascii_control(user) or any(c.isspace() for c in user):
+        die("invalid ssh_user: whitespace or control characters")
+    if len(user) > SSH_USER_MAX or not SSH_USER_RE.fullmatch(user):
+        die(f"invalid ssh_user: {user}")
+    return user
+
+
+def _is_dns_hostname(host: str) -> bool:
+    name = host[:-1] if host.endswith(".") else host
+    if not name or len(host) > SSH_HOST_MAX:
+        return False
+    labels = name.split(".")
+    return bool(labels) and all(_HOSTNAME_LABEL_RE.fullmatch(label) for label in labels)
+
+
+def validate_ssh_host(host: str) -> str:
+    """Allow DNS / IPv4 / IPv6 only. No whitespace, controls, or shell metacharacters."""
+    if not isinstance(host, str) or not host:
+        die("invalid ssh_host: empty")
+    if _has_ascii_control(host) or any(c.isspace() for c in host):
+        die("invalid ssh_host: whitespace or control characters")
+    if len(host) > SSH_HOST_MAX:
+        die("invalid ssh_host: too long")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    if not _is_dns_hostname(host):
+        die(f"invalid ssh_host: {host}")
+    return host
+
+
+def _user_metadata_error(value: str, field: str) -> Optional[str]:
+    if not isinstance(value, str):
+        return f"invalid {field}: must be a string"
+    if _has_ascii_control(value):
+        return f"invalid {field}: control characters are not allowed"
+    if len(value) > USER_METADATA_MAX:
+        return f"invalid {field}: exceeds {USER_METADATA_MAX} characters"
+    return None
+
+
+def validate_display_name(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    err = _user_metadata_error(value, "display_name")
+    if err:
+        die(err)
+    return value
+
+
+def validate_department(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    err = _user_metadata_error(value, "department")
+    if err:
+        die(err)
+    return value
+
+
 def parse_ssh_target(
     host: str,
     user: Optional[str] = None,
@@ -1248,6 +1347,8 @@ def parse_ssh_target(
     ssh_port = 22 if port is None else port
     if not isinstance(ssh_port, int) or isinstance(ssh_port, bool) or not (1 <= ssh_port <= 65535):
         die(f"invalid ssh_port: {port}")
+    validate_ssh_user(ssh_user)
+    validate_ssh_host(raw)
     return raw, ssh_user, ssh_port
 
 
@@ -1293,6 +1394,8 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         die(f"invalid ssh_host: {ssh_host}")
     if not isinstance(ssh_user, str) or not ssh_user.strip():
         die(f"invalid ssh_user: {ssh_user}")
+    ssh_host = validate_ssh_host(ssh_host.strip())
+    ssh_user = validate_ssh_user(ssh_user.strip())
     if isinstance(ssh_port, bool) or not isinstance(ssh_port, int) or not (1 <= ssh_port <= 65535):
         die(f"invalid ssh_port: {ssh_port}")
     if not isinstance(enabled, bool):
@@ -1306,8 +1409,8 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
     return {
         "node_id": node_id,
         "name": name,
-        "ssh_host": ssh_host.strip(),
-        "ssh_user": ssh_user.strip(),
+        "ssh_host": ssh_host,
+        "ssh_user": ssh_user,
         "ssh_port": ssh_port,
         "enabled": enabled,
         "status": status,
@@ -3034,6 +3137,8 @@ def provision_user_on_node(
     department: Optional[str] = None,
 ) -> dict[str, Any]:
     """Idempotent per-node add (D16). Returns a SUCCESS/FAILED node row."""
+    display_name = validate_display_name(display_name)
+    department = validate_department(department)
     ssh_state, shown, show_detail = ssh_remote_json(
         node,
         ["vcl", "user", "show", tag, "--json"],
@@ -3089,6 +3194,8 @@ def provision_user_on_node(
 def cmd_user_add(args: argparse.Namespace) -> int:
     tag = args.tag
     validate_name(tag)
+    display_name = validate_display_name(getattr(args, "display_name", None))
+    department = validate_department(getattr(args, "department", None))
     user_id = (getattr(args, "user_id", None) or "").strip()
     if user_id:
         if not UUID_RE.fullmatch(user_id):
@@ -3115,8 +3222,8 @@ def cmd_user_add(args: argparse.Namespace) -> int:
                 node,
                 tag=tag,
                 user_id=user_id,
-                display_name=getattr(args, "display_name", None),
-                department=getattr(args, "department", None),
+                display_name=display_name,
+                department=department,
             )
         )
 
@@ -3513,6 +3620,15 @@ def validate_import_rows(
             errors.append(f"line {line}: duplicate tag {tag}")
         else:
             seen[tag] = line
+
+        display_err = _user_metadata_error(
+            str(row.get("display_name") or ""), "display_name"
+        )
+        if display_err:
+            errors.append(f"line {line}: {display_err}")
+        dept_err = _user_metadata_error(str(row.get("department") or ""), "department")
+        if dept_err:
+            errors.append(f"line {line}: {dept_err}")
 
         names, err = parse_nodes_cell(str(row.get("nodes_raw") or ""))
         if err:

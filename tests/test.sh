@@ -154,6 +154,14 @@ assert_failure "rejects uppercase tag" is_valid_user_tag Alice
 assert_failure "rejects tag starting with hyphen" is_valid_user_tag -alice
 assert_failure "rejects overlong tag" is_valid_user_tag a23456789012345678901234567890123
 
+assert_success "accepts display_name with spaces" is_valid_user_metadata "Alice Smith"
+assert_success "accepts unicode display_name" is_valid_user_metadata "王明"
+assert_success "accepts empty department" is_valid_user_metadata ""
+assert_failure "rejects display_name with newline" is_valid_user_metadata $'Alice\nid'
+assert_failure "rejects display_name with tab" is_valid_user_metadata $'Alice\tid'
+assert_failure "rejects overlong display_name" \
+  is_valid_user_metadata "$(python3 -c 'print("A"*129)')"
+
 assert_success "flags www.microsoft.com as known-bad for pinned sing-box" \
   is_known_bad_reality_host www.microsoft.com
 assert_success "known-bad REALITY host match is case-insensitive" \
@@ -2720,6 +2728,16 @@ JSON
   assert_success "users_registry_mutate set still works after remove deletion" \
     users_registry_mutate "${PROV_DIR}/users-o1.json" set bob "Bobby" qa
 
+  nl_mut_rc=0
+  nl_mut_err=$(users_registry_mutate "${PROV_DIR}/users-o1.json" set bob $'Bob\nid' qa 2>&1) || nl_mut_rc=$?
+  if (( nl_mut_rc != 0 )) && [[ "$nl_mut_err" == *"control characters"* ]]; then
+    pass "users_registry_mutate set rejects display_name with newline"
+  else
+    fail "users_registry_mutate set rejects display_name with newline (rc=${nl_mut_rc} err=${nl_mut_err})"
+  fi
+  assert_equal "rejected set leaves display_name unchanged" "Bobby" \
+    "$(users_registry_field "${PROV_DIR}/users-o1.json" bob display_name)"
+
   cp -a -- "${PROV_DIR}/users.json" "${PROV_DIR}/users-uid.json"
   assert_success "users_registry_mutate add carol with empty user_id" \
     users_registry_mutate "${PROV_DIR}/users-uid.json" add carol "Carol" eng \
@@ -2887,6 +2905,19 @@ bob.li,Bob Again,Eng
 CSV
   assert_failure "import dry-run rejects conflicts and invalid tags" \
     users_import_prepare "${PROV_DIR}/import-bad.csv" "${PROV_DIR}/users.json" "$NODE_ID" "" "" 0 1
+
+  cat > "${PROV_DIR}/import-ctrl.csv" <<CSV
+tag,display_name,department
+dave,"Dave
+id",ops
+CSV
+  ctrl_imp_rc=0
+  ctrl_imp_err=$(users_import_prepare "${PROV_DIR}/import-ctrl.csv" "${PROV_DIR}/users.json" "$NODE_ID" "" "" 0 1 2>&1) || ctrl_imp_rc=$?
+  if (( ctrl_imp_rc != 0 )) && [[ "$ctrl_imp_err" == *"control characters"* ]]; then
+    pass "import dry-run rejects display_name with newline"
+  else
+    fail "import dry-run rejects display_name with newline (rc=${ctrl_imp_rc} err=${ctrl_imp_err})"
+  fi
 
   assert_success "import prepare writes staged registry" \
     users_import_prepare "${PROV_DIR}/import-ok.csv" "${PROV_DIR}/users.json" "$NODE_ID" \

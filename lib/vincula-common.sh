@@ -202,6 +202,21 @@ is_valid_user_tag() {
   [[ "$tag" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]]
 }
 
+# Display names / departments: Unicode and spaces allowed; ASCII controls
+# (newline, tab, NUL-class, DEL) and overlong values rejected. Max 128.
+# Quotes/semicolons are allowed here; SSH quoting is the controller's job.
+USER_METADATA_MAX=128
+is_valid_user_metadata() {
+  local value=$1
+  if (( ${#value} > USER_METADATA_MAX )); then
+    return 1
+  fi
+  if [[ "$value" =~ [[:cntrl:]] ]]; then
+    return 1
+  fi
+  return 0
+}
+
 require_python3() {
   command -v python3 >/dev/null 2>&1 || {
     printf 'ERROR: python3 is required for users.json registry operations.\n' >&2
@@ -582,6 +597,15 @@ now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 USER_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+METADATA_MAX = 128
+
+def require_metadata(value, field):
+    text = value if isinstance(value, str) else ""
+    if any(ord(c) < 32 or ord(c) == 127 for c in text):
+        raise SystemExit(f"invalid {field}: control characters are not allowed")
+    if len(text) > METADATA_MAX:
+        raise SystemExit(f"invalid {field}: exceeds {METADATA_MAX} characters")
+    return text
 
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
@@ -606,6 +630,8 @@ if action == "add":
     if len(args) > 6:
         raise SystemExit("add: too many arguments")
     tag, display_name, department, vless_uuid, node_id = args[:5]
+    display_name = require_metadata(display_name, "display_name")
+    department = require_metadata(department, "department")
     explicit_user_id = args[5].strip() if len(args) > 5 else ""
     if find(tag):
         raise SystemExit(f"user tag already exists: {tag}")
@@ -670,6 +696,8 @@ elif action == "rotate":
     })
 elif action == "set":
     tag, display_name, department = args
+    display_name = require_metadata(display_name, "display_name")
+    department = require_metadata(department, "department")
     user = find(tag)
     if not user:
         raise SystemExit(f"user not found: {tag}")
@@ -1025,6 +1053,7 @@ from datetime import datetime, timezone
 include_uuid = include_uuid in ("1", "true", "yes", "on")
 dry_run = dry_run in ("1", "true", "yes", "on")
 TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+METADATA_MAX = 128
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 with open(users_file, encoding="utf-8") as f:
@@ -1059,6 +1088,14 @@ try:
                 continue
             if not TAG_RE.match(tag):
                 errors.append(f'line {i}: invalid tag "{tag}"')
+            if any(ord(c) < 32 or ord(c) == 127 for c in display_name):
+                errors.append(f"line {i}: invalid display_name: control characters are not allowed")
+            elif len(display_name) > METADATA_MAX:
+                errors.append(f"line {i}: invalid display_name: exceeds {METADATA_MAX} characters")
+            if any(ord(c) < 32 or ord(c) == 127 for c in department):
+                errors.append(f"line {i}: invalid department: control characters are not allowed")
+            elif len(department) > METADATA_MAX:
+                errors.append(f"line {i}: invalid department: exceeds {METADATA_MAX} characters")
             if tag in seen_in_file:
                 errors.append(f"line {i}: duplicate tag {tag}")
             else:

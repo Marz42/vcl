@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sqlite3
 import sys
 import time
@@ -110,6 +111,30 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
     if host.startswith("[") and host.endswith("]") and len(host) > 2:
         host = host[1:-1]
     return host, port, remote
+
+
+def _coerce_remote_argv(remote: list[str]) -> list[str]:
+    """Recover remote argv the way a POSIX login shell would.
+
+    Production ssh_argv (P1-01) sends one shlex.join'd string after --.
+    Direct fixture calls still pass a split argv list.
+    """
+    if len(remote) != 1:
+        return list(remote)
+    try:
+        return shlex.split(remote[0], posix=True)
+    except ValueError as exc:
+        sys.stderr.write(f"fake-ssh: invalid remote command quoting: {exc}\n")
+        raise SystemExit(255) from exc
+
+
+def _record_remote_argv(raw_remote: list[str], parsed: list[str]) -> None:
+    path = os.environ.get("VCL_FAKE_SSH_ARGV_LOG", "").strip()
+    if not path:
+        return
+    payload = {"raw_remote": raw_remote, "argv": parsed}
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def _remote_kind(remote: list[str]) -> tuple[str, list[str]]:
@@ -895,10 +920,16 @@ def main(argv: list[str] | None = None) -> int:
     if hang_s:
         time.sleep(float(hang_s))
 
-    host, port, remote = _parse_argv(argv)
+    host, port, raw_remote = _parse_argv(argv)
     if not host:
         sys.stderr.write("fake-ssh: missing destination host\n")
         return 255
+
+    try:
+        remote = _coerce_remote_argv(raw_remote)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 255
+    _record_remote_argv(raw_remote, remote)
 
     alias = HOST_ALIAS.get(host)
     if alias is None:
