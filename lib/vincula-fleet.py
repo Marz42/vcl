@@ -35,17 +35,36 @@ from typing import Any, Optional, Sequence
 VCL_FLEET_VERSION = "0.3.0-dev"
 FLEET_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_DB_SCHEMA_VERSION = 1
+FLEET_DB_SCHEMA_VERSION = 2
 NODE_STATUS_ACTIVE = "active"
 NODE_STATUS_DISABLED = "disabled"
 NODE_STATUS_RETIRED = "retired"
 NODE_STATUSES = (NODE_STATUS_ACTIVE, NODE_STATUS_DISABLED, NODE_STATUS_RETIRED)
+INSTANCE_STATUS_ACTIVE = "active"
+INSTANCE_STATUS_RETIRED = "retired"
+INSTANCE_STATUSES = (INSTANCE_STATUS_ACTIVE, INSTANCE_STATUS_RETIRED)
 RETIRE_SKIP_SYNC_ENV = "VCL_FLEET_RETIRE_SKIP_SYNC"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
 
-# Controller-local cache. Not the node source of truth. Plan §0.4.
+# Controller-local cache (audit/cursor) plus instance_history SoT.
+# fleet.json does not store instance_id. Plan §0.8.
+INSTANCE_HISTORY_DDL = """
+CREATE TABLE instance_history (
+  node_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  retired_at TEXT,
+  endpoint TEXT,
+  ssh_host TEXT,
+  status TEXT NOT NULL,
+  PRIMARY KEY (node_id, instance_id)
+);
+CREATE INDEX idx_instance_history_node
+  ON instance_history(node_id, started_at);
+"""
+
 FLEET_DB_DDL = """
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
@@ -98,7 +117,7 @@ CREATE TABLE daily_usage (
   connection_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (date, node_id, user_id, destination_host)
 );
-"""
+""" + INSTANCE_HISTORY_DDL
 
 INSERT_AUDIT_EVENT_SQL = """
 INSERT OR IGNORE INTO audit_events (
@@ -235,7 +254,7 @@ def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def open_fleet_db() -> sqlite3.Connection:
-    """Open ~/.config/vincula/fleet.db (or VCL_FLEET_HOME), creating schema 1."""
+    """Open ~/.config/vincula/fleet.db (or VCL_FLEET_HOME), creating schema 2."""
     _ensure_fleet_home()
     path = fleet_db_path()
     try:
@@ -256,7 +275,9 @@ def open_fleet_db() -> sqlite3.Connection:
             conn.commit()
         else:
             ver = fleet_db_meta_get(conn, "schema_version")
-            if ver != str(FLEET_DB_SCHEMA_VERSION):
+            if ver == "1":
+                _migrate_fleet_db_1_to_2(conn)
+            elif ver != str(FLEET_DB_SCHEMA_VERSION):
                 conn.close()
                 die(f"unsupported fleet.db schema_version: {ver}")
         _chmod_private(path, 0o600)
@@ -273,6 +294,176 @@ def open_fleet_db() -> sqlite3.Connection:
         except Exception:
             pass
         die(f"cannot initialize fleet.db: {exc}")
+
+
+def _migrate_fleet_db_1_to_2(conn: sqlite3.Connection) -> None:
+    """CREATE instance_history only; do not rebuild schema 1 tables."""
+    conn.executescript(INSTANCE_HISTORY_DDL)
+    backfill_instance_history(conn, load_registry())
+    fleet_db_meta_set(conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION))
+    conn.commit()
+
+
+def insert_instance(
+    conn: sqlite3.Connection,
+    *,
+    node_id: str,
+    instance_id: str,
+    started_at: str,
+    endpoint: Optional[str] = None,
+    ssh_host: Optional[str] = None,
+    status: str = INSTANCE_STATUS_ACTIVE,
+    retired_at: Optional[str] = None,
+) -> None:
+    validate_node_id(node_id)
+    if not isinstance(instance_id, str) or not UUID_RE.fullmatch(instance_id):
+        die(f"invalid instance_id: {instance_id}")
+    if instance_id == node_id:
+        die("instance_id must not equal node_id")
+    if status not in INSTANCE_STATUSES:
+        die(f"invalid instance_history status: {status}")
+    conn.execute(
+        """
+        INSERT INTO instance_history (
+          node_id, instance_id, started_at, retired_at, endpoint, ssh_host, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            node_id,
+            instance_id,
+            started_at,
+            retired_at,
+            _optional_text(endpoint),
+            _optional_text(ssh_host),
+            status,
+        ),
+    )
+
+
+def retire_active_instance(
+    conn: sqlite3.Connection,
+    node_id: str,
+    retired_at: Optional[str] = None,
+    now: Optional[str] = None,
+) -> None:
+    """Mark every active instance for node_id as retired."""
+    validate_node_id(node_id)
+    ts = retired_at or now or format_utc(datetime.now(timezone.utc))
+    conn.execute(
+        """
+        UPDATE instance_history
+        SET status = ?, retired_at = ?
+        WHERE node_id = ? AND status = ?
+        """,
+        (INSTANCE_STATUS_RETIRED, ts, node_id, INSTANCE_STATUS_ACTIVE),
+    )
+
+
+def mark_instance_retired(
+    conn: sqlite3.Connection,
+    node_id: str,
+    instance_id: str,
+    retired_at: Optional[str] = None,
+) -> None:
+    """Retire one (node_id, instance_id) row if it is still active."""
+    validate_node_id(node_id)
+    ts = retired_at or format_utc(datetime.now(timezone.utc))
+    conn.execute(
+        """
+        UPDATE instance_history
+        SET status = ?, retired_at = ?
+        WHERE node_id = ? AND instance_id = ? AND status = ?
+        """,
+        (INSTANCE_STATUS_RETIRED, ts, node_id, instance_id, INSTANCE_STATUS_ACTIVE),
+    )
+
+
+def record_instance(
+    conn: sqlite3.Connection,
+    node_id: str,
+    instance_id: str,
+    endpoint: Optional[str] = None,
+    ssh_host: Optional[str] = None,
+    *,
+    now_iso: Optional[str] = None,
+) -> None:
+    """INSERT on first sight. A new instance retires the previous active row."""
+    iid = _optional_text(instance_id)
+    if iid is None:
+        return
+    if not UUID_RE.fullmatch(iid):
+        return
+    if iid == node_id:
+        die("instance_id must not equal node_id")
+    existing = conn.execute(
+        """
+        SELECT 1 FROM instance_history
+        WHERE node_id = ? AND instance_id = ?
+        """,
+        (node_id, iid),
+    ).fetchone()
+    if existing is not None:
+        return
+    ts = now_iso or format_utc(datetime.now(timezone.utc))
+    retire_active_instance(conn, node_id, retired_at=ts)
+    insert_instance(
+        conn,
+        node_id=node_id,
+        instance_id=iid,
+        started_at=ts,
+        endpoint=endpoint,
+        ssh_host=ssh_host,
+        status=INSTANCE_STATUS_ACTIVE,
+    )
+
+
+def list_instances(
+    conn: sqlite3.Connection, node_id: str
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, retired_at,
+               endpoint, ssh_host, status
+        FROM instance_history
+        WHERE node_id = ?
+        ORDER BY started_at ASC, rowid ASC
+        """,
+        (node_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def backfill_instance_history(
+    conn: sqlite3.Connection, registry: dict[str, Any]
+) -> None:
+    """Schema 1→2: one active row per sync_cursor with a real instance_id."""
+    now = format_utc(datetime.now(timezone.utc))
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    for node in registry.get("nodes") or []:
+        if isinstance(node, dict) and node.get("node_id"):
+            nodes_by_id[str(node["node_id"])] = node
+    cursors = conn.execute(
+        "SELECT node_id, instance_id, last_sync_at FROM sync_cursor"
+    ).fetchall()
+    for row in cursors:
+        node_id = str(row["node_id"])
+        instance_id = _optional_text(row["instance_id"])
+        if instance_id is None:
+            continue
+        if not UUID_RE.fullmatch(node_id) or not UUID_RE.fullmatch(instance_id):
+            continue
+        if instance_id == node_id:
+            continue
+        started = _optional_text(row["last_sync_at"]) or now
+        ssh_host = _optional_text((nodes_by_id.get(node_id) or {}).get("ssh_host"))
+        insert_instance(
+            conn,
+            node_id=node_id,
+            instance_id=instance_id,
+            started_at=started,
+            ssh_host=ssh_host,
+            status=INSTANCE_STATUS_ACTIVE,
+        )
 
 
 def _optional_text(value: Any) -> Optional[str]:
@@ -3164,6 +3355,15 @@ def sync_one_node(
         sys.stderr.write(
             f"WARNING: {node['name']}: instance changed, node_id stable "
             f"({prior_instance} → {remote_iid})\n"
+        )
+    if remote_iid:
+        record_instance(
+            conn,
+            node_id,
+            remote_iid,
+            endpoint=None,
+            ssh_host=_optional_text(node.get("ssh_host")),
+            now_iso=now_iso,
         )
 
     proc = ssh_audit_export(node, after)

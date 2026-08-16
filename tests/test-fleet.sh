@@ -112,8 +112,10 @@ assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 2" \
   grep -q 'FLEET_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet.db schema version is 1" \
-  grep -q 'FLEET_DB_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema version is 2" \
+  grep -q 'FLEET_DB_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db DDL includes instance_history" \
+  grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
   grep -q 'INSERT OR IGNORE INTO audit_events' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
@@ -2154,7 +2156,7 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.FLEET_DB_SCHEMA_VERSION == 1
+assert mod.FLEET_DB_SCHEMA_VERSION == 2
 assert mod.fleet_db_path() == home / "fleet.db"
 
 conn1 = mod.open_fleet_db()
@@ -2168,19 +2170,26 @@ tables = {
 }
 pk = conn1.execute("PRAGMA table_info(audit_events)").fetchall()
 pk_cols = [r[1] for r in pk if r[5]]
+hist_pk = conn1.execute("PRAGMA table_info(instance_history)").fetchall()
+hist_pk_cols = [r[1] for r in hist_pk if r[5]]
 conn1.close()
 
 conn2 = mod.open_fleet_db()
 ver2 = mod.fleet_db_meta_get(conn2, "schema_version")
 wal2 = conn2.execute("PRAGMA journal_mode").fetchone()[0]
 count = conn2.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+hist_count = conn2.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
 conn2.close()
 
-assert ver1 == "1" and ver2 == "1", (ver1, ver2)
+assert ver1 == "2" and ver2 == "2", (ver1, ver2)
 assert wal1.lower() == "wal" and wal2.lower() == "wal", (wal1, wal2)
-assert tables >= {"meta", "audit_events", "sync_cursor", "daily_usage"}
+assert tables >= {
+    "meta", "audit_events", "sync_cursor", "daily_usage", "instance_history"
+}
 assert set(pk_cols) == {"node_id", "event_id"}, pk_cols
+assert set(hist_pk_cols) == {"node_id", "instance_id"}, hist_pk_cols
 assert count == 0
+assert hist_count == 0
 db = home / "fleet.db"
 mode = stat.S_IMODE(db.stat().st_mode)
 assert mode == 0o600, oct(mode)
@@ -2188,9 +2197,245 @@ home_mode = stat.S_IMODE(home.stat().st_mode)
 assert home_mode == 0o700, oct(home_mode)
 PY
 if (( open_twice_rc == 0 )); then
-  pass "open_fleet_db twice keeps schema 1 WAL fleet.db mode 0600"
+  pass "open_fleet_db twice keeps schema 2 WAL fleet.db mode 0600"
 else
-  fail "open_fleet_db twice keeps schema 1 WAL fleet.db mode 0600"
+  fail "open_fleet_db twice keeps schema 2 WAL fleet.db mode 0600"
+fi
+
+migrate_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$TEST_TMP" \
+  "$TEST_NODE_ID" "$TEST_INSTANCE_ID" "$TEST_TOKYO_NODE_ID" <<'PY' || migrate_rc=$?
+import importlib.util
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+path, tmp, node_id, instance_id, other_id = sys.argv[1:6]
+mod_spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(mod_spec)
+mod_spec.loader.exec_module(mod)
+
+schema1_ddl = """
+CREATE TABLE meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE audit_events (
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
+  event_id INTEGER NOT NULL,
+  connection_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  started_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
+  destination_host TEXT,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  network TEXT,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  imported_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, event_id)
+);
+CREATE TABLE sync_cursor (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  last_event_id INTEGER NOT NULL,
+  last_sync_at TEXT NOT NULL,
+  status TEXT NOT NULL
+);
+CREATE TABLE daily_usage (
+  date TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT NOT NULL,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  connection_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (date, node_id, user_id, destination_host)
+);
+"""
+
+# --- handwritten schema 1: cursor with instance_id backfills; NULL does not ---
+home = Path(tmp) / "fleet-home-db-migrate"
+home.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"] = str(home)
+registry = {
+    "schema_version": 2,
+    "nodes": [
+        {
+            "node_id": node_id,
+            "name": "lax",
+            "ssh_host": "203.0.113.10",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+        },
+        {
+            "node_id": other_id,
+            "name": "tokyo",
+            "ssh_host": "203.0.113.11",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+        },
+    ],
+}
+(home / "fleet.json").write_text(
+    json.dumps(registry, indent=2) + "\n", encoding="utf-8"
+)
+raw = sqlite3.connect(str(home / "fleet.db"))
+raw.executescript(schema1_ddl)
+raw.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '1')")
+raw.execute(
+    """
+    INSERT INTO audit_events (
+      node_id, instance_id, event_id, connection_id, generation,
+      user_id, user_tag, started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, imported_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        node_id, instance_id, 1, "c-1", 0, "u-alice", "alice",
+        "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+        "example.com", "203.0.113.10", 443, "tcp", 10, 20,
+        "2026-08-16T03:00:00Z",
+    ),
+)
+raw.execute(
+    """
+    INSERT INTO sync_cursor (
+      node_id, instance_id, last_event_id, last_sync_at, status
+    ) VALUES (?, ?, 1, '2026-08-16T03:00:00Z', 'ok')
+    """,
+    (node_id, instance_id),
+)
+raw.execute(
+    """
+    INSERT INTO sync_cursor (
+      node_id, instance_id, last_event_id, last_sync_at, status
+    ) VALUES (?, NULL, 0, '2026-08-16T03:00:00Z', 'ok')
+    """,
+    (other_id,),
+)
+raw.execute(
+    """
+    INSERT INTO daily_usage (
+      date, node_id, instance_id, user_id, user_tag, destination_host,
+      upload_bytes, download_bytes, connection_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    ("2026-08-10", node_id, instance_id, "u-alice", "alice", "example.com", 10, 20, 1),
+)
+raw.commit()
+tables_before = {
+    r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
+}
+assert "instance_history" not in tables_before
+raw.close()
+
+conn = mod.open_fleet_db()
+ver = mod.fleet_db_meta_get(conn, "schema_version")
+assert ver == "2", ver
+audit_n = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+daily_n = conn.execute("SELECT COUNT(*) FROM daily_usage").fetchone()[0]
+assert audit_n == 1 and daily_n == 1, (audit_n, daily_n)
+hist = mod.list_instances(conn, node_id)
+assert len(hist) == 1, hist
+assert hist[0]["instance_id"] == instance_id
+assert hist[0]["status"] == "active"
+assert hist[0]["retired_at"] is None
+assert hist[0]["started_at"] == "2026-08-16T03:00:00Z"
+assert hist[0]["ssh_host"] == "203.0.113.10"
+assert hist[0]["endpoint"] is None
+assert mod.list_instances(conn, other_id) == []
+conn.close()
+
+conn2 = mod.open_fleet_db()
+assert mod.fleet_db_meta_get(conn2, "schema_version") == "2"
+assert len(mod.list_instances(conn2, node_id)) == 1
+conn2.close()
+
+# --- record_instance first sight / change / chronological query ---
+home2 = Path(tmp) / "fleet-home-db-history"
+home2.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"] = str(home2)
+conn = mod.open_fleet_db()
+assert mod.fleet_db_meta_get(conn, "schema_version") == "2"
+old_iid = instance_id
+new_iid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+mod.record_instance(
+    conn, node_id, old_iid, "203.0.113.10", "203.0.113.10",
+    now_iso="2026-08-16T04:00:00Z",
+)
+mod.record_instance(
+    conn, node_id, old_iid, "203.0.113.10", "203.0.113.10",
+    now_iso="2026-08-16T04:01:00Z",
+)
+first = mod.list_instances(conn, node_id)
+assert len(first) == 1, first
+assert first[0]["instance_id"] == old_iid
+assert first[0]["status"] == "active"
+assert first[0]["endpoint"] == "203.0.113.10"
+assert first[0]["started_at"] == "2026-08-16T04:00:00Z"
+
+mod.record_instance(
+    conn, node_id, new_iid, "203.0.113.18", "203.0.113.18",
+    now_iso="2026-08-16T05:00:00Z",
+)
+rows = mod.list_instances(conn, node_id)
+assert [r["instance_id"] for r in rows] == [old_iid, new_iid], rows
+assert rows[0]["status"] == "retired"
+assert rows[0]["retired_at"] == "2026-08-16T05:00:00Z"
+assert rows[1]["status"] == "active"
+assert rows[1]["retired_at"] is None
+assert rows[1]["endpoint"] == "203.0.113.18"
+assert rows[1]["ssh_host"] == "203.0.113.18"
+
+mod.mark_instance_retired(conn, node_id, new_iid, "2026-08-16T06:00:00Z")
+after = mod.list_instances(conn, node_id)
+assert after[1]["status"] == "retired"
+assert after[1]["retired_at"] == "2026-08-16T06:00:00Z"
+
+try:
+    mod.insert_instance(
+        conn, node_id=node_id, instance_id=node_id,
+        started_at="2026-08-16T07:00:00Z",
+    )
+    raise AssertionError("insert_instance must refuse instance_id == node_id")
+except SystemExit:
+    pass
+conn.close()
+
+# future schema dies; schema 1 tables stay put
+home3 = Path(tmp) / "fleet-home-db-future"
+home3.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"] = str(home3)
+raw = sqlite3.connect(str(home3 / "fleet.db"))
+raw.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+raw.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '99')")
+raw.commit()
+raw.close()
+try:
+    mod.open_fleet_db()
+    raise AssertionError("open_fleet_db must die on schema 99")
+except SystemExit as exc:
+    assert exc.code == 1
+PY
+if (( migrate_rc == 0 )); then
+  pass "fleet.db schema 1→2 preserves data and records instance history"
+else
+  fail "fleet.db schema 1→2 preserves data and records instance history"
 fi
 
 import_batch_rc=0
@@ -2456,9 +2701,21 @@ count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_
 cur = conn.execute(
     "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
+hist = conn.execute(
+    """
+    SELECT instance_id, status, retired_at, ssh_host
+    FROM instance_history WHERE node_id=? ORDER BY started_at, rowid
+    """,
+    (node_id,),
+).fetchall()
 conn.close()
 assert count == 5, count
 assert cur == (5, "ok"), cur
+assert len(hist) == 1, hist
+assert hist[0][0] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert hist[0][1] == "active"
+assert hist[0][2] is None
+assert hist[0][3] == "203.0.113.10"
 PY
 if (( sync1_check_rc == 0 )); then
   pass "initial sync after 0 imports 5 events and cursor=5"
@@ -2820,6 +3077,133 @@ if (( unlabeled_rc == 0 )); then
 else
   fail "jsonl rows missing node_id are not stored"
 fi
+
+HIST_FLEET_HOME="${TEST_TMP}/fleet-home-instance-history"
+HIST_FAKE_STATE="${TEST_TMP}/fake-history-state"
+SAVED_HIST_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$HIST_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$HIST_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax"
+
+assert_success "instance-history fleet init" fleet init
+assert_success "instance-history offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+hist_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || hist_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "lax-hist-1", 0, "u-alice", ident["node_id"], ident["instance_id"],
+        "alice", "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z",
+        "2026-08-10T09:00:00Z", "example.com", "203.0.113.10", 443, "tcp", 10, 20,
+    ),
+)
+conn.commit()
+conn.close()
+PY
+if (( hist_seed_rc == 0 )); then
+  pass "instance-history fixture seeded lax accounting.db"
+else
+  fail "instance-history fixture seeded lax accounting.db"
+fi
+
+hist_sync1_rc=0
+fleet sync --node lax --json >/dev/null || hist_sync1_rc=$?
+if (( hist_sync1_rc == 0 )); then
+  pass "instance-history first sync exits 0"
+else
+  fail "instance-history first sync exits 0 (rc=${hist_sync1_rc})"
+fi
+
+hist_first_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" <<'PY' || hist_first_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+
+path, home, node_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+rows = mod.list_instances(conn, node_id)
+conn.close()
+assert len(rows) == 1, rows
+assert rows[0]["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert rows[0]["status"] == "active"
+assert rows[0]["retired_at"] is None
+assert rows[0]["ssh_host"] == "203.0.113.10"
+PY
+if (( hist_first_rc == 0 )); then
+  pass "first-sight sync records one active instance_history row"
+else
+  fail "first-sight sync records one active instance_history row"
+fi
+
+export VCL_FAKE_REINSTALL=1
+hist_re_rc=0
+hist_re_err=$(fleet sync --node lax 2>&1 >/dev/null) || hist_re_rc=$?
+if (( hist_re_rc == 0 )) && [[ "$hist_re_err" == *"instance changed, node_id stable"* ]]; then
+  pass "VCL_FAKE_REINSTALL sync WARNs instance changed and exits 0"
+else
+  fail "VCL_FAKE_REINSTALL sync WARNs instance changed and exits 0 (rc=${hist_re_rc} err=${hist_re_err})"
+fi
+unset VCL_FAKE_REINSTALL
+
+hist_change_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" <<'PY' || hist_change_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+
+path, home, node_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+rows = mod.list_instances(conn, node_id)
+raw = (home / "fleet.json").read_text(encoding="utf-8")
+conn.close()
+assert "instance_id" not in raw
+assert [r["instance_id"] for r in rows] == [
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+], rows
+assert rows[0]["status"] == "retired"
+assert rows[0]["retired_at"]
+assert rows[1]["status"] == "active"
+assert rows[1]["retired_at"] is None
+assert rows[0]["started_at"] <= rows[1]["started_at"]
+PY
+if (( hist_change_rc == 0 )); then
+  pass "instance change records new row and retires the previous instance"
+else
+  fail "instance change records new row and retires the previous instance"
+fi
+
+export VCL_FLEET_HOME="${SAVED_HIST_HOME}"
 
 assert_success "cmd_audit_user is defined" \
   grep -q 'def cmd_audit_user(' "${PROJECT_DIR}/lib/vincula-fleet.py"
