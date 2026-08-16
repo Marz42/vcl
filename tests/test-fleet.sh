@@ -1319,6 +1319,209 @@ else
   fail "PARTIAL state machine: all-ok SUCCESS, one-fail/all-fail PARTIAL, exit 0/2"
 fi
 
+assert_failure "fake-ssh classifies remote argv, not identity substring" \
+  grep -q '"identity" in text' "$FAKE_SSH"
+
+unknown_cmd_rc=0
+unknown_cmd_err=$("$FAKE_SSH" 203.0.113.10 -- vcl nosuch --json 2>&1) || unknown_cmd_rc=$?
+if (( unknown_cmd_rc == 1 )) && [[ "$unknown_cmd_err" == *"unknown vcl command"* ]]; then
+  pass "fake-ssh unknown vcl subcommand exits 1"
+else
+  fail "fake-ssh unknown vcl subcommand exits 1 (rc=${unknown_cmd_rc} err=${unknown_cmd_err})"
+fi
+assert_failure "fake-ssh unknown subcommand does not emit identity JSON" \
+  grep -q 'node_id' <<< "$unknown_cmd_err"
+
+nostate_rc=0
+nostate_err=$("$FAKE_SSH" 203.0.113.10 -- vcl user list --json 2>&1) || nostate_rc=$?
+if (( nostate_rc != 0 )) && [[ "$nostate_err" == *"VCL_FAKE_STATE_DIR"* ]]; then
+  pass "fake-ssh user commands require VCL_FAKE_STATE_DIR"
+else
+  fail "fake-ssh user commands require VCL_FAKE_STATE_DIR (rc=${nostate_rc} err=${nostate_err})"
+fi
+
+ident_nostate=$("$FAKE_SSH" 203.0.113.10 -- vcl identity --json)
+assert_success "fake-ssh identity still works without VCL_FAKE_STATE_DIR" \
+  grep -q 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' <<< "$ident_nostate"
+
+FAKE_USER_STATE="${TEST_TMP}/fake-user-state"
+export VCL_FAKE_STATE_DIR="$FAKE_USER_STATE"
+mkdir -p "$VCL_FAKE_STATE_DIR"
+
+ALICE_UID="11111111-1111-4111-8111-111111111111"
+BOB_UID="22222222-2222-4222-8222-222222222222"
+CAROL_UID="33333333-3333-4333-8333-333333333333"
+
+add_alice_rc=0
+add_alice=$("$FAKE_SSH" 203.0.113.10 -- vcl user add alice --user-id "$ALICE_UID" \
+  --display-name Alice --department Engineering --json) || add_alice_rc=$?
+if (( add_alice_rc == 0 )); then
+  pass "fake-ssh user add alice on lax exits 0"
+else
+  fail "fake-ssh user add alice on lax exits 0 (rc=${add_alice_rc})"
+fi
+
+lax_list=$("$FAKE_SSH" 203.0.113.10 -- vcl user list --json)
+tokyo_list=$("$FAKE_SSH" 203.0.113.11 -- vcl user list --json)
+if python3 - "$add_alice" "$lax_list" "$tokyo_list" "$ALICE_UID" <<'PY'
+import json, sys
+add, lax, tokyo, uid = sys.argv[1:5]
+add_doc = json.loads(add)
+lax_doc = json.loads(lax)
+tokyo_doc = json.loads(tokyo)
+assert add_doc["schema_version"] == 1 and add_doc["ok"] is True, add_doc
+assert add_doc["tag"] == "alice" and add_doc["user_id"] == uid, add_doc
+assert add_doc["enabled"] is True and add_doc["status"] == "active", add_doc
+assert add_doc["credential_id"], add_doc
+assert add_doc["vless_uri"].startswith("vless://"), add_doc
+assert "@203.0.113.10:443" in add_doc["vless_uri"], add_doc
+assert add_doc["vless_uri"].endswith("#alice"), add_doc
+assert "uuid" not in add_doc, add_doc
+alice = next(u for u in lax_doc["users"] if u["tag"] == "alice")
+assert alice["user_id"] == uid, alice
+assert alice["display_name"] == "Alice", alice
+assert alice["department"] == "Engineering", alice
+assert alice["enabled"] is True, alice
+assert alice["active_credential_id"] == add_doc["credential_id"], alice
+assert tokyo_doc["schema_version"] == 1, tokyo_doc
+assert tokyo_doc["users"] == [], tokyo_doc
+PY
+then
+  pass "fake-ssh user add on lax is visible in lax list, not tokyo"
+else
+  fail "fake-ssh user add on lax is visible in lax list, not tokyo"
+fi
+
+assert_success "fake-ssh wrote lax users.json under VCL_FAKE_STATE_DIR" \
+  test -f "${VCL_FAKE_STATE_DIR}/lax/users.json"
+assert_success "fake-ssh initialized empty tokyo users.json" \
+  test -f "${VCL_FAKE_STATE_DIR}/tokyo/users.json"
+
+lax_show=$("$FAKE_SSH" 203.0.113.10 -- vcl user show alice --json)
+assert_success "fake-ssh user show alice includes user_id" \
+  grep -q "$ALICE_UID" <<< "$lax_show"
+assert_success "fake-ssh user show credentials omit vless uuid field" \
+  python3 -c 'import json,sys; d=json.loads(sys.stdin.read());
+assert all("uuid" not in c for c in d["credentials"])' <<< "$lax_show"
+
+last_disable_rc=0
+last_disable_err=$("$FAKE_SSH" 203.0.113.10 -- vcl user disable alice --json 2>&1) || last_disable_rc=$?
+if (( last_disable_rc != 0 )) && [[ "$last_disable_err" == *"last enabled user"* ]]; then
+  pass "fake-ssh refuses to disable the last enabled user"
+else
+  fail "fake-ssh refuses to disable the last enabled user (rc=${last_disable_rc} err=${last_disable_err})"
+fi
+
+add_bob_rc=0
+"$FAKE_SSH" 203.0.113.10 -- vcl user add bob --user-id "$BOB_UID" --json >/dev/null || add_bob_rc=$?
+if (( add_bob_rc == 0 )); then
+  pass "fake-ssh user add bob on lax exits 0"
+else
+  fail "fake-ssh user add bob on lax exits 0 (rc=${add_bob_rc})"
+fi
+
+old_cred=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["credential_id"])' <<< "$add_alice")
+rotate_rc=0
+rotate_out=$("$FAKE_SSH" 203.0.113.10 -- vcl user rotate alice --json) || rotate_rc=$?
+if (( rotate_rc == 0 )); then
+  pass "fake-ssh rotate alice on lax exits 0"
+else
+  fail "fake-ssh rotate alice on lax exits 0 (rc=${rotate_rc})"
+fi
+new_list=$("$FAKE_SSH" 203.0.113.10 -- vcl user list --json)
+new_show=$("$FAKE_SSH" 203.0.113.10 -- vcl user show alice --json)
+if python3 - "$rotate_out" "$new_list" "$new_show" "$old_cred" "$ALICE_UID" <<'PY'
+import json, sys
+rotate, listed, show, old_cred, uid = sys.argv[1:6]
+rot = json.loads(rotate)
+lax = json.loads(listed)
+show_doc = json.loads(show)
+assert rot["ok"] is True and rot["user_id"] == uid, rot
+assert rot["credential_id"] != old_cred, (rot["credential_id"], old_cred)
+assert rot["vless_uri"].startswith("vless://")
+assert rot["credential_id"] in rot["vless_uri"]
+alice = next(u for u in lax["users"] if u["tag"] == "alice")
+assert alice["user_id"] == uid, alice
+assert alice["active_credential_id"] == rot["credential_id"], alice
+assert alice["active_credential_id"] != old_cred, alice
+assert alice["credentials"]["count"] == 2, alice
+assert alice["credentials"]["active"] == 1, alice
+assert alice["credentials"]["revoked"] == 1, alice
+statuses = [c["status"] for c in show_doc["credentials"]]
+assert statuses.count("revoked") == 1 and statuses.count("active") == 1, statuses
+assert all("uuid" not in c for c in show_doc["credentials"])
+PY
+then
+  pass "fake-ssh rotate alice on lax changes credential_id"
+else
+  fail "fake-ssh rotate alice on lax changes credential_id"
+fi
+
+disable_out=$("$FAKE_SSH" 203.0.113.10 -- vcl user disable alice --json)
+disable_list=$("$FAKE_SSH" 203.0.113.10 -- vcl user list --json)
+if python3 - "$disable_out" "$disable_list" <<'PY'
+import json, sys
+dis = json.loads(sys.argv[1])
+listed = json.loads(sys.argv[2])
+assert dis["schema_version"] == 1 and dis["ok"] is True, dis
+assert dis["tag"] == "alice" and dis["enabled"] is False, dis
+alice = next(u for u in listed["users"] if u["tag"] == "alice")
+bob = next(u for u in listed["users"] if u["tag"] == "bob")
+assert alice["enabled"] is False, alice
+assert bob["enabled"] is True, bob
+PY
+then
+  pass "fake-ssh disable alice is reflected in subsequent list"
+else
+  fail "fake-ssh disable alice is reflected in subsequent list"
+fi
+
+enable_out=$("$FAKE_SSH" 203.0.113.10 -- vcl user enable alice --json)
+assert_success "fake-ssh enable alice reports enabled true" \
+  python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["enabled"] is True' <<< "$enable_out"
+
+export VCL_FAKE_FAIL_USER_ADD=tokyo
+fail_tokyo_rc=0
+fail_tokyo=$("$FAKE_SSH" 203.0.113.11 -- vcl user add carol --user-id "$CAROL_UID" --json) || fail_tokyo_rc=$?
+fail_tokyo_list=$("$FAKE_SSH" 203.0.113.11 -- vcl user list --json)
+lax_carol_rc=0
+lax_carol=$("$FAKE_SSH" 203.0.113.10 -- vcl user add carol --user-id "$CAROL_UID" --json) || lax_carol_rc=$?
+if python3 - "$fail_tokyo" "$fail_tokyo_list" "$lax_carol" "$fail_tokyo_rc" "$lax_carol_rc" "$CAROL_UID" <<'PY'
+import json, sys
+fail_out, tokyo_list, lax_add, fail_rc, lax_rc, uid = sys.argv[1:7]
+fail_doc = json.loads(fail_out)
+tokyo_doc = json.loads(tokyo_list)
+lax_doc = json.loads(lax_add)
+assert int(fail_rc) == 1, fail_rc
+assert fail_doc.get("ok") is False, fail_doc
+assert fail_doc.get("error") == "failed", fail_doc
+assert fail_doc.get("schema_version") == 1, fail_doc
+assert tokyo_doc["users"] == [], tokyo_doc
+assert int(lax_rc) == 0, lax_rc
+assert lax_doc["ok"] is True and lax_doc["tag"] == "carol", lax_doc
+assert lax_doc["user_id"] == uid, lax_doc
+PY
+then
+  pass "fake-ssh VCL_FAKE_FAIL_USER_ADD=tokyo injects per-host user add failure"
+else
+  fail "fake-ssh VCL_FAKE_FAIL_USER_ADD=tokyo injects per-host user add failure"
+fi
+unset VCL_FAKE_FAIL_USER_ADD
+
+ident_with_state=$("$FAKE_SSH" 203.0.113.10 -- vcl identity --json)
+assert_success "fake-ssh identity still works with VCL_FAKE_STATE_DIR set" \
+  grep -q 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' <<< "$ident_with_state"
+
+status_with_state_rc=0
+"$FAKE_SSH" 203.0.113.10 -- vcl status --json >/dev/null || status_with_state_rc=$?
+if (( status_with_state_rc == 0 )); then
+  pass "fake-ssh status still works with VCL_FAKE_STATE_DIR set"
+else
+  fail "fake-ssh status still works with VCL_FAKE_STATE_DIR set (rc=${status_with_state_rc})"
+fi
+
+unset VCL_FAKE_STATE_DIR
+
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
   grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"

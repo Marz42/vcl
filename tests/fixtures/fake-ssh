@@ -2,15 +2,23 @@
 """OpenSSH stand-in for vcl-fleet tests. No network.
 
 Selected by VCL_FLEET_SSH. Parses host/user/port like ssh, then returns
-canned vcl identity/status/verify JSON or simulated SSH failures.
+canned vcl identity/status/verify JSON, mutable per-node user state, or
+simulated SSH failures.
+
+User commands require VCL_FAKE_STATE_DIR (each alias gets users.json).
+Identity/status/verify still serve canned fixtures when the state dir is
+unset, matching 0.2.8 tests. Optional identity.json under the state dir
+overrides the canned file.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,6 +26,11 @@ HERE = Path(__file__).resolve().parent
 NODES = HERE / "nodes"
 
 FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
+KNOWN_KINDS = ("identity", "status", "verify", "user", "audit")
+USER_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 
 # TEST-NET-3 fixtures. sg/badkey fail before any remote command.
 HOST_ALIAS = {
@@ -56,6 +69,7 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
     while i < len(argv):
         arg = argv[i]
         if arg == "--":
+            # Destination may already have been seen; argv after -- is the remote command.
             remote = argv[i + 1 :]
             break
         if arg == "-p" and i + 1 < len(argv):
@@ -79,7 +93,11 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
             i += 1
             continue
         host = arg
-        remote = argv[i + 1 :]
+        rest = argv[i + 1 :]
+        if rest and rest[0] == "--":
+            remote = rest[1:]
+        else:
+            remote = rest
         break
     if "@" in host:
         host = host.rsplit("@", 1)[1]
@@ -88,15 +106,46 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
     return host, port, remote
 
 
-def _remote_kind(remote: list[str]) -> str:
-    text = " ".join(remote)
-    if "identity" in text:
-        return "identity"
-    if "verify" in text:
-        return "verify"
-    if "status" in text:
-        return "status"
-    return "identity"
+def _remote_kind(remote: list[str]) -> tuple[str, list[str]]:
+    """Classify argv after -- by remote[0:2], not substring search.
+
+    `vcl identity` / `vcl user …` must not collapse to identity because
+    the word "identity" appears (or does not) in the joined text.
+    """
+    args = list(remote)
+    if args and args[0] == "--":
+        args = args[1:]
+    if args and args[0] == "vcl":
+        args = args[1:]
+        if not args:
+            return "unknown", []
+    if not args:
+        return "identity", []
+    kind = args[0]
+    if kind in KNOWN_KINDS:
+        return kind, args[1:]
+    return "unknown", args
+
+
+def _state_root() -> Path | None:
+    raw = os.environ.get("VCL_FAKE_STATE_DIR", "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    tmp.replace(path)
+
+
+def _emit_json(data: object) -> None:
+    sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
+    sys.stdout.write("\n")
 
 
 def _load_fixture(name: str, kind: str) -> dict:
@@ -106,6 +155,12 @@ def _load_fixture(name: str, kind: str) -> dict:
         alt = NODES / "lax" / "identity-reinstall.json"
         if alt.is_file():
             path = alt
+    else:
+        state = _state_root()
+        if state is not None and kind == "identity":
+            override = state / name / "identity.json"
+            if override.is_file():
+                path = override
     with path.open(encoding="utf-8") as fh:
         data = json.load(fh)
     if isinstance(data, dict) and "utc_now" in data:
@@ -114,6 +169,301 @@ def _load_fixture(name: str, kind: str) -> dict:
     if override and isinstance(data, dict) and "instance_id" in data:
         data["instance_id"] = override
     return data
+
+
+def _node_id(alias: str) -> str:
+    ident = _load_fixture(alias, "identity")
+    return str(ident.get("node_id") or "")
+
+
+def _users_path(alias: str) -> Path:
+    root = _state_root()
+    if root is None:
+        raise RuntimeError("VCL_FAKE_STATE_DIR is required for user commands")
+    path = root / alias / "users.json"
+    if not path.is_file():
+        _write_json(path, {"schema_version": 2, "users": []})
+    return path
+
+
+def _load_users(alias: str) -> dict:
+    path = _users_path(alias)
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    if data.get("schema_version") != 2:
+        raise SystemExit("users.json must be schema_version 2")
+    data.setdefault("users", [])
+    return data
+
+
+def _save_users(alias: str, data: dict) -> None:
+    _write_json(_users_path(alias), data)
+
+
+def _find_user(users: list[dict], tag: str) -> dict | None:
+    for user in users:
+        if user.get("tag") == tag:
+            return user
+    return None
+
+
+def _active_credential(user: dict) -> dict | None:
+    for cred in user.get("credentials") or []:
+        if cred.get("status") == "active":
+            return cred
+    return None
+
+
+def _fake_uri(credential_id: str, host: str, tag: str) -> str:
+    return f"vless://{credential_id}@{host}:443?encryption=none&type=tcp#{tag}"
+
+
+def _fail_aliases(env_name: str) -> set[str]:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _parse_user_flags(argv: list[str]) -> tuple[list[str], dict[str, str], bool]:
+    positional: list[str] = []
+    flags: dict[str, str] = {}
+    as_json = False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--json":
+            as_json = True
+            i += 1
+            continue
+        if arg in ("--user-id", "--display-name", "--department"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"user: {arg} requires a value")
+            flags[arg[2:].replace("-", "_")] = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-"):
+            raise SystemExit(f"user: unknown option {arg}")
+        positional.append(arg)
+        i += 1
+    return positional, flags, as_json
+
+
+def _emit_user_add_error(error: str, user_id: str = "") -> int:
+    doc: dict[str, object] = {"schema_version": 1, "ok": False, "error": error}
+    if user_id:
+        doc["user_id"] = user_id
+    _emit_json(doc)
+    return 1
+
+
+def _list_json(users: list[dict]) -> dict:
+    out = []
+    for user in users:
+        creds = user.get("credentials") or []
+        active = _active_credential(user)
+        out.append(
+            {
+                "tag": user.get("tag") or "",
+                "display_name": user.get("display_name") or user.get("tag") or "",
+                "department": user.get("department") or "",
+                "user_id": user.get("user_id") or "",
+                "enabled": bool(user.get("enabled")),
+                "active_credential_id": (active or {}).get("credential_id"),
+                "credentials": {
+                    "count": len(creds),
+                    "active": sum(1 for c in creds if c.get("status") == "active"),
+                    "revoked": sum(1 for c in creds if c.get("status") == "revoked"),
+                },
+            }
+        )
+    return {"schema_version": 1, "users": out}
+
+
+def _show_json(user: dict) -> dict:
+    credentials = []
+    for cred in user.get("credentials") or []:
+        credentials.append(
+            {
+                "credential_id": cred.get("credential_id") or "",
+                "node_id": cred.get("node_id") or "",
+                "status": cred.get("status") or "",
+                "created_at": cred.get("created_at") or "",
+                "revoked_at": cred.get("revoked_at"),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "tag": user.get("tag") or "",
+        "display_name": user.get("display_name") or user.get("tag") or "",
+        "department": user.get("department") or "",
+        "user_id": user.get("user_id") or "",
+        "enabled": bool(user.get("enabled")),
+        "created_at": user.get("created_at") or "",
+        "credentials": credentials,
+    }
+
+
+def _handle_user(alias: str, host: str, argv: list[str]) -> int:
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for user commands\n")
+        return 1
+    if not argv:
+        sys.stderr.write("fake-ssh: unknown vcl command: vcl user\n")
+        return 1
+
+    try:
+        positional, flags, _as_json = _parse_user_flags(argv[1:])
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: {exc}\n")
+        return 1
+
+    action = argv[0]
+    data = _load_users(alias)
+    users = data["users"]
+    now = _utc_now()
+    node_id = _node_id(alias)
+
+    if action == "add":
+        if alias in _fail_aliases("VCL_FAKE_FAIL_USER_ADD"):
+            return _emit_user_add_error("failed")
+        if not positional:
+            return _emit_user_add_error("invalid_tag")
+        tag = positional[0]
+        user_id = flags.get("user_id", "").strip()
+        if not TAG_RE.fullmatch(tag):
+            return _emit_user_add_error("invalid_tag", user_id)
+        if _find_user(users, tag):
+            return _emit_user_add_error("duplicate_tag", user_id)
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        elif not USER_ID_RE.fullmatch(user_id):
+            return _emit_user_add_error("invalid_user_id", user_id)
+        elif any(u.get("user_id") == user_id for u in users):
+            return _emit_user_add_error("duplicate_user_id", user_id)
+        credential_id = str(uuid.uuid4())
+        vless_uuid = str(uuid.uuid4())
+        display_name = flags.get("display_name") or tag
+        department = flags.get("department") or ""
+        users.append(
+            {
+                "user_id": user_id,
+                "tag": tag,
+                "display_name": display_name,
+                "department": department,
+                "enabled": True,
+                "created_at": now,
+                "credentials": [
+                    {
+                        "credential_id": credential_id,
+                        "node_id": node_id,
+                        "uuid": vless_uuid,
+                        "status": "active",
+                        "created_at": now,
+                        "revoked_at": None,
+                    }
+                ],
+            }
+        )
+        _save_users(alias, data)
+        _emit_json(
+            {
+                "schema_version": 1,
+                "ok": True,
+                "tag": tag,
+                "user_id": user_id,
+                "credential_id": credential_id,
+                "vless_uri": _fake_uri(credential_id, host, tag),
+                "status": "active",
+                "enabled": True,
+            }
+        )
+        return 0
+
+    if action == "list":
+        _emit_json(_list_json(users))
+        return 0
+
+    if action in ("show", "enable", "disable", "rotate"):
+        if not positional:
+            sys.stderr.write(f"fake-ssh: vcl user {action} requires a tag\n")
+            return 1
+        tag = positional[0]
+        if not TAG_RE.fullmatch(tag):
+            sys.stderr.write(f"fake-ssh: invalid user tag: {tag}\n")
+            return 1
+        user = _find_user(users, tag)
+        if user is None:
+            sys.stderr.write(f"fake-ssh: user not found: {tag}\n")
+            return 1
+        if action == "show":
+            _emit_json(_show_json(user))
+            return 0
+        if action == "enable":
+            user["enabled"] = True
+            _save_users(alias, data)
+            _emit_json(
+                {
+                    "schema_version": 1,
+                    "ok": True,
+                    "tag": tag,
+                    "user_id": user.get("user_id") or "",
+                    "enabled": True,
+                }
+            )
+            return 0
+        if action == "disable":
+            enabled_count = sum(1 for u in users if u.get("enabled"))
+            if user.get("enabled") and enabled_count <= 1:
+                sys.stderr.write("fake-ssh: refusing to disable the last enabled user\n")
+                return 1
+            user["enabled"] = False
+            _save_users(alias, data)
+            _emit_json(
+                {
+                    "schema_version": 1,
+                    "ok": True,
+                    "tag": tag,
+                    "user_id": user.get("user_id") or "",
+                    "enabled": False,
+                }
+            )
+            return 0
+        # rotate
+        active = _active_credential(user)
+        if active is None:
+            sys.stderr.write(f"fake-ssh: user {tag} has no active credential to rotate\n")
+            return 1
+        active["status"] = "revoked"
+        active["revoked_at"] = now
+        credential_id = str(uuid.uuid4())
+        user.setdefault("credentials", []).append(
+            {
+                "credential_id": credential_id,
+                "node_id": node_id,
+                "uuid": str(uuid.uuid4()),
+                "status": "active",
+                "created_at": now,
+                "revoked_at": None,
+            }
+        )
+        _save_users(alias, data)
+        _emit_json(
+            {
+                "schema_version": 1,
+                "ok": True,
+                "tag": tag,
+                "user_id": user.get("user_id") or "",
+                "credential_id": credential_id,
+                "vless_uri": _fake_uri(credential_id, host, tag),
+                "status": "active",
+                "enabled": bool(user.get("enabled")),
+            }
+        )
+        return 0
+
+    sys.stderr.write(f"fake-ssh: unknown vcl command: vcl user {action}\n")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,7 +512,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("this is not identity JSON\n")
         return 0
 
-    kind = _remote_kind(remote)
+    kind, rest = _remote_kind(remote)
+    if kind == "unknown":
+        shown = " ".join(remote) or "(empty)"
+        sys.stderr.write(f"fake-ssh: unknown vcl command: {shown}\n")
+        return 1
+    if kind == "audit":
+        sys.stderr.write("fake-ssh: unimplemented: vcl audit\n")
+        return 1
+    if kind == "user":
+        return _handle_user(alias, host, rest)
     data = _load_fixture(alias, kind)
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
