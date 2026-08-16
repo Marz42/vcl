@@ -2,6 +2,64 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.2.9
+
+Fleet Users & Audit。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**；`users.json` schema **仍为 2**；`state.json` schema **仍为 2**。产品开发戳 `0.2.9-dev`（freeze 批去掉 `-dev`）。
+
+### 身份传播（D16）
+
+- 节点 `vcl user add TAG`（无 `--user-id`）仍生成本地 `user_id=UUID()`
+- 节点 `vcl user add TAG --user-id UUID`（advanced / controller）：校验 UUID；同 registry 内 `user_id` 或 tag 已存在则拒绝；`credential_id` 与 VLESS uuid 仍由本节点新生成
+- 控制器 `vcl-fleet user add TAG --nodes a,b` 生成 **一个** fleet-global `user_id`，对每个目标 SSH `vcl user add TAG --user-id GLOBAL --json`
+- 禁止用 `display_name` 匹配用户；tag 仅 UX
+- 节点 `--json` 合同 0.2.1–0.2.4（`list`/`show` **不含** VLESS uuid）；人类 `list` 增加 `USER_ID` 列
+
+### 多节点开通（D15）
+
+- `vcl-fleet user add|list|show|enable|disable|rotate`；`enable`/`disable`/`rotate` **必须** `--node`（禁止无 `--node` 的全局 disable）
+- 全部 SUCCESS → `state=SUCCESS` exit 0；任一 FAILED（含全部失败）→ `state=PARTIAL` exit **2**，每节点状态 + 可复制 `--user-id` 补救
+- **不**承诺、**不**实现分布式 rollback
+- 凭据 CSV `user,node,credential_id,vless_uri` 模式 **0600**；URI 按节点 host 不同
+- `user import` CSV 头 `tag,display_name,department,nodes`：全量校验后才 SSH；`user export --credentials --output FILE` 同 0600
+
+### 增量同步 / 审计（D9）
+
+- 节点 `vcl audit export --after EVENT_ID --jsonl`：stdout 连接 JSONL；stderr 一行 meta。过期判定 → `CURSOR_EXPIRED` exit **3**、stdout 空、不静默跳缺口
+- `after=0` 即使 retention 已截断窗口也算成功（首次 sync）
+- `vcl-fleet sync [--node NAME] [--reseed NAME]`：读盘上 `fleet.db` cursor；`INSERT OR IGNORE` 同一事务重建该节点 `daily_usage` 后才推进 cursor；新进程读同一 DB 仍一致
+- `CURSOR_EXPIRED` → 该节点不 import 空洞数据；打印 `vcl-fleet sync --reseed NAME`。`--reseed` **不是** 0.3.0 snapshot
+- `vcl-fleet audit user TAG --from --to` 按稳定 `user_id` 合并，记录带 **node**
+- `vcl-fleet stats` 只读 `daily_usage`（`started_at` UTC 日派生），明细保留节点归属；与节点 `vcl stats` **不**保证字节级一致
+
+### 节点退役
+
+- `vcl-fleet node retire NAME`：**先** final sync，再写 `$FLEET_HOME/retired/<name>/`，再尽力 disable 远程用户（保留最后一个 enabled），再标 `retired`
+- 不自动 `vcl uninstall`；不删 `fleet.db` 该节点历史；退役后 audit/stats 仍可查
+- `CURSOR_EXPIRED` 或 SSH 失败 → **不**标记 retired
+
+### Schema / 产物
+
+- `fleet.json` schema **1 → 2**（节点 `status`：`active` \| `disabled` \| `retired`）
+- 新 `fleet.db` schema **1**（`audit_events` / `sync_cursor` / `daily_usage`）
+- accounting / users / state schema **不变**
+- 节点 `release.lock` 仍 8 个 first-party 文件（不含 fleet）；控制器 zip 四成员不变（db 逻辑在 `vincula-fleet.py`）
+
+### 明确不做（0.3.0+）
+
+- backup/restore、age、Python SQLite Backup API、`vcl snapshot export`、`replace-node`、UI
+- 例行 `scp accounting.db`、计费级计量、节点 `vcl fleet` 子命令、分布式 rollback 保证、为 cursor 阻塞 90 天 retention、退役自动 uninstall / 擦除 `fleet.db`
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.8` → `0.2.9`
+- allowlist **含** `0.2.8`，**不含** `0.2.9` / `0.2.9-dev`
+- 保留 `user_id` / `node_id` / `instance_id`；不重 mint；D18 不对 0.2.8 源重迁 730
+- 不提供自动 fleet.json 2→1；回滚见 `docs/release-readiness-0.2.9.md`
+
+### 验收摘要
+
+AC-2.9-01…12 的 fixture / 静态证据见 `docs/release-readiness-0.2.9.md`。已知限制见 `docs/known-issues-0.2.9.md`。0.2.9 **不**套用 D20 24h soak 门槛。原 AC-2.8-08/09 的 incremental sync / cursor 语义在本版落地为 AC-2.9-08/09/12。
+
 ## 0.2.8
 
 Fleet Foundation。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**。工作站控制器是用户级工具，**无** `release.lock` 链。

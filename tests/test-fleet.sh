@@ -470,12 +470,12 @@ assert_failure "vcl-fleet.cmd never sets StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 assert_failure "vcl-fleet.cmd never sets UserKnownHostsFile=/dev/null" \
   grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/bin/vcl-fleet.cmd"
-assert_failure "AC-2.8-02 controller has no bind" \
+assert_failure "AC-2.8-02 / AC-2.9-10 controller has no bind" \
   grep -E '0\.0\.0\.0|HTTPServer|socket\.bind' \
     "${PROJECT_DIR}/lib/vincula-fleet.py" \
     "${PROJECT_DIR}/bin/vcl-fleet" \
     "${PROJECT_DIR}/bin/vcl-fleet.cmd"
-assert_failure "AC-2.8-02 controller has no listen/http.server" \
+assert_failure "AC-2.8-02 / AC-2.9-10 controller has no listen/http.server" \
   grep -E 'http\.server|socket\.listen|socket\.socket' \
     "${PROJECT_DIR}/lib/vincula-fleet.py" \
     "${PROJECT_DIR}/bin/vcl-fleet" \
@@ -3714,10 +3714,10 @@ assert_success "docs/fleet.md names CLOCK_SKEW_WARN_SECONDS 30" \
   grep -q 'CLOCK_SKEW_WARN_SECONDS = 30' "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md names CLOCK_SKEW_FAIL_SECONDS 300" \
   grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md has AC-2.8-01" \
-  grep -q 'AC-2.8-01' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md has AC-2.8-10" \
-  grep -q 'AC-2.8-10' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md has AC-2.9-01" \
+  grep -q 'AC-2.9-01' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md has AC-2.9-10" \
+  grep -q 'AC-2.9-10' "${PROJECT_DIR}/docs/fleet.md"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then

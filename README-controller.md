@@ -1,6 +1,6 @@
 # Vincula controller (`vcl-fleet`)
 
-Workstation Fleet Foundation CLI. **No root, no systemd, no `/etc/vincula`.**
+Workstation Fleet Users & Audit CLI. **No root, no systemd, no `/etc/vincula`.**
 This zip is a user-local tool: it has no installer and no `release.lock`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
@@ -26,6 +26,11 @@ Config directory: `%APPDATA%\vincula\` (usually
 
 SSH uses your user `known_hosts` (`%USERPROFILE%\.ssh\known_hosts`).
 
+```bat
+bin\vcl-fleet.cmd user add alice --nodes lax,tokyo --display-name Alice
+bin\vcl-fleet.cmd sync
+```
+
 ## Linux / macOS
 
 Python 3.10+ and OpenSSH (`ssh` on PATH):
@@ -36,3 +41,11 @@ python3 bin/vcl-fleet version
 
 Config directory: `${XDG_CONFIG_HOME:-~/.config}/vincula/`.
 Override with `VCL_FLEET_HOME`.
+
+```bash
+python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice
+python3 bin/vcl-fleet sync
+```
+
+Operator guide (PARTIAL, `CURSOR_EXPIRED`, retire): see the repo `docs/fleet.md`
+(not shipped in this zip).

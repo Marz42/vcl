@@ -1,4 +1,4 @@
-# vincula V0.2.8
+# vincula V0.2.9-dev
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -20,7 +20,7 @@ sing-box 固定：1.13.18（不追 latest）
 | 用户 registry | `users.json` schema 2 |
 | Accounting | schema 3；raw 90 天 / daily 90 天 |
 
-Gate / 已知限制：[`docs/release-readiness-0.2.8.md`](docs/release-readiness-0.2.8.md) · [`docs/known-issues-0.2.8.md`](docs/known-issues-0.2.8.md)
+Gate / 已知限制：[`docs/release-readiness-0.2.9.md`](docs/release-readiness-0.2.9.md) · [`docs/known-issues-0.2.9.md`](docs/known-issues-0.2.9.md)
 
 ---
 
@@ -58,9 +58,9 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-node-0.2.8/  与  dist/vincula-node-0.2.8.tar.gz (+ .sha256)
+# → dist/vincula-node-0.2.9-dev/  与  dist/vincula-node-0.2.9-dev.tar.gz (+ .sha256)
 bash scripts/build-controller.sh
-# → dist/vincula-controller-0.2.8/  与  dist/vincula-controller-0.2.8.zip
+# → dist/vincula-controller-0.2.9-dev/  与  dist/vincula-controller-0.2.9-dev.zip
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -85,14 +85,14 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-node-0.2.8.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-node-0.2.9-dev.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
 
 **不支持** `curl | bash` 单文件安装（必须同目录有 `bin/` + `lib/`）。
 
-工作站控制器是另一个产物（zip，无 installer / 无 `release.lock`）。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key 与 AC-2.8 见 [`docs/fleet.md`](docs/fleet.md)。
+工作站控制器是另一个产物（zip，无 installer / 无 `release.lock`）。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key、user/sync/retire 与 AC-2.9 见 [`docs/fleet.md`](docs/fleet.md)。
 
 ### 环境变量
 
@@ -213,17 +213,19 @@ vcl uninstall --yes
 
 现有 UUID `node_id`（`state.json` `node.node_id` / `config.toml` `node_id` / `users.json` credentials / accounting）**就是逻辑节点 ID**，永久冻结。`name` 可改；改 IP / hostname **不**改 `node_id`。**禁止重铸**，也不引入第二套逻辑 ID。
 
-`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。
+`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。`0.2.8` → `0.2.9-dev` **不**重 mint。
 
-详见 [`docs/identity.md`](docs/identity.md)。
+Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器注入同一 `--user-id` 到每个节点。详见 [`docs/identity.md`](docs/identity.md)。
 
 ---
 
-## Fleet Foundation（工作站控制器）
+## Fleet Users & Audit（工作站控制器）
 
-0.2.8 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 对节点做只读 `vcl identity|status|verify --json`。
+0.2.9 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点。
 
-节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、status/verify 含义：[`docs/fleet.md`](docs/fleet.md)。
+节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire：[`docs/fleet.md`](docs/fleet.md)。
+
+AC 证据是 **fake-ssh 多节点夹具**（lax + tokyo），不是 live VPS。发行建议见 [`docs/release-readiness-0.2.9.md`](docs/release-readiness-0.2.9.md)。
 
 ```bash
 python3 bin/vcl-fleet version
@@ -231,6 +233,18 @@ python3 bin/vcl-fleet init
 python3 bin/vcl-fleet node add lax --host 203.0.113.10 --host-key SHA256:...
 python3 bin/vcl-fleet status
 python3 bin/vcl-fleet verify
+
+python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice
+python3 bin/vcl-fleet user list
+python3 bin/vcl-fleet user rotate alice --node lax
+python3 bin/vcl-fleet user disable alice --node lax   # --node 必填
+
+python3 bin/vcl-fleet sync
+python3 bin/vcl-fleet sync --reseed lax              # CURSOR_EXPIRED 补救；不是 0.3.0 snapshot
+python3 bin/vcl-fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-16T00:00:00Z
+python3 bin/vcl-fleet stats user alice --days 30
+
+python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 retired；不删历史
 ```
 
 ---
@@ -243,6 +257,7 @@ python3 bin/vcl-fleet verify
 - `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7**：保留 Reality / UUID / `user_id` / accounting DB
 - `0.2.6` → `0.2.7`（accounting schema 2→3，不可逆）
 - `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
+- `0.2.8` → **0.2.9-dev**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
@@ -275,5 +290,5 @@ Source of Truth：`state.json`（节点/REALITY）+ `users.json`（credential UU
 
 ## 明确不做
 
-Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、完整 fleet 用户开通 / incremental sync / UI（0.2.9+；0.2.8 仅 Fleet Foundation）、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
+Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、backup/restore / `replace-node` / UI（**0.3.0+**；fleet 用户开通与 incremental sync **已在 0.2.9**）、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
 全新安装若发现残留路径会拒绝，并在报错中打印确切的 `rm -f` / `rmdir` 清理命令；仍然没有 `vcl recover`。

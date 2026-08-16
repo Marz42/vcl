@@ -28,15 +28,17 @@ accountd 通过 `VCL_STATE_FILE`（默认 `/etc/vincula/state.json`）读 `node.
 
 `ON CONFLICT UPDATE` 不得改已有行的 `instance_id`（继续的 0.2.7 世代保持 NULL）。
 
-## `state.json` schema 1 → 2
+## `state.json` schema 1 → 2（0.2.9 保持 2）
 
-| | 0.2.7 | 0.2.8 |
+| | 0.2.7 | 0.2.8 / 0.2.9 |
 | --- | --- | --- |
 | `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） |
-| `users.json.schema_version` | `2` | `2`（不变） |
-| accounting `meta.schema_version` | `3` | **`3`**（列已存在；只改写入值，无 DDL） |
+| `users.json.schema_version` | `2` | `2`（不变；`--user-id` 是 CLI） |
+| accounting `meta.schema_version` | `3` | **`3`**（无 DDL） |
+| `fleet.json.schema_version` | — | 0.2.8 = `1`；**0.2.9 = `2`**（`status`） |
+| `fleet.db` | — | 0.2.9 schema **`1`**（工作站本地） |
 
-产品版本 bump **不**自动改 accounting schema。0.2.8 不提供自动 state 2→1；回滚 = 恢复 `backup_existing_install` 备份 + 0.2.7 安装器。
+产品版本 bump **不**自动改 accounting schema。0.2.9 不提供自动 state 2→1 或 fleet.json 2→1；节点回滚 = 恢复 `backup_existing_install` 备份 + 0.2.8 安装器。
 
 ## NULL 含义（D5）
 
@@ -51,10 +53,11 @@ physical instance identity was not tracked at that time
 ## mint 规则
 
 ```text
-fresh install 0.2.8:     node_id=UUID() 且 instance_id=UUID() 且 instance_id ≠ node_id
+fresh install 0.2.8+:    node_id=UUID() 且 instance_id=UUID() 且 instance_id ≠ node_id
 upgrade 0.2.7 → 0.2.8:   保留现有 node_id；为当前物理安装 mint instance_id=UUID()
-已是 0.2.8 再跑安装器:   保留 node_id 与 instance_id（幂等，不重 mint）
-重装/替换（0.3.0）:      同 node_id，新 instance_id —— 0.2.8 只预留语义，不实现 replace-node
+upgrade 0.2.8 → 0.2.9:   保留 node_id 与 instance_id（不重 mint）
+已是 0.2.8/0.2.9 再跑安装器: 保留 node_id 与 instance_id（幂等，不重 mint）
+重装/替换（0.3.0）:      同 node_id，新 instance_id —— 0.2.9 只预留语义，不实现 replace-node
 0.2.7 历史 accounting 行: instance_id IS NULL 保持 NULL
 新 INSERT（新连接或新 generation）: 写入当前 instance_id
 ```
@@ -79,7 +82,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `schema_version` | int | `1` |
-| `vincula_version` | string | 产品版本（冻结为 `0.2.8`） |
+| `vincula_version` | string | 产品版本（开发戳 `0.2.9-dev`；freeze 为 `0.2.9`） |
 | `node_id` | UUID | 逻辑节点 ID |
 | `instance_id` | UUID 或 `null` | 当前物理安装；缺则 `null` 且 exit 1 |
 | `node_name` | string | 可改的显示名 |
@@ -88,7 +91,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```json
 {
   "schema_version": 1,
-  "vincula_version": "0.2.8",
+  "vincula_version": "0.2.9-dev",
   "node_id": "<uuid>",
   "instance_id": "<uuid>",
   "node_name": "<str>",
@@ -96,15 +99,32 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 }
 ```
 
-## Fleet-global `user_id`（0.2.9-dev）
+## Fleet-global `user_id` 传播（0.2.9）
 
-`users.json` schema **仍为 2**（已有 `user_id`）。下列 `schema_version` 是 **CLI JSON 合同**，不是 registry schema。
+`users.json` schema **仍为 2**（已有 `user_id`）。下列 `schema_version` 是 **CLI JSON 合同**，不是 registry schema。0.2.8 → 0.2.9 **不**改 users/state/accounting schema。
 
-- 节点本地 `vcl user add TAG`（无 `--user-id`）→ 生成本地 `user_id=UUID()`
-- 控制器 `vcl user add TAG --user-id UUID` → 注入同一 fleet-global `user_id`（advanced/controller）
-- 禁止用 `display_name` 匹配用户；tag 仅 UX
+身份规则（D16）：**逻辑用户 = 开通时注入的同一个 `user_id`**。tag 仅 UX。禁止用 `display_name` 静默合并。
+
+```text
+节点本地 vcl user add TAG（无 --user-id）
+  → users_registry_mutate 生成新 user_id=UUID()（与 0.2.8 相同）
+
+节点 vcl user add TAG --user-id UUID（advanced / controller）
+  → 校验 UUID 格式
+  → 同 registry 内 user_id 已存在 → 拒绝（含不同 tag）
+  → 同 tag 已存在 → 仍拒绝（既有 "user tag already exists"）
+  → 写入该显式 user_id；credential_id 与 VLESS uuid 仍由本节点新生成
+
+控制器 vcl-fleet user add TAG --nodes a,b
+  → controller 生成一个全局 user_id（或接受 --user-id 补救）
+  → 对每个目标节点 SSH：vcl user add TAG --user-id GLOBAL --json ...
+```
+
+控制器开通前先 `vcl user show TAG --json`（或 list）做幂等：tag 不存在则 add；tag 存在且 `user_id` 相同 → 该节点 SUCCESS；tag 存在且 `user_id` 不同 → FAILED。节点 CLI 本身不幂等。
 
 `vcl user list` 人类表增加 `USER_ID` 列（完整 UUID）。`list`/`show` 的 `--json` **不含** VLESS `uuid`；`add`/`rotate` 的 URI 已含 uuid，仅这些命令输出 URI。
+
+工作站侧流程（PARTIAL、CSV、retire）见 [`fleet.md`](fleet.md)。
 
 ### `vcl user add TAG ... --json`（0.2.1）
 
