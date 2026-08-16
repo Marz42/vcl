@@ -77,6 +77,8 @@ unset VCL_FAKE_FAIL_RESTORE
 unset VCL_FAKE_FAIL_BACKUP
 unset VCL_FAKE_FAIL_SCP
 unset VCL_FAKE_REINSTALL
+unset VCL_FAKE_EXPORT_LIE_COUNT
+unset VCL_FAKE_EXPORT_LIE_NEXT_CURSOR
 readonly FAKE_SSH="${VCL_FLEET_SSH}"
 readonly FAKE_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN}"
 readonly FAKE_SCP="${VCL_FLEET_SCP}"
@@ -2461,6 +2463,33 @@ else
   fail "fake-ssh audit export --after 0 emits JSONL plus stderr meta"
 fi
 
+export_ahead_rc=0
+"$FAKE_SSH" 203.0.113.10 -- vcl audit export --after 10 --jsonl \
+  > "${TEST_TMP}/fake-export-ahead.out" 2> "${TEST_TMP}/fake-export-ahead.err" \
+  || export_ahead_rc=$?
+export_ahead_check_rc=0
+python3 - "$export_ahead_rc" "${TEST_TMP}/fake-export-ahead.out" \
+  "${TEST_TMP}/fake-export-ahead.err" <<'PY' || export_ahead_check_rc=$?
+import json, sys
+from pathlib import Path
+assert int(sys.argv[1]) == 3, sys.argv[1]
+stdout = Path(sys.argv[2]).read_text(encoding="utf-8")
+stderr = Path(sys.argv[3]).read_text(encoding="utf-8")
+assert stdout.strip() == "", stdout
+meta = json.loads(stderr.strip().splitlines()[-1])
+assert meta["ok"] is False
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["after"] == 10
+assert meta["max_event_id"] == 3
+assert meta["count"] == 0
+assert meta["next_cursor"] == 10
+PY
+if (( export_ahead_check_rc == 0 )); then
+  pass "fake-ssh audit export after=10 max=3 is CURSOR_AHEAD exit 3"
+else
+  fail "fake-ssh audit export after=10 max=3 is CURSOR_AHEAD exit 3"
+fi
+
 fail_export_rc=0
 fail_export_err=$(VCL_FAKE_FAIL_EXPORT=lax "$FAKE_SSH" 203.0.113.10 -- \
   vcl audit export --after 0 --jsonl 2>&1) || fail_export_rc=$?
@@ -2959,10 +2988,11 @@ assert_success "sync-test offline add lax" \
 sync_help_rc=0
 sync_help=$(fleet sync -h) || sync_help_rc=$?
 if (( sync_help_rc == 0 )) && [[ "$sync_help" == *"--reseed"* ]] \
-  && [[ "$sync_help" == *"--node"* ]] && [[ "$sync_help" == *"CURSOR_EXPIRED"* ]]; then
-  pass "sync -h documents --node/--reseed/CURSOR_EXPIRED"
+  && [[ "$sync_help" == *"--node"* ]] && [[ "$sync_help" == *"CURSOR_EXPIRED"* ]] \
+  && [[ "$sync_help" == *"CURSOR_AHEAD"* ]]; then
+  pass "sync -h documents --node/--reseed/CURSOR_EXPIRED/CURSOR_AHEAD"
 else
-  fail "sync -h documents --node/--reseed/CURSOR_EXPIRED (rc=${sync_help_rc})"
+  fail "sync -h documents --node/--reseed/CURSOR_EXPIRED/CURSOR_AHEAD (rc=${sync_help_rc})"
 fi
 
 unknown_sync_rc=0
@@ -3421,6 +3451,516 @@ if (( unlabeled_rc == 0 )); then
 else
   fail "jsonl rows missing node_id are not stored"
 fi
+
+validate_batch_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || validate_batch_rc=$?
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("vincula_fleet", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+def row(eid, node_id=nid, instance_id=iid):
+    return {
+        "event_id": eid,
+        "connection_id": f"c-{eid}",
+        "generation": 0,
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "node_id": node_id,
+        "instance_id": instance_id,
+        "started_at": "2026-08-10T08:00:00Z",
+        "last_seen_at": "2026-08-10T09:00:00Z",
+        "upload_bytes": 1,
+        "download_bytes": 1,
+    }
+
+def meta(**over):
+    base = {
+        "ok": True,
+        "after": 5,
+        "count": 3,
+        "next_cursor": 8,
+        "earliest_available_event_id": 1,
+        "max_event_id": 8,
+        "node_id": nid,
+        "instance_id": iid,
+    }
+    base.update(over)
+    return base
+
+rows = [row(6), row(7), row(8)]
+assert mod.validate_export_batch(
+    meta(), rows, expected_after=5, expected_node_id=nid, expected_instance_id=iid
+) == 8
+
+empty_ok = meta(count=0, next_cursor=5, max_event_id=5)
+assert mod.validate_export_batch(
+    empty_ok, [], expected_after=5, expected_node_id=nid, expected_instance_id=iid
+) == 5
+
+try:
+    mod.validate_export_batch(
+        meta(count=5), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("lying count must fail")
+except ValueError as exc:
+    assert "count=5" in str(exc), exc
+
+try:
+    mod.validate_export_batch(
+        meta(next_cursor=99), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("lying next_cursor must fail")
+except ValueError as exc:
+    assert "next_cursor=99" in str(exc), exc
+
+gapped = [row(6), row(8), row(9)]
+try:
+    mod.validate_export_batch(
+        meta(count=3, next_cursor=9, max_event_id=9), gapped,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("missing event 7 must fail")
+except ValueError as exc:
+    assert "missing event_id 7" in str(exc), exc
+
+skipped_first = [row(8), row(9), row(10)]
+try:
+    mod.validate_export_batch(
+        meta(after=6, count=3, next_cursor=10, max_event_id=10), skipped_first,
+        expected_after=6, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("first != after+1 must fail")
+except ValueError as exc:
+    assert "after+1" in str(exc), exc
+
+try:
+    mod.validate_export_batch(
+        meta(after=4), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("meta.after mismatch must fail")
+except ValueError as exc:
+    assert "after=4" in str(exc), exc
+
+other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+try:
+    mod.validate_export_batch(
+        meta(node_id=other), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("meta node_id mismatch must fail")
+except ValueError as exc:
+    assert "node_id" in str(exc), exc
+
+try:
+    mod.validate_export_batch(
+        meta(), [row(6), row(7, node_id=other), row(8)],
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("row node_id mismatch must fail")
+except ValueError as exc:
+    assert "node_id" in str(exc), exc
+
+# after=0 may start at any remaining min; rows must still be contiguous.
+from0 = meta(after=0, count=3, next_cursor=103, earliest_available_event_id=101, max_event_id=103)
+assert mod.validate_export_batch(
+    from0, [row(101), row(102), row(103)],
+    expected_after=0, expected_node_id=nid, expected_instance_id=iid,
+) == 103
+PY
+if (( validate_batch_rc == 0 )); then
+  pass "validate_export_batch rejects lying count/next_cursor/gaps"
+else
+  fail "validate_export_batch rejects lying count/next_cursor/gaps"
+fi
+
+P104_FLEET_HOME="${TEST_TMP}/fleet-home-p104"
+P104_FAKE_STATE="${TEST_TMP}/fake-p104-state"
+SAVED_P104_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$P104_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$P104_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax"
+
+assert_success "P1-04 fleet init" fleet init
+assert_success "P1-04 offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+p104_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || p104_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+node_id, instance_id = ident["node_id"], ident["instance_id"]
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+for i in range(1, 6):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"p104-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+conn.commit()
+conn.close()
+PY
+if (( p104_seed_rc == 0 )); then
+  pass "P1-04 fixture seeded events 1-5"
+else
+  fail "P1-04 fixture seeded events 1-5"
+fi
+
+p104_happy_rc=0
+p104_happy_out=$(fleet sync --node lax --json) || p104_happy_rc=$?
+p104_happy_check_rc=0
+python3 - "$p104_happy_out" "$p104_happy_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_happy_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+assert doc["ok"] is True
+row = doc["nodes"][0]
+assert row["status"] == "ok"
+assert row["after"] == 0
+assert row["last_event_id"] == 5
+assert row["inserted"] == 5
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert cur == (5, "ok"), cur
+PY
+if (( p104_happy_check_rc == 0 )); then
+  pass "P1-04 happy path sync imports 1-5 cursor=5"
+else
+  fail "P1-04 happy path sync imports 1-5 cursor=5"
+fi
+
+p104_ahead_prep_rc=0
+python3 - "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_ahead_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+home, node_id = Path(sys.argv[1]), sys.argv[2]
+conn = sqlite3.connect(str(home / "fleet.db"))
+conn.execute(
+    "UPDATE sync_cursor SET last_event_id=10, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+conn.commit()
+conn.close()
+PY
+if (( p104_ahead_prep_rc == 0 )); then
+  pass "P1-04 forced cursor=10 against max=5"
+else
+  fail "P1-04 forced cursor=10 against max=5"
+fi
+
+p104_ahead_rc=0
+p104_ahead_out=$(fleet sync --node lax --json) || p104_ahead_rc=$?
+p104_ahead_human=$(fleet sync --node lax 2>&1) || true
+p104_ahead_check_rc=0
+python3 - "$p104_ahead_out" "$p104_ahead_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" \
+  "$p104_ahead_human" <<'PY' || p104_ahead_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+assert doc["ok"] is False
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert row["error"] == "CURSOR_AHEAD"
+assert row["after"] == 10
+assert row["last_event_id"] == 10
+assert row["inserted"] == 0
+assert row["remediation"] == "vcl-fleet sync --reseed lax"
+assert "vcl-fleet sync --reseed lax" in doc["remediation"]
+human = sys.argv[5]
+assert "CURSOR_AHEAD" in human
+assert "--reseed lax" in human
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert cur == (10, "error"), cur
+PY
+if (( p104_ahead_check_rc == 0 )); then
+  pass "CURSOR_AHEAD after=10 max=5: no import, cursor unchanged, reseed"
+else
+  fail "CURSOR_AHEAD after=10 max=5: no import, cursor unchanged, reseed"
+fi
+
+p104_gap_prep_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || p104_gap_prep_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+ident = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
+instance_id = ident["instance_id"]
+acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
+# events 1-5 already present; append 6 then 8-10 (missing 7)
+for i in (6, 8, 9, 10):
+    acct.execute(
+        """
+        INSERT INTO connections (
+          event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            i, f"p104-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-11T08:00:00Z", "2026-08-11T09:00:00Z", "2026-08-11T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+acct.commit()
+acct.close()
+fleet = sqlite3.connect(str(home / "fleet.db"))
+fleet.execute(
+    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+fleet.commit()
+fleet.close()
+PY
+if (( p104_gap_prep_rc == 0 )); then
+  pass "P1-04 gap fixture: missing event 7, cursor=5"
+else
+  fail "P1-04 gap fixture: missing event 7, cursor=5"
+fi
+
+p104_gap_rc=0
+p104_gap_out=$(fleet sync --node lax --json) || p104_gap_rc=$?
+p104_gap_check_rc=0
+python3 - "$p104_gap_out" "$p104_gap_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_gap_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert "missing event_id 7" in (row.get("error") or "")
+assert row["last_event_id"] == 5
+assert row["inserted"] == 0
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+ids = [r[0] for r in conn.execute(
+    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+)]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert ids == [1, 2, 3, 4, 5], ids
+assert cur == (5, "error"), cur
+PY
+if (( p104_gap_check_rc == 0 )); then
+  pass "continuity gap missing event 7: ERROR, no import, cursor unchanged"
+else
+  fail "continuity gap missing event 7: ERROR, no import, cursor unchanged"
+fi
+
+p104_lie_prep_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_lie_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
+acct.execute("DELETE FROM connections WHERE event_id > 5")
+ident_iid = acct.execute("SELECT instance_id FROM connections LIMIT 1").fetchone()[0]
+for i in (6, 7, 8):
+    acct.execute(
+        """
+        INSERT INTO connections (
+          event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            i, f"p104-lie-{i}", 0, "u-alice", node_id, ident_iid, "alice",
+            "2026-08-12T08:00:00Z", "2026-08-12T09:00:00Z", "2026-08-12T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+acct.commit()
+acct.close()
+fleet = sqlite3.connect(str(home / "fleet.db"))
+fleet.execute(
+    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+fleet.commit()
+fleet.close()
+PY
+if (( p104_lie_prep_rc == 0 )); then
+  pass "P1-04 lying-meta fixture: remote 1-8, cursor=5"
+else
+  fail "P1-04 lying-meta fixture: remote 1-8, cursor=5"
+fi
+
+p104_count_rc=0
+p104_count_out=$(VCL_FAKE_EXPORT_LIE_COUNT=5 fleet sync --node lax --json) || p104_count_rc=$?
+p104_count_check_rc=0
+python3 - "$p104_count_out" "$p104_count_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_count_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert "count=5" in (row.get("error") or ""), row.get("error")
+assert row["last_event_id"] == 5
+assert row["inserted"] == 0
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert cur == (5, "error"), cur
+PY
+if (( p104_count_check_rc == 0 )); then
+  pass "lying meta count=5 vs 3 delivered: ERROR, no import, cursor unchanged"
+else
+  fail "lying meta count=5 vs 3 delivered: ERROR, no import, cursor unchanged"
+fi
+
+p104_next_prep_rc=0
+python3 - "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_next_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+home, node_id = Path(sys.argv[1]), sys.argv[2]
+conn = sqlite3.connect(str(home / "fleet.db"))
+conn.execute(
+    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+conn.commit()
+conn.close()
+PY
+if (( p104_next_prep_rc == 0 )); then
+  pass "P1-04 reset cursor=5 before next_cursor lie"
+else
+  fail "P1-04 reset cursor=5 before next_cursor lie"
+fi
+
+p104_next_rc=0
+p104_next_out=$(VCL_FAKE_EXPORT_LIE_NEXT_CURSOR=99 fleet sync --node lax --json) \
+  || p104_next_rc=$?
+p104_next_check_rc=0
+python3 - "$p104_next_out" "$p104_next_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_next_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert "next_cursor=99" in (row.get("error") or ""), row.get("error")
+assert row["last_event_id"] == 5
+assert row["inserted"] == 0
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert cur == (5, "error"), cur
+PY
+if (( p104_next_check_rc == 0 )); then
+  pass "lying next_cursor=99: ERROR, no import, cursor unchanged"
+else
+  fail "lying next_cursor=99: ERROR, no import, cursor unchanged"
+fi
+
+p104_retry_prep_rc=0
+python3 - "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_retry_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+home, node_id = Path(sys.argv[1]), sys.argv[2]
+conn = sqlite3.connect(str(home / "fleet.db"))
+conn.execute(
+    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+conn.commit()
+conn.close()
+PY
+
+p104_retry_rc=0
+p104_retry_out=$(fleet sync --node lax --json) || p104_retry_rc=$?
+p104_retry_check_rc=0
+python3 - "$p104_retry_out" "$p104_retry_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_retry_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+assert doc["ok"] is True
+row = doc["nodes"][0]
+assert row["status"] == "ok"
+assert row["after"] == 5
+assert row["last_event_id"] == 8
+assert row["inserted"] == 3
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+ids = [r[0] for r in conn.execute(
+    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+)]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert ids == [1, 2, 3, 4, 5, 6, 7, 8], ids
+assert cur == (8, "ok"), cur
+PY
+if (( p104_retry_check_rc == 0 )); then
+  pass "honest retry after lying meta imports 6-8 and advances cursor"
+else
+  fail "honest retry after lying meta imports 6-8 and advances cursor"
+fi
+
+export VCL_FLEET_HOME="$SAVED_P104_HOME"
+unset VCL_FAKE_EXPORT_LIE_COUNT
+unset VCL_FAKE_EXPORT_LIE_NEXT_CURSOR
 
 HIST_FLEET_HOME="${TEST_TMP}/fleet-home-instance-history"
 HIST_FAKE_STATE="${TEST_TMP}/fake-history-state"

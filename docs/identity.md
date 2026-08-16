@@ -103,7 +103,7 @@ CREATE TABLE instance_history (
 
 `status` ∈ `active` \| `retired`。同一 `node_id` **至多一行** `active`。查询：`vcl-fleet node instances NAME`（表头 `INSTANCE_ID STARTED RETIRED ENDPOINT SSH STATUS`）。
 
-replace 成功后：`sync_cursor.instance_id` 更新为新值，**保留** `last_event_id`，**不**自动 `--reseed`。`CURSOR_EXPIRED` 仍用 `vcl-fleet sync --reseed NAME`；reseed 擦本地审计缓存，**不**删 `instance_history`。
+replace 成功后：`sync_cursor.instance_id` 更新为新值，**保留** `last_event_id`，**不**自动 `--reseed`。`CURSOR_EXPIRED` 与 `CURSOR_AHEAD`（cursor 超过恢复库 `MAX(event_id)`）仍用 `vcl-fleet sync --reseed NAME`；reseed 擦本地审计缓存，**不**删 `instance_history`。
 
 ## UUID 格式
 

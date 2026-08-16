@@ -745,12 +745,15 @@ def import_audit_batch(
     rows: Sequence[Any],
     now_iso: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
+    next_cursor: Optional[int] = None,
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. Idempotent via INSERT OR IGNORE.
 
     Unlabeled rows (missing/empty node_id) are skipped and counted; they are
     never merged. A labeled row whose node_id does not match the batch
     node_id fails the whole import and leaves the cursor unchanged.
+    When next_cursor is set (sync path), the cursor is written to that
+    remote-declared value rather than local MAX(event_id).
     """
     validate_node_id(node_id)
     inst = _optional_text(instance_id)
@@ -795,19 +798,28 @@ def import_audit_batch(
         params = [
             _audit_insert_params(row, node_id, now_iso) for row in labeled
         ]
+        if next_cursor is not None and (
+            isinstance(next_cursor, bool)
+            or not isinstance(next_cursor, int)
+            or next_cursor < 0
+        ):
+            die("invalid next_cursor")
         try:
             conn.execute("BEGIN IMMEDIATE")
             if params:
                 conn.executemany(INSERT_AUDIT_EVENT_SQL, params)
             rebuild_daily_usage_for_node(conn, node_id)
-            max_row = conn.execute(
-                "SELECT MAX(event_id) FROM audit_events WHERE node_id = ?",
-                (node_id,),
-            ).fetchone()
-            if max_row is None or max_row[0] is None:
-                last_event_id = prior_cursor
+            if next_cursor is not None:
+                last_event_id = next_cursor
             else:
-                last_event_id = int(max_row[0])
+                max_row = conn.execute(
+                    "SELECT MAX(event_id) FROM audit_events WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                if max_row is None or max_row[0] is None:
+                    last_event_id = prior_cursor
+                else:
+                    last_event_id = int(max_row[0])
             conn.execute(
                 """
                 INSERT OR REPLACE INTO sync_cursor (
@@ -848,10 +860,16 @@ def import_export_jsonl(
     rows: Sequence[Any],
     now_iso: str,
     conn: Optional[sqlite3.Connection] = None,
+    next_cursor: Optional[int] = None,
 ) -> dict[str, Any]:
     """Import a node audit-export JSONL batch and advance the sync cursor."""
     return import_audit_batch(
-        node_id, instance_id, rows, now_iso=now_iso, conn=conn
+        node_id,
+        instance_id,
+        rows,
+        now_iso=now_iso,
+        conn=conn,
+        next_cursor=next_cursor,
     )
 
 
@@ -887,6 +905,120 @@ def parse_export_meta(stderr: str) -> Optional[dict[str, Any]]:
         ):
             return obj
     return None
+
+
+def _require_export_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"export meta {name} is not an int")
+    return value
+
+
+def validate_export_batch(
+    meta: Optional[dict[str, Any]],
+    rows: Sequence[Any],
+    *,
+    expected_after: int,
+    expected_node_id: str,
+    expected_instance_id: Optional[str] = None,
+) -> int:
+    """Validate remote export meta against delivered JSONL.
+
+    Returns the remote next_cursor. Any mismatch raises ValueError;
+    the caller must not import or advance the cursor.
+    """
+    if not isinstance(meta, dict):
+        raise ValueError("missing export meta")
+    if meta.get("ok") is not True:
+        raise ValueError("export meta ok is not true")
+    err = meta.get("error")
+    if err:
+        raise ValueError(f"export meta error={err}")
+
+    meta_after = _require_export_int(meta.get("after"), "after")
+    if meta_after != expected_after:
+        raise ValueError(
+            f"export meta after={meta_after} != cursor {expected_after}"
+        )
+
+    delivered = list(rows)
+    count = _require_export_int(meta.get("count"), "count")
+    if count != len(delivered):
+        raise ValueError(
+            f"export meta count={count} != delivered {len(delivered)}"
+        )
+    if count < 0:
+        raise ValueError("export meta count is negative")
+
+    meta_nid = _optional_text(meta.get("node_id"))
+    if meta_nid is not None and meta_nid != expected_node_id:
+        raise ValueError(
+            f"export meta node_id={meta_nid} != {expected_node_id}"
+        )
+    meta_iid = _optional_text(meta.get("instance_id"))
+    if (
+        expected_instance_id
+        and meta_iid is not None
+        and meta_iid != expected_instance_id
+    ):
+        raise ValueError(
+            f"export meta instance_id={meta_iid} != {expected_instance_id}"
+        )
+
+    event_ids: list[int] = []
+    for i, row in enumerate(delivered):
+        if not isinstance(row, dict):
+            raise ValueError(f"JSONL row {i} is not an object")
+        eid = row.get("event_id")
+        if isinstance(eid, bool) or not isinstance(eid, int):
+            raise ValueError(f"JSONL row {i} event_id is not an int")
+        event_ids.append(eid)
+
+        row_nid = _row_node_id(row)
+        if row_nid is not None and row_nid != expected_node_id:
+            raise ValueError(
+                f"JSONL row {i} node_id={row_nid} != {expected_node_id}"
+            )
+
+    if event_ids:
+        if expected_after > 0 and event_ids[0] != expected_after + 1:
+            raise ValueError(
+                f"export gap: first event_id={event_ids[0]} != "
+                f"after+1={expected_after + 1}"
+            )
+        for i in range(1, len(event_ids)):
+            if event_ids[i] != event_ids[i - 1] + 1:
+                raise ValueError(
+                    f"export gap: missing event_id {event_ids[i - 1] + 1}"
+                )
+
+        earliest = meta.get("earliest_available_event_id")
+        if earliest is not None:
+            earliest_i = _require_export_int(
+                earliest, "earliest_available_event_id"
+            )
+            if event_ids[0] < earliest_i:
+                raise ValueError(
+                    "row event_id below earliest_available_event_id"
+                )
+        max_event_id = meta.get("max_event_id")
+        if max_event_id is not None:
+            max_i = _require_export_int(max_event_id, "max_event_id")
+            if event_ids[-1] > max_i:
+                raise ValueError("row event_id exceeds meta max_event_id")
+
+    next_cursor = _require_export_int(meta.get("next_cursor"), "next_cursor")
+    if event_ids:
+        if next_cursor != event_ids[-1]:
+            raise ValueError(
+                f"export meta next_cursor={next_cursor} != "
+                f"last event_id {event_ids[-1]}"
+            )
+    elif next_cursor != expected_after:
+        raise ValueError(
+            f"export meta next_cursor={next_cursor} != after "
+            f"{expected_after} (empty batch)"
+        )
+    return next_cursor
 
 
 def read_sync_cursor_row(
@@ -3998,6 +4130,7 @@ def _sync_result(
     instance_id: Optional[str] = None,
     error: Optional[str] = None,
     earliest: Any = None,
+    max_event_id: Any = None,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": node["name"],
@@ -4011,9 +4144,10 @@ def _sync_result(
         "skipped_unlabeled": skipped_unlabeled,
         "error": error,
         "earliest_available_event_id": earliest,
+        "max_event_id": max_event_id,
         "remediation": None,
     }
-    if status == SYNC_STATUS_EXPIRED:
+    if status == SYNC_STATUS_EXPIRED or error == "CURSOR_AHEAD":
         row["remediation"] = remediation_sync_reseed(node["name"])
     return row
 
@@ -4062,7 +4196,9 @@ def sync_one_node(
     Replace updates cursor.instance_id and keeps last_event_id. This
     function never reseeds: an instance_id change emits WARN
     `instance changed, node_id stable` and continues from the existing
-    cursor (plan §0.9). Auto-reseed is forbidden.
+    cursor (plan §0.9). Auto-reseed is forbidden. CURSOR_AHEAD (stale
+    cursor past remote MAX) and lying export meta fail closed: no import,
+    cursor unchanged, operator is pointed at --reseed.
     """
     node_id = node["node_id"]
     cursor_row = read_sync_cursor_row(conn, node_id)
@@ -4144,6 +4280,12 @@ def sync_one_node(
     detail = _ssh_failure_detail(proc)
     meta = parse_export_meta(proc.stderr or "")
     earliest = None if meta is None else meta.get("earliest_available_event_id")
+    max_event_id = None if meta is None else meta.get("max_event_id")
+    meta_error = None
+    if isinstance(meta, dict):
+        raw_err = meta.get("error")
+        if isinstance(raw_err, str) and raw_err.strip():
+            meta_error = raw_err.strip()
 
     if proc.returncode == 255:
         last_event_id = mark_cursor_status(
@@ -4162,10 +4304,7 @@ def sync_one_node(
             error=detail or "ssh unreachable",
         )
 
-    expired = proc.returncode == 3 or (
-        isinstance(meta, dict) and meta.get("error") == "CURSOR_EXPIRED"
-    )
-    if expired:
+    if meta_error == "CURSOR_EXPIRED":
         last_event_id = mark_cursor_status(
             conn,
             node_id,
@@ -4181,6 +4320,26 @@ def sync_one_node(
             instance_id=remote_iid,
             error="CURSOR_EXPIRED",
             earliest=earliest,
+            max_event_id=max_event_id,
+        )
+
+    if meta_error == "CURSOR_AHEAD":
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error="CURSOR_AHEAD",
+            earliest=earliest,
+            max_event_id=max_event_id,
         )
 
     if proc.returncode != 0:
@@ -4220,8 +4379,40 @@ def sync_one_node(
         )
 
     try:
+        next_cursor = validate_export_batch(
+            meta,
+            rows,
+            expected_after=after,
+            expected_node_id=node_id,
+            expected_instance_id=remote_iid,
+        )
+    except ValueError as exc:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error=str(exc),
+            earliest=earliest,
+            max_event_id=max_event_id,
+        )
+
+    try:
         imported = import_export_jsonl(
-            node_id, remote_iid, rows, now_iso, conn=conn
+            node_id,
+            remote_iid,
+            rows,
+            now_iso,
+            conn=conn,
+            next_cursor=next_cursor,
         )
     except SystemExit as exc:
         last_event_id = mark_cursor_status(
@@ -4249,6 +4440,8 @@ def sync_one_node(
         ignored=int(imported["ignored"]),
         skipped_unlabeled=int(imported["skipped_unlabeled"]),
         instance_id=remote_iid,
+        earliest=earliest,
+        max_event_id=max_event_id,
     )
 
 
@@ -4267,6 +4460,14 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
                 f"  CURSOR_EXPIRED after={row.get('after')} "
                 f"earliest_available_event_id="
                 f"{row.get('earliest_available_event_id')}"
+            )
+            if row.get("remediation"):
+                remediations.append(str(row["remediation"]))
+        elif row.get("error") == "CURSOR_AHEAD":
+            lines.append(
+                f"  CURSOR_AHEAD after={row.get('after')} "
+                f"max_event_id={row.get('max_event_id')}; "
+                "stale cursor vs restored DB; reseed"
             )
             if row.get("remediation"):
                 remediations.append(str(row["remediation"]))
@@ -5282,8 +5483,13 @@ def build_parser() -> argparse.ArgumentParser:
             "`vcl audit export --after CURSOR --jsonl`, and import via "
             "INSERT OR IGNORE in one transaction. The cursor advances "
             "only after a successful import COMMIT. Remote CURSOR_EXPIRED "
-            "(exit 3) does not import; status=expired and overall exit 2. "
-            "Reseed with --reseed NAME: delete that node's local "
+            "(exit 3, meta.error=CURSOR_EXPIRED) does not import; "
+            "status=expired and overall exit 2. Remote CURSOR_AHEAD "
+            "(exit 3, meta.error=CURSOR_AHEAD: after > MAX(event_id)) "
+            "does not import; status=error and overall exit 2. Lying "
+            "export meta (count, next_cursor, event_id continuity, "
+            "node/instance) is ERROR, cursor unchanged. Both cursor "
+            "errors remediate with --reseed NAME: delete that node's local "
             "audit_events and daily_usage, reset cursor to 0, then pull "
             "the remaining window. Reseed is not a 0.3.0 snapshot. "
             "Any expired or error node → PARTIAL exit 2."

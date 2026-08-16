@@ -6,6 +6,7 @@
 **Addendum:** 2026-08-16 — B2 / P0-01a: `node replace` fail-closed.  
 **Addendum:** 2026-08-16 — B3 / P0-02: controller zip ships audit + backup modules.  
 **Addendum:** 2026-08-16 — B6 / P1-06: operation-level flock mutex on node and controller.  
+**Addendum:** 2026-08-16 — B7 / P1-04: `CURSOR_AHEAD` + strict sync batch validation.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -61,6 +62,14 @@ Controller: exclusive `fcntl.flock` on `$FLEET_HOME/.lock` for `node add/set/dis
 Concurrent `user add` / `node add` either serialize (both records present) or the waiter exits busy; no last-writer-wins lost update.
 
 Living-tree test counts after B6: `bash tests/test.sh` **1051**; standalone `bash tests/test-fleet.sh` **415**.
+
+## Addendum (2026-08-16) — B7 / P1-04 CURSOR_AHEAD and strict sync validation
+
+Living tree (`0.3.1-dev`): node `vcl audit export --after` returns **CURSOR_AHEAD** (exit **3**, `meta.error=CURSOR_AHEAD`, empty stdout, `next_cursor` unchanged) when `after > 0` and `after > MAX(event_id)`. Distinct from **CURSOR_EXPIRED** (`MIN(event_id) > after+1` or empty DB). Controller distinguishes by `meta.error`, not return code alone.
+
+`sync_one_node` validates remote meta against delivered JSONL before import: `after` matches our cursor, `count==len(rows)`, `next_cursor` is last `event_id` (or unchanged if empty), JSONL `event_id` values are contiguous, first row is `after+1` when `after>0`, and meta/row `node_id` matches identity. Any mismatch → **ERROR**, no import, cursor not advanced. Cursor advances to the remote `next_cursor` only after the full batch is validated and imported in one transaction. `CURSOR_AHEAD` prints `--reseed` (stale cursor vs a restored older DB, including `--from-backup`). Replace remains fail-closed (B2); this batch does not re-enable it.
+
+Living-tree test counts after B7: `bash tests/test.sh` **1066**; standalone `bash tests/test-fleet.sh` **430**.
 
 ### Freeze-era recommendation (historical)
 
@@ -118,7 +127,7 @@ Evidence strategy = **node unit tests** (`tests/test.sh`) plus **fake-ssh / fake
 | AC-3.0-06 | Replace mints a new `instance_id` (not a copy of `node_id`) | **PASS** (fixture) | `mint_instance_id`; staged `instance_id≠node_id` and ≠ source | `AC-3.0-06 fixture PASS: restore mints new instance_id`; fleet history two rows | Accidental `instance_id = node_id` is fail-closed | YES (fixture) |
 | AC-3.0-07 | Safe replace rotates Reality and user credentials | **PASS** (fixture) | Safe plan new Reality + new active uuid; old uuid absent from staged users | `AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials`; fleet reissue CSV | Secrets-mode restore reuses keys (not the replace default) | YES (fixture) |
 | AC-3.0-08 | `user_id` unchanged | **PASS** (fixture) | Plan copies user metadata / `user_id` | `AC-3.0-08 fixture PASS: restore keeps user_id` | None for this AC beyond live operator error | YES (fixture) |
-| AC-3.0-09 | After replace, historical accounting/audit remains queryable | **PASS** (fixture) | Accounting snapshot restored; `event_id` kept; fleet cursor `last_event_id` kept; no auto reseed | `AC-3.0-09 fixture PASS: restore keeps accounting event_id history`; `AC-3.0-09 replace sync keeps old instance rows and cursor`; reseed keeps `instance_history` | `--from-backup` without final sync may leave a cursor hole (`CURSOR_EXPIRED` → `--reseed`) | YES (fixture) |
+| AC-3.0-09 | After replace, historical accounting/audit remains queryable | **PASS** (fixture) | Accounting snapshot restored; `event_id` kept; fleet cursor `last_event_id` kept; no auto reseed | `AC-3.0-09 fixture PASS: restore keeps accounting event_id history`; `AC-3.0-09 replace sync keeps old instance rows and cursor`; reseed keeps `instance_history` | `--from-backup` without final sync may leave a cursor ahead of restored `MAX(event_id)` (`CURSOR_AHEAD` → `--reseed`) or a retention hole (`CURSOR_EXPIRED` → `--reseed`). **B7:** neither case is silent OK | YES (fixture) |
 | AC-3.0-10 | Reissue CSV is correct | **PASS** (fixture) | Header `user,node,old_credential_id,new_credential_id,vless_uri`; 0600; only previously-active users | `AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id` | Operator mishandling 0600 files after copy | YES (fixture) |
 | AC-3.0-11 | After revoke, old credential links fail | **PARTIAL / UNKNOWN** (LIVE-only) | Staged `users.json` / generated inbound `users[].uuid` omit the old uuid (code contract only) | `AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set` — **not PASS**. Live: old URI → new IP:443 fails; new URI succeeds; stop old VPS | Fixture cannot prove a handshake rejection. Old VPS still up ⇒ old IP still accepts old uuid | **No** for `READY WITH DOCUMENTED LIMITATIONS`. Live PASS required to raise `READY FOR RC` |
 | AC-3.0-12 | Failed restore does not silently destroy target or source | **PASS** (fixture) | verify-before-mutate; `pre-restore-*` safety; `VCL_RESTORE_FAIL_AFTER` test hook; fleet replace failure does not rewrite `ssh_host` | `AC-3.0-12 fixture PASS: failed restore does not mutate source or target`; mid-restore safety rollback; fleet restore/verify/backup/scp fail inject | Distributed rollback of a **committed** new-VPS restore is not promised (print `node set` back to old host) | YES (fixture) |

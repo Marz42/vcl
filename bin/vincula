@@ -2588,6 +2588,7 @@ vcl audit export — incremental connection dump (durable event_id cursor)
 --after is exclusive (0 = from the beginning of the available window).
 Stdout is JSONL (one connection object per line). Stderr is one JSON meta line.
 If retention deleted rows after a non-zero cursor, exit 3 with CURSOR_EXPIRED.
+If the cursor is past MAX(event_id), exit 3 with CURSOR_AHEAD (distinct meta.error).
 HELP
         return 0
         ;;

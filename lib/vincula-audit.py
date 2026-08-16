@@ -9,7 +9,8 @@ Window is interval-overlap (D11), not UTC day granularity (that is stats).
 
 JSONL export (`--after EVENT_ID --jsonl`) streams connections ordered by
 `event_id` for fleet incremental sync. Retention gaps return CURSOR_EXPIRED
-(exit 3); `--after 0` always succeeds for the remaining window.
+(exit 3). A cursor past MAX(event_id) returns CURSOR_AHEAD (also exit 3;
+distinct meta.error). `--after 0` always succeeds for the remaining window.
 
 Reads schema 3 connections only. Opens accounting.db read-only and never
 writes poll_baseline. Stdlib only. Targets Python 3.10+.
@@ -275,11 +276,15 @@ def export_after(
 ) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """Export connections with event_id > after, oldest event_id first.
 
-    Returns (status, rows, meta). status is "ok" or "CURSOR_EXPIRED".
+    Returns (status, rows, meta). status is "ok", "CURSOR_EXPIRED",
+    or "CURSOR_AHEAD".
     CURSOR_EXPIRED when after > 0 and the DB is empty or
     MIN(event_id) > after + 1 (retention deleted the next expected row).
+    CURSOR_AHEAD when after > 0 and MAX(event_id) is set and after is
+    greater than that max (stale cursor vs a restored older DB). Distinct
+    from CURSOR_EXPIRED. next_cursor does not advance.
     after=0 always succeeds (truncated window is a first sync, not expiry).
-    Optional limit caps returned rows (SQL LIMIT); expiry is decided first.
+    Optional limit caps returned rows (SQL LIMIT); expiry/ahead first.
     Does not write the database.
     """
     if isinstance(after, bool) or not isinstance(after, int) or after < 0:
@@ -305,6 +310,19 @@ def export_after(
         )
         meta["next_cursor"] = after
         return ("CURSOR_EXPIRED", [], meta)
+
+    ahead = after > 0 and max_event_id is not None and after > max_event_id
+    if ahead:
+        meta = _export_meta(
+            ok=False,
+            after=after,
+            earliest=earliest,
+            max_event_id=max_event_id,
+            count=0,
+            error="CURSOR_AHEAD",
+        )
+        meta["next_cursor"] = after
+        return ("CURSOR_AHEAD", [], meta)
 
     cols = ", ".join(ROW_KEYS)
     sql = (
@@ -510,7 +528,7 @@ def main_export(args: argparse.Namespace) -> int:
 
     _apply_export_identity(meta, args)
     _emit_export_meta(meta)
-    if status == "CURSOR_EXPIRED":
+    if status in ("CURSOR_EXPIRED", "CURSOR_AHEAD"):
         return 3
     for row in rows:
         print(json.dumps(row, separators=(",", ":")))

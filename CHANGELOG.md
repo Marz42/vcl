@@ -6,6 +6,7 @@
 
 Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
 
+- **B7 / P1-04:** Node `audit export` returns `CURSOR_AHEAD` (exit 3, distinct `meta.error`) when `after > MAX(event_id)`. Fleet sync validates remote meta (`after`, count vs JSONL, `next_cursor`, event_id continuity, node/instance) before import; any mismatch is ERROR, cursor unchanged, no partial batch. Stale cursor vs a restored older DB fails closed with `--reseed` guidance (replace remains fail-closed).
 - **B6 / P1-06:** Operation-level flock mutex. Node: `/run/lock/vincula.lock` (fallback `/var/lock/vincula.lock`) covers user add/set/disable/enable/rotate/import, restore, and `users.json` writers; timeout 30s → exit 4 `busy: another vincula operation in progress`; released on EXIT. Controller: `$FLEET_HOME/.lock` (fcntl) covers node add/set/disable/enable/retire/replace, sync cursor updates, and `save_registry` / `fleet.db` writers in one critical section.
 - **B5 / P1-05:** Clash `/connections` 响应必须是带 `connections` 数组的 JSON 对象。`{}` / 缺字段 / 错类型 / 非对象元素 / 超大 body 视为协议错误：不 close 打开中的连接、不刷新 `last_success_at`。合法 `{"connections":[]}` 仍关闭 stale。计数器非 int 按连接跳过。
 - **B4 / P1-01:** SSH 远程命令用 `shlex.join` 合成一条 POSIX 引用字符串；校验 `ssh_user` / `ssh_host`（DNS/IPv4/IPv6，拒绝控制字符与 shell 元字符）以及 `display_name` / `department`（拒绝 ASCII 控制字符与换行）。节点 CLI / CSV import 同步拒绝。对抗测试覆盖空格、`;`、backtick、`$()`、换行。

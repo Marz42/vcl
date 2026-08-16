@@ -336,11 +336,27 @@ node's local `audit_events` + `daily_usage`, resets `last_event_id=0`, then
 pulls `--after 0` (the remaining window). Reseed is **not** a backup;
 `instance_history` is **not** erased.
 
+### `CURSOR_AHEAD` (remote exit 3, distinct `meta.error`)
+
+When `after > 0` and `after > MAX(event_id)` (stale controller cursor vs a
+restored older `accounting.db`, including `--from-backup`), the node reports
+`CURSOR_AHEAD`. This is **not** `CURSOR_EXPIRED`. The controller does **not**
+treat it as a successful empty sync: status=`error`, cursor unchanged, no
+import, overall exit **2**, same `--reseed NAME` remediation.
+
+Sync also fail-closes if remote meta lies: `count` ≠ JSONL rows, `next_cursor`
+≠ last `event_id`, `event_id` not contiguous (`first != after+1` when
+`after>0`, or an internal hole), or `node_id` / meta `instance_id` mismatch
+with identity. Cursor advances to the remote `next_cursor` only after the
+full batch is validated and imported in one transaction.
+
 **Replace does not auto-reseed** (intended after B10; `node replace` is
 NOT IMPLEMENTED against real vcl today). After a successful replace,
 `last_event_id` is kept. Immediate `sync --node NAME` continues `--after`
-that id on the new instance. If the old host’s retention already opened a
-hole before the final sync, you still `--reseed` — you do not restore again.
+that id on the new instance. If the restored DB's max is below that cursor,
+you get `CURSOR_AHEAD` and `--reseed`. If the old host’s retention already
+opened a hole before the final sync, you still `--reseed` — you do not
+restore again.
 
 Cursor lives on disk in `fleet.db`. A new controller process reading the
 same file continues from the last committed `event_id`. Re-running sync is
@@ -508,7 +524,7 @@ is not live VPS. Full Status / Code / Test / Remaining risk table:
 | AC-2.9-09 | After retire, history still queryable; cursor survives new process | `AC-2.9-09 historical audit still queryable after retire`; sync restart COUNT unchanged |
 | AC-2.9-10 | No management API port | Static grep: no `socket.bind` / `HTTPServer` in `lib/vincula-fleet.py`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd` |
 | AC-2.9-11 | Node `--user-id`; plain add still generates; controller injects | `tests/test.sh` explicit / generated / duplicate `user_id`; fleet add shares one UUID |
-| AC-2.9-12 | `audit export --after` + idempotent sync; gap → `CURSOR_EXPIRED` + `--reseed` | `tests/test.sh` export/CURSOR_EXPIRED; `tests/test-fleet.sh` reseed / hole not imported |
+| AC-2.9-12 | `audit export --after` + idempotent sync; gap → `CURSOR_EXPIRED` + `--reseed`; `after>max` → `CURSOR_AHEAD` | `tests/test.sh` export/CURSOR_EXPIRED/CURSOR_AHEAD; `tests/test-fleet.sh` reseed / hole not imported / lying meta |
 
 ## AC-3.0 matrix (01–12)
 

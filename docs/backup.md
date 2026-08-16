@@ -299,7 +299,11 @@ exit 2). Do not run it against a real node. Fresh-host restore uses
 
 `--host-key` will be required when replace is re-enabled (new VPS, new host
 key). Replace does **not** mark the logical node `retired`. Operator notes:
-[`fleet.md`](fleet.md).
+[`fleet.md`](fleet.md). Intended replace keeps `sync_cursor.last_event_id`.
+If `--from-backup` restored an older `accounting.db` whose `MAX(event_id)` is
+below that cursor, the next `vcl-fleet sync` is **CURSOR_AHEAD** (exit 3 on
+the node; controller does not import or advance). Remedy: `vcl-fleet sync
+--reseed NAME`.
 
 `scp` of `.tar` / `.tar.age` / reissue CSV is allowed. `scp` of live
 `accounting.db` is still forbidden.

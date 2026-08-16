@@ -4051,6 +4051,22 @@ assert status == "ok"
 assert [r["event_id"] for r in rows] == [102, 103]
 assert meta["next_cursor"] == 103
 
+status, rows, meta = audit.export_after(ro, 103)
+assert status == "ok" and rows == []
+assert meta["next_cursor"] == 103
+assert meta["count"] == 0
+
+status, rows, meta = audit.export_after(ro, 104)
+assert status == "CURSOR_AHEAD", status
+assert rows == []
+assert meta["ok"] is False
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["after"] == 104
+assert meta["max_event_id"] == 103
+assert meta["earliest_available_event_id"] == 101
+assert meta["count"] == 0
+assert meta["next_cursor"] == 104
+
 status, rows, meta = audit.export_after(ro, 0, limit=2)
 assert status == "ok"
 assert [r["event_id"] for r in rows] == [101, 102]
@@ -4089,6 +4105,48 @@ assert meta["error"] == "CURSOR_EXPIRED"
 assert meta["earliest_available_event_id"] is None
 ero.close()
 
+ahead_db = base / "ahead.db"
+ahead_conn = acct.open_db(str(ahead_db))
+for i in range(1, 6):
+    ahead_conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"ahead-{i}", 0, "u-alice", "node-1", None, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+ahead_conn.commit()
+ahead_bounds = ahead_conn.execute(
+    "SELECT MIN(event_id), MAX(event_id) FROM connections"
+).fetchone()
+assert tuple(ahead_bounds) == (1, 5), tuple(ahead_bounds)
+ahead_conn.close()
+aro = audit.open_db_readonly(str(ahead_db))
+status, rows, meta = audit.export_after(aro, 10)
+assert status == "CURSOR_AHEAD", status
+assert rows == []
+assert meta["ok"] is False
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["after"] == 10
+assert meta["max_event_id"] == 5
+assert meta["count"] == 0
+assert meta["next_cursor"] == 10
+status, rows, meta = audit.export_after(aro, 5)
+assert status == "ok" and rows == []
+assert meta["next_cursor"] == 5
+status, rows, meta = audit.export_after(aro, 0)
+assert status == "ok"
+assert [r["event_id"] for r in rows] == [1, 2, 3, 4, 5]
+aro.close()
+
 def run(*extra, dbpath=None, check=True):
     cmd = [
         sys.executable, audit_py,
@@ -4123,6 +4181,26 @@ assert meta["error"] == "CURSOR_EXPIRED"
 assert meta["ok"] is False
 assert meta["earliest_available_event_id"] == 101
 assert meta["count"] == 0
+
+out = run("--after", "104", "--jsonl", check=False)
+assert out.returncode == 3, out.returncode
+assert out.stdout.strip() == ""
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["ok"] is False
+assert meta["max_event_id"] == 103
+assert meta["after"] == 104
+assert meta["next_cursor"] == 104
+assert meta["count"] == 0
+
+out = run("--after", "10", "--jsonl", dbpath=ahead_db, check=False)
+assert out.returncode == 3, out.returncode
+assert out.stdout.strip() == ""
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["max_event_id"] == 5
+assert meta["after"] == 10
+assert meta["next_cursor"] == 10
 
 out = run("--after", "0", "--jsonl", "--limit", "1")
 assert out.returncode == 0
@@ -4164,9 +4242,9 @@ chk.close()
 print("export-ok")
 PY
   then
-    pass "vincula-audit export --after jsonl CURSOR_EXPIRED and --limit"
+    pass "vincula-audit export --after jsonl CURSOR_EXPIRED CURSOR_AHEAD and --limit"
   else
-    fail "vincula-audit export --after jsonl CURSOR_EXPIRED and --limit"
+    fail "vincula-audit export --after jsonl CURSOR_EXPIRED CURSOR_AHEAD and --limit"
   fi
 fi
 

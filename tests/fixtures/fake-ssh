@@ -615,6 +615,11 @@ def _inline_export_after(
             meta["ok"] = False
             meta["error"] = "CURSOR_EXPIRED"
             return "CURSOR_EXPIRED", [], meta
+        ahead = after > 0 and max_event_id is not None and after > max_event_id
+        if ahead:
+            meta["ok"] = False
+            meta["error"] = "CURSOR_AHEAD"
+            return "CURSOR_AHEAD", [], meta
         sql = (
             f"SELECT {', '.join(keys)} FROM connections WHERE event_id > ? "
             "ORDER BY event_id ASC"
@@ -677,9 +682,26 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
         row["node_id"] = node_id
         row["instance_id"] = instance_id
 
+    lie_count = os.environ.get("VCL_FAKE_EXPORT_LIE_COUNT", "").strip()
+    if lie_count:
+        try:
+            meta["count"] = int(lie_count)
+        except ValueError:
+            sys.stderr.write("fake-ssh: VCL_FAKE_EXPORT_LIE_COUNT must be an integer\n")
+            return 1
+    lie_next = os.environ.get("VCL_FAKE_EXPORT_LIE_NEXT_CURSOR", "").strip()
+    if lie_next:
+        try:
+            meta["next_cursor"] = int(lie_next)
+        except ValueError:
+            sys.stderr.write(
+                "fake-ssh: VCL_FAKE_EXPORT_LIE_NEXT_CURSOR must be an integer\n"
+            )
+            return 1
+
     sys.stderr.write(json.dumps(meta, separators=(",", ":")))
     sys.stderr.write("\n")
-    if status == "CURSOR_EXPIRED":
+    if status in ("CURSOR_EXPIRED", "CURSOR_AHEAD"):
         return 3
     for row in rows:
         sys.stdout.write(json.dumps(row, separators=(",", ":")))

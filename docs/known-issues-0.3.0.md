@@ -25,7 +25,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | No live VPS replace | AC-3.0 replace CI = lax → lax2 **fixtures**, not two public VPS. Live secretless replace + old URI on the new IP is still required before `READY FOR RC`. **Additionally blocked by P0-01** (even a live run would fail the real CLI contract) |
 | AC-3.0-11 is LIVE-only | “Old credential links fail” needs a real VLESS handshake against the new sing-box. Fixtures only prove the old uuid is absent from inbound `users` (**PARTIAL**). Unit tests must **not** report PASS |
 | `age` is a system package | Secretless backups never call age. `--include-secrets` requires `age` (or `$VCL_AGE_BIN`) on PATH. 0.3.0 does not bundle it and does not implement passphrase mode |
-| `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Skips final sync. WARN in stderr. Remaining hole is still `--reseed`, not another restore |
+| `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Skips final sync. WARN in stderr. Next sync with a kept cursor past restored `MAX(event_id)` is `CURSOR_AHEAD` (or `CURSOR_EXPIRED` for a retention hole). Remedy is `--reseed`, not another restore |
 | Old VPS still up | After safe restore, old uuid + old IP may still work until the old machine is stopped. Cut-over is operational, not a distributed revoke |
 | Node restore is fresh-node only | Existing `$STATE_DIR/VERSION` → `Refusing to overwrite an existing Vincula install.` `--replace-node` is **not** a node CLI flag. (Intentional node contract. The P0 is fleet replace contradicting it — see P0-01.) |
 | `fleet.db` schema 2 irreversible | No automatic 2→1. A 0.2.9 controller will not open schema 2. Rollback the workstation `$FLEET_HOME` copy taken before upgrade |
@@ -73,6 +73,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P1-01 SSH remote argv not POSIX-quoted | B4: `ssh_argv` sends one `shlex.join` string; `ssh_user`/`ssh_host` and `display_name`/`department` reject control characters; node CLI / CSV import match. Spaces in display names stay one remote arg |
 | P1-05 Clash 200 + bad envelope treated as empty snapshot | B5: `/connections` body must be an object with `connections` a list of objects. `{}` / wrong types / oversized body are protocol errors (no close-all, no `last_success_at` refresh). Legal `{"connections":[]}` still closes stale. Non-int counters are skipped per connection |
 | P1-06 no operation-level mutex (lost updates) | B6: node `flock` on `/run/lock/vincula.lock` (fallback `/var/lock/vincula.lock`) covers user mutations, restore, and `users.json` writers; controller `fcntl` on `$FLEET_HOME/.lock` covers registry mutations and sync/`fleet.db` cursor updates. Timeout 30s → exit 4 `busy: another vincula operation in progress`. flock is fd-based (released on process exit); not a PID file |
+| P1-04 audit cursor silently dropped data | B7: node export `CURSOR_AHEAD` (exit 3) when `after > MAX(event_id)`; fleet sync validates meta/JSONL before import and does not advance a stale cursor. `--from-backup` / kept cursor vs an older restored DB fails closed with `--reseed` |
 
 ## Related docs
 
