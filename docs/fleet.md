@@ -19,7 +19,7 @@ Gate: [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md) ·
 | --- | --- |
 | Python | **3.10+** on PATH (`py -3` / `python` on Windows, `python3` on Unix) |
 | SSH | **system OpenSSH client** (`ssh.exe` / `scp.exe` / `ssh-keyscan.exe` on Windows; `ssh` / `scp` / `ssh-keyscan` on Linux/macOS) |
-| Node | 0.2.9 (or 0.2.9-dev) with `vcl identity --json`, `vcl user * --json`, and `vcl audit export --after N --jsonl` reachable as the SSH user (default `root`) |
+| Node | 0.2.9 (or later) with `vcl identity --json`, `vcl user * --json`, and `vcl audit export --after N --jsonl` reachable as the SSH user (default `root`) |
 | Not bundled | CPython, OpenSSH, paramiko, pip packages |
 
 Vincula does not ship a management HTTP API. The only workstation → node
@@ -88,7 +88,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet stats user\|top users\|top hosts\|node NAME --days N` | `daily_usage` with **node** attribution |
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet version` | `vcl-fleet 0.2.9-dev` (freeze drops `-dev`) |
+| `vcl-fleet version` | `vcl-fleet 0.2.9` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.

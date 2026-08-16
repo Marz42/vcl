@@ -119,9 +119,9 @@ assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
 assert_success "vcl-fleet Windows entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 
-assert_equal "vcl-fleet version" "vcl-fleet 0.2.9-dev" \
+assert_equal "vcl-fleet version" "vcl-fleet 0.2.9" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
-assert_equal "vcl-fleet.py version" "vcl-fleet 0.2.9-dev" \
+assert_equal "vcl-fleet.py version" "vcl-fleet 0.2.9" \
   "$(fleet version)"
 
 assert_success "init creates fleet.json" fleet init
@@ -957,7 +957,7 @@ if (( verify_rc != 0 )); then
 else
   fail "verify three-fixture exits non-zero (sg FAIL) (rc=${verify_rc})"
 fi
-assert_success "verify reports lax version" grep -q '0.2.9-dev' <<< "$verify_out"
+assert_success "verify reports lax version" grep -q '0.2.9' <<< "$verify_out"
 assert_success "verify reports lax node_id" grep -q "$LAX_REMOTE_NODE_ID" <<< "$verify_out"
 assert_success "verify reports lax instance_id" \
   grep -q 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' <<< "$verify_out"
@@ -988,7 +988,7 @@ need = [
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
 assert nodes["lax"]["ok"] is True
-assert nodes["lax"]["vincula_version"] == "0.2.9-dev"
+assert nodes["lax"]["vincula_version"] == "0.2.9"
 assert nodes["lax"]["node_id"] == lax_id
 assert nodes["lax"]["ssh"] == "OK"
 assert nodes["lax"]["proxy"] == "OK"

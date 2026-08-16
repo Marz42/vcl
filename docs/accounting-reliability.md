@@ -1,11 +1,11 @@
-# Accounting reliability (V0.2.7 / V0.2.8)
+# Accounting reliability (V0.2.7 / V0.2.8 / V0.2.9)
 
 Vincula does **not** ship a patched sing-box binary. Accounting is built on:
 
 1. Stock sing-box **1.13.18** Clash API (`experimental.clash_api` bound to `127.0.0.1` only)
 2. Per-user `acct/<tag>` direct outbounds + `auth_user` route rules
 
-Clash API poll is the **only** production collector in 0.2.7 and 0.2.8. There is no file-backed ingest path.
+Clash API poll is the **only** production collector in 0.2.7 through 0.2.9. There is no file-backed ingest path.
 
 ## Status: Approximate — Reliable Accounting is NOT done
 

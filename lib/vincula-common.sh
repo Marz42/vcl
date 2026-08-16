@@ -4,7 +4,7 @@
 
 # shellcheck shell=bash
 
-readonly VINCULA_COMMON_VERSION="0.2.9-dev"
+readonly VINCULA_COMMON_VERSION="0.2.9"
 
 json_quoted_field() {
   local file=$1 field=$2

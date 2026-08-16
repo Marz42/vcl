@@ -1,4 +1,4 @@
-# 身份合同（0.2.9-dev）
+# 身份合同（0.2.9）
 
 `node_id` 是逻辑节点身份，永久冻结。`instance_id` 是一次物理安装。二者均为 UUID，且 **不得相等**。
 
@@ -82,7 +82,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `schema_version` | int | `1` |
-| `vincula_version` | string | 产品版本（开发戳 `0.2.9-dev`；freeze 为 `0.2.9`） |
+| `vincula_version` | string | 产品版本（冻结为 `0.2.9`） |
 | `node_id` | UUID | 逻辑节点 ID |
 | `instance_id` | UUID 或 `null` | 当前物理安装；缺则 `null` 且 exit 1 |
 | `node_name` | string | 可改的显示名 |
@@ -91,7 +91,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```json
 {
   "schema_version": 1,
-  "vincula_version": "0.2.9-dev",
+  "vincula_version": "0.2.9",
   "node_id": "<uuid>",
   "instance_id": "<uuid>",
   "node_name": "<str>",

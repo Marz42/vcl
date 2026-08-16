@@ -4,7 +4,7 @@
 
 ## 0.2.9
 
-Fleet Users & Audit。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**；`users.json` schema **仍为 2**；`state.json` schema **仍为 2**。产品开发戳 `0.2.9-dev`（freeze 批去掉 `-dev`）。
+Fleet Users & Audit。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**；`users.json` schema **仍为 2**；`state.json` schema **仍为 2**。
 
 ### 身份传播（D16）
 

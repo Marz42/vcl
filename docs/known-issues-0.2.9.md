@@ -4,7 +4,7 @@
 
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** — fake-ssh multi-node fixture coverage for Fleet Users & Audit is green; there is no Windows 11 live `vcl-fleet.cmd` run and no live SSH against real VPS nodes (provision / sync / retire). 0.2.9 does **not** use the D20 24h soak gate. See [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md).
 
-Known P0/P1 at this docs gate: **0**.
+Known P0/P1 at freeze: **0**.
 
 ## Product limitations
 

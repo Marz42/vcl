@@ -1,6 +1,6 @@
 # Vincula 0.2.9 Release Readiness
 
-**Tree version:** 0.2.9-dev (docs gate; freeze batch drops `-dev`)  
+**Tree version:** 0.2.9  
 **Date:** 2026-08-16  
 **Focus:** Fleet Users & Audit (`--user-id`, PARTIAL multi-node provision, `audit export --after` / `CURSOR_EXPIRED`, `vcl-fleet sync` / `fleet.db`, fleet audit/stats with node tags, `node retire`, `fleet.json` schema 2)  
 **Companion:** [`known-issues-0.2.9.md`](known-issues-0.2.9.md) · Operator: [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §6 / §9 / §10 / §11 / D9 / D15 / D16.
@@ -26,7 +26,7 @@ Fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`. Raise to `READY
 
 | Item | Status |
 | --- | --- |
-| Product version `0.2.9-dev` (freeze → `0.2.9`) | PASS — constants + tests |
+| Product version `0.2.9` (no `-dev`) | PASS — constants + tests |
 | Upgrade allowlist includes `0.2.8`, excludes `0.2.9` / `0.2.9-dev` | PASS (unit) |
 | `state.json` schema stays **2**; no remint of `instance_id` | PASS (unit) |
 | `users.json` schema stays **2**; `--user-id` is CLI, not a schema bump | PASS (unit) |
@@ -114,3 +114,92 @@ backup/restore, age, Python SQLite Backup API, `vcl snapshot export`, `replace-n
 ## Policy after freeze
 
 After tag `v0.2.9`, prefer P0/P1 fixes only. Backup/restore and `replace-node` belong in 0.3.0+. A Win11 live controller run plus live multi-node SSH operator verification (`user add` + `sync`) is required before raising this recommendation to `READY FOR RC`.
+
+## Completion report (SPEC §19)
+
+Filled at freeze `0.2.9` (Batch 12-freeze). Historical 0.2.8/0.2.7 docs and `docs/specs/` were not rewritten.
+
+### 1. Changed files
+
+**Milestone (0.2.8 → 0.2.9):** `vincula.sh`, `bin/vincula`, `lib/vincula-common.sh`, `lib/vincula-audit.py`, `lib/vincula-fleet.py`, `lib/vincula-accountd.service`, `tests/test.sh`, `tests/test-fleet.sh`, `tests/fixtures/fake-ssh`, identity fixtures (`identity-sample.json`, `nodes/{lax,tokyo,copied}/identity.json`, `lax/identity-reinstall.json`), `README.md`, `README-controller.md`, `CHANGELOG.md`, `docs/fleet.md`, `docs/identity.md`, `docs/known-issues-0.2.9.md`, `docs/release-readiness-0.2.9.md`, `release.lock`, `vincula.sh.sha256`.
+
+**Freeze-only (drop `-dev` + lock regen):** the product stamps above plus `vincula-bootstrap.sh` comment URLs (`0.2.8` → `0.2.9` tarball examples), `docs/accounting-reliability.md` title (collector unchanged through 0.2.9), and regenerated `release.lock` / `vincula.sh.sha256`. Fleet files remain **out** of the node lock.
+
+Node first-party lock members stay **8**: `vincula.sh`, `vincula-bootstrap.sh`, `bin/vincula`, `lib/vincula-common.sh`, `lib/vincula-accountd.py`, `lib/vincula-stats.py`, `lib/vincula-audit.py`, `lib/vincula-accountd.service`. No `vincula-fleet.py`.
+
+### 2. Schema changes
+
+| Format | 0.2.8 | 0.2.9 | Notes |
+| --- | --- | --- | --- |
+| Product `VINCULA_VERSION` / `VCL_FLEET_VERSION` | `0.2.8` | **`0.2.9`** | Freeze dropped `-dev` only |
+| `state.json.schema_version` | 2 | **2** | No remint of `instance_id` |
+| `users.json.schema_version` | 2 | **2** | `--user-id` is CLI, not a schema bump |
+| accounting `meta.schema_version` | 3 | **3** | No DDL; export is read-only |
+| `fleet.json.schema_version` | 1 | **2** | Adds `status` (`active` \| `disabled` \| `retired`) |
+| `fleet.db` `meta.schema_version` | — | **1** | New workstation cache |
+
+### 3. CLI changes
+
+**Node:** `vcl user add --user-id UUID --json`; `vcl user list|show|rotate|enable|disable --json` (contracts 0.2.1–0.2.4); human `list` adds `USER_ID`; `vcl audit export --after EVENT_ID --jsonl` (meta on stderr; `CURSOR_EXPIRED` exit 3).
+
+**Controller:** `vcl-fleet user add|list|show|enable|disable|rotate|import|export`; `vcl-fleet sync [--node NAME] [--reseed NAME]`; `vcl-fleet audit user`; `vcl-fleet stats …`; `vcl-fleet node retire NAME`. PARTIAL → exit **2**. No node `vcl fleet` subcommand.
+
+### 4. Migration path
+
+Supported sources: `0.1.0`–`0.1.5` and `0.2.0`–`0.2.8` → **0.2.9**. Allowlist includes `0.2.8`, excludes `0.2.9` / `0.2.9-dev`. Same-version re-run verifies both planes and does not rotate credentials or remint `instance_id`. D18 does **not** re-migrate daily=730 from 0.2.8. Workstation: `fleet.json` 1→2 on next save; `fleet.db` created on first open/sync.
+
+### 5. Rollback path
+
+No automatic `fleet.json` 2→1. Node schemas were not bumped. Nodes: restore `backup_existing_install` **and** the matching **0.2.8** installer. Workstation: replace the zip with the 0.2.8 controller; restore pre-upgrade `$FLEET_HOME` or drop `fleet.db` (0.2.8 has none). Schema-2 `fleet.json` is unsupported on a 0.2.8 binary.
+
+### 6. Security impact
+
+No new listen port (`socket.bind` / `HTTPServer` absent — AC-2.9-10). Credential CSV mode **0600** + stderr WARNING. D14 unchanged: no `StrictHostKeyChecking=no`, no `UserKnownHostsFile=/dev/null`, no paramiko, OpenSSH argv lists only. Controller remains non-root, no systemd, no `/etc/vincula`. Node `release.lock` still 8 files; controller zip still has **no** lock.
+
+### 7. Tests executed
+
+Freeze verification: `bash -n` on all first-party bash (installer, helper, common, scripts, `tests/test.sh`, `tests/test-fleet.sh`); `python3 -m py_compile` on `lib/*.py`, `bin/vcl-fleet`, `tests/fixtures/fake-ssh`; `bash tests/test.sh` (sources fleet); `bash tests/test-fleet.sh` (standalone); `bash scripts/gen-release-lock.sh`.
+
+| Suite | Count | Result |
+| --- | --- | --- |
+| `bash tests/test.sh` (sources `tests/test-fleet.sh`) | **837** | green |
+| `bash tests/test-fleet.sh` (standalone) | **334** | green |
+
+P0/P1 at freeze: **0**. No live Win11 / live VPS / live 0.2.8→0.2.9 upgrade run.
+
+### 8. Failure-injection results
+
+| Inject | Result |
+| --- | --- |
+| `VCL_FAKE_FAIL_USER_ADD=tokyo` (`user add bob`) | exit 2, `state=PARTIAL`, tokyo `FAILED`, remediation `--user-id`; overall not `SUCCESS`; no rollback of lax |
+| Export fail during `node retire` | retire refused; registry stays `active` |
+| Cursor gap (`after` behind MIN) | node `CURSOR_EXPIRED` exit 3, stdout empty, no hole import; COUNT unchanged |
+| `--reseed NAME` after expire | remaining window imported; cursor advanced |
+| Sync interrupted / re-run (new Python process) | `COUNT(*)` and cursor unchanged (idempotent) |
+| jsonl row missing `node_id` | dropped + WARN; not inserted |
+| Disable without `--node` | non-zero; `refusing fleet-wide disable` |
+
+### 9. Acceptance criteria matrix
+
+AC-2.9-01…12: all **PASS** on fake-ssh fixtures / static grep as tabulated above. None marked PASS from live VPS or soak. Original English SPEC AC-2.8-08/09 (incremental sync / durable cursor) are **implemented** here as AC-2.9-08/09/12.
+
+### 10. Known limitations
+
+See [`known-issues-0.2.9.md`](known-issues-0.2.9.md). Headline: no Win11 live `vcl-fleet.cmd`; no live multi-node VPS; fleet stats not byte-identical with node `vcl stats`; retire cannot disable the last enabled user; `--reseed` is not a 0.3.0 snapshot; D20 soak is not a 0.2.9 gate; PARTIAL has no distributed rollback guarantee.
+
+### 11. Version / schema bump explanation
+
+Product bump `0.2.8` → `0.2.9-dev` happened at the start of the milestone (Batch 8-version). Freeze only removes `-dev`. Accounting / users / state schemas are **not** tied to the product stamp (§9.5). `fleet.json` 1→2 and new `fleet.db` schema 1 are the only persistence bumps.
+
+### 12. Release recommendation
+
+**READY WITH DOCUMENTED LIMITATIONS**
+
+CI fake-ssh all-green, P0/P1=0, no Win11 live `vcl-fleet.cmd` and no live SSH user add/sync. Raise to `READY FOR RC` only after those two live checks. Not `NOT READY FOR RC`: documented limits do not break the 0.2.9 contract.
+
+### Extra (plan §7)
+
+13. **Confirmed:** incremental sync + `fleet.db` cursor (original AC-2.8-08/09 semantics) landed as AC-2.9-08/09/12.
+14. **PARTIAL negative:** tokyo FAIL → exit 2, not full success (AC-2.9-06).
+15. **CURSOR_EXPIRED + `--reseed`:** node exit 3 + empty stdout; fleet does not import holes; reseed pulls remaining window (AC-2.9-12).
+16. **Dual artifacts:** node `release.lock` still **8** files (fleet not included); controller zip still four members and **no** lock; `fleet.db` logic lives in `vincula-fleet.py`.

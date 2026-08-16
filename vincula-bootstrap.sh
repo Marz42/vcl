@@ -2,7 +2,7 @@
 # vincula-bootstrap.sh — download a pinned Vincula release tarball, verify, exec installer.
 #
 # Usage:
-#   RELEASE_URL=https://example.com/vincula-node-0.2.8.tar.gz bash vincula-bootstrap.sh
+#   RELEASE_URL=https://example.com/vincula-node-0.2.9.tar.gz bash vincula-bootstrap.sh
 #
 # For local/dev installs from a full git/release tree, run sudo bash vincula.sh
 # directly instead of this bootstrapper (no single-file curl|bash install).
@@ -16,7 +16,7 @@ IFS=$'\n\t'
 umask 077
 
 # Placeholder for release engineering to embed a default pin:
-# EMBEDDED_RELEASE_URL="https://example.com/releases/vincula-node-0.2.8.tar.gz"
+# EMBEDDED_RELEASE_URL="https://example.com/releases/vincula-node-0.2.9.tar.gz"
 # EMBEDDED_RELEASE_SHA256="<hex>"
 EMBEDDED_RELEASE_URL="${EMBEDDED_RELEASE_URL:-}"
 EMBEDDED_RELEASE_SHA256="${EMBEDDED_RELEASE_SHA256:-}"
