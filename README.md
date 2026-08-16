@@ -1,4 +1,4 @@
-# vincula V0.2.8-dev
+# vincula V0.2.8
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -20,7 +20,7 @@ sing-box 固定：1.13.18（不追 latest）
 | 用户 registry | `users.json` schema 2 |
 | Accounting | schema 3；raw 90 天 / daily 90 天 |
 
-Gate / 已知限制：[`docs/release-readiness-0.2.7.md`](docs/release-readiness-0.2.7.md) · [`docs/known-issues-0.2.7.md`](docs/known-issues-0.2.7.md)
+Gate / 已知限制：[`docs/release-readiness-0.2.8.md`](docs/release-readiness-0.2.8.md) · [`docs/known-issues-0.2.8.md`](docs/known-issues-0.2.8.md)
 
 ---
 
@@ -58,9 +58,9 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-node-0.2.8-dev/  与  dist/vincula-node-0.2.8-dev.tar.gz (+ .sha256)
+# → dist/vincula-node-0.2.8/  与  dist/vincula-node-0.2.8.tar.gz (+ .sha256)
 bash scripts/build-controller.sh
-# → dist/vincula-controller-0.2.8-dev/  与  dist/vincula-controller-0.2.8-dev.zip
+# → dist/vincula-controller-0.2.8/  与  dist/vincula-controller-0.2.8.zip
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -85,7 +85,7 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-node-0.2.8-dev.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-node-0.2.8.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -235,7 +235,7 @@ python3 bin/vcl-fleet verify
 - 同版本：校验双平面，不轮换凭据
 - `0.1.0`–`0.1.5` 或 `0.2.0`–`0.2.6` → **0.2.7**：保留 Reality / UUID / `user_id` / accounting DB
 - `0.2.6` → `0.2.7`（accounting schema 2→3，不可逆）
-- `0.2.7` → **0.2.8-dev**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
+- `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 

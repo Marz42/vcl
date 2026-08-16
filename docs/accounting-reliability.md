@@ -1,11 +1,11 @@
-# Accounting reliability (V0.2.7)
+# Accounting reliability (V0.2.7 / V0.2.8)
 
 Vincula does **not** ship a patched sing-box binary. Accounting is built on:
 
 1. Stock sing-box **1.13.18** Clash API (`experimental.clash_api` bound to `127.0.0.1` only)
 2. Per-user `acct/<tag>` direct outbounds + `auth_user` route rules
 
-Clash API poll is the **only** production collector in 0.2.7. There is no file-backed ingest path.
+Clash API poll is the **only** production collector in 0.2.7 and 0.2.8. There is no file-backed ingest path.
 
 ## Status: Approximate — Reliable Accounting is NOT done
 
@@ -27,7 +27,7 @@ SQLite `accounting.db` uses `meta.schema_version = 3`.
 | `connections.event_id` | `INTEGER PRIMARY KEY AUTOINCREMENT` (deleted ids are not reused) |
 | `connections.generation` | Session generation for a Clash `connection_id`. Migrated rows start at **0** |
 | `UNIQUE (connection_id, generation)` | One open row per generation; a counter reset inserts a new generation |
-| `connections.instance_id` | Always NULL in 0.2.7 (mint in 0.2.8; never copied from `node_id`) |
+| `connections.instance_id` | 0.2.8: new INSERT writes `state.json` SoT (`node.instance_id`). Historical 0.2.7 NULL rows stay NULL. Never copied from `node_id`. The DB is not the SoT |
 | `poll_baseline` | Durable Clash counters + accounted totals for the open generation |
 | `daily_usage` | Unchanged UTC-day rollup keyed by `(date, user_id, destination_host)` |
 

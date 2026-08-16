@@ -1,4 +1,4 @@
-# Fleet operator guide (0.2.8-dev)
+# Fleet operator guide (0.2.8)
 
 Workstation **Fleet Foundation** controller. It registers nodes, then runs
 read-only remote `vcl identity|status|verify --json` over **system OpenSSH**.
@@ -16,7 +16,7 @@ Full identity contract: [`identity.md`](identity.md).
 | --- | --- |
 | Python | **3.10+** on PATH (`py -3` / `python` on Windows, `python3` on Unix) |
 | SSH | **system OpenSSH client** (`ssh.exe` / `scp.exe` / `ssh-keyscan.exe` on Windows; `ssh` / `scp` / `ssh-keyscan` on Linux/macOS) |
-| Node | 0.2.8-dev (or later) with `vcl identity --json` reachable as the SSH user (default `root`) |
+| Node | 0.2.8 (or later) with `vcl identity --json` reachable as the SSH user (default `root`) |
 | Not bundled | CPython, OpenSSH, paramiko, pip packages |
 
 Vincula does not ship a management HTTP API. The only workstation → node
@@ -71,7 +71,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet node disable NAME` / `enable NAME` | Flip `enabled` |
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet version` | `vcl-fleet 0.2.8-dev` |
+| `vcl-fleet version` | `vcl-fleet 0.2.8` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.

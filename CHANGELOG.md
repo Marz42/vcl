@@ -2,6 +2,55 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.2.8
+
+Fleet Foundation。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**。工作站控制器是用户级工具，**无** `release.lock` 链。
+
+### 身份（D4 / D5）
+
+- `node_id` 冻结为逻辑节点 ID；改 name / IP / hostname **不**重铸
+- `instance_id` = 一次物理安装；SoT = `state.json` `node.instance_id`；**不**写入 `config.toml` 或 `fleet.json`
+- `state.json` schema **1 → 2**（`node.instance_id` 必填 UUID，且不得等于 `node_id`）
+- 升级 `0.2.7` → `0.2.8`：保留 `node_id`，为当前安装 mint `instance_id`
+- 新 accounting INSERT 从 SoT 写入 `connections.instance_id`；`ON CONFLICT UPDATE` 不改该列
+- 0.2.7 历史行保持 `instance_id IS NULL`；禁止把 `node_id` 复制进 `instance_id`
+- `vcl identity [--json]`：合同 `schema_version` 1（identity JSON，不是 state schema）
+- `vcl status --json` / `vcl verify --json`：远程只读合同；人类模式零参数行为不变
+
+### Fleet 控制器（D13 / D14）
+
+- 新入口 `vcl-fleet`（Unix）+ `vcl-fleet.cmd`（Windows 11 first-class）；SPEC `vcl fleet <sub>` ≡ `vcl-fleet <sub>`
+- 节点 `vcl` **无** `fleet` 子命令
+- 用户级 `fleet.json` schema 1（registry）；不存 password / `instance_id`
+- 系统 OpenSSH 传输；可注入 `VCL_FLEET_SSH` / `VCL_FLEET_SSH_KEYSCAN`；禁止 paramiko
+- host-key：默认用户 `known_hosts`；禁止 `StrictHostKeyChecking=no` 与 `UserKnownHostsFile=/dev/null`；非 TTY 必须 `--host-key SHA256:...`
+- `vcl-fleet status`：区分 SSH FAIL / PROXY FAIL / ACCOUNTING STALE|FAIL（三 fixture：lax / tokyo / sg）
+- `vcl-fleet verify`：registry `node_id` 必须与远程一致；`instance_id` 变化仅 WARN
+- 时钟偏差（修正 C）：`CLOCK_SKEW_WARN_SECONDS = 30`、`CLOCK_SKEW_FAIL_SECONDS = 300`、FAIL 检查名 `audit-clock-health`
+
+### 双 artifact
+
+- 节点：`dist/vincula-node-0.2.8.tar.gz`（`release.lock` **仍 8** 个 first-party 文件；不含 fleet）
+- 控制器：`dist/vincula-controller-0.2.8.zip`（`bin/vcl-fleet`、`bin/vcl-fleet.cmd`、`lib/vincula-fleet.py`、`README-controller.md`）；无 installer、无 systemd、无 `release.lock`
+- 控制器需要工作站 **Python 3.10+** 与 **系统 OpenSSH**（不捆绑）
+
+### 明确不做（0.2.9+）
+
+- incremental audit sync / `vcl audit export --after event_id` / `CURSOR_EXPIRED` / 完整 `fleet.db` cache
+- `vcl-fleet user *` / `--user-id` / fleet stats / fleet audit / UI
+- 原英文 SPEC 的 AC-2.8-08/09（cursor 一致性）推迟 0.2.9；本版覆盖为 mock SSH 与 registry 持久化
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.7` → `0.2.8`
+- allowlist **不含** `0.2.8`（同版本只校验）
+- accounting schema 仍为 3（无 DDL）
+- 不提供自动 state 2→1；回滚 = 恢复 `backup_existing_install` 备份 + 0.2.7 安装器
+
+### 验收摘要
+
+AC-2.8-01…13 的 fixture / 静态证据见 `docs/release-readiness-0.2.8.md`。已知限制见 `docs/known-issues-0.2.8.md`。0.2.8 **不**套用 D20 24h soak 门槛。
+
 ## 0.2.7
 
 Stability & Audit Foundation. 记账仍为 **approximate / Clash polling**（非计费级）。schema 3 **不可逆**。
