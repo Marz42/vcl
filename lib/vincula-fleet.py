@@ -2,10 +2,10 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64, datetime. OpenSSH via the system ssh/ssh.exe binary
-(injectable with VCL_FLEET_SSH) and ssh-keyscan (VCL_FLEET_SSH_KEYSCAN).
-No pip, no paramiko, no cryptography package. No root, no systemd, no
-/etc/vincula.
+hashlib, base64, datetime, csv, uuid. OpenSSH via the system ssh/ssh.exe
+binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
+(VCL_FLEET_SSH_KEYSCAN). No pip, no paramiko, no cryptography package.
+No root, no systemd, no /etc/vincula.
 
 User-local fleet.json is the node registry. SSH passwords are never
 stored. Targets Python 3.10+.
@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -40,7 +43,10 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
 NODE_KEYS = ("node_id", "name", "ssh_host", "ssh_user", "ssh_port", "enabled")
 SSH_TIMEOUT_SECONDS = 20
+SSH_MUTATION_TIMEOUT_SECONDS = 60
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
+CSV_CREDENTIAL_HEADER = ("user", "node", "credential_id", "vless_uri")
+CREDENTIAL_WARN_TAIL = "contains authentication credentials."
 STATUS_JSON_SCHEMA_VERSION = 1
 VERIFY_JSON_SCHEMA_VERSION = 1
 # D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
@@ -746,12 +752,16 @@ def _stdout_json(proc: subprocess.CompletedProcess[str]) -> Optional[Any]:
 
 
 def ssh_remote_json(
-    node: dict[str, Any], remote_cmd: list[str]
+    node: dict[str, Any],
+    remote_cmd: list[str],
+    *,
+    timeout: float = SSH_TIMEOUT_SECONDS,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
     SSH unreachable (exit 255 / timeout / connect failure) → ssh FAIL.
     Remote vcl status/verify may exit 1 with valid JSON; that is SSH OK.
+    Mutation commands (user add/rotate) pass timeout=SSH_MUTATION_TIMEOUT_SECONDS.
     """
     proc = ssh_run(
         node["ssh_host"],
@@ -759,6 +769,7 @@ def ssh_remote_json(
         node["ssh_port"],
         remote_cmd,
         batch=True,
+        timeout=timeout,
     )
     detail = _ssh_failure_detail(proc)
     if proc.returncode == 255:
@@ -766,7 +777,35 @@ def ssh_remote_json(
     payload = _stdout_json(proc)
     if not isinstance(payload, dict):
         return "OK", None, detail or "remote JSON missing or invalid"
-    return "OK", payload, ""
+    return "OK", payload, detail if proc.returncode != 0 else ""
+
+
+def ssh_remote_text(
+    node: dict[str, Any],
+    remote_cmd: list[str],
+    *,
+    timeout: float = SSH_TIMEOUT_SECONDS,
+) -> tuple[str, str, str]:
+    """SSH a remote command expecting text stdout (e.g. vcl user link).
+
+    FAIL = unreachable (exit 255 / timeout). OK = host reached; stdout may
+    still be empty if the remote command failed (detail then has stderr).
+    """
+    proc = ssh_run(
+        node["ssh_host"],
+        node["ssh_user"],
+        node["ssh_port"],
+        remote_cmd,
+        batch=True,
+        timeout=timeout,
+    )
+    detail = _ssh_failure_detail(proc)
+    stdout = proc.stdout or ""
+    if proc.returncode == 255:
+        return "FAIL", "", detail
+    if proc.returncode != 0:
+        return "OK", stdout, detail
+    return "OK", stdout, ""
 
 
 def classify_proxy(status_doc: Optional[dict[str, Any]]) -> str:
@@ -1299,13 +1338,544 @@ def never_report_full_success(doc: dict[str, Any]) -> int:
     return MUTATION_EXIT_SUCCESS if doc.get("state") == OP_SUCCESS else MUTATION_EXIT_PARTIAL
 
 
+def parse_nodes_csv(raw: str) -> list[str]:
+    parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if not parts:
+        die("nodes list is empty")
+    seen: set[str] = set()
+    names: list[str] = []
+    for name in parts:
+        validate_name(name)
+        if name in seen:
+            die(f"duplicate node in list: {name}")
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def target_names_from_add_args(args: argparse.Namespace) -> list[str]:
+    one = getattr(args, "node_one", None)
+    many = getattr(args, "nodes_csv", None)
+    if one and many:
+        die("--node and --nodes are mutually exclusive")
+    raw = many or one
+    if not raw:
+        die("user add requires --node or --nodes")
+    return parse_nodes_csv(str(raw))
+
+
+def require_enabled_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
+    node = require_node(registry, name)
+    if not node.get("enabled", True):
+        die(f"node is disabled: {name}")
+    return node
+
+
+def write_private_file(path: Path, text: str) -> None:
+    path = Path(path)
+    parent = path.parent
+    if str(parent) not in (".", ""):
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+    payload = text if text.endswith("\n") else text + "\n"
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, 0o600)
+
+
+def warn_credentials(target: str) -> None:
+    sys.stderr.write(
+        f"WARNING: {target} {CREDENTIAL_WARN_TAIL}\n"
+        "Store and distribute it securely.\n"
+    )
+
+
+def format_credential_csv(tag: str, nodes: list[dict[str, Any]]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(CSV_CREDENTIAL_HEADER)
+    for row in nodes:
+        writer.writerow(
+            (
+                tag,
+                _node_name(row),
+                row.get("credential_id") or "",
+                row.get("vless_uri") or "",
+            )
+        )
+    return buf.getvalue()
+
+
+def _first_vless_uri(text: str) -> Optional[str]:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("vless://"):
+            return stripped
+    stripped = (text or "").strip()
+    return stripped or None
+
+
+def _active_credential_id(shown: dict[str, Any]) -> Optional[str]:
+    for cred in shown.get("credentials") or []:
+        if isinstance(cred, dict) and cred.get("status") == "active":
+            cid = cred.get("credential_id")
+            if isinstance(cid, str) and cid:
+                return cid
+    return None
+
+
+def ssh_user_link_uri(node: dict[str, Any], tag: str) -> Optional[str]:
+    ssh_state, stdout, _detail = ssh_remote_text(
+        node,
+        ["vcl", "user", "link", tag],
+        timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+    )
+    if ssh_state != "OK":
+        return None
+    return _first_vless_uri(stdout)
+
+
+def _ssh_error(prefix_rc: int, detail: str) -> str:
+    text = (detail or "failed").strip() or "failed"
+    if text.startswith("ssh exit "):
+        return text
+    return f"ssh exit {prefix_rc}: {text}"
+
+
+def provision_user_on_node(
+    node: dict[str, Any],
+    *,
+    tag: str,
+    user_id: str,
+    display_name: Optional[str] = None,
+    department: Optional[str] = None,
+) -> dict[str, Any]:
+    """Idempotent per-node add (D16). Returns a SUCCESS/FAILED node row."""
+    ssh_state, shown, show_detail = ssh_remote_json(
+        node,
+        ["vcl", "user", "show", tag, "--json"],
+        timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+    )
+    if ssh_state != "OK":
+        return _node_result_row(node, False, _ssh_error(255, show_detail))
+
+    if isinstance(shown, dict) and shown.get("tag") == tag:
+        remote_uid = shown.get("user_id") or ""
+        if remote_uid != user_id:
+            return _node_result_row(
+                node,
+                False,
+                (
+                    f"identity conflict: tag {tag} has user_id {remote_uid}, "
+                    f"expected {user_id}"
+                ),
+            )
+        cred_id = _active_credential_id(shown)
+        uri = ssh_user_link_uri(node, tag)
+        return _node_result_row(
+            node,
+            True,
+            {"credential_id": cred_id, "vless_uri": uri},
+        )
+
+    remote = ["vcl", "user", "add", tag, "--user-id", user_id, "--json"]
+    if display_name:
+        remote.extend(["--display-name", display_name])
+    if department:
+        remote.extend(["--department", department])
+    ssh_state, payload, detail = ssh_remote_json(
+        node, remote, timeout=SSH_MUTATION_TIMEOUT_SECONDS
+    )
+    if ssh_state != "OK":
+        return _node_result_row(node, False, _ssh_error(255, detail))
+    if not isinstance(payload, dict):
+        return _node_result_row(node, False, _ssh_error(1, detail))
+    if payload.get("ok") is not True:
+        err = payload.get("error") or detail or "failed"
+        return _node_result_row(node, False, _ssh_error(1, str(err)))
+    return _node_result_row(
+        node,
+        True,
+        {
+            "credential_id": payload.get("credential_id"),
+            "vless_uri": payload.get("vless_uri"),
+        },
+    )
+
+
+def cmd_user_add(args: argparse.Namespace) -> int:
+    tag = args.tag
+    validate_name(tag)
+    user_id = (getattr(args, "user_id", None) or "").strip()
+    if user_id:
+        if not UUID_RE.fullmatch(user_id):
+            die(f"invalid user_id: {user_id}")
+    else:
+        user_id = str(uuid.uuid4())
+
+    names = target_names_from_add_args(args)
+    registry = load_registry()
+    nodes = [require_enabled_node(registry, name) for name in names]
+    as_json = bool(getattr(args, "as_json", False))
+
+    if not as_json:
+        sys.stderr.write(
+            f"user.add {tag} {OP_PLANNED} nodes={','.join(n['name'] for n in nodes)}\n"
+        )
+
+    results: list[dict[str, Any]] = []
+    for node in nodes:
+        if not as_json:
+            sys.stderr.write(f"user.add {tag} {OP_APPLYING} {node['name']}\n")
+        results.append(
+            provision_user_on_node(
+                node,
+                tag=tag,
+                user_id=user_id,
+                display_name=getattr(args, "display_name", None),
+                department=getattr(args, "department", None),
+            )
+        )
+
+    doc = mutation_report(results, tag=tag, user_id=user_id, operation="user.add")
+    success_nodes = [row for row in doc["nodes"] if row.get("status") == OP_SUCCESS]
+    csv_text = format_credential_csv(tag, success_nodes) if success_nodes else ""
+
+    output = getattr(args, "output", None)
+    if output and csv_text:
+        write_private_file(Path(output), csv_text)
+        warn_credentials(str(output))
+
+    if as_json:
+        sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+        return never_report_full_success(doc)
+
+    if doc["state"] == OP_SUCCESS:
+        warn_credentials("stdout")
+        sys.stdout.write(csv_text)
+        sys.stderr.write(f"STATE {OP_SUCCESS}\n")
+        sys.stderr.write(f"user_id: {user_id}\n")
+        return MUTATION_EXIT_SUCCESS
+
+    sys.stdout.write(format_partial_report(doc))
+    if csv_text:
+        warn_credentials("stdout")
+        sys.stdout.write(csv_text)
+    return MUTATION_EXIT_PARTIAL
+
+
+def _list_users_on_node(
+    node: dict[str, Any],
+) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    ssh_state, payload, detail = ssh_remote_json(
+        node, ["vcl", "user", "list", "--json"]
+    )
+    if ssh_state != "OK":
+        return None, _ssh_error(255, detail)
+    if not isinstance(payload, dict):
+        return None, _ssh_error(1, detail)
+    users = payload.get("users") or []
+    if not isinstance(users, list):
+        return None, "remote list JSON users is not a list"
+    return [u for u in users if isinstance(u, dict)], None
+
+
+def cmd_user_list(args: argparse.Namespace) -> int:
+    registry = load_registry()
+    nodes = _selected_nodes(registry, include_all=False)
+    as_json = bool(getattr(args, "as_json", False))
+    unreachable: list[dict[str, Any]] = []
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for node in nodes:
+        users, err = _list_users_on_node(node)
+        if err is not None:
+            unreachable.append({"name": node["name"], "error": err})
+            continue
+        for user in users or []:
+            uid = str(user.get("user_id") or "")
+            tag = str(user.get("tag") or "")
+            key = uid or f"tag:{tag}@{node['name']}"
+            if key not in grouped:
+                grouped[key] = {
+                    "tag": tag,
+                    "user_id": uid,
+                    "nodes": [],
+                }
+                order.append(key)
+            rec = grouped[key]
+            if tag and rec["tag"] and tag != rec["tag"]:
+                rec["tag"] = f"{rec['tag']},{tag}"
+            elif tag and not rec["tag"]:
+                rec["tag"] = tag
+            rec["nodes"].append(
+                {
+                    "name": node["name"],
+                    "tag": tag,
+                    "enabled": bool(user.get("enabled")),
+                    "status": "active" if user.get("enabled") else "disabled",
+                    "active_credential_id": user.get("active_credential_id"),
+                }
+            )
+
+    ok = not unreachable
+    payload = {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "ok": ok,
+        "state": OP_SUCCESS if ok else OP_PARTIAL,
+        "users": [
+            {
+                "tag": grouped[key]["tag"],
+                "user_id": grouped[key]["user_id"],
+                "nodes": grouped[key]["nodes"],
+            }
+            for key in order
+        ],
+        "unreachable": unreachable,
+    }
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        return 0 if ok else MUTATION_EXIT_PARTIAL
+
+    sys.stdout.write("TAG USER_ID NODES\n")
+    for key in order:
+        rec = grouped[key]
+        node_names = ",".join(n["name"] for n in rec["nodes"])
+        sys.stdout.write(f"{rec['tag']} {rec['user_id'] or '-'} {node_names}\n")
+    for row in unreachable:
+        sys.stdout.write(f"UNREACHABLE {row['name']}\n")
+    if not ok:
+        sys.stdout.write(f"STATE {OP_PARTIAL}\n")
+    return 0 if ok else MUTATION_EXIT_PARTIAL
+
+
+def cmd_user_show(args: argparse.Namespace) -> int:
+    tag = args.tag
+    validate_name(tag)
+    registry = load_registry()
+    nodes = _selected_nodes(registry, include_all=False)
+    as_json = bool(getattr(args, "as_json", False))
+    rows: list[dict[str, Any]] = []
+    user_ids: set[str] = set()
+    unreachable = False
+
+    for node in nodes:
+        ssh_state, payload, detail = ssh_remote_json(
+            node, ["vcl", "user", "show", tag, "--json"]
+        )
+        if ssh_state != "OK":
+            unreachable = True
+            rows.append(
+                {
+                    "name": node["name"],
+                    "status": "UNREACHABLE",
+                    "enabled": None,
+                    "user_id": None,
+                    "credential_id": None,
+                    "error": _ssh_error(255, detail),
+                }
+            )
+            continue
+        if not isinstance(payload, dict) or payload.get("tag") != tag:
+            rows.append(
+                {
+                    "name": node["name"],
+                    "status": "MISSING",
+                    "enabled": None,
+                    "user_id": None,
+                    "credential_id": None,
+                    "error": None,
+                }
+            )
+            continue
+        uid = payload.get("user_id") or ""
+        if uid:
+            user_ids.add(str(uid))
+        cred_id = _active_credential_id(payload)
+        enabled = bool(payload.get("enabled"))
+        cred_status = "active" if cred_id else "none"
+        rows.append(
+            {
+                "name": node["name"],
+                "status": cred_status if enabled else "disabled",
+                "enabled": enabled,
+                "user_id": uid or None,
+                "credential_id": cred_id,
+                "error": None,
+            }
+        )
+
+    conflict = len(user_ids) > 1
+    global_uid = next(iter(user_ids)) if len(user_ids) == 1 else None
+    found = any(row.get("user_id") for row in rows)
+    payload = {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "ok": (not conflict) and (not unreachable) and found,
+        "tag": tag,
+        "user_id": global_uid,
+        "conflict": conflict,
+        "nodes": rows,
+    }
+
+    if conflict:
+        if as_json:
+            sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        else:
+            sys.stderr.write(
+                f"vcl-fleet: tag {tag} has conflicting user_id across nodes\n"
+            )
+            for row in rows:
+                if row.get("user_id"):
+                    sys.stderr.write(f"  {row['name']}: {row['user_id']}\n")
+        return 1
+
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        if unreachable:
+            return MUTATION_EXIT_PARTIAL
+        return 0 if found else 1
+
+    if not found and not unreachable:
+        die(f"user not found: {tag}")
+
+    sys.stdout.write(f"TAG {tag}\n")
+    if global_uid:
+        sys.stdout.write(f"USER_ID {global_uid}\n")
+    sys.stdout.write("NODE CREDENTIAL_ID ENABLED STATUS\n")
+    for row in rows:
+        enabled = row.get("enabled")
+        if enabled is True:
+            enabled_s = "true"
+        elif enabled is False:
+            enabled_s = "false"
+        else:
+            enabled_s = "-"
+        sys.stdout.write(
+            f"{row['name']} {row.get('credential_id') or '-'} "
+            f"{enabled_s} {row['status']}\n"
+        )
+    if unreachable:
+        sys.stdout.write(f"STATE {OP_PARTIAL}\n")
+        return MUTATION_EXIT_PARTIAL
+    return 0
+
+
+def _require_single_node_flag(args: argparse.Namespace, action: str) -> str:
+    name = getattr(args, "node", None)
+    if not name:
+        if action == "disable":
+            die("refusing fleet-wide disable; pass --node")
+        die(f"refusing fleet-wide {action}; pass --node")
+    return str(name)
+
+
+def cmd_user_enable_disable(args: argparse.Namespace, *, enabled: bool) -> int:
+    action = "enable" if enabled else "disable"
+    tag = args.tag
+    validate_name(tag)
+    node_name = _require_single_node_flag(args, action)
+    node = require_enabled_node(load_registry(), node_name)
+    as_json = bool(getattr(args, "as_json", False))
+    ssh_state, payload, detail = ssh_remote_json(
+        node,
+        ["vcl", "user", action, tag, "--json"],
+        timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+    )
+    if ssh_state != "OK":
+        die(_ssh_error(255, detail))
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        err = ""
+        if isinstance(payload, dict):
+            err = str(payload.get("error") or "")
+        die(err or detail or f"user {action} failed on {node_name}")
+    doc = {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "ok": True,
+        "tag": tag,
+        "node": node_name,
+        "user_id": payload.get("user_id"),
+        "enabled": bool(payload.get("enabled", enabled)),
+    }
+    if as_json:
+        sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+        return 0
+    state = "enabled" if doc["enabled"] else "disabled"
+    sys.stdout.write(f"{tag} {state} on {node_name}\n")
+    return 0
+
+
+def cmd_user_rotate(args: argparse.Namespace) -> int:
+    tag = args.tag
+    validate_name(tag)
+    node_name = _require_single_node_flag(args, "rotate")
+    node = require_enabled_node(load_registry(), node_name)
+    as_json = bool(getattr(args, "as_json", False))
+    ssh_state, payload, detail = ssh_remote_json(
+        node,
+        ["vcl", "user", "rotate", tag, "--json"],
+        timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+    )
+    if ssh_state != "OK":
+        die(_ssh_error(255, detail))
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        err = ""
+        if isinstance(payload, dict):
+            err = str(payload.get("error") or "")
+        die(err or detail or f"user rotate failed on {node_name}")
+    cred_id = payload.get("credential_id")
+    uri = payload.get("vless_uri")
+    doc = {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "ok": True,
+        "tag": tag,
+        "node": node_name,
+        "user_id": payload.get("user_id"),
+        "credential_id": cred_id,
+        "vless_uri": uri,
+        "status": payload.get("status") or "active",
+        "enabled": payload.get("enabled"),
+    }
+    if as_json:
+        warn_credentials("stdout")
+        sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+        return 0
+    row = {
+        "name": node_name,
+        "credential_id": cred_id,
+        "vless_uri": uri,
+    }
+    csv_text = format_credential_csv(tag, [row])
+    output = getattr(args, "output", None)
+    if output:
+        write_private_file(Path(output), csv_text)
+        warn_credentials(str(output))
+    warn_credentials("stdout")
+    sys.stdout.write(csv_text)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
         description=(
             "Vincula fleet controller. Registers nodes over OpenSSH "
             "(vcl identity --json) or with --offline. status/verify probe "
-            "enabled nodes over SSH using remote vcl --json contracts."
+            "enabled nodes over SSH using remote vcl --json contracts. "
+            "user add provisions the same user_id on one or more nodes; "
+            "any per-node failure is PARTIAL (exit 2). Distributed rollback "
+            "is not promised."
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -1399,6 +1969,140 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include disabled nodes (marked DISABLED)",
     )
+    user = sub.add_parser(
+        "user",
+        help="provision and inspect users across fleet nodes",
+        description=(
+            "The controller generates one fleet-global user_id (or accepts "
+            "--user-id for remediation) and SSHes "
+            "`vcl user add TAG --user-id UUID --json` to each target. "
+            "All nodes SUCCESS → exit 0. Any FAILED (including all failed) "
+            "→ PARTIAL, exit 2, per-node status, and a copy-paste "
+            "remediation command. Distributed rollback is not promised "
+            "and is not performed. enable/disable/rotate require --node "
+            "(no fleet-wide disable)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    user_sub = user.add_subparsers(dest="user_command")
+
+    p_uadd = user_sub.add_parser(
+        "add",
+        help="provision TAG on --node / --nodes (PARTIAL exit 2)",
+        description=(
+            "Generate or reuse --user-id, then add the user on each target "
+            "node. --node N is the same as --nodes N. Exit 0 on SUCCESS; "
+            "exit 2 on PARTIAL. Distributed rollback is not promised."
+        ),
+    )
+    p_uadd.add_argument("tag", help="user tag (same charset as node names)")
+    uadd_nodes = p_uadd.add_mutually_exclusive_group(required=True)
+    uadd_nodes.add_argument(
+        "--node",
+        dest="node_one",
+        help="single target node (same as --nodes NAME)",
+    )
+    uadd_nodes.add_argument(
+        "--nodes",
+        dest="nodes_csv",
+        help="comma-separated target nodes (e.g. lax,tokyo)",
+    )
+    p_uadd.add_argument("--display-name", dest="display_name")
+    p_uadd.add_argument("--department", dest="department")
+    p_uadd.add_argument(
+        "--user-id",
+        dest="user_id",
+        help="fleet-global UUID (generated if omitted; required for PARTIAL remediation)",
+    )
+    p_uadd.add_argument(
+        "--output",
+        help="write credential CSV (user,node,credential_id,vless_uri) mode 0600",
+    )
+    p_uadd.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print mutation JSON (schema_version 1)",
+    )
+
+    p_ulist = user_sub.add_parser(
+        "list",
+        help="aggregate user list from enabled nodes",
+    )
+    p_ulist.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+    p_ushow = user_sub.add_parser(
+        "show",
+        help="per-node credential status for TAG",
+    )
+    p_ushow.add_argument("tag")
+    p_ushow.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+    p_uenable = user_sub.add_parser(
+        "enable",
+        help="enable TAG on a single --node",
+    )
+    p_uenable.add_argument("tag")
+    p_uenable.add_argument(
+        "--node",
+        dest="node",
+        help="target node (required; no fleet-wide enable)",
+    )
+    p_uenable.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+    p_udisable = user_sub.add_parser(
+        "disable",
+        help="disable TAG on a single --node (not fleet-wide)",
+    )
+    p_udisable.add_argument("tag")
+    p_udisable.add_argument(
+        "--node",
+        dest="node",
+        help="target node (required; refusing fleet-wide disable)",
+    )
+    p_udisable.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+    p_urotate = user_sub.add_parser(
+        "rotate",
+        help="rotate TAG credential on a single --node",
+    )
+    p_urotate.add_argument("tag")
+    p_urotate.add_argument(
+        "--node",
+        dest="node",
+        help="target node (required)",
+    )
+    p_urotate.add_argument(
+        "--output",
+        help="write credential CSV mode 0600",
+    )
+    p_urotate.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -1438,6 +2142,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sub == "enable":
             return cmd_node_enable(args.name, True)
         die(f"unknown node command: {sub}", 2)
+    if command == "user":
+        sub = args.user_command
+        if sub is None:
+            parser.parse_args(["user", "--help"])
+            return 2
+        if sub == "add":
+            return cmd_user_add(args)
+        if sub == "list":
+            return cmd_user_list(args)
+        if sub == "show":
+            return cmd_user_show(args)
+        if sub == "enable":
+            return cmd_user_enable_disable(args, enabled=True)
+        if sub == "disable":
+            return cmd_user_enable_disable(args, enabled=False)
+        if sub == "rotate":
+            return cmd_user_rotate(args)
+        die(f"unknown user command: {sub}", 2)
     die(f"unknown command: {command}", 2)
     return 2
 

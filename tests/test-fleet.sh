@@ -1522,6 +1522,270 @@ fi
 
 unset VCL_FAKE_STATE_DIR
 
+assert_success "SSH mutation timeout is 60s" \
+  grep -q 'SSH_MUTATION_TIMEOUT_SECONDS = 60' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+user_add_help_rc=0
+user_add_help=$(fleet user add -h 2>&1) || user_add_help_rc=$?
+if (( user_add_help_rc == 0 )) && [[ "$user_add_help" == *"PARTIAL"* ]] \
+  && [[ "$user_add_help" == *"--nodes"* ]] && [[ "$user_add_help" == *"--user-id"* ]]; then
+  pass "user add -h prints PARTIAL/--nodes/--user-id help"
+else
+  fail "user add -h prints PARTIAL/--nodes/--user-id help (rc=${user_add_help_rc})"
+fi
+assert_success "user add help does not promise rollback" \
+  grep -qi 'not promised' <<< "$user_add_help"
+
+USER_FLEET_HOME="${TEST_TMP}/fleet-home-users"
+USER_FAKE_STATE="${TEST_TMP}/fake-fleet-user-state"
+export VCL_FLEET_HOME="$USER_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$USER_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "$VCL_FAKE_STATE_DIR"
+assert_success "user-test fleet init" fleet init
+assert_success "user-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "user-test offline add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+
+add_alice_rc=0
+add_alice_out=$(fleet user add alice --nodes lax,tokyo --display-name Alice --department Engineering) || add_alice_rc=$?
+if (( add_alice_rc == 0 )); then
+  pass "AC-2.9-01 user add alice --nodes lax,tokyo exits 0"
+else
+  fail "AC-2.9-01 user add alice --nodes lax,tokyo exits 0 (rc=${add_alice_rc})"
+fi
+assert_success "AC-2.9-07 credential CSV header" \
+  grep -q '^user,node,credential_id,vless_uri$' <<< "$add_alice_out"
+
+ac_add_rc=0
+python3 - "$add_alice_out" "$VCL_FAKE_STATE_DIR" <<'PY' || ac_add_rc=$?
+import csv, io, json, sys
+from pathlib import Path
+
+text, state = sys.argv[1], Path(sys.argv[2])
+rows = list(csv.DictReader(io.StringIO(text)))
+assert [r for r in text.splitlines() if r][0] == "user,node,credential_id,vless_uri"
+assert {row["user"] for row in rows} == {"alice"}, rows
+by_node = {row["node"]: row for row in rows}
+assert set(by_node) == {"lax", "tokyo"}, by_node
+assert by_node["lax"]["credential_id"] != by_node["tokyo"]["credential_id"]
+assert by_node["lax"]["vless_uri"] != by_node["tokyo"]["vless_uri"]
+assert "@203.0.113.10:443" in by_node["lax"]["vless_uri"]
+assert "@203.0.113.11:443" in by_node["tokyo"]["vless_uri"]
+assert by_node["lax"]["credential_id"] in by_node["lax"]["vless_uri"]
+assert by_node["tokyo"]["credential_id"] in by_node["tokyo"]["vless_uri"]
+lax = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+alice_lax = next(u for u in lax["users"] if u["tag"] == "alice")
+alice_tokyo = next(u for u in tokyo["users"] if u["tag"] == "alice")
+assert alice_lax["user_id"] == alice_tokyo["user_id"], (alice_lax["user_id"], alice_tokyo["user_id"])
+assert alice_lax["user_id"]
+assert alice_lax["display_name"] == "Alice"
+assert alice_lax["department"] == "Engineering"
+lax_active = next(c for c in alice_lax["credentials"] if c["status"] == "active")
+tokyo_active = next(c for c in alice_tokyo["credentials"] if c["status"] == "active")
+assert lax_active["credential_id"] == by_node["lax"]["credential_id"]
+assert tokyo_active["credential_id"] == by_node["tokyo"]["credential_id"]
+assert lax_active["credential_id"] != tokyo_active["credential_id"]
+open(state / "alice_user_id.txt", "w", encoding="utf-8").write(alice_lax["user_id"])
+open(state / "alice_lax_cred.txt", "w", encoding="utf-8").write(lax_active["credential_id"])
+open(state / "alice_tokyo_cred.txt", "w", encoding="utf-8").write(tokyo_active["credential_id"])
+PY
+if (( ac_add_rc == 0 )); then
+  pass "AC-2.9-01 same user_id two nodes different credential UUID"
+  pass "AC-2.9-07 credential CSV is node-specific (lax/tokyo hosts)"
+else
+  fail "AC-2.9-01 same user_id two nodes different credential UUID"
+  fail "AC-2.9-07 credential CSV is node-specific (lax/tokyo hosts)"
+fi
+ALICE_FLEET_UID=$(cat "${VCL_FAKE_STATE_DIR}/alice_user_id.txt")
+ALICE_LAX_CRED=$(cat "${VCL_FAKE_STATE_DIR}/alice_lax_cred.txt")
+ALICE_TOKYO_CRED=$(cat "${VCL_FAKE_STATE_DIR}/alice_tokyo_cred.txt")
+
+add_json_rc=0
+add_json_out=$(fleet user add alice --nodes lax,tokyo --user-id "$ALICE_FLEET_UID" --json) || add_json_rc=$?
+if python3 - "$add_json_out" "$add_json_rc" "$ALICE_FLEET_UID" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+assert doc["state"] == "SUCCESS", doc
+assert doc["user_id"] == sys.argv[3], (doc["user_id"], sys.argv[3])
+assert {n["name"]: n["status"] for n in doc["nodes"]} == {"lax": "SUCCESS", "tokyo": "SUCCESS"}
+assert doc["nodes"][0]["credential_id"] != doc["nodes"][1]["credential_id"]
+PY
+then
+  pass "user add --json is idempotent SUCCESS with the same user_id"
+else
+  fail "user add --json is idempotent SUCCESS with the same user_id"
+fi
+
+list_out=$(fleet user list)
+assert_success "user list header TAG USER_ID NODES" \
+  grep -q '^TAG USER_ID NODES$' <<< "$list_out"
+assert_success "user list alice spans lax,tokyo" \
+  grep -Eq "^alice ${ALICE_FLEET_UID} (lax,tokyo|tokyo,lax)$" <<< "$list_out"
+
+list_json=$(fleet user list --json)
+if python3 - "$list_json" "$ALICE_FLEET_UID" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+uid = sys.argv[2]
+assert doc["schema_version"] == 1 and doc["ok"] is True, doc
+alice = next(u for u in doc["users"] if u["tag"] == "alice")
+assert alice["user_id"] == uid, alice
+assert {n["name"] for n in alice["nodes"]} == {"lax", "tokyo"}, alice
+PY
+then
+  pass "user list --json aggregates alice by user_id"
+else
+  fail "user list --json aggregates alice by user_id"
+fi
+
+show_out=$(fleet user show alice)
+assert_success "user show alice names both nodes" \
+  grep -q '^lax ' <<< "$show_out"
+assert_success "user show alice includes tokyo" \
+  grep -q '^tokyo ' <<< "$show_out"
+
+show_json=$(fleet user show alice --json)
+if python3 - "$show_json" "$ALICE_FLEET_UID" "$ALICE_LAX_CRED" "$ALICE_TOKYO_CRED" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+uid, lax_cred, tokyo_cred = sys.argv[2:5]
+assert doc["ok"] is True and doc["tag"] == "alice", doc
+assert doc["user_id"] == uid, doc
+by_name = {n["name"]: n for n in doc["nodes"]}
+assert by_name["lax"]["credential_id"] == lax_cred, by_name["lax"]
+assert by_name["tokyo"]["credential_id"] == tokyo_cred, by_name["tokyo"]
+assert by_name["lax"]["enabled"] is True and by_name["tokyo"]["enabled"] is True
+assert by_name["lax"]["status"] == "active"
+PY
+then
+  pass "user show alice --json reports per-node credentials"
+else
+  fail "user show alice --json reports per-node credentials"
+fi
+
+rotate_rc=0
+rotate_out=$(fleet user rotate alice --node lax) || rotate_rc=$?
+if (( rotate_rc == 0 )); then
+  pass "user rotate alice --node lax exits 0"
+else
+  fail "user rotate alice --node lax exits 0 (rc=${rotate_rc})"
+fi
+assert_success "rotate stdout is a credential CSV row" \
+  grep -q '^user,node,credential_id,vless_uri$' <<< "$rotate_out"
+
+rotate_check_rc=0
+python3 - "$rotate_out" "$VCL_FAKE_STATE_DIR" "$ALICE_LAX_CRED" "$ALICE_TOKYO_CRED" <<'PY' || rotate_check_rc=$?
+import csv, io, json, sys
+from pathlib import Path
+text, state, old_lax, old_tokyo = sys.argv[1:5]
+rows = list(csv.DictReader(io.StringIO(text)))
+assert len(rows) == 1, rows
+assert rows[0]["user"] == "alice" and rows[0]["node"] == "lax"
+assert rows[0]["credential_id"] != old_lax
+assert "@203.0.113.10:443" in rows[0]["vless_uri"]
+lax = json.loads((Path(state) / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo = json.loads((Path(state) / "tokyo" / "users.json").read_text(encoding="utf-8"))
+alice_lax = next(u for u in lax["users"] if u["tag"] == "alice")
+alice_tokyo = next(u for u in tokyo["users"] if u["tag"] == "alice")
+lax_active = next(c for c in alice_lax["credentials"] if c["status"] == "active")
+tokyo_active = next(c for c in alice_tokyo["credentials"] if c["status"] == "active")
+assert lax_active["credential_id"] == rows[0]["credential_id"]
+assert lax_active["credential_id"] != old_lax
+assert tokyo_active["credential_id"] == old_tokyo
+assert alice_lax["user_id"] == alice_tokyo["user_id"]
+PY
+if (( rotate_check_rc == 0 )); then
+  pass "AC-2.9-02 rotate one node does not change the other node's credential"
+else
+  fail "AC-2.9-02 rotate one node does not change the other node's credential"
+fi
+
+dave_add_rc=0
+dave_add_out=$(fleet user add dave --node lax) || dave_add_rc=$?
+if (( dave_add_rc == 0 )); then
+  pass "user add dave on lax (so alice is not last enabled)"
+else
+  fail "user add dave on lax (so alice is not last enabled) (rc=${dave_add_rc})"
+fi
+
+disable_rc=0
+disable_out=$(fleet user disable alice --node lax) || disable_rc=$?
+if (( disable_rc == 0 )) && [[ "$disable_out" == *"disabled on lax"* ]]; then
+  pass "user disable alice --node lax exits 0"
+else
+  fail "user disable alice --node lax exits 0 (rc=${disable_rc} out=${disable_out})"
+fi
+
+disable_json=$(fleet user show alice --json)
+if python3 - "$disable_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+by_name = {n["name"]: n for n in doc["nodes"]}
+assert by_name["lax"]["enabled"] is False, by_name["lax"]
+assert by_name["tokyo"]["enabled"] is True, by_name["tokyo"]
+PY
+then
+  pass "AC-2.9-03 disable one node does not disable the user on other nodes"
+else
+  fail "AC-2.9-03 disable one node does not disable the user on other nodes"
+fi
+
+enable_back_rc=0
+fleet user enable alice --node lax >/dev/null || enable_back_rc=$?
+if (( enable_back_rc == 0 )); then
+  pass "user enable alice --node lax exits 0"
+else
+  fail "user enable alice --node lax exits 0 (rc=${enable_back_rc})"
+fi
+
+no_node_rc=0
+no_node_err=$(fleet user disable alice 2>&1) || no_node_rc=$?
+if (( no_node_rc != 0 )) && [[ "$no_node_err" == *"refusing fleet-wide disable"* ]]; then
+  pass "user disable without --node is refused"
+else
+  fail "user disable without --node is refused (rc=${no_node_rc} err=${no_node_err})"
+fi
+
+export VCL_FAKE_FAIL_USER_ADD=tokyo
+partial_rc=0
+partial_out=$(fleet user add bob --nodes lax,tokyo --display-name Bob 2>&1) || partial_rc=$?
+unset VCL_FAKE_FAIL_USER_ADD
+if (( partial_rc == 2 )); then
+  pass "AC-2.9-06 partial user add exits 2"
+else
+  fail "AC-2.9-06 partial user add exits 2 (rc=${partial_rc})"
+fi
+assert_success "AC-2.9-06 output contains PARTIAL" \
+  grep -q '^STATE PARTIAL' <<< "$partial_out"
+assert_failure "AC-2.9-06 overall state is not SUCCESS" \
+  grep -q '^STATE SUCCESS' <<< "$partial_out"
+assert_success "AC-2.9-06 tokyo FAILED" \
+  grep -Eq 'tokyo[[:space:]]+FAILED' <<< "$partial_out"
+assert_success "AC-2.9-06 remediation includes --user-id" \
+  grep -q 'vcl-fleet user add bob --nodes tokyo --user-id ' <<< "$partial_out"
+assert_success "AC-2.9-06 successful lax row is still in CSV" \
+  grep -q '^bob,lax,' <<< "$partial_out"
+
+if python3 - "$VCL_FAKE_STATE_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+lax = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+assert any(u["tag"] == "bob" for u in lax["users"]), lax
+assert not any(u["tag"] == "bob" for u in tokyo["users"]), tokyo
+PY
+then
+  pass "AC-2.9-06 bob exists on lax only after tokyo FAIL inject"
+else
+  fail "AC-2.9-06 bob exists on lax only after tokyo FAIL inject"
+fi
+
+unset VCL_FAKE_STATE_DIR
+
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
   grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"

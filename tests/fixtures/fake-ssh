@@ -384,7 +384,7 @@ def _handle_user(alias: str, host: str, argv: list[str]) -> int:
         _emit_json(_list_json(users))
         return 0
 
-    if action in ("show", "enable", "disable", "rotate"):
+    if action in ("show", "enable", "disable", "rotate", "link"):
         if not positional:
             sys.stderr.write(f"fake-ssh: vcl user {action} requires a tag\n")
             return 1
@@ -398,6 +398,16 @@ def _handle_user(alias: str, host: str, argv: list[str]) -> int:
             return 1
         if action == "show":
             _emit_json(_show_json(user))
+            return 0
+        if action == "link":
+            active = _active_credential(user)
+            if active is None:
+                sys.stderr.write(f"fake-ssh: user {tag} has no active credential\n")
+                return 1
+            sys.stdout.write(
+                _fake_uri(str(active.get("credential_id") or ""), host, tag)
+            )
+            sys.stdout.write("\n")
             return 0
         if action == "enable":
             user["enabled"] = True
