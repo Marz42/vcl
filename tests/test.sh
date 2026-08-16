@@ -2605,6 +2605,282 @@ else
   fail "failed Clash poll does not refresh last_success_at"
 fi
 
+# P1-05: Clash /connections schema is strict. {} / wrong envelope / oversized
+# body are protocol errors: no close-all, no last_success_at refresh.
+p105_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/p105-clash" "$SAMPLE_USERS" <<'PY' || p105_rc=$?
+import importlib.util, json, os, sys
+
+mod_path, work, users = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(work, exist_ok=True)
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TAG_TO_USER_ID = mod.load_tag_to_user_id(users)
+
+assert mod.CLASH_RESPONSE_MAX_BYTES == 8 * 1024 * 1024, mod.CLASH_RESPONSE_MAX_BYTES
+
+STAMP = "2026-08-14T00:00:00Z"
+ALICE = {
+    "id": "c-happy",
+    "upload": 100,
+    "download": 200,
+    "start": "2026-08-14T10:00:00Z",
+    "chains": ["DIRECT", "acct/alice"],
+    "metadata": {
+        "host": "h.example",
+        "destinationPort": 443,
+        "network": "tcp",
+    },
+}
+
+class FakeResp:
+    def __init__(self, body: bytes):
+        self._body = body
+    def read(self, n=-1):
+        if n is None or n < 0:
+            return self._body
+        return self._body[:n]
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+
+orig_urlopen = mod.urllib.request.urlopen
+
+def install_body(body: bytes):
+    def fake_urlopen(_req, timeout=None):
+        return FakeResp(body)
+    mod.urllib.request.urlopen = fake_urlopen
+
+def seed_open(db_path, cid="keep-open"):
+    conn = mod.open_db(db_path)
+    mod.upsert_connection(conn, {
+        "connection_id": cid,
+        "node_id": "n1",
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "destination_host": "keep.example",
+        "destination_ip": None,
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": 10,
+        "download_bytes": 20,
+        "started_at": "2026-08-14T09:00:00Z",
+        "ts": "2026-08-14T09:01:00Z",
+    }, close=False, accounted_upload=10, accounted_download=20)
+    mod.meta_set(conn, "last_success_at", STAMP)
+    conn.commit()
+    return conn
+
+def closed_at(conn, cid="keep-open"):
+    return conn.execute(
+        "SELECT closed_at FROM connections WHERE connection_id=?", (cid,)
+    ).fetchone()[0]
+
+def bytes_row(conn, cid="keep-open"):
+    return conn.execute(
+        "SELECT upload_bytes, download_bytes, closed_at FROM connections "
+        "WHERE connection_id=?",
+        (cid,),
+    ).fetchone()
+
+# Envelope unit tests (no HTTP).
+bad_payloads = [
+    {},
+    {"connections": None},
+    {"connections": {}},
+    {"connections": "string"},
+    [{"id": "x"}],
+    {"connections": [1, 2]},
+    {"connections": ["x"]},
+    None,
+    "nope",
+    True,
+]
+for payload in bad_payloads:
+    try:
+        mod.decode_clash_connections_payload(payload)
+        raise AssertionError(f"expected ClashSchemaError for {payload!r}")
+    except mod.ClashSchemaError:
+        pass
+
+assert mod.decode_clash_connections_payload({"connections": []}) == []
+happy = mod.decode_clash_connections_payload({"connections": [ALICE]})
+assert len(happy) == 1 and happy[0]["connection_id"] == "c-happy", happy
+assert happy[0]["upload_bytes"] == 100 and happy[0]["download_bytes"] == 200
+
+# Non-int counters stay in the live list so apply_poll_delta can skip without
+# treating the id as absent (would close an open row).
+bad_counter = dict(ALICE, id="c-bad", upload="nope", download=1)
+parsed_bad = mod.parse_clash_connection(bad_counter)
+assert parsed_bad is not None and parsed_bad["connection_id"] == "c-bad"
+assert parsed_bad["upload_bytes"] == "nope"
+skipped = mod.decode_clash_connections_payload({"connections": [bad_counter, ALICE]})
+assert [e["connection_id"] for e in skipped] == ["c-bad", "c-happy"]
+
+try:
+    install_body(b"{}")
+    try:
+        mod.fetch_clash_connections("http://127.0.0.1/connections")
+        raise AssertionError("expected ClashSchemaError for {}")
+    except mod.ClashSchemaError:
+        pass
+
+    # Oversized body is rejected before parse (constant patched small).
+    orig_max = mod.CLASH_RESPONSE_MAX_BYTES
+    mod.CLASH_RESPONSE_MAX_BYTES = 32
+    try:
+        install_body(b'{"connections":[]}' + b" " * 64)
+        try:
+            mod.fetch_clash_connections("http://127.0.0.1/connections")
+            raise AssertionError("expected ClashSchemaError for oversized body")
+        except mod.ClashSchemaError as exc:
+            assert "exceeds" in str(exc) and "bytes" in str(exc), exc
+    finally:
+        mod.CLASH_RESPONSE_MAX_BYTES = orig_max
+
+    # HTTP 200 + bad envelopes: open row stays open, last_success_at frozen.
+    bad_bodies = [
+        b"{}",
+        b'{"connections":null}',
+        b'{"connections":{}}',
+        b'{"connections":"string"}',
+        b'[{"id":"x"}]',
+        b'{"connections":[1,2]}',
+    ]
+    for i, body in enumerate(bad_bodies):
+        db = os.path.join(work, f"bad-{i}.db")
+        conn = seed_open(db)
+        install_body(body)
+        daemon = mod.AccountDaemon(
+            db_path=db,
+            clash_url="http://127.0.0.1:1/connections",
+            users_path=users,
+        )
+        daemon._cycles = 2
+        daemon._known_open = mod.reload_known_open_from_db(conn)
+        ok, new_known = daemon._poll_clash(conn)
+        assert ok is False and new_known is None, (body, ok, new_known)
+        daemon._tick(conn)
+        assert closed_at(conn) is None, body
+        assert bytes_row(conn)[0] == 10 and bytes_row(conn)[1] == 20, body
+        assert mod.meta_get(conn, "last_success_at") == STAMP, (
+            body,
+            mod.meta_get(conn, "last_success_at"),
+        )
+        conn.close()
+
+    # Legal empty snapshot still closes stale and refreshes last_success_at.
+    empty_db = os.path.join(work, "empty.db")
+    conn = seed_open(empty_db)
+    install_body(b'{"connections":[]}')
+    daemon = mod.AccountDaemon(
+        db_path=empty_db,
+        clash_url="http://127.0.0.1:1/connections",
+        users_path=users,
+    )
+    daemon._cycles = 2
+    daemon._known_open = mod.reload_known_open_from_db(conn)
+    daemon._tick(conn)
+    assert closed_at(conn) is not None
+    assert mod.meta_get(conn, "last_success_at") != STAMP
+    assert mod.meta_get(conn, "last_success_at") != ""
+    conn.close()
+
+    # Happy path: valid object list is ingested (first sight = baseline 0).
+    happy_db = os.path.join(work, "happy.db")
+    conn = seed_open(happy_db)
+    install_body(json.dumps({"connections": [ALICE]}).encode("utf-8"))
+    daemon = mod.AccountDaemon(
+        db_path=happy_db,
+        clash_url="http://127.0.0.1:1/connections",
+        users_path=users,
+    )
+    daemon._cycles = 2
+    daemon._known_open = mod.reload_known_open_from_db(conn)
+    daemon._tick(conn)
+    row = conn.execute(
+        "SELECT upload_bytes, download_bytes, closed_at FROM connections "
+        "WHERE connection_id='c-happy'"
+    ).fetchone()
+    assert row is not None and row[0] == 0 and row[1] == 0 and row[2] is None, row
+    assert closed_at(conn) is not None  # keep-open absent from live set
+    assert mod.meta_get(conn, "last_success_at") != STAMP
+    conn.close()
+
+    # Non-int counters: skip delta, do not close that id, poll still succeeds.
+    skip_db = os.path.join(work, "skip.db")
+    conn = seed_open(skip_db, cid="c-pre")
+    mixed = {
+        "connections": [
+            dict(ALICE, id="c-pre", upload="nope", download=99),
+            dict(ALICE, id="c-good", upload=5, download=6),
+        ]
+    }
+    install_body(json.dumps(mixed).encode("utf-8"))
+    daemon = mod.AccountDaemon(
+        db_path=skip_db,
+        clash_url="http://127.0.0.1:1/connections",
+        users_path=users,
+    )
+    daemon._cycles = 2
+    daemon._known_open = mod.reload_known_open_from_db(conn)
+    ok, _known = daemon._poll_clash(conn)
+    assert ok is True, ok
+    conn.rollback()
+    daemon._tick(conn)
+    pre = bytes_row(conn, "c-pre")
+    assert pre[0] == 10 and pre[1] == 20 and pre[2] is None, pre
+    good = conn.execute(
+        "SELECT upload_bytes, download_bytes FROM connections "
+        "WHERE connection_id='c-good'"
+    ).fetchone()
+    assert good is not None and good[0] == 0 and good[1] == 0, good
+    assert mod.meta_get(conn, "last_success_at") != STAMP
+    conn.close()
+
+    # Oversized HTTP body: poll fails, DB unchanged.
+    over_db = os.path.join(work, "over.db")
+    conn = seed_open(over_db)
+    orig_max = mod.CLASH_RESPONSE_MAX_BYTES
+    mod.CLASH_RESPONSE_MAX_BYTES = 32
+    try:
+        install_body(b'{"connections":[]}' + b" " * 64)
+        daemon = mod.AccountDaemon(
+            db_path=over_db,
+            clash_url="http://127.0.0.1:1/connections",
+            users_path=users,
+        )
+        daemon._cycles = 2
+        daemon._known_open = mod.reload_known_open_from_db(conn)
+        daemon._tick(conn)
+        assert closed_at(conn) is None
+        assert mod.meta_get(conn, "last_success_at") == STAMP
+    finally:
+        mod.CLASH_RESPONSE_MAX_BYTES = orig_max
+    conn.close()
+finally:
+    mod.urllib.request.urlopen = orig_urlopen
+PY
+if (( p105_rc == 0 )); then
+  pass "P1-05 empty object is protocol error not empty snapshot"
+  pass "P1-05 connections string is protocol error"
+  pass "P1-05 non-object connection entries are protocol error"
+  pass "P1-05 oversized Clash body is rejected"
+  pass "P1-05 non-int counters are skipped"
+  pass "P1-05 legal empty connections list still closes stale"
+  pass "P1-05 happy-path Clash object list still ingests"
+else
+  fail "P1-05 empty object is protocol error not empty snapshot"
+  fail "P1-05 connections string is protocol error"
+  fail "P1-05 non-object connection entries are protocol error"
+  fail "P1-05 oversized Clash body is rejected"
+  fail "P1-05 non-int counters are skipped"
+  fail "P1-05 legal empty connections list still closes stale"
+  fail "P1-05 happy-path Clash object list still ingests"
+fi
+
 # --- 0.2.5 user provisioning offline tests ---
 if command -v python3 >/dev/null 2>&1; then
   PROV_DIR="${TEST_TMP}/provision"

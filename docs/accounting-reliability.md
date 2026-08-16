@@ -37,7 +37,7 @@ Schema 2→3 rewrite keeps existing accounted bytes, assigns `event_id`, sets `g
 
 | Approach | What it sees | Gaps |
 | --- | --- | --- |
-| Clash API `/connections` poll | Live connections and byte counters; outbound tag `acct/<tag>` maps to `user_id` | Connections that start and finish between polls can be missed entirely |
+| Clash API `/connections` poll | Live connections and byte counters; outbound tag `acct/<tag>` maps to `user_id`. HTTP 200 is **not** enough: the body must be a JSON **object** with `connections` a **list of objects**. `{}`, missing/`null`/wrong-type `connections`, a top-level array, non-object entries, or a body over 8 MiB is a **protocol error** — the tick does not close open rows and does not refresh `last_success_at`. A genuine empty snapshot is only `{"connections":[]}` | Connections that start and finish between polls can be missed entirely; a bad envelope used to look like empty and close every open row (P1-05, fixed in 0.3.1-dev) |
 | Official lifecycle / “connection closed” events in 1.13.18 | Not exposed as a stable, complete closed-connection stream suitable for billing | Polling remains approximate |
 
 **poll_baseline / generation**

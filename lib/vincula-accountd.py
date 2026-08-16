@@ -55,12 +55,18 @@ RETENTION_DELETE_BATCH = 2000
 SCHEMA_VERSION = 3
 INT64_MAX = 2**63 - 1
 HEARTBEAT_MAX_AGE_SECONDS = 300
+# Reject Clash /connections bodies larger than this before json.loads (P1-05).
+CLASH_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 
 NODE_ID = "local"
 INSTANCE_ID: Optional[str] = None  # state.json node.instance_id; None → SQL NULL
 TAG_TO_USER_ID: Dict[str, str] = {}
 
 LOG = logging.getLogger("vincula-accountd")
+
+
+class ClashSchemaError(ValueError):
+    """Clash /connections JSON is not a usable snapshot (wrong envelope or size)."""
 
 # Schema 3 connections body (shared by empty-DB SCHEMA_SQL and 2→3 rewrite).
 # INTEGER PRIMARY KEY AUTOINCREMENT is required (D9): deleted event_id values
@@ -545,6 +551,24 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         LOG.warning("skip connection %s: unknown user_tag %s", cid, user_tag)
         return None
 
+    upload_raw = item["upload"] if "upload" in item and item["upload"] is not None else 0
+    download_raw = (
+        item["download"] if "download" in item and item["download"] is not None else 0
+    )
+    try:
+        upload_bytes: Any = require_nonneg_int(upload_raw, "upload")
+        download_bytes: Any = require_nonneg_int(download_raw, "download")
+    except ValueError:
+        # Keep the id in the live set; apply_poll_delta skips the delta (P1-05).
+        LOG.warning(
+            "skip connection %s: invalid counters (upload=%r download=%r)",
+            cid,
+            upload_raw,
+            download_raw,
+        )
+        upload_bytes = upload_raw
+        download_bytes = download_raw
+
     return {
         "event": "connection_update",
         "connection_id": str(cid),
@@ -555,8 +579,8 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "destination_ip": dest_ip,
         "destination_port": dest_port,
         "network": network,
-        "upload_bytes": int(item.get("upload") or 0),
-        "download_bytes": int(item.get("download") or 0),
+        "upload_bytes": upload_bytes,
+        "download_bytes": download_bytes,
         "started_at": started,
         "ts": utc_now_iso(),
     }
@@ -891,8 +915,9 @@ def close_stale_open_connections(
     """Close open rows that are not in the live Clash set.
 
     If live_ids is None, keep the legacy behaviour of closing every open row
-    (used by tests and callers that have no snapshot). An empty live set means
-    the Clash snapshot is empty, so every open row is stale.
+    (used by tests and callers that have no snapshot). An empty live set from a
+    *valid* Clash snapshot means every open row is stale. Callers must not pass
+    an empty set when the poll itself failed (wrong envelope / size / HTTP).
     """
     now = now or utc_now_iso()
     ids = None if live_ids is None else [str(cid) for cid in live_ids]
@@ -911,6 +936,30 @@ def close_stale_open_connections(
     return cur.rowcount
 
 
+def decode_clash_connections_payload(data: Any) -> List[Dict[str, Any]]:
+    """Strict Clash /connections JSON object → internal events.
+
+    Top-level must be a dict with ``connections`` a list of objects. Missing
+    key, null, wrong types, a top-level list, or non-object entries are
+    protocol errors — never an empty snapshot (P1-05).
+    """
+    if not isinstance(data, dict):
+        raise ClashSchemaError("Clash API response must be a JSON object")
+    if "connections" not in data:
+        raise ClashSchemaError("Clash API response missing 'connections' list")
+    items = data["connections"]
+    if not isinstance(items, list):
+        raise ClashSchemaError("Clash API 'connections' must be a list")
+    events: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ClashSchemaError("Clash API connection entry must be an object")
+        ev = parse_clash_connection(item)
+        if ev:
+            events.append(ev)
+    return events
+
+
 def fetch_clash_connections(
     url: str,
     secret: str = "",
@@ -921,20 +970,14 @@ def fetch_clash_connections(
         headers["Authorization"] = f"Bearer {secret}"
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-    data = json.loads(body)
-    if isinstance(data, dict):
-        items = data.get("connections") or []
-    elif isinstance(data, list):
-        items = data
-    else:
-        items = []
-    events: List[Dict[str, Any]] = []
-    for item in items:
-        ev = parse_clash_connection(item)
-        if ev:
-            events.append(ev)
-    return events
+        body = resp.read(CLASH_RESPONSE_MAX_BYTES + 1)
+    if len(body) > CLASH_RESPONSE_MAX_BYTES:
+        raise ClashSchemaError(
+            f"Clash API response exceeds {CLASH_RESPONSE_MAX_BYTES} bytes"
+        )
+    text = body.decode("utf-8", errors="replace")
+    data = json.loads(text)
+    return decode_clash_connections_payload(data)
 
 
 def apply_poll_delta(
@@ -1732,7 +1775,13 @@ class AccountDaemon:
                     closed,
                 )
             return True, new_known
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            OSError,
+            ClashSchemaError,
+        ) as exc:
             LOG.warning("Clash API poll failed: %s", exc)
             return False, None
 
