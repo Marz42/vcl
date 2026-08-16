@@ -2,7 +2,8 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64, datetime, csv, uuid, sqlite3, importlib, shlex, ipaddress.
+hashlib, base64, datetime, csv, uuid, sqlite3, importlib, shlex, ipaddress,
+time, functools, contextlib, fcntl (POSIX) / msvcrt (Windows).
 OpenSSH via the system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH),
 ssh-keyscan (VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no
 paramiko, no cryptography package. No root, no systemd, no /etc/vincula.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import functools
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -29,10 +31,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.3.1-dev"
 FLEET_SCHEMA_VERSION = 2
@@ -132,6 +136,9 @@ INSERT OR IGNORE INTO audit_events (
 CLOCK_SKEW_WARN_SECONDS = 30
 CLOCK_SKEW_FAIL_SECONDS = 300
 CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
+FLEET_OP_LOCK_TIMEOUT = 30
+FLEET_BUSY_EXIT = 4
+FLEET_BUSY_MSG = "busy: another vincula operation in progress"
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -254,6 +261,121 @@ def _ensure_fleet_home() -> Path:
     home.mkdir(parents=True, exist_ok=True)
     _chmod_private(home, 0o700)
     return home
+
+
+def fleet_lock_path() -> Path:
+    override = os.environ.get("VCL_FLEET_LOCK_FILE")
+    if override:
+        return Path(override)
+    return fleet_home() / ".lock"
+
+
+def _fleet_lock_timeout(timeout: Optional[float] = None) -> float:
+    if timeout is not None:
+        return float(timeout)
+    env = os.environ.get("VCL_FLEET_LOCK_TIMEOUT")
+    if env is not None and env != "":
+        try:
+            return float(env)
+        except ValueError:
+            die(f"invalid VCL_FLEET_LOCK_TIMEOUT: {env}")
+    return float(FLEET_OP_LOCK_TIMEOUT)
+
+
+def _flock_exclusive(fd: int, timeout: float) -> bool:
+    """Acquire an exclusive flock/fcntl lock, polling until timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if timeout <= 0 or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
+_FLEET_LOCK_DEPTH = 0
+_FLEET_LOCK_FH: Any = None
+
+
+def acquire_fleet_op_lock(timeout: Optional[float] = None) -> None:
+    """Exclusive lock on $FLEET_HOME/.lock (shared by registry + fleet.db)."""
+    global _FLEET_LOCK_DEPTH, _FLEET_LOCK_FH
+    if _FLEET_LOCK_DEPTH > 0:
+        _FLEET_LOCK_DEPTH += 1
+        return
+    wait = _fleet_lock_timeout(timeout)
+    _ensure_fleet_home()
+    path = fleet_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = open(path, "a+b")
+    except OSError as exc:
+        die(f"cannot open lock file {path}: {exc}")
+    _chmod_private(path, 0o600)
+    if not _flock_exclusive(fh.fileno(), wait):
+        try:
+            fh.close()
+        except OSError:
+            pass
+        die(FLEET_BUSY_MSG, FLEET_BUSY_EXIT)
+    _FLEET_LOCK_FH = fh
+    _FLEET_LOCK_DEPTH = 1
+
+
+def release_fleet_op_lock() -> None:
+    global _FLEET_LOCK_DEPTH, _FLEET_LOCK_FH
+    if _FLEET_LOCK_DEPTH <= 0:
+        _FLEET_LOCK_DEPTH = 0
+        return
+    _FLEET_LOCK_DEPTH -= 1
+    if _FLEET_LOCK_DEPTH > 0:
+        return
+    fh = _FLEET_LOCK_FH
+    _FLEET_LOCK_FH = None
+    if fh is None:
+        return
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        fh.close()
+    except OSError:
+        pass
+
+
+@contextmanager
+def fleet_op_lock(timeout: Optional[float] = None) -> Any:
+    acquire_fleet_op_lock(timeout=timeout)
+    try:
+        yield
+    finally:
+        release_fleet_op_lock()
+
+
+def with_fleet_op_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with fleet_op_lock():
+            return fn(*args, **kwargs)
+
+    return wrapped
 
 
 def _has_meta_table(conn: sqlite3.Connection) -> bool:
@@ -788,14 +910,15 @@ def write_sync_cursor(
     status: str,
     now_iso: str,
 ) -> None:
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO sync_cursor (
-          node_id, instance_id, last_event_id, last_sync_at, status
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        (node_id, instance_id, last_event_id, now_iso, status),
-    )
+    with fleet_op_lock():
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sync_cursor (
+              node_id, instance_id, last_event_id, last_sync_at, status
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (node_id, instance_id, last_event_id, now_iso, status),
+        )
 
 
 def mark_cursor_status(
@@ -834,25 +957,26 @@ def reseed_node_local(
     validate_node_id(node_id)
     if now_iso is None:
         now_iso = format_utc(datetime.now(timezone.utc))
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        conn.execute("DELETE FROM audit_events WHERE node_id = ?", (node_id,))
-        conn.execute("DELETE FROM daily_usage WHERE node_id = ?", (node_id,))
-        write_sync_cursor(
-            conn,
-            node_id=node_id,
-            instance_id=instance_id,
-            last_event_id=0,
-            status=SYNC_STATUS_OK,
-            now_iso=now_iso,
-        )
-        conn.commit()
-    except BaseException:
+    with fleet_op_lock():
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-        raise
+            conn.execute("DELETE FROM audit_events WHERE node_id = ?", (node_id,))
+            conn.execute("DELETE FROM daily_usage WHERE node_id = ?", (node_id,))
+            write_sync_cursor(
+                conn,
+                node_id=node_id,
+                instance_id=instance_id,
+                last_event_id=0,
+                status=SYNC_STATUS_OK,
+                now_iso=now_iso,
+            )
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
 
 
 def remediation_sync_reseed(name: str) -> str:
@@ -1459,28 +1583,29 @@ def load_registry(path: Optional[Path] = None) -> dict[str, Any]:
 
 
 def save_registry(path: Optional[Path], registry: dict[str, Any]) -> None:
-    path = fleet_registry_path() if path is None else Path(path)
-    payload = validate_registry(registry)
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(parent, 0o700)
-    except OSError:
-        pass
-    fd, tmp = tempfile.mkstemp(prefix=".fleet.json.", suffix=".tmp", dir=str(parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
-            fh.write("\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        os.chmod(path, 0o600)
-    except Exception:
+    with fleet_op_lock():
+        path = fleet_registry_path() if path is None else Path(path)
+        payload = validate_registry(registry)
+        parent = path.parent
+        parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.unlink(tmp)
+            os.chmod(parent, 0o700)
         except OSError:
             pass
-        raise
+        fd, tmp = tempfile.mkstemp(prefix=".fleet.json.", suffix=".tmp", dir=str(parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+                fh.write("\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def find_by_name(registry: dict[str, Any], name: str) -> Optional[dict[str, Any]]:
@@ -1571,6 +1696,7 @@ def set_enabled(registry: dict[str, Any], name: str, enabled: bool) -> dict[str,
     return node
 
 
+@with_fleet_op_lock
 def cmd_init() -> int:
     path = fleet_registry_path()
     if path.is_file():
@@ -1582,6 +1708,7 @@ def cmd_init() -> int:
     return 0
 
 
+@with_fleet_op_lock
 def cmd_node_add(args: argparse.Namespace) -> int:
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
     if args.offline:
@@ -1649,6 +1776,7 @@ def cmd_node_show(name: str) -> int:
     return 0
 
 
+@with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
     """Endpoint rebind: change ssh_host only. Credentials and instance_id stay."""
     registry = load_registry()
@@ -1658,6 +1786,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     return 0
 
 
+@with_fleet_op_lock
 def cmd_node_enable(name: str, enabled: bool) -> int:
     registry = load_registry()
     set_enabled(registry, name, enabled)
@@ -1819,6 +1948,7 @@ def _run_final_sync(node: dict[str, Any], *, write_table: bool = True) -> dict[s
     return row
 
 
+@with_fleet_op_lock
 def cmd_node_retire(name: str) -> int:
     validate_name(name)
     registry = load_registry()
@@ -1983,6 +2113,7 @@ def _cursor_instance_id(node_id: str) -> Optional[str]:
     return _optional_text(row["instance_id"])
 
 
+@with_fleet_op_lock
 def cmd_node_replace(args: argparse.Namespace) -> int:
     """Physical instance replacement: secretless backup, restore, rotate.
 
@@ -4170,6 +4301,7 @@ def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+@with_fleet_op_lock
 def cmd_sync(args: argparse.Namespace) -> int:
     registry = load_registry()
     node_name = (getattr(args, "node", None) or "").strip() or None

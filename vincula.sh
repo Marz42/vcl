@@ -303,6 +303,12 @@ rollback_migration() {
 on_exit() {
   local status=$1
   trap - EXIT
+  if declare -F release_vincula_op_lock >/dev/null 2>&1; then
+    if [[ "${VINCULA_OP_LOCK_DEPTH:-0}" -gt 0 ]]; then
+      VINCULA_OP_LOCK_DEPTH=1
+      release_vincula_op_lock
+    fi
+  fi
   if (( status != 0 && MIGRATION_STARTED == 1 && INSTALL_COMMITTED == 0 )); then
     rollback_migration
   elif (( status != 0 && MUTATION_STARTED == 1 && INSTALL_COMMITTED == 0 )); then
@@ -1522,6 +1528,7 @@ migrate_existing_install() {
   local legacy_inbound_config=0
   local check_err
 
+  acquire_vincula_op_lock
   log_info "Installed: ${installed_version}"
   log_info "Installer: ${VINCULA_VERSION}"
   require_canonical_files
@@ -1998,6 +2005,7 @@ install_new_node() {
   local created_user created_group clash_secret
   local node_id node_name instance_id clash_port
 
+  acquire_vincula_op_lock
   os_arch=$(uname -m)
   arch=$(map_arch "$os_arch") || die "Unsupported architecture: ${os_arch}. Only amd64 and arm64 are supported."
   port=${VCL_PORT:-443}

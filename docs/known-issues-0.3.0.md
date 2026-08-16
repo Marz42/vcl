@@ -72,6 +72,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P0-02 controller zip missing audit/backup | B3: zip ships `lib/vincula-audit.py` and `lib/vincula-backup.py`; black-box unpack runs `version` / `init` / `audit` / `stats`; `node replace` fail-closed still works from the zip |
 | P1-01 SSH remote argv not POSIX-quoted | B4: `ssh_argv` sends one `shlex.join` string; `ssh_user`/`ssh_host` and `display_name`/`department` reject control characters; node CLI / CSV import match. Spaces in display names stay one remote arg |
 | P1-05 Clash 200 + bad envelope treated as empty snapshot | B5: `/connections` body must be an object with `connections` a list of objects. `{}` / wrong types / oversized body are protocol errors (no close-all, no `last_success_at` refresh). Legal `{"connections":[]}` still closes stale. Non-int counters are skipped per connection |
+| P1-06 no operation-level mutex (lost updates) | B6: node `flock` on `/run/lock/vincula.lock` (fallback `/var/lock/vincula.lock`) covers user mutations, restore, and `users.json` writers; controller `fcntl` on `$FLEET_HOME/.lock` covers registry mutations and sync/`fleet.db` cursor updates. Timeout 30s → exit 4 `busy: another vincula operation in progress`. flock is fd-based (released on process exit); not a PID file |
 
 ## Related docs
 

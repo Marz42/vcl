@@ -1603,6 +1603,7 @@ PY
   [[ -n "$display_name" ]] || display_name=$tag
   is_valid_user_metadata "$display_name" || emit_user_add_error invalid_display_name "invalid display_name."
   is_valid_user_metadata "$department" || emit_user_add_error invalid_department "invalid department."
+  acquire_vincula_op_lock
   local node_id uuid staged_dir staged_users credential_id vless_uri mutate_err mutate_rc
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
@@ -1696,6 +1697,7 @@ cmd_user_set() {
   done
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   (( set_display || set_department )) || die "user set: require --display-name and/or --department."
+  acquire_vincula_op_lock
   local cur_display cur_dept staged_dir staged_users
   cur_display=$(users_registry_field "$USERS_FILE" "$tag" display_name)
   cur_dept=$(users_registry_field "$USERS_FILE" "$tag" department)
@@ -1790,6 +1792,7 @@ cmd_user_disable() {
   parse_user_optional_json disable "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   local staged_dir staged_users
+  acquire_vincula_op_lock
   USER_MUTATION_BACKUP=""
   backup_user_mutation
   staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
@@ -1815,6 +1818,7 @@ cmd_user_enable() {
   parse_user_optional_json enable "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   local staged_dir staged_users
+  acquire_vincula_op_lock
   USER_MUTATION_BACKUP=""
   backup_user_mutation
   staged_dir=$(mktemp -d /tmp/vincula-user.XXXXXXXX)
@@ -1840,6 +1844,7 @@ cmd_user_rotate() {
   parse_user_optional_json rotate "$@" && as_json=1
   is_valid_user_tag "$tag" || die "invalid user tag: ${tag}."
   local node_id uuid staged_dir staged_users credential_id vless_uri
+  acquire_vincula_op_lock
   node_id=$(node_id_from_settings)
   uuid=$("$BINARY_PATH" generate uuid)
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "generated UUID is invalid."
@@ -1949,6 +1954,7 @@ cmd_user_import() {
     return
   fi
 
+  acquire_vincula_op_lock
   local staged_dir staged_users cred_tmp="" cred_keep=""
   USER_MUTATION_BACKUP=""
   backup_user_mutation
@@ -2967,6 +2973,7 @@ cmd_restore() {
 
   [[ -n "$file" ]] || die "usage: vcl restore FILE [--age-identity FILE] [--reissue-output FILE] [--json]"
   [[ -f "$file" ]] || die "backup file not found: ${file}"
+  acquire_vincula_op_lock
   if [[ -f "$VERSION_FILE" ]]; then
     die "Refusing to overwrite an existing Vincula install."
   fi

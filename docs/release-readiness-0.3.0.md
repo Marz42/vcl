@@ -5,6 +5,7 @@
 **Addendum:** 2026-08-16 — P2-04 honesty; recommendation **NOT READY**.  
 **Addendum:** 2026-08-16 — B2 / P0-01a: `node replace` fail-closed.  
 **Addendum:** 2026-08-16 — B3 / P0-02: controller zip ships audit + backup modules.  
+**Addendum:** 2026-08-16 — B6 / P1-06: operation-level flock mutex on node and controller.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -50,6 +51,16 @@ Living tree (`0.3.1-dev`): `scripts/build-controller.sh` packs **six** files (`R
 P0-02 is **closed**. Known P0 on the living tree: **1** (P0-01). Controller zip still has **no** `release.lock` (P2-03). Freeze-era “four members” text below is historical.
 
 Living-tree test counts after B3: `bash tests/test.sh` **998**; standalone `bash tests/test-fleet.sh` **393**.
+
+## Addendum (2026-08-16) — B6 / P1-06 operation-level mutex
+
+Living tree (`0.3.1-dev`): node CLI and installer take an exclusive `flock` on `/run/lock/vincula.lock` (fallback `/var/lock/vincula.lock`; tests use `$VCL_LOCK_FILE`). The lock covers user add/set/disable/enable/rotate/import, `vcl restore`, and other `users.json` writers for the full read–stage–validate–commit–restart window. Timeout 30s (`$VCL_LOCK_TIMEOUT`) → exit 4, stderr `busy: another vincula operation in progress`. Released on EXIT (trap) and when the fd closes.
+
+Controller: exclusive `fcntl.flock` on `$FLEET_HOME/.lock` for `node add/set/disable/enable/retire/replace`, `sync` (including cursor / `fleet.db` writes), and `save_registry`. Registry and `fleet.db` share that one lock. Timeout `$VCL_FLEET_LOCK_TIMEOUT` (default 30s) → exit 4 with the same busy text.
+
+Concurrent `user add` / `node add` either serialize (both records present) or the waiter exits busy; no last-writer-wins lost update.
+
+Living-tree test counts after B6: `bash tests/test.sh` **1051**; standalone `bash tests/test-fleet.sh` **415**.
 
 ### Freeze-era recommendation (historical)
 

@@ -224,6 +224,113 @@ require_python3() {
   }
 }
 
+# Operation-level mutex (P1-06). Covers the full read-stage-validate-commit
+# window of user mutations, restore, and any users.json writer.
+# Default: /run/lock/vincula.lock, then /var/lock/vincula.lock.
+# Tests: VCL_LOCK_FILE (absolute path) and VCL_LOCK_TIMEOUT (seconds, default 30).
+VINCULA_OP_LOCK_TIMEOUT=30
+VINCULA_BUSY_EXIT=4
+VINCULA_OP_LOCK_DEPTH=0
+VINCULA_OP_LOCK_FD=""
+_VINCULA_OP_LOCK_TRAP_INSTALLED=0
+
+resolve_vincula_op_lock_file() {
+  if [[ -n "${VCL_LOCK_FILE:-}" ]]; then
+    printf '%s\n' "$VCL_LOCK_FILE"
+    return 0
+  fi
+  if [[ -d /run/lock && -w /run/lock ]]; then
+    printf '%s\n' /run/lock/vincula.lock
+    return 0
+  fi
+  if [[ -d /var/lock && -w /var/lock ]]; then
+    printf '%s\n' /var/lock/vincula.lock
+    return 0
+  fi
+  printf 'ERROR: no writable lock directory (/run/lock or /var/lock)\n' >&2
+  return 1
+}
+
+vincula_busy() {
+  printf 'ERROR: busy: another vincula operation in progress\n' >&2
+  return "$VINCULA_BUSY_EXIT"
+}
+
+release_vincula_op_lock() {
+  if (( VINCULA_OP_LOCK_DEPTH <= 0 )); then
+    VINCULA_OP_LOCK_DEPTH=0
+    return 0
+  fi
+  VINCULA_OP_LOCK_DEPTH=$((VINCULA_OP_LOCK_DEPTH - 1))
+  if (( VINCULA_OP_LOCK_DEPTH > 0 )); then
+    return 0
+  fi
+  if [[ -n "${VINCULA_OP_LOCK_FD:-}" ]]; then
+    flock -u "$VINCULA_OP_LOCK_FD" 2>/dev/null || true
+    eval "exec ${VINCULA_OP_LOCK_FD}>&-" 2>/dev/null || true
+    VINCULA_OP_LOCK_FD=""
+  fi
+}
+
+_vincula_op_lock_on_exit() {
+  if [[ "${VINCULA_OP_LOCK_DEPTH:-0}" -gt 0 ]]; then
+    VINCULA_OP_LOCK_DEPTH=1
+    release_vincula_op_lock
+  fi
+}
+
+acquire_vincula_op_lock() {
+  if (( VINCULA_OP_LOCK_DEPTH > 0 )); then
+    VINCULA_OP_LOCK_DEPTH=$((VINCULA_OP_LOCK_DEPTH + 1))
+    return 0
+  fi
+  local lockfile parent timeout spec
+  lockfile=$(resolve_vincula_op_lock_file) || return 1
+  parent=$(dirname -- "$lockfile")
+  if [[ ! -d "$parent" ]]; then
+    mkdir -p -- "$parent" || {
+      printf 'ERROR: cannot create lock directory %s\n' "$parent" >&2
+      return 1
+    }
+  fi
+  command -v flock >/dev/null 2>&1 || {
+    printf 'ERROR: flock is required for operation locking\n' >&2
+    return 1
+  }
+  timeout=${VCL_LOCK_TIMEOUT:-$VINCULA_OP_LOCK_TIMEOUT}
+  exec {VINCULA_OP_LOCK_FD}>"$lockfile" || {
+    printf 'ERROR: cannot open lock file %s\n' "$lockfile" >&2
+    return 1
+  }
+  chmod 0600 "$lockfile" 2>/dev/null || true
+  if [[ "$timeout" == "0" || "$timeout" == "0.0" ]]; then
+    if ! flock -n "$VINCULA_OP_LOCK_FD"; then
+      eval "exec ${VINCULA_OP_LOCK_FD}>&-" 2>/dev/null || true
+      VINCULA_OP_LOCK_FD=""
+      vincula_busy
+      return "$VINCULA_BUSY_EXIT"
+    fi
+  else
+    if ! flock -w "$timeout" "$VINCULA_OP_LOCK_FD"; then
+      eval "exec ${VINCULA_OP_LOCK_FD}>&-" 2>/dev/null || true
+      VINCULA_OP_LOCK_FD=""
+      vincula_busy
+      return "$VINCULA_BUSY_EXIT"
+    fi
+  fi
+  VINCULA_OP_LOCK_DEPTH=1
+  # Do not replace an existing EXIT trap (installer on_exit / test finish).
+  # Those paths call release_vincula_op_lock or the process exits and the
+  # kernel drops the flock with the fd. CLI has no EXIT trap, so install one.
+  if (( _VINCULA_OP_LOCK_TRAP_INSTALLED == 0 )); then
+    spec=$(trap -p EXIT 2>/dev/null || true)
+    if [[ -z "$spec" ]]; then
+      trap '_vincula_op_lock_on_exit' EXIT
+    fi
+    _VINCULA_OP_LOCK_TRAP_INSTALLED=1
+  fi
+}
+
 generate_uuid_v4() {
   require_python3 || return 1
   python3 -c 'import uuid; print(uuid.uuid4())'
@@ -587,8 +694,10 @@ users_registry_mutate() {
   local users_file=$1 action=$2
   shift 2
   require_python3 || return 1
-  python3 - "$users_file" "$action" "$@" <<'PY'
-import json, re, sys, uuid
+  acquire_vincula_op_lock || return $?
+  local rc=0
+  python3 - "$users_file" "$action" "$@" <<'PY' || rc=$?
+import json, os, re, sys, time, uuid
 from datetime import datetime, timezone
 
 path, action = sys.argv[1], sys.argv[2]
@@ -609,6 +718,10 @@ def require_metadata(value, field):
 
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
+
+delay = float(os.environ.get("VCL_LOCK_TEST_DELAY") or "0")
+if delay > 0:
+    time.sleep(delay)
 
 if data.get("schema_version") != 2:
     raise SystemExit("users.json must be schema_version 2")
@@ -710,6 +823,8 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
+  release_vincula_op_lock
+  return "$rc"
 }
 
 users_registry_show() {
@@ -1041,8 +1156,13 @@ users_import_prepare() {
   local public_key=${11:-}
   local short_id=${12:-}
   require_python3 || return 1
+  local locked=0 rc=0
+  if [[ "$dry_run" != "1" && "$dry_run" != "true" && "$dry_run" != "yes" && "$dry_run" != "on" ]]; then
+    acquire_vincula_op_lock || return $?
+    locked=1
+  fi
   python3 - "$csv_path" "$users_file" "$node_id" "$out_users_json" "$out_cred_csv" \
-    "$include_uuid" "$dry_run" "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY'
+    "$include_uuid" "$dry_run" "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY' || rc=$?
 import csv, json, re, sys, uuid
 from datetime import datetime, timezone
 
@@ -1204,6 +1324,10 @@ if out_cred_csv:
         writer.writerows(cred_rows)
 raise SystemExit(0)
 PY
+  if (( locked )); then
+    release_vincula_op_lock
+  fi
+  return "$rc"
 }
 
 # Export users CSV. credentials=0: metadata. credentials=1: credential export with URIs.

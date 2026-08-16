@@ -4752,6 +4752,123 @@ assert_success "README marks node replace NOT IMPLEMENTED" \
 assert_success "cmd_node_replace body kept pending B10" \
   grep -q -- '--replace-node' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
+# P1-06 / B6: controller operation lock
+assert_success "fleet lock path is \$FLEET_HOME/.lock" \
+  grep -q 'fleet_home() / ".lock"' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet lock uses fcntl.flock" \
+  grep -q 'fcntl.flock' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet busy message matches node busy text" \
+  grep -q 'another vincula operation in progress' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "cmd_node_add holds fleet operation lock" \
+  grep -q '@with_fleet_op_lock' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "cmd_sync holds fleet operation lock" \
+  awk '/^@with_fleet_op_lock$/{prev=1; next} prev && /^def cmd_sync\(/ {found=1} {prev=0} END{exit found?0:1}' \
+    "${PROJECT_DIR}/lib/vincula-fleet.py"
+save_lock_src=$(sed -n '/^def save_registry(/,/^def find_by_name(/p' "${PROJECT_DIR}/lib/vincula-fleet.py")
+assert_success "save_registry acquires fleet operation lock" \
+  grep -q 'fleet_op_lock' <<< "$save_lock_src"
+cursor_lock_src=$(sed -n '/^def write_sync_cursor(/,/^def mark_cursor_status(/p' "${PROJECT_DIR}/lib/vincula-fleet.py")
+assert_success "write_sync_cursor acquires fleet operation lock" \
+  grep -q 'fleet_op_lock' <<< "$cursor_lock_src"
+
+SAVED_OPLOCK_HOME="${VCL_FLEET_HOME}"
+OPLOCK_FLEET_HOME="${TEST_TMP}/fleet-home-op-lock"
+export VCL_FLEET_HOME="$OPLOCK_FLEET_HOME"
+mkdir -p "$VCL_FLEET_HOME"
+assert_success "op-lock fleet init" fleet init
+
+OPLOCK_NID_A="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa00001"
+OPLOCK_NID_B="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa00002"
+fleet node add locka --host 203.0.113.51 --offline --node-id "$OPLOCK_NID_A" \
+  >"${TEST_TMP}/locka.out" 2>"${TEST_TMP}/locka.err" &
+locka_pid=$!
+fleet node add lockb --host 203.0.113.52 --offline --node-id "$OPLOCK_NID_B" \
+  >"${TEST_TMP}/lockb.out" 2>"${TEST_TMP}/lockb.err" &
+lockb_pid=$!
+locka_rc=0
+wait "$locka_pid" || locka_rc=$?
+lockb_rc=0
+wait "$lockb_pid" || lockb_rc=$?
+lock_json="${OPLOCK_FLEET_HOME}/fleet.json"
+lock_has_a=0
+lock_has_b=0
+grep -q '"name": "locka"' "$lock_json" && lock_has_a=1
+grep -q '"name": "lockb"' "$lock_json" && lock_has_b=1
+if (( lock_has_a == 1 && lock_has_b == 1 )); then
+  pass "concurrent fleet node add keeps both nodes (serialized, no lost update)"
+elif (( locka_rc == 0 && lockb_rc == 4 && lock_has_a == 1 && lock_has_b == 0 )); then
+  pass "concurrent fleet node add keeps both nodes (serialized, no lost update)"
+elif (( lockb_rc == 0 && locka_rc == 4 && lock_has_b == 1 && lock_has_a == 0 )); then
+  pass "concurrent fleet node add keeps both nodes (serialized, no lost update)"
+else
+  fail "concurrent fleet node add keeps both nodes (serialized, no lost update) (a_rc=${locka_rc} b_rc=${lockb_rc} a=${lock_has_a} b=${lock_has_b})"
+fi
+
+oplock_holder_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$OPLOCK_FLEET_HOME" <<'PY' &
+import importlib.util, os, sys, time
+path, home = sys.argv[1], sys.argv[2]
+os.environ["VCL_FLEET_HOME"] = home
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.acquire_fleet_op_lock()
+open(os.path.join(home, ".lock-held"), "w", encoding="utf-8").close()
+time.sleep(8)
+PY
+oplock_holder_pid=$!
+oplock_ready=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [[ -f "${OPLOCK_FLEET_HOME}/.lock-held" ]]; then
+    oplock_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if (( oplock_ready != 1 )); then
+  fail "held fleet lock makes concurrent node add busy (holder did not acquire)"
+else
+  oplock_busy_rc=0
+  oplock_busy_err=$(
+    VCL_FLEET_LOCK_TIMEOUT=0 fleet node add lockc --host 203.0.113.53 --offline \
+      --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaa00003" 2>&1
+  ) || oplock_busy_rc=$?
+  if (( oplock_busy_rc == 4 )) && [[ "$oplock_busy_err" == *busy* ]] \
+    && [[ "$oplock_busy_err" == *"another vincula operation in progress"* ]]; then
+    pass "held fleet lock makes concurrent node add busy"
+  else
+    fail "held fleet lock makes concurrent node add busy (rc=${oplock_busy_rc} err=${oplock_busy_err})"
+  fi
+fi
+kill "$oplock_holder_pid" 2>/dev/null || true
+wait "$oplock_holder_pid" 2>/dev/null || true
+
+fleet_fail_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$OPLOCK_FLEET_HOME" <<'PY' || fleet_fail_rc=$?
+import importlib.util, os, sys
+path, home = sys.argv[1], sys.argv[2]
+os.environ["VCL_FLEET_HOME"] = home
+os.environ["VCL_FLEET_LOCK_TIMEOUT"] = "0"
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+try:
+    with mod.fleet_op_lock():
+        raise SystemExit(1)
+except SystemExit as exc:
+    if exc.code != 1:
+        raise
+mod.acquire_fleet_op_lock()
+mod.release_fleet_op_lock()
+PY
+if (( fleet_fail_rc == 0 )); then
+  pass "fleet lock released on failure (finally)"
+else
+  fail "fleet lock released on failure (finally) (rc=${fleet_fail_rc})"
+fi
+
+export VCL_FLEET_HOME="${SAVED_OPLOCK_HOME}"
+
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then
   export HOME="${FLEET_SAVED_HOME}"

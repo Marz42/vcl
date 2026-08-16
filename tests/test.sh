@@ -227,6 +227,8 @@ assert_equal "parses bracketed VLESS host" "2001:db8::10" "$VLESS_HOST"
 assert_equal "parses bracketed VLESS port" "8443" "$VLESS_PORT"
 
 TEST_TMP=$(mktemp -d /tmp/vincula-tests.XXXXXXXX)
+# P1-06: do not flock /run/lock/vincula.lock during the suite.
+export VCL_LOCK_FILE="${TEST_TMP}/vincula.lock"
 readonly TEST_NODE_ID="6fc96a10-1111-4111-8111-111111111111"
 readonly TEST_INSTANCE_ID="7aa07b21-2222-4222-8222-222222222222"
 render_sing_box_config "${TEST_TMP}/config.json" "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_SHORT_ID" 443 www.cloudflare.com
@@ -6087,6 +6089,156 @@ else
   fail "AC-3.0-06 fixture PASS: restore mints new instance_id"
   fail "AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials"
   fail "AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id"
+fi
+
+# P1-06 / B6: operation-level flock mutex
+assert_success "common.sh resolves /run/lock/vincula.lock" \
+  grep -q '/run/lock/vincula.lock' "${PROJECT_DIR}/lib/vincula-common.sh"
+assert_success "common.sh falls back to /var/lock/vincula.lock" \
+  grep -q '/var/lock/vincula.lock' "${PROJECT_DIR}/lib/vincula-common.sh"
+assert_success "common.sh uses flock" \
+  grep -q 'flock -w' "${PROJECT_DIR}/lib/vincula-common.sh"
+assert_success "busy error names another vincula operation in progress" \
+  grep -q 'another vincula operation in progress' "${PROJECT_DIR}/lib/vincula-common.sh"
+assert_success "cmd_user_add acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' "${PROJECT_DIR}/bin/vincula"
+restore_lock_src=$(sed -n '/^cmd_restore()/,/^cmd_link()/p' "${PROJECT_DIR}/bin/vincula")
+assert_success "cmd_restore acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' <<< "$restore_lock_src"
+migrate_lock_src=$(sed -n '/^migrate_existing_install()/,/^install_accountd_artifacts()/p' "${PROJECT_DIR}/vincula.sh")
+assert_success "migrate_existing_install acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' <<< "$migrate_lock_src"
+install_lock_src=$(sed -n '/^install_new_node()/,/^main()/p' "${PROJECT_DIR}/vincula.sh")
+assert_success "install_new_node acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' <<< "$install_lock_src"
+mutate_lock_src=$(sed -n '/^users_registry_mutate()/,/^users_registry_show()/p' "${PROJECT_DIR}/lib/vincula-common.sh")
+assert_success "users_registry_mutate acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' <<< "$mutate_lock_src"
+
+LOCK_RACE_USERS="${TEST_TMP}/lock-race-users.json"
+cp -a -- "${TEST_TMP}/users.json" "$LOCK_RACE_USERS"
+LOCK_ALICE_UUID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01"
+LOCK_BOB_UUID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02"
+
+lock_add_one() {
+  local tag=$1 uuid=$2
+  VCL_LOCK_FILE="${TEST_TMP}/vincula.lock" \
+  VCL_LOCK_TEST_DELAY=0.4 \
+    bash -c '
+      set -euo pipefail
+      # shellcheck disable=SC1090
+      source "$1"
+      users_registry_mutate "$2" add "$3" "$3" dept "$4" "$5"
+    ' bash "${PROJECT_DIR}/lib/vincula-common.sh" "$LOCK_RACE_USERS" "$tag" "$uuid" "$TEST_NODE_ID"
+}
+
+lock_add_one alice "$LOCK_ALICE_UUID" \
+  >"${TEST_TMP}/lock-alice.out" 2>"${TEST_TMP}/lock-alice.err" &
+lock_alice_pid=$!
+lock_add_one bob "$LOCK_BOB_UUID" \
+  >"${TEST_TMP}/lock-bob.out" 2>"${TEST_TMP}/lock-bob.err" &
+lock_bob_pid=$!
+lock_alice_rc=0
+wait "$lock_alice_pid" || lock_alice_rc=$?
+lock_bob_rc=0
+wait "$lock_bob_pid" || lock_bob_rc=$?
+lock_has_alice=0
+lock_has_bob=0
+grep -q '"tag": "alice"' "$LOCK_RACE_USERS" && lock_has_alice=1
+grep -q '"tag": "bob"' "$LOCK_RACE_USERS" && lock_has_bob=1
+if (( lock_has_alice == 1 && lock_has_bob == 1 )); then
+  pass "concurrent user add keeps both tags (serialized, no lost update)"
+elif (( lock_alice_rc == 0 && lock_bob_rc == 4 && lock_has_alice == 1 && lock_has_bob == 0 )); then
+  pass "concurrent user add keeps both tags (serialized, no lost update)"
+elif (( lock_bob_rc == 0 && lock_alice_rc == 4 && lock_has_bob == 1 && lock_has_alice == 0 )); then
+  pass "concurrent user add keeps both tags (serialized, no lost update)"
+else
+  fail "concurrent user add keeps both tags (serialized, no lost update) (alice_rc=${lock_alice_rc} bob_rc=${lock_bob_rc} alice=${lock_has_alice} bob=${lock_has_bob})"
+fi
+if (( lock_alice_rc == 4 )); then
+  assert_success "concurrent user add busy stderr names busy" \
+    grep -q 'busy' "${TEST_TMP}/lock-alice.err"
+elif (( lock_bob_rc == 4 )); then
+  assert_success "concurrent user add busy stderr names busy" \
+    grep -q 'busy' "${TEST_TMP}/lock-bob.err"
+else
+  pass "concurrent user add busy stderr names busy"
+fi
+
+LOCK_BUSY_USERS="${TEST_TMP}/lock-busy-users.json"
+cp -a -- "${TEST_TMP}/users.json" "$LOCK_BUSY_USERS"
+exec {VCL_HOLD_FD}>"${TEST_TMP}/vincula.lock"
+if flock -n "$VCL_HOLD_FD"; then
+  lock_busy_rc=0
+  lock_busy_err=$(
+    VCL_LOCK_FILE="${TEST_TMP}/vincula.lock" \
+    VCL_LOCK_TIMEOUT=0 \
+      bash -c '
+        set -euo pipefail
+        source "$1"
+        users_registry_mutate "$2" add carol Carol dept "$3" "$4"
+      ' bash "${PROJECT_DIR}/lib/vincula-common.sh" "$LOCK_BUSY_USERS" \
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" "$TEST_NODE_ID" 2>&1
+  ) || lock_busy_rc=$?
+  if (( lock_busy_rc == 4 )) && [[ "$lock_busy_err" == *busy* ]] \
+    && [[ "$lock_busy_err" == *"another vincula operation in progress"* ]]; then
+    pass "held node lock makes concurrent mutate busy"
+  else
+    fail "held node lock makes concurrent mutate busy (rc=${lock_busy_rc} err=${lock_busy_err})"
+  fi
+  if grep -q '"tag": "carol"' "$LOCK_BUSY_USERS"; then
+    fail "busy mutate does not write carol"
+  else
+    pass "busy mutate does not write carol"
+  fi
+else
+  fail "held node lock makes concurrent mutate busy (test could not flock)"
+  fail "busy mutate does not write carol"
+fi
+eval "exec ${VCL_HOLD_FD}>&-"
+unset VCL_HOLD_FD
+
+lock_fail_rc=0
+bash -c '
+  set -euo pipefail
+  source "$1"
+  acquire_vincula_op_lock
+  exit 1
+' bash "${PROJECT_DIR}/lib/vincula-common.sh" >/dev/null 2>&1 || lock_fail_rc=$?
+lock_after_fail_rc=0
+VCL_LOCK_TIMEOUT=0 bash -c '
+  set -euo pipefail
+  source "$1"
+  acquire_vincula_op_lock
+' bash "${PROJECT_DIR}/lib/vincula-common.sh" >/dev/null 2>&1 || lock_after_fail_rc=$?
+if (( lock_fail_rc == 1 && lock_after_fail_rc == 0 )); then
+  pass "node lock released on failure (trap)"
+else
+  fail "node lock released on failure (trap) (child=${lock_fail_rc} after=${lock_after_fail_rc})"
+fi
+
+if [[ -n "${restore_cli_root:-}" && -x "${restore_cli_root}/bin/vincula" ]]; then
+  exec {VCL_HOLD_FD}>"${TEST_TMP}/vincula.lock"
+  if flock -n "$VCL_HOLD_FD"; then
+    restore_busy_rc=0
+    restore_busy_err=$(
+      VCL_LOCK_TIMEOUT=0 cli_restore --json \
+        --reissue-output "${restore_backups}/lock-busy-reissue.csv" \
+        "${BACKUP_DIR}/restore-src.tar" 2>&1
+    ) || restore_busy_rc=$?
+    if (( restore_busy_rc == 4 )) && [[ "$restore_busy_err" == *busy* ]] \
+      && [[ "$restore_busy_err" == *"another vincula operation in progress"* ]]; then
+      pass "restore acquires node lock (busy while held)"
+    else
+      fail "restore acquires node lock (busy while held) (rc=${restore_busy_rc} err=${restore_busy_err})"
+    fi
+  else
+    fail "restore acquires node lock (busy while held) (test could not flock)"
+  fi
+  eval "exec ${VCL_HOLD_FD}>&-"
+  unset VCL_HOLD_FD
+else
+  fail "restore acquires node lock (busy while held) (cli wrapper missing)"
 fi
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
