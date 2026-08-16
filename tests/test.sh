@@ -103,7 +103,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.2.9" \
+assert_equal "runs when read from standard input" "vincula 0.3.0-dev" \
   "$(bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -126,7 +126,8 @@ assert_success "migrates from 0.2.5" is_supported_upgrade_from 0.2.5
 assert_success "migrates from 0.2.6" is_supported_upgrade_from 0.2.6
 assert_success "migrates from 0.2.7" is_supported_upgrade_from 0.2.7
 assert_success "migrates from 0.2.8" is_supported_upgrade_from 0.2.8
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.2.9
+assert_success "migrates from 0.2.9" is_supported_upgrade_from 0.2.9
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.0-dev
 assert_failure "does not migrate 0.3.0" is_supported_upgrade_from 0.3.0
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -136,6 +137,7 @@ assert_equal "D18 custom 180 preserved" "180" "$(migrate_legacy_daily_retention 
 assert_equal "D18 custom 30 preserved" "30" "$(migrate_legacy_daily_retention 0.1.5 30)"
 assert_equal "D18 already 90 stays 90" "90" "$(migrate_legacy_daily_retention 0.2.6 90)"
 assert_equal "D18 730 from 0.2.8 is preserved" "730" "$(migrate_legacy_daily_retention 0.2.8 730)"
+assert_equal "D18 730 from 0.2.9 is preserved" "730" "$(migrate_legacy_daily_retention 0.2.9 730)"
 d18_err=$(migrate_legacy_daily_retention 0.2.6 730 2>&1 >/dev/null)
 assert_success "D18 730 logs migration message" \
   grep -q 'Migrated legacy default daily retention 730 → 90.' <<< "$d18_err"
@@ -326,7 +328,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.2.9"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.3.0-dev"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -720,8 +722,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.2.9" \
-  grep -q 'Vincula-Version: 0.2.9' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.3.0-dev" \
+  grep -q 'Vincula-Version: 0.3.0-dev' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
