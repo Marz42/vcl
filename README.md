@@ -1,4 +1,4 @@
-# vincula V0.3.0
+# vincula V0.3.1-dev
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 

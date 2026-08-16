@@ -2,6 +2,10 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.3.1-dev
+
+Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Tree stamp only in this commit; functional batches follow. Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
+
 ## 0.3.0
 
 Backup / Replace / Restore。记账仍为 **approximate / Clash polling**（非计费级）。**未** bump `state.json` / `users.json` / accounting / `fleet.json` schema。新产品合同：backup schema **1**；`fleet.db` schema **1 → 2**（`instance_history`）。
