@@ -71,12 +71,18 @@ mkdir -p "${HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home"
 export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
 export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
+export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
+unset VCL_FAKE_STATE_DIR
+unset VCL_FAKE_FAIL_RESTORE
+unset VCL_FAKE_REINSTALL
 readonly FAKE_SSH="${VCL_FLEET_SSH}"
 readonly FAKE_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN}"
+readonly FAKE_SCP="${VCL_FLEET_SCP}"
 readonly LAX_REMOTE_NODE_ID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 readonly LAX_HOSTKEY_PUB="${PROJECT_DIR}/tests/fixtures/nodes/lax/hostkey.pub"
 readonly TOKYO_HOSTKEY_PUB="${PROJECT_DIR}/tests/fixtures/nodes/tokyo/hostkey.pub"
 readonly BADKEY_HOSTKEY_PUB="${PROJECT_DIR}/tests/fixtures/nodes/badkey/hostkey.pub"
+readonly LAX2_HOSTKEY_PUB="${PROJECT_DIR}/tests/fixtures/nodes/lax2/hostkey.pub"
 
 fingerprint_of() {
   python3 - "$1" <<'PY'
@@ -93,6 +99,7 @@ PY
 LAX_HOST_KEY=$(fingerprint_of "$LAX_HOSTKEY_PUB")
 TOKYO_HOST_KEY=$(fingerprint_of "$TOKYO_HOSTKEY_PUB")
 BADKEY_HOST_KEY=$(fingerprint_of "$BADKEY_HOSTKEY_PUB")
+LAX2_HOST_KEY=$(fingerprint_of "$LAX2_HOSTKEY_PUB")
 
 if command -v ssh-keygen >/dev/null 2>&1; then
   keygen_lax=$(ssh-keygen -l -f "$LAX_HOSTKEY_PUB" | awk '{print $2}')
@@ -125,6 +132,18 @@ assert_equal "vcl-fleet version" "vcl-fleet 0.3.0-dev" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
 assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.0-dev" \
   "$(fleet version)"
+
+node_help=$(fleet node -h)
+assert_success "node -h lists replace" grep -q 'replace' <<< "$node_help"
+assert_success "node -h lists instances" grep -q 'instances' <<< "$node_help"
+set_help=$(fleet node set -h)
+assert_success "node set -h names rebind" grep -q 'rebind' <<< "$set_help"
+replace_help=$(fleet node replace -h)
+assert_success "node replace -h names replace" grep -q 'replace' <<< "$replace_help"
+assert_success "node replace -h names rebind" grep -q 'rebind' <<< "$replace_help"
+assert_success "node replace -h requires --host-key" grep -q -- '--host-key' <<< "$replace_help"
+instances_help=$(fleet node instances -h)
+assert_success "node instances -h exists" grep -q 'instance' <<< "$instances_help"
 
 assert_success "init creates fleet.json" fleet init
 assert_success "init wrote fleet.json under VCL_FLEET_HOME" \
@@ -307,6 +326,13 @@ assert_success "AC-2.8-09 registry survives a new process" \
 
 assert_success "fake-ssh is executable" test -x "$FAKE_SSH"
 assert_success "fake-ssh-keyscan is executable" test -x "$FAKE_KEYSCAN"
+assert_success "fake-scp is executable" test -x "$FAKE_SCP"
+assert_success "fake-scp uses python3 shebang" \
+  grep -q '^#!/usr/bin/env python3' "$FAKE_SCP"
+assert_failure "fake-scp never sets StrictHostKeyChecking=no" \
+  grep -q 'StrictHostKeyChecking=no' "$FAKE_SCP"
+assert_failure "fake-scp never sets UserKnownHostsFile=/dev/null" \
+  grep -q 'UserKnownHostsFile=/dev/null' "$FAKE_SCP"
 keyscan_rc=0
 "$FAKE_KEYSCAN" -p 22 203.0.113.10 >/dev/null || keyscan_rc=$?
 if (( keyscan_rc == 0 )); then
@@ -464,6 +490,12 @@ assert_failure "fleet.py never sets StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_failure "fleet.py never sets UserKnownHostsFile=/dev/null" \
   grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.py has scp_bin" \
+  grep -q 'def scp_bin(' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.py reads VCL_FLEET_SCP" \
+  grep -q 'VCL_FLEET_SCP' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_failure "node replace does not send --include-secrets" \
+  grep -q -- '--include-secrets' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_failure "vcl-fleet never sets StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/bin/vcl-fleet"
 assert_failure "vcl-fleet never sets UserKnownHostsFile=/dev/null" \
@@ -4088,6 +4120,597 @@ export VCL_FLEET_HOME="${SAVED_QUERY_HOME}"
 
 unset VCL_FAKE_STATE_DIR
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"
+
+# --- 0.3.0 node replace / instances / rebind ---
+assert_success "cmd_node_replace is defined" \
+  grep -q 'def cmd_node_replace(' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "cmd_node_instances is defined" \
+  grep -q 'def cmd_node_instances(' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "replace does not auto-reseed" \
+  python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("def cmd_node_replace")
+end = text.index("def format_instances_table")
+assert "reseed_node_local" not in text[start:end], "replace must not call reseed"
+PY
+
+BACKUP_FAKE_STATE="${TEST_TMP}/fake-backup-direct"
+mkdir -p "${BACKUP_FAKE_STATE}/lax"
+direct_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$BACKUP_FAKE_STATE" <<'PY' || direct_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state = sys.argv[1], Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("acct", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+lax = state / "lax"
+state_doc = {
+    "schema_version": 2, "project_version": "0.3.0-dev",
+    "sing_box_version": "1.13.18", "architecture": "amd64",
+    "installed_at": "2026-08-16T00:00:00Z",
+    "node": {
+        "node_id": node_id, "instance_id": instance_id, "node_name": "lax",
+        "server": "203.0.113.10", "listen": "0.0.0.0", "port": 443,
+        "reality_handshake_server": "www.cloudflare.com",
+        "reality_server_name": "www.cloudflare.com",
+        "reality_private_key": "sekrit", "reality_public_key": "pub",
+        "reality_short_id": "abcd1234",
+    },
+    "service_account": {
+        "user": "sing-box", "uid": 1000, "group": "sing-box", "gid": 1000,
+        "home": "/var/lib/sing-box", "shell": "/usr/sbin/nologin",
+        "created_by_vincula": True, "group_created_by_vincula": True,
+    },
+}
+users = {"schema_version": 2, "users": [{
+    "user_id": "u-alice", "tag": "alice", "display_name": "Alice",
+    "department": "eng", "enabled": True, "created_at": "2026-08-01T00:00:00Z",
+    "credentials": [{
+        "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "node_id": node_id, "uuid": "11111111-1111-4111-8111-111111111111",
+        "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
+    }],
+}]}
+toml = """project_version = "0.3.0-dev"
+sing_box_version = "1.13.18"
+architecture = "amd64"
+node_id = "%s"
+node_name = "lax"
+server = "203.0.113.10"
+listen = "0.0.0.0"
+port = 443
+reality_handshake_server = "www.cloudflare.com"
+reality_server_name = "www.cloudflare.com"
+clash_api_port = 9090
+clash_api_secret = "clash-sekrit"
+accounting_raw_retention_days = 90
+accounting_daily_retention_days = 90
+billing_cycle_start_day = 1
+""" % node_id
+lax.mkdir(parents=True, exist_ok=True)
+(lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
+(lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+(lax / "config.toml").write_text(toml, encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+conn = acct.open_db(str(lax / "accounting.db"))
+conn.execute(
+    """INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at, destination_host, destination_ip,
+      destination_port, network, upload_bytes, download_bytes)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    ("c1", 0, "u-alice", node_id, instance_id, "alice",
+     "2026-08-16T01:00:00Z", "2026-08-16T01:05:00Z", "2026-08-16T01:05:00Z",
+     "example.com", "203.0.113.10", 443, "tcp", 10, 20),
+)
+conn.commit()
+conn.close()
+PY
+if (( direct_seed_rc == 0 )); then
+  pass "direct backup fixture seeded"
+else
+  fail "direct backup fixture seeded"
+fi
+export VCL_FAKE_STATE_DIR="$BACKUP_FAKE_STATE"
+direct_backup_rc=0
+direct_backup=$("$FAKE_SSH" root@203.0.113.10 -- vcl backup create --json) || direct_backup_rc=$?
+if (( direct_backup_rc == 0 )) && [[ -f "${BACKUP_FAKE_STATE}/lax/backup.tar" ]]; then
+  pass "fake-ssh backup create writes alias backup.tar"
+else
+  fail "fake-ssh backup create writes alias backup.tar (rc=${direct_backup_rc})"
+fi
+direct_verify_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-backup.py" "${BACKUP_FAKE_STATE}/lax/backup.tar" \
+  "$direct_backup" <<'PY' || direct_verify_rc=$?
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("vbackup", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+result = mod.verify_archive(sys.argv[2])
+assert result.get("ok") is True, result
+assert result.get("secret_bearing") is False, result
+assert result.get("encryption") == "none", result
+doc = json.loads(sys.argv[3])
+assert doc["ok"] is True
+assert doc["path"] == "/var/backups/vincula/backup.tar"
+assert doc["secret_bearing"] is False
+PY
+if (( direct_verify_rc == 0 )); then
+  pass "fake-ssh backup create is secretless and verifies"
+else
+  fail "fake-ssh backup create is secretless and verifies"
+fi
+unset VCL_FAKE_STATE_DIR
+
+REBIND_FLEET_HOME="${TEST_TMP}/fleet-home-rebind"
+REBIND_FAKE_STATE="${TEST_TMP}/fake-rebind-state"
+SAVED_REPLACE_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$REBIND_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$REBIND_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax"
+
+assert_success "rebind-test fleet init" fleet init
+assert_success "rebind-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+rebind_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" <<'PY' || rebind_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("acct", sys.argv[1])
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+state = Path(sys.argv[2])
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+lax = state / "lax"
+users = {"schema_version": 2, "users": [{
+    "user_id": "u-alice", "tag": "alice", "display_name": "Alice",
+    "department": "eng", "enabled": True, "created_at": "2026-08-01T00:00:00Z",
+    "credentials": [{
+        "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "node_id": node_id, "uuid": "11111111-1111-4111-8111-111111111111",
+        "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
+    }],
+}]}
+(lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+conn = acct.open_db(str(lax / "accounting.db"))
+conn.execute(
+    """INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at, destination_host, destination_ip,
+      destination_port, network, upload_bytes, download_bytes)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    ("rebind-1", 0, "u-alice", node_id, instance_id, "alice",
+     "2026-08-16T01:00:00Z", "2026-08-16T01:05:00Z", "2026-08-16T01:05:00Z",
+     "example.com", "203.0.113.10", 443, "tcp", 10, 20),
+)
+conn.commit()
+conn.close()
+PY
+if (( rebind_seed_rc == 0 )); then
+  pass "rebind-test fixture seeded"
+else
+  fail "rebind-test fixture seeded"
+fi
+
+rebind_sync_rc=0
+fleet sync --node lax >/dev/null || rebind_sync_rc=$?
+if (( rebind_sync_rc == 0 )); then
+  pass "rebind-test first sync exits 0"
+else
+  fail "rebind-test first sync exits 0 (rc=${rebind_sync_rc})"
+fi
+
+assert_success "rebind node set lax host" fleet node set lax --host 203.0.113.28
+
+rebind_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$VCL_FAKE_STATE_DIR" "$LAX_REMOTE_NODE_ID" <<'PY' || rebind_rc=$?
+import importlib.util, json, os, sys
+from pathlib import Path
+path, home, state, node_id = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+registry = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+assert "instance_id" not in (home / "fleet.json").read_text(encoding="utf-8")
+node = next(n for n in registry["nodes"] if n["name"] == "lax")
+assert node["node_id"] == node_id
+assert node["ssh_host"] == "203.0.113.28"
+assert node["status"] == "active"
+users = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+uuid = users["users"][0]["credentials"][0]["uuid"]
+assert uuid == "11111111-1111-4111-8111-111111111111", uuid
+conn = mod.open_fleet_db()
+rows = mod.list_instances(conn, node_id)
+cur = mod.read_sync_cursor_row(conn, node_id)
+conn.close()
+assert len(rows) == 1, rows
+assert rows[0]["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert rows[0]["status"] == "active"
+assert cur["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+PY
+if (( rebind_rc == 0 )); then
+  pass "node set rebind keeps credentials and instance_id"
+else
+  fail "node set rebind keeps credentials and instance_id"
+fi
+
+unknown_replace_rc=0
+unknown_replace_err=$(fleet node replace mars --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || unknown_replace_rc=$?
+if (( unknown_replace_rc != 0 )) && [[ "$unknown_replace_err" == *"unknown node"* ]]; then
+  pass "replace unknown node is refused"
+else
+  fail "replace unknown node is refused (rc=${unknown_replace_rc} err=${unknown_replace_err})"
+fi
+
+export VCL_FLEET_RETIRE_SKIP_SYNC=1
+retire_for_replace_rc=0
+fleet node retire lax >/dev/null || retire_for_replace_rc=$?
+if (( retire_for_replace_rc == 0 )); then
+  pass "rebind-test retire lax for replace-refuse"
+else
+  fail "rebind-test retire lax for replace-refuse (rc=${retire_for_replace_rc})"
+fi
+unset VCL_FLEET_RETIRE_SKIP_SYNC
+retired_replace_rc=0
+retired_replace_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || retired_replace_rc=$?
+if (( retired_replace_rc != 0 )) && [[ "$retired_replace_err" == *"retired"* ]]; then
+  pass "replace retired node is refused"
+else
+  fail "replace retired node is refused (rc=${retired_replace_rc} err=${retired_replace_err})"
+fi
+
+REPLACE_FLEET_HOME="${TEST_TMP}/fleet-home-replace"
+REPLACE_FAKE_STATE="${TEST_TMP}/fake-replace-state"
+export VCL_FLEET_HOME="$REPLACE_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$REPLACE_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax" "${VCL_FAKE_STATE_DIR}/lax2"
+
+assert_success "replace-test fleet init" fleet init
+assert_success "replace-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+replace_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" <<'PY' || replace_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("acct", sys.argv[1])
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+state = Path(sys.argv[2])
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+lax = state / "lax"
+state_doc = {
+    "schema_version": 2, "project_version": "0.3.0-dev",
+    "sing_box_version": "1.13.18", "architecture": "amd64",
+    "installed_at": "2026-08-16T00:00:00Z",
+    "node": {
+        "node_id": node_id, "instance_id": instance_id, "node_name": "lax",
+        "server": "203.0.113.10", "listen": "0.0.0.0", "port": 443,
+        "reality_handshake_server": "www.cloudflare.com",
+        "reality_server_name": "www.cloudflare.com",
+        "reality_private_key": "sekrit", "reality_public_key": "pub",
+        "reality_short_id": "abcd1234",
+    },
+    "service_account": {
+        "user": "sing-box", "uid": 1000, "group": "sing-box", "gid": 1000,
+        "home": "/var/lib/sing-box", "shell": "/usr/sbin/nologin",
+        "created_by_vincula": True, "group_created_by_vincula": True,
+    },
+}
+users = {"schema_version": 2, "users": [{
+    "user_id": "u-alice", "tag": "alice", "display_name": "Alice",
+    "department": "eng", "enabled": True, "created_at": "2026-08-01T00:00:00Z",
+    "credentials": [{
+        "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "node_id": node_id, "uuid": "11111111-1111-4111-8111-111111111111",
+        "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
+    }],
+}]}
+toml = """project_version = "0.3.0-dev"
+sing_box_version = "1.13.18"
+architecture = "amd64"
+node_id = "%s"
+node_name = "lax"
+server = "203.0.113.10"
+listen = "0.0.0.0"
+port = 443
+reality_handshake_server = "www.cloudflare.com"
+reality_server_name = "www.cloudflare.com"
+clash_api_port = 9090
+clash_api_secret = "clash-sekrit"
+accounting_raw_retention_days = 90
+accounting_daily_retention_days = 90
+billing_cycle_start_day = 1
+""" % node_id
+(lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
+(lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+(lax / "config.toml").write_text(toml, encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+conn = acct.open_db(str(lax / "accounting.db"))
+for i in range(1, 6):
+    conn.execute(
+        """INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at, destination_host, destination_ip,
+          destination_port, network, upload_bytes, download_bytes)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (f"lax-replace-{i}", 0, "u-alice", node_id, instance_id, "alice",
+         "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+         "example.com", "203.0.113.10", 443, "tcp", 10, 20),
+    )
+conn.commit()
+conn.close()
+PY
+if (( replace_seed_rc == 0 )); then
+  pass "replace-test fixture seeded"
+else
+  fail "replace-test fixture seeded"
+fi
+
+replace_sync_rc=0
+fleet sync --node lax >/dev/null || replace_sync_rc=$?
+if (( replace_sync_rc == 0 )); then
+  pass "replace-test pre-sync exits 0"
+else
+  fail "replace-test pre-sync exits 0 (rc=${replace_sync_rc})"
+fi
+
+replace_json_rc=0
+replace_err="${TEST_TMP}/replace-lax.err"
+replace_json=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" --json \
+  2>"$replace_err") || replace_json_rc=$?
+if (( replace_json_rc == 0 )); then
+  pass "node replace lax happy path exits 0"
+else
+  fail "node replace lax happy path exits 0 (rc=${replace_json_rc} out=${replace_json})"
+fi
+
+replace_check_rc=0
+python3 - "$replace_json" "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$VCL_FAKE_STATE_DIR" "$LAX_REMOTE_NODE_ID" <<'PY' || replace_check_rc=$?
+import csv, importlib.util, json, os, stat, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+path, home, state = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
+node_id = sys.argv[5]
+assert doc["ok"] is True, doc
+assert doc["state"] == "SUCCESS", doc
+assert doc["name"] == "lax"
+assert doc["node_id"] == node_id
+assert doc["ssh_host"] == "203.0.113.18"
+assert doc["old_instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert doc["new_instance_id"]
+assert doc["new_instance_id"] != doc["old_instance_id"]
+assert doc["new_instance_id"] != node_id
+csv_path = Path(doc["reissue_csv"])
+assert csv_path.is_file(), csv_path
+mode = stat.S_IMODE(csv_path.stat().st_mode)
+assert mode == 0o600, oct(mode)
+with csv_path.open(encoding="utf-8", newline="") as fh:
+    rows = list(csv.DictReader(fh))
+assert rows, rows
+assert list(rows[0].keys()) == [
+    "user", "node", "old_credential_id", "new_credential_id", "vless_uri"
+]
+assert rows[0]["user"] == "alice"
+assert rows[0]["old_credential_id"] != rows[0]["new_credential_id"]
+raw = (home / "fleet.json").read_text(encoding="utf-8")
+assert "instance_id" not in raw
+registry = json.loads(raw)
+node = next(n for n in registry["nodes"] if n["name"] == "lax")
+assert node["node_id"] == node_id
+assert node["ssh_host"] == "203.0.113.18"
+assert node["status"] == "active"
+assert node["enabled"] is True
+ident = json.loads((state / "lax2" / "identity.json").read_text(encoding="utf-8"))
+assert ident["node_id"] == node_id
+assert ident["instance_id"] == doc["new_instance_id"]
+users = json.loads((state / "lax2" / "users.json").read_text(encoding="utf-8"))
+active = [
+    c for u in users["users"] for c in u["credentials"] if c["status"] == "active"
+]
+assert active and active[0]["uuid"] != "11111111-1111-4111-8111-111111111111"
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+hist = mod.list_instances(conn, node_id)
+cur = mod.read_sync_cursor_row(conn, node_id)
+old_rows = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=? AND instance_id=?",
+    (node_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+).fetchone()[0]
+conn.close()
+assert len(hist) == 2, hist
+assert hist[0]["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert hist[0]["status"] == "retired"
+assert hist[0]["retired_at"]
+assert hist[1]["instance_id"] == doc["new_instance_id"]
+assert hist[1]["status"] == "active"
+assert hist[1]["ssh_host"] == "203.0.113.18"
+assert cur["instance_id"] == doc["new_instance_id"]
+assert int(cur["last_event_id"]) == 5, cur
+assert old_rows == 5, old_rows
+Path(state / "new_instance_id.txt").write_text(doc["new_instance_id"], encoding="utf-8")
+PY
+if (( replace_check_rc == 0 )); then
+  pass "AC-3.0-05/06/07/10 replace keeps node_id, mints instance, writes reissue CSV"
+else
+  fail "AC-3.0-05/06/07/10 replace keeps node_id, mints instance, writes reissue CSV"
+fi
+
+instances_out=$(fleet node instances lax)
+assert_success "node instances lists old retired instance" \
+  grep -q 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' <<< "$instances_out"
+assert_success "node instances lists retired then active" \
+  grep -q 'retired' <<< "$instances_out"
+assert_success "node instances lists active" \
+  grep -q 'active' <<< "$instances_out"
+
+instances_json_rc=0
+instances_json=$(fleet node instances lax --json) || instances_json_rc=$?
+python3 - "$instances_json" "$instances_json_rc" <<'PY' || instances_json_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0
+assert doc["schema_version"] == 1
+assert doc["name"] == "lax"
+assert len(doc["instances"]) == 2
+assert doc["instances"][0]["status"] == "retired"
+assert doc["instances"][1]["status"] == "active"
+PY
+if (( instances_json_rc == 0 )); then
+  pass "node instances --json shows both physical instances"
+else
+  fail "node instances --json shows both physical instances"
+fi
+
+replace_sync2_rc=0
+replace_sync2_err=$(fleet sync --node lax 2>&1) || replace_sync2_rc=$?
+if grep -q 'instance changed, node_id stable' "$replace_err"; then
+  pass "replace WARNs instance changed, node_id stable"
+else
+  fail "replace WARNs instance changed, node_id stable (err=$(cat "$replace_err"))"
+fi
+if (( replace_sync2_rc == 0 )); then
+  pass "sync after replace exits 0 without auto-reseed"
+else
+  fail "sync after replace exits 0 without auto-reseed (rc=${replace_sync2_rc} err=${replace_sync2_err})"
+fi
+
+post_sync_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" <<'PY' || post_sync_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+path, home, node_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+count = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
+).fetchone()[0]
+old = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=? AND instance_id=?",
+    (node_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+).fetchone()[0]
+cur = mod.read_sync_cursor_row(conn, node_id)
+hist = mod.list_instances(conn, node_id)
+conn.close()
+assert count >= 5, count
+assert old == 5, old
+assert int(cur["last_event_id"]) >= 5, cur
+assert len(hist) == 2, hist
+PY
+if (( post_sync_rc == 0 )); then
+  pass "AC-3.0-09 replace sync keeps old instance rows and cursor"
+else
+  fail "AC-3.0-09 replace sync keeps old instance rows and cursor"
+fi
+
+expire_replace_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || expire_replace_rc=$?
+import sqlite3, sys
+from pathlib import Path
+state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+db = state / "lax2" / "accounting.db"
+conn = sqlite3.connect(str(db))
+conn.execute("DELETE FROM connections")
+for i in range(100, 103):
+    conn.execute(
+        """INSERT INTO connections (
+          event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at, destination_host, destination_ip,
+          destination_port, network, upload_bytes, download_bytes)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (i, f"gap-{i}", 0, "u-alice", node_id, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+         "alice", "2026-08-16T10:00:00Z", "2026-08-16T10:05:00Z", "2026-08-16T10:05:00Z",
+         "example.com", "203.0.113.18", 443, "tcp", 1, 1),
+    )
+conn.commit()
+row = conn.execute("SELECT MIN(event_id), COUNT(*) FROM connections").fetchone()
+conn.close()
+assert row[0] == 100, row
+assert row[1] == 3, row
+fleet = sqlite3.connect(str(home / "fleet.db"))
+fleet.execute(
+    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+fleet.commit()
+fleet.close()
+PY
+if (( expire_replace_rc == 0 )); then
+  pass "replace CURSOR_EXPIRED fixture: MIN=100 cursor=5"
+else
+  fail "replace CURSOR_EXPIRED fixture: MIN=100 cursor=5"
+fi
+
+expire_sync_rc=0
+expire_sync_err=$(fleet sync --node lax 2>&1) || expire_sync_rc=$?
+if (( expire_sync_rc != 0 )) && [[ "$expire_sync_err" == *"CURSOR_EXPIRED"* ]] \
+  && [[ "$expire_sync_err" == *"--reseed"* ]]; then
+  pass "post-replace gap yields CURSOR_EXPIRED and --reseed guidance"
+else
+  fail "post-replace gap yields CURSOR_EXPIRED and --reseed guidance (rc=${expire_sync_rc} err=${expire_sync_err})"
+fi
+
+reseed_rc=0
+fleet sync --reseed lax >/dev/null || reseed_rc=$?
+if (( reseed_rc == 0 )); then
+  pass "post-replace --reseed lax exits 0"
+else
+  fail "post-replace --reseed lax exits 0 (rc=${reseed_rc})"
+fi
+
+reseed_hist_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" <<'PY' || reseed_hist_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+path, home, node_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+hist = mod.list_instances(conn, node_id)
+rows = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=? AND node_id != ''",
+    (node_id,),
+).fetchone()[0]
+blank = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
+).fetchone()[0]
+conn.close()
+assert len(hist) == 2, hist
+assert rows >= 1, rows
+assert blank == 0, blank
+PY
+if (( reseed_hist_rc == 0 )); then
+  pass "reseed after replace keeps instance_history and labeled node_id"
+else
+  fail "reseed after replace keeps instance_history and labeled node_id"
+fi
+
+export VCL_FLEET_HOME="${SAVED_REPLACE_HOME}"
+unset VCL_FAKE_STATE_DIR
 
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \

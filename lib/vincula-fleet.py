@@ -3,9 +3,9 @@
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
 hashlib, base64, datetime, csv, uuid, sqlite3, importlib. OpenSSH via the
-system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
-(VCL_FLEET_SSH_KEYSCAN). No pip, no paramiko, no cryptography package.
-No root, no systemd, no /etc/vincula.
+system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH), ssh-keyscan
+(VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no paramiko, no
+cryptography package. No root, no systemd, no /etc/vincula.
 
 User-local fleet.json is the node registry. SSH passwords are never
 stored. Targets Python 3.10+.
@@ -148,7 +148,12 @@ NODE_KEYS = (
 )
 SSH_TIMEOUT_SECONDS = 20
 SSH_MUTATION_TIMEOUT_SECONDS = 60
+SSH_BACKUP_TIMEOUT_SECONDS = 120
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
+SCP_TIMEOUT_SECONDS = 60
+REMOTE_BACKUP_TAR = "/var/backups/vincula/backup.tar"
+REMOTE_RESTORE_TAR = "/tmp/vincula-restore.tar"
+REMOTE_REISSUE_CSV = "/tmp/reissue.csv"
 CSV_CREDENTIAL_HEADER = ("user", "node", "credential_id", "vless_uri")
 CSV_IMPORT_HEADER = ("tag", "display_name", "department", "nodes")
 CSV_EXPORT_META_HEADER = (
@@ -165,6 +170,8 @@ VERIFY_JSON_SCHEMA_VERSION = 1
 SYNC_JSON_SCHEMA_VERSION = 1
 AUDIT_JSON_SCHEMA_VERSION = 1
 STATS_JSON_SCHEMA_VERSION = 1
+REPLACE_JSON_SCHEMA_VERSION = 1
+INSTANCE_JSON_SCHEMA_VERSION = 1
 LABELED_NODE_SQL = "node_id IS NOT NULL AND node_id != ''"
 # D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
 OP_PLANNED = "PLANNED"
@@ -842,6 +849,13 @@ def ssh_bin() -> str:
     return "ssh.exe" if sys.platform == "win32" else "ssh"
 
 
+def scp_bin() -> str:
+    env = os.environ.get("VCL_FLEET_SCP")
+    if env:
+        return env
+    return "scp.exe" if sys.platform == "win32" else "scp"
+
+
 def ssh_keyscan_bin() -> str:
     env = os.environ.get("VCL_FLEET_SSH_KEYSCAN")
     if env:
@@ -931,6 +945,109 @@ def ssh_run(
         return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
     except OSError as exc:
         die(f"cannot execute {argv[0]}: {exc}")
+
+
+def scp_argv(
+    *,
+    port: int,
+    src: str,
+    dest: str,
+    batch: bool = True,
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Build an OpenSSH scp argv. Never weakens host-key checking."""
+    argv = [scp_bin(), "-P", str(port)]
+    if extra:
+        argv.extend(extra)
+    if batch:
+        argv.extend(["-o", "BatchMode=yes"])
+    argv.extend(["-o", "IdentitiesOnly=no", src, dest])
+    _reject_forbidden_ssh_options(argv)
+    return argv
+
+
+def scp_run(
+    *,
+    port: int,
+    src: str,
+    dest: str,
+    batch: bool = True,
+    extra: list[str] | None = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Copy src to dest via scp. List argv only; never shell=True."""
+    argv = scp_argv(port=port, src=src, dest=dest, batch=batch, extra=extra)
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout
+        stderr = exc.stderr
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        detail = (stderr or "").strip()
+        timeout_msg = f"scp timed out after {timeout}s"
+        stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
+        return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
+    except OSError as exc:
+        die(f"cannot execute {argv[0]}: {exc}")
+
+
+def _scp_remote_spec(node: dict[str, Any], remote_path: str) -> str:
+    return f"{node['ssh_user']}@{node['ssh_host']}:{remote_path}"
+
+
+def scp_pull(
+    node: dict[str, Any],
+    remote_path: str,
+    local_path: Path,
+    *,
+    extra: list[str] | None = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> None:
+    dest = Path(local_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    proc = scp_run(
+        port=int(node.get("ssh_port") or 22),
+        src=_scp_remote_spec(node, remote_path),
+        dest=str(dest),
+        extra=extra,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        die(f"scp pull failed: {_ssh_failure_detail(proc)}")
+    if not dest.is_file():
+        die(f"scp pull did not write {dest}")
+    _chmod_private(dest, 0o600)
+
+
+def scp_push(
+    node: dict[str, Any],
+    local_path: Path,
+    remote_path: str,
+    *,
+    extra: list[str] | None = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> None:
+    src = Path(local_path)
+    if not src.is_file():
+        die(f"scp push source not found: {src}")
+    proc = scp_run(
+        port=int(node.get("ssh_port") or 22),
+        src=str(src),
+        dest=_scp_remote_spec(node, remote_path),
+        extra=extra,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        die(f"scp push failed: {_ssh_failure_detail(proc)}")
 
 
 def default_known_hosts_path() -> Path:
@@ -1424,6 +1541,7 @@ def cmd_node_show(name: str) -> int:
 
 
 def cmd_node_set(args: argparse.Namespace) -> int:
+    """Endpoint rebind: change ssh_host only. Credentials and instance_id stay."""
     registry = load_registry()
     set_host(registry, args.name, args.host, user=args.user, port=args.port)
     save_registry(None, registry)
@@ -1579,7 +1697,7 @@ def disable_remote_users_except_last(
     return disabled, keep_tag, err_s
 
 
-def _run_final_sync(node: dict[str, Any]) -> dict[str, Any]:
+def _run_final_sync(node: dict[str, Any], *, write_table: bool = True) -> dict[str, Any]:
     """Same machinery as `vcl-fleet sync --node NAME` for one node."""
     now_iso = format_utc(datetime.now(timezone.utc))
     conn = open_fleet_db()
@@ -1587,7 +1705,8 @@ def _run_final_sync(node: dict[str, Any]) -> dict[str, Any]:
         row = sync_one_node(conn, node, now_iso=now_iso)
     finally:
         conn.close()
-    sys.stdout.write(format_sync_table([row]))
+    if write_table:
+        sys.stdout.write(format_sync_table([row]))
     return row
 
 
@@ -1682,6 +1801,387 @@ def cmd_node_retire(name: str) -> int:
     return 0
 
 
+def _node_view(
+    node: dict[str, Any],
+    *,
+    ssh_host: Optional[str] = None,
+    ssh_user: Optional[str] = None,
+    ssh_port: Optional[int] = None,
+) -> dict[str, Any]:
+    view = dict(node)
+    if ssh_host is not None:
+        view["ssh_host"] = ssh_host
+    if ssh_user is not None:
+        view["ssh_user"] = ssh_user
+    if ssh_port is not None:
+        view["ssh_port"] = ssh_port
+    return view
+
+
+def _replace_result(
+    *,
+    ok: bool,
+    name: str,
+    node_id: str,
+    old_instance_id: Optional[str],
+    new_instance_id: Optional[str],
+    ssh_host: str,
+    reissue_csv: Optional[str],
+    state: str,
+    error: Optional[str] = None,
+) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "schema_version": REPLACE_JSON_SCHEMA_VERSION,
+        "ok": ok,
+        "name": name,
+        "node_id": node_id,
+        "old_instance_id": old_instance_id,
+        "new_instance_id": new_instance_id,
+        "ssh_host": ssh_host,
+        "reissue_csv": reissue_csv,
+        "state": state,
+    }
+    if error:
+        doc["error"] = error
+    return doc
+
+
+def _emit_replace_result(doc: dict[str, Any], as_json: bool) -> int:
+    if as_json:
+        sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+        return 0 if doc.get("ok") else 1
+    if not doc.get("ok"):
+        die(str(doc.get("error") or "replace failed"))
+    sys.stdout.write(
+        f"Replaced {doc['name']} (node_id={doc['node_id']} still active).\n"
+    )
+    sys.stdout.write(f"old instance_id: {doc.get('old_instance_id') or '-'}\n")
+    sys.stdout.write(f"new instance_id: {doc.get('new_instance_id') or '-'}\n")
+    sys.stdout.write(f"ssh_host: {doc['ssh_host']}\n")
+    if doc.get("reissue_csv"):
+        sys.stdout.write(f"reissue_csv: {doc['reissue_csv']}\n")
+    return 0
+
+
+def _cursor_instance_id(node_id: str) -> Optional[str]:
+    conn = open_fleet_db()
+    try:
+        row = read_sync_cursor_row(conn, node_id)
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return _optional_text(row["instance_id"])
+
+
+def cmd_node_replace(args: argparse.Namespace) -> int:
+    """Physical instance replacement: secretless backup, restore, rotate."""
+    validate_name(args.name)
+    as_json = bool(getattr(args, "as_json", False))
+    registry = load_registry()
+    node = require_node(registry, args.name)
+    life = node_lifecycle_status(node)
+    if life == NODE_STATUS_RETIRED:
+        die(f"cannot replace retired node: {args.name}")
+    if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
+        die(f"cannot replace disabled node: {args.name}; enable it first")
+
+    new_host, new_user, new_port = parse_ssh_target(
+        args.host, None, int(node.get("ssh_port") or 22)
+    )
+    extra, _batch = prepare_ssh_host_key(
+        new_host, new_port, getattr(args, "host_key", None)
+    )
+    old_node = _node_view(node)
+    new_node = _node_view(
+        node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
+    )
+    old_instance_id = _cursor_instance_id(node["node_id"])
+    from_backup = _optional_text(getattr(args, "from_backup", None))
+
+    if from_backup:
+        sys.stderr.write(
+            "WARNING: --from-backup skips final sync; the audit tail may be lost\n"
+        )
+        local_archive = Path(from_backup)
+        if not local_archive.is_file():
+            die(f"backup file not found: {local_archive}")
+    else:
+        ssh_state, ident, ident_detail = ssh_remote_json(
+            old_node, ["vcl", "identity", "--json"]
+        )
+        if ssh_state != "OK" or not isinstance(ident, dict):
+            die(
+                f"cannot replace {args.name}: SSH identity failed "
+                f"({ident_detail or 'unreachable'}); final sync required"
+            )
+        remote_id = ident.get("node_id")
+        if remote_id != node["node_id"]:
+            die(
+                f"cannot replace {args.name}: remote node_id {remote_id} does "
+                f"not match registry {node['node_id']}"
+            )
+        old_instance_id = _optional_text(ident.get("instance_id")) or old_instance_id
+        sync_row = _run_final_sync(old_node, write_table=not as_json)
+        status = sync_row.get("status")
+        if status == SYNC_STATUS_EXPIRED:
+            die(
+                f"cannot replace {args.name}: CURSOR_EXPIRED; "
+                f"run: {remediation_sync_reseed(args.name)}"
+            )
+        if status != SYNC_STATUS_OK:
+            die(
+                f"cannot replace {args.name}: final sync failed "
+                f"({sync_row.get('error') or status}); not creating backup"
+            )
+        ssh_state, backup_doc, backup_detail = ssh_remote_json(
+            old_node,
+            ["vcl", "backup", "create", "--json"],
+            timeout=SSH_BACKUP_TIMEOUT_SECONDS,
+        )
+        if (
+            ssh_state != "OK"
+            or not isinstance(backup_doc, dict)
+            or backup_doc.get("ok") is not True
+        ):
+            die(
+                f"cannot replace {args.name}: backup create failed "
+                f"({backup_detail or 'remote backup failed'})"
+            )
+        remote_path = str(backup_doc.get("path") or REMOTE_BACKUP_TAR)
+        backups = fleet_home() / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        _chmod_private(backups, 0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        local_archive = backups / f"node-{node['node_id']}-{stamp}.tar"
+        scp_pull(old_node, remote_path, local_archive)
+
+    backup_mod = load_backup_module()
+    verified = backup_mod.verify_archive(local_archive)
+    if not verified.get("ok"):
+        die(f"backup verify failed: {verified.get('error') or 'failed'}")
+    if verified.get("secret_bearing"):
+        die("node replace requires a secretless backup")
+
+    scp_push(new_node, local_archive, REMOTE_RESTORE_TAR, extra=extra)
+    restore_cmd = [
+        "vcl",
+        "restore",
+        REMOTE_RESTORE_TAR,
+        "--replace-node",
+        node["node_id"],
+        "--server",
+        new_host,
+        "--output",
+        REMOTE_REISSUE_CSV,
+        "--json",
+    ]
+    ssh_state, restore_doc, restore_detail = ssh_remote_json(
+        new_node,
+        restore_cmd,
+        extra=extra,
+        timeout=SSH_BACKUP_TIMEOUT_SECONDS,
+    )
+    if (
+        ssh_state != "OK"
+        or not isinstance(restore_doc, dict)
+        or restore_doc.get("ok") is not True
+    ):
+        die(
+            f"cannot replace {args.name}: restore failed on {new_host} "
+            f"({restore_detail or 'restore failed'})"
+        )
+
+    ssh_state, new_ident, ident_detail = ssh_remote_json(
+        new_node, ["vcl", "identity", "--json"], extra=extra
+    )
+    failed_reason = None
+    new_instance_id = None
+    if ssh_state != "OK" or not isinstance(new_ident, dict):
+        failed_reason = ident_detail or "identity unreachable after restore"
+    else:
+        if new_ident.get("node_id") != node["node_id"]:
+            failed_reason = (
+                f"restored node_id {new_ident.get('node_id')} does not match "
+                f"registry {node['node_id']}"
+            )
+        else:
+            new_instance_id = _optional_text(new_ident.get("instance_id"))
+            if not new_instance_id:
+                failed_reason = "restored instance_id missing"
+            elif new_instance_id == node["node_id"]:
+                failed_reason = "restored instance_id equals node_id"
+            elif old_instance_id and new_instance_id == old_instance_id:
+                failed_reason = "restored instance_id was not rotated"
+
+    if failed_reason is None:
+        ssh_state, verify_doc, verify_detail = ssh_remote_json(
+            new_node, ["vcl", "verify", "--json"], extra=extra
+        )
+        if ssh_state != "OK" or not isinstance(verify_doc, dict):
+            failed_reason = verify_detail or "verify unreachable after restore"
+        elif verify_doc.get("ok") is not True:
+            failed_reason = "vcl verify --json is not ok after restore"
+
+    if failed_reason is not None:
+        sys.stderr.write(
+            f"WARNING: restore committed on {new_host} but replace did not "
+            f"update the registry ({failed_reason}). "
+            f"Remediation: vcl-fleet node set {args.name} --host {node['ssh_host']}\n"
+        )
+        return _emit_replace_result(
+            _replace_result(
+                ok=False,
+                name=args.name,
+                node_id=node["node_id"],
+                old_instance_id=old_instance_id,
+                new_instance_id=new_instance_id,
+                ssh_host=node["ssh_host"],
+                reissue_csv=None,
+                state=OP_FAILED,
+                error=failed_reason,
+            ),
+            as_json,
+        )
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    csv_dest = Path(args.output) if getattr(args, "output", None) else (
+        fleet_home() / f"reissue-{args.name}-{stamp}.csv"
+    )
+    csv_dest.parent.mkdir(parents=True, exist_ok=True)
+    csv_proc = scp_run(
+        port=int(new_node.get("ssh_port") or 22),
+        src=_scp_remote_spec(new_node, REMOTE_REISSUE_CSV),
+        dest=str(csv_dest),
+        extra=extra,
+    )
+    reissue_csv: Optional[str]
+    if csv_proc.returncode == 0 and csv_dest.is_file():
+        _chmod_private(csv_dest, 0o600)
+        warn_credentials(str(csv_dest))
+        reissue_csv = str(csv_dest)
+    else:
+        sys.stderr.write(
+            f"WARNING: {args.name}: could not collect reissue CSV "
+            f"({_ssh_failure_detail(csv_proc)})\n"
+        )
+        reissue_csv = None
+
+    now_iso = format_utc(datetime.now(timezone.utc))
+    conn = open_fleet_db()
+    try:
+        retire_active_instance(conn, node["node_id"], retired_at=now_iso)
+        insert_instance(
+            conn,
+            node_id=node["node_id"],
+            instance_id=str(new_instance_id),
+            started_at=now_iso,
+            endpoint=new_host,
+            ssh_host=new_host,
+            status=INSTANCE_STATUS_ACTIVE,
+        )
+        cursor = read_sync_cursor_row(conn, node["node_id"])
+        last_event_id = int(cursor["last_event_id"]) if cursor is not None else 0
+        cursor_status = (
+            str(cursor["status"])
+            if cursor is not None and cursor["status"]
+            else SYNC_STATUS_OK
+        )
+        write_sync_cursor(
+            conn,
+            node_id=node["node_id"],
+            instance_id=new_instance_id,
+            last_event_id=last_event_id,
+            status=cursor_status,
+            now_iso=now_iso,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    registry = load_registry()
+    stored = require_node(registry, args.name)
+    stored["ssh_host"] = new_host
+    stored["ssh_user"] = new_user
+    stored["ssh_port"] = new_port
+    stored["status"] = NODE_STATUS_ACTIVE
+    stored["enabled"] = True
+    save_registry(None, registry)
+
+    _disabled, kept, disable_err = disable_remote_users_except_last(old_node)
+    if disable_err:
+        sys.stderr.write(
+            f"WARNING: {args.name}: remote user disable on old host was "
+            f"best-effort: {disable_err}\n"
+        )
+    if kept:
+        sys.stderr.write(
+            f"WARNING: last enabled user {kept} remains on the old host "
+            "(node invariant; credentials were not revoked)\n"
+        )
+    if old_instance_id and new_instance_id and old_instance_id != new_instance_id:
+        sys.stderr.write(
+            f"WARNING: {args.name}: instance changed, node_id stable "
+            f"({old_instance_id} → {new_instance_id})\n"
+        )
+
+    return _emit_replace_result(
+        _replace_result(
+            ok=True,
+            name=args.name,
+            node_id=node["node_id"],
+            old_instance_id=old_instance_id,
+            new_instance_id=new_instance_id,
+            ssh_host=new_host,
+            reissue_csv=reissue_csv,
+            state=OP_SUCCESS,
+        ),
+        as_json,
+    )
+
+
+def format_instances_table(rows: list[dict[str, Any]]) -> str:
+    lines = ["INSTANCE_ID STARTED RETIRED ENDPOINT SSH STATUS"]
+    for row in rows:
+        lines.append(
+            f"{row.get('instance_id') or '-'} {row.get('started_at') or '-'} "
+            f"{row.get('retired_at') or '-'} {row.get('endpoint') or '-'} "
+            f"{row.get('ssh_host') or '-'} {row.get('status') or '-'}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def cmd_node_instances(name: str, as_json: bool = False) -> int:
+    validate_name(name)
+    node = require_node(load_registry(), name)
+    conn = open_fleet_db()
+    try:
+        rows = list_instances(conn, node["node_id"])
+    finally:
+        conn.close()
+    if as_json:
+        payload = {
+            "schema_version": INSTANCE_JSON_SCHEMA_VERSION,
+            "name": node["name"],
+            "node_id": node["node_id"],
+            "instances": [
+                {
+                    "instance_id": row.get("instance_id"),
+                    "started_at": row.get("started_at"),
+                    "retired_at": row.get("retired_at"),
+                    "endpoint": row.get("endpoint"),
+                    "ssh_host": row.get("ssh_host"),
+                    "status": row.get("status"),
+                }
+                for row in rows
+            ],
+        }
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        return 0
+    sys.stdout.write(format_instances_table(rows))
+    return 0
+
+
 def format_utc(dt: datetime) -> str:
     return _as_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1765,6 +2265,7 @@ def ssh_remote_json(
     remote_cmd: list[str],
     *,
     timeout: float = SSH_TIMEOUT_SECONDS,
+    extra: list[str] | None = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
@@ -1778,6 +2279,7 @@ def ssh_remote_json(
         node["ssh_port"],
         remote_cmd,
         batch=True,
+        extra=extra,
         timeout=timeout,
     )
     detail = _ssh_failure_detail(proc)
@@ -3289,7 +3791,13 @@ def sync_one_node(
     *,
     now_iso: str,
 ) -> dict[str, Any]:
-    """Sync one node. Cursor advances only after a successful import commit."""
+    """Sync one node. Cursor advances only after a successful import commit.
+
+    Replace updates cursor.instance_id and keeps last_event_id. This
+    function never reseeds: an instance_id change emits WARN
+    `instance changed, node_id stable` and continues from the existing
+    cursor (plan §0.9). Auto-reseed is forbidden.
+    """
     node_id = node["node_id"]
     cursor_row = read_sync_cursor_row(conn, node_id)
     after = int(cursor_row["last_event_id"]) if cursor_row is not None else 0
@@ -3574,6 +4082,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 _AUDIT_MOD: Optional[Any] = None
+_BACKUP_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -3591,6 +4100,24 @@ def load_audit_module() -> Any:
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     _AUDIT_MOD = mod
+    return mod
+
+
+def load_backup_module() -> Any:
+    """Load lib/vincula-backup.py for local backup verify (no second parser)."""
+    global _BACKUP_MOD
+    if _BACKUP_MOD is not None:
+        return _BACKUP_MOD
+    path = Path(__file__).resolve().parent / "vincula-backup.py"
+    if not path.is_file():
+        die(f"vincula-backup.py not found: {path}")
+    loader = importlib.machinery.SourceFileLoader("vincula_backup", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        die("cannot load vincula-backup.py")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _BACKUP_MOD = mod
     return mod
 
 
@@ -4160,7 +4687,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_show = node_sub.add_parser("show", help="show one registered node")
     p_show.add_argument("name")
 
-    p_set = node_sub.add_parser("set", help="change ssh_host (node_id stays)")
+    p_set = node_sub.add_parser(
+        "set",
+        help="change ssh_host (endpoint rebind; credentials stay)",
+        description=(
+            "This is endpoint rebind; credentials stay. "
+            "Physical replacement is node replace."
+        ),
+    )
     p_set.add_argument("name")
     p_set.add_argument("--host", required=True, help="new SSH hostname or IP")
     p_set.add_argument("--user", help="optional new SSH user")
@@ -4183,6 +4717,53 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_retire.add_argument("name")
+
+    p_replace = node_sub.add_parser(
+        "replace",
+        help="replace the physical instance (rotate secrets; not a rebind)",
+        description=(
+            "Physical instance replacement: secretless backup from the old "
+            "host, restore onto NEW_HOST (already bootstrapped), mint a new "
+            "instance_id, rotate credentials, and write a reissue CSV. "
+            "This is not node set (endpoint rebind; credentials stay). "
+            "Requires --host-key. Does not mark the logical node retired "
+            "and does not auto-reseed fleet.db."
+        ),
+    )
+    p_replace.add_argument("name")
+    p_replace.add_argument("--host", required=True, help="new SSH hostname or IP")
+    p_replace.add_argument(
+        "--host-key",
+        dest="host_key",
+        help="pin new host-key fingerprint SHA256:... (required)",
+    )
+    p_replace.add_argument(
+        "--output",
+        help="write reissue CSV here (default: $FLEET_HOME/reissue-NAME-UTC.csv)",
+    )
+    p_replace.add_argument(
+        "--from-backup",
+        dest="from_backup",
+        help="use an existing secretless backup FILE (skip final sync + remote backup)",
+    )
+    p_replace.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
+    p_instances = node_sub.add_parser(
+        "instances",
+        help="list instance_history for NAME (physical instances over time)",
+    )
+    p_instances.add_argument("name")
+    p_instances.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
 
     p_status = sub.add_parser(
         "status",
@@ -4594,6 +5175,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_node_enable(args.name, True)
         if sub == "retire":
             return cmd_node_retire(args.name)
+        if sub == "replace":
+            return cmd_node_replace(args)
+        if sub == "instances":
+            return cmd_node_instances(args.name, as_json=bool(getattr(args, "as_json", False)))
         die(f"unknown node command: {sub}", 2)
     if command == "user":
         sub = args.user_command

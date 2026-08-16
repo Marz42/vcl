@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 NODES = HERE / "nodes"
 
 FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
-KNOWN_KINDS = ("identity", "status", "verify", "user", "audit")
+KNOWN_KINDS = ("identity", "status", "verify", "user", "audit", "backup", "restore")
 USER_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -54,6 +54,8 @@ HOST_ALIAS = {
     "copied.test": "copied",
     "203.0.113.17": "ask",
     "ask.test": "ask",
+    "203.0.113.18": "lax2",
+    "lax2.test": "lax2",
 }
 
 
@@ -484,6 +486,10 @@ def _audit_py() -> Path:
     return HERE.parent.parent / "lib" / "vincula-audit.py"
 
 
+def _backup_py() -> Path:
+    return HERE.parent.parent / "lib" / "vincula-backup.py"
+
+
 def _load_audit():
     path = _audit_py()
     if not path.is_file():
@@ -656,6 +662,224 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
     return 0
 
 
+def _load_backup():
+    path = _backup_py()
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("vincula_backup_fake", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _alias_dir(alias: str) -> Path:
+    root = _state_root()
+    if root is None:
+        raise RuntimeError("VCL_FAKE_STATE_DIR is required")
+    path = root / alias
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _remote_backup_path() -> str:
+    return "/var/backups/vincula/backup.tar"
+
+
+def _handle_backup(alias: str, argv: list[str]) -> int:
+    if not argv or argv[0] != "create":
+        shown = " ".join(["vcl", "backup", *argv]).strip()
+        sys.stderr.write(f"fake-ssh: unimplemented: {shown}\n")
+        return 1
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for backup create\n")
+        return 1
+    if "--include-secrets" in argv:
+        sys.stderr.write("fake-ssh: replace path is secretless; refusing --include-secrets\n")
+        return 1
+    backup = _load_backup()
+    if backup is None:
+        sys.stderr.write("fake-ssh: vincula-backup.py not found\n")
+        return 1
+    node_dir = _alias_dir(alias)
+    dest = node_dir / "backup.tar"
+    db = node_dir / "accounting.db"
+    try:
+        result = backup.create_backup(
+            node_dir,
+            db if db.is_file() else None,
+            include_secrets=False,
+            output=dest,
+        )
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: backup create failed: {exc}\n")
+        return 1
+    except Exception as exc:
+        sys.stderr.write(f"fake-ssh: backup create failed: {exc}\n")
+        return 1
+    result["path"] = _remote_backup_path()
+    _emit_json(result)
+    return 0
+
+
+def _parse_restore_flags(argv: list[str]) -> tuple[str, dict[str, str], bool]:
+    positional: list[str] = []
+    flags: dict[str, str] = {}
+    as_json = False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--json":
+            as_json = True
+            i += 1
+            continue
+        if arg == "--include-secrets":
+            flags["include_secrets"] = "1"
+            i += 1
+            continue
+        if arg in (
+            "--replace-node",
+            "--server",
+            "--output",
+            "--reissue-output",
+            "--age-identity",
+        ):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"restore: {arg} requires a value")
+            key = arg[2:].replace("-", "_")
+            flags[key] = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-"):
+            raise SystemExit(f"restore: unknown option {arg}")
+        positional.append(arg)
+        i += 1
+    if not positional:
+        raise SystemExit("usage: vcl restore FILE --replace-node NODE_ID")
+    return positional[0], flags, as_json
+
+
+def _resolve_restore_archive(alias: str, remote_file: str) -> Path:
+    node_dir = _alias_dir(alias)
+    name = Path(remote_file).name
+    candidate = node_dir / name
+    if candidate.is_file():
+        return candidate
+    fallback = node_dir / "backup.tar"
+    if fallback.is_file():
+        return fallback
+    raise SystemExit(f"restore archive not found: {remote_file}")
+
+
+def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
+    if alias in _fail_aliases("VCL_FAKE_FAIL_RESTORE"):
+        sys.stderr.write("fake-ssh: restore failed\n")
+        return 1
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for restore\n")
+        return 1
+    try:
+        remote_file, flags, as_json = _parse_restore_flags(argv)
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: {exc}\n")
+        return 1
+    replace_node = flags.get("replace_node", "").strip()
+    if not replace_node:
+        sys.stderr.write("fake-ssh: restore requires --replace-node NODE_ID\n")
+        return 1
+    if flags.get("include_secrets"):
+        sys.stderr.write("fake-ssh: replace path is secretless; refusing --include-secrets\n")
+        return 1
+    backup = _load_backup()
+    if backup is None:
+        sys.stderr.write("fake-ssh: vincula-backup.py not found\n")
+        return 1
+    try:
+        archive = _resolve_restore_archive(alias, remote_file)
+        verified, members = backup._load_verified_members(archive, None)
+        source_id = str(verified.get("source_node_id") or "")
+        if replace_node != source_id:
+            sys.stderr.write(
+                f"ERROR: backup source_node_id {source_id} does not match "
+                f"--replace-node {replace_node}.\n"
+            )
+            return 1
+        state = json.loads(members["state.json"].decode("utf-8"))
+        users = json.loads(members["users.json"].decode("utf-8"))
+        config_toml = members.get("config.toml", b"").decode("utf-8")
+        accounting = members.get("accounting.db")
+        env_iid = os.environ.get("VCL_RESTORE_INSTANCE_ID", "").strip()
+        if not env_iid:
+            node = state.get("node") if isinstance(state.get("node"), dict) else {}
+            env_iid = backup.mint_instance_id(
+                str(node.get("node_id") or source_id)
+            )
+        plan = backup.build_restore_plan(
+            state=state,
+            users=users,
+            config_toml=config_toml,
+            accounting=accounting,
+            manifest=verified,
+            include_secrets=False,
+            new_instance_id=env_iid,
+            new_reality_private=os.environ.get("VCL_RESTORE_REALITY_PRIVATE")
+            or "fake-restore-priv",
+            new_reality_public=os.environ.get("VCL_RESTORE_REALITY_PUBLIC")
+            or "fake-restore-pub",
+            new_reality_short_id=os.environ.get("VCL_RESTORE_REALITY_SHORT_ID")
+            or "fakesid1",
+            new_clash_secret=os.environ.get("VCL_RESTORE_CLASH_SECRET")
+            or "fake-clash-secret",
+            target_server=flags.get("server") or host,
+            project_version="0.3.0-dev",
+        )
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: restore failed: {exc}\n")
+        return 1
+    except Exception as exc:
+        sys.stderr.write(f"fake-ssh: restore failed: {exc}\n")
+        return 1
+
+    node_dir = _alias_dir(alias)
+    node = plan["state"].get("node") if isinstance(plan["state"].get("node"), dict) else {}
+    identity = {
+        "schema_version": 1,
+        "vincula_version": "0.3.0-dev",
+        "node_id": plan["node_id"],
+        "instance_id": plan["new_instance_id"],
+        "node_name": node.get("node_name") or alias,
+        "utc_now": _utc_now(),
+    }
+    _write_json(node_dir / "identity.json", identity)
+    _write_json(node_dir / "state.json", plan["state"])
+    _write_json(node_dir / "users.json", plan["users"])
+    (node_dir / "config.toml").write_text(str(plan["config_toml"]), encoding="utf-8")
+    if plan.get("accounting") is not None:
+        (node_dir / "accounting.db").write_bytes(bytes(plan["accounting"]))
+    csv_remote = flags.get("output") or flags.get("reissue_output") or "/tmp/reissue.csv"
+    csv_path = node_dir / Path(csv_remote).name
+    if plan["reissue_rows"]:
+        backup.write_reissue_csv(csv_path, plan["reissue_rows"])
+    result = {
+        "schema_version": 1,
+        "ok": True,
+        "mode": plan["mode"],
+        "node_id": plan["node_id"],
+        "source_instance_id": plan["source_instance_id"],
+        "instance_id": plan["new_instance_id"],
+        "reissue_csv": csv_remote,
+        "users_reissued": len(plan["reissue_rows"]),
+    }
+    if as_json:
+        _emit_json(result)
+    else:
+        sys.stdout.write(f"Restore {plan['mode']} node_id={plan['node_id']}\n")
+        sys.stdout.write(f"instance_id: {plan['new_instance_id']}\n")
+        sys.stdout.write(f"reissue_csv: {csv_remote}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     joined = " ".join(argv)
@@ -711,6 +935,10 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_audit(alias, rest)
     if kind == "user":
         return _handle_user(alias, host, rest)
+    if kind == "backup":
+        return _handle_backup(alias, rest)
+    if kind == "restore":
+        return _handle_restore(alias, host, rest)
     data = _load_fixture(alias, kind)
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")

@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""OpenSSH scp stand-in for vcl-fleet tests. No network.
+
+Selected by VCL_FLEET_SCP. Copies files between a local path and
+$VCL_FAKE_STATE_DIR/<alias>/ using the remote path basename. Remote
+specs are user@host:path (or host:path). Never calls real scp.
+
+Rejects D14 host-key weakening options. Does not invoke a shell.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+FORBIDDEN_STRICT_NO = "StrictHostKeyChecking=" + "no"
+FORBIDDEN_KNOWN_NULL = "UserKnownHostsFile=" + "/dev/null"
+
+HOST_ALIAS = {
+    "203.0.113.10": "lax",
+    "lax.test": "lax",
+    "203.0.113.11": "tokyo",
+    "tokyo.test": "tokyo",
+    "203.0.113.12": "sg",
+    "sg.test": "sg",
+    "203.0.113.13": "badkey",
+    "badkey.test": "badkey",
+    "203.0.113.14": "hang",
+    "hang.test": "hang",
+    "203.0.113.15": "badjson",
+    "badjson.test": "badjson",
+    "203.0.113.16": "copied",
+    "copied.test": "copied",
+    "203.0.113.17": "ask",
+    "ask.test": "ask",
+    "203.0.113.18": "lax2",
+    "lax2.test": "lax2",
+}
+
+
+def _state_root() -> Path | None:
+    raw = os.environ.get("VCL_FAKE_STATE_DIR", "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _is_remote(spec: str) -> bool:
+    if spec.startswith("/") or spec.startswith("./") or spec.startswith("../"):
+        return False
+    if spec.startswith("-"):
+        return False
+    return ":" in spec
+
+
+def _split_remote(spec: str) -> tuple[str, str]:
+    host_part, path = spec.split(":", 1)
+    if "@" in host_part:
+        host_part = host_part.rsplit("@", 1)[1]
+    if host_part.startswith("[") and host_part.endswith("]") and len(host_part) > 2:
+        host_part = host_part[1:-1]
+    if not path:
+        path = "."
+    return host_part, path
+
+
+def _alias_file(host: str, remote_path: str) -> Path:
+    root = _state_root()
+    if root is None:
+        raise RuntimeError("VCL_FAKE_STATE_DIR is required for fake-scp")
+    alias = HOST_ALIAS.get(host)
+    if alias is None:
+        raise RuntimeError(f"unknown fake-scp host: {host}")
+    name = Path(remote_path).name
+    if not name or name in (".", ".."):
+        raise RuntimeError(f"refusing remote path: {remote_path}")
+    dest = root / alias / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def _parse_argv(argv: list[str]) -> tuple[str, str]:
+    positional: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-P", "-o", "-c", "-i", "-F", "-l", "-S") and i + 1 < len(argv):
+            i += 2
+            continue
+        if arg.startswith("-o") and len(arg) > 2:
+            i += 1
+            continue
+        if arg.startswith("-P") and len(arg) > 2:
+            i += 1
+            continue
+        if arg.startswith("-") and arg != "-":
+            i += 1
+            continue
+        positional.append(arg)
+        i += 1
+    if len(positional) != 2:
+        raise RuntimeError("usage: scp [opts] SRC DST")
+    return positional[0], positional[1]
+
+
+def _copy_file(src: Path, dest: Path) -> None:
+    if not src.is_file():
+        raise RuntimeError(f"source not found: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.scp.tmp")
+    try:
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+        tmp.replace(dest)
+        os.chmod(dest, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    joined = " ".join(argv)
+    if FORBIDDEN_STRICT_NO in argv or FORBIDDEN_STRICT_NO in joined:
+        sys.stderr.write("FORBIDDEN_HOSTKEY_OPTION\n")
+        return 2
+    if FORBIDDEN_KNOWN_NULL in argv or FORBIDDEN_KNOWN_NULL in joined:
+        sys.stderr.write("FORBIDDEN_HOSTKEY_OPTION\n")
+        return 2
+    for arg in argv:
+        option = arg[2:] if arg.startswith("-o") and len(arg) > 2 else arg
+        if option.startswith("UserKnownHostsFile="):
+            sys.stderr.write("FORBIDDEN_HOSTKEY_OPTION\n")
+            return 2
+
+    try:
+        src, dest = _parse_argv(argv)
+        src_remote = _is_remote(src)
+        dest_remote = _is_remote(dest)
+        if src_remote and dest_remote:
+            raise RuntimeError("refusing remote-to-remote scp")
+        if src_remote:
+            host, rpath = _split_remote(src)
+            _copy_file(_alias_file(host, rpath), Path(dest))
+        elif dest_remote:
+            host, rpath = _split_remote(dest)
+            _copy_file(Path(src), _alias_file(host, rpath))
+        else:
+            _copy_file(Path(src), Path(dest))
+    except Exception as exc:
+        sys.stderr.write(f"fake-scp: {exc}\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

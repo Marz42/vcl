@@ -21,6 +21,8 @@ HOST_ALIAS = {
     "tokyo.test": "tokyo",
     "203.0.113.13": "badkey",
     "badkey.test": "badkey",
+    "203.0.113.18": "lax2",
+    "lax2.test": "lax2",
 }
 
 
