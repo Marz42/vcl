@@ -527,6 +527,24 @@ assert_failure "AC-2.8-10 shipped controller has no UserKnownHostsFile=/dev/null
     "${PROJECT_DIR}/bin/vcl-fleet" \
     "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 
+assert_failure "vincula-backup.py has no bind/HTTPServer" \
+  grep -E '0\.0\.0\.0|HTTPServer|socket\.bind' \
+    "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_failure "vincula-backup.py never sets StrictHostKeyChecking=no" \
+  grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_failure "vincula-backup.py never sets UserKnownHostsFile=/dev/null" \
+  grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_failure "fake-age has no bind/HTTPServer" \
+  grep -E '0\.0\.0\.0|HTTPServer|socket\.bind' \
+    "${PROJECT_DIR}/tests/fixtures/fake-age"
+assert_failure "fake-age never sets StrictHostKeyChecking=no" \
+  grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/tests/fixtures/fake-age"
+assert_failure "fake-age never sets UserKnownHostsFile=/dev/null" \
+  grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/tests/fixtures/fake-age"
+assert_failure "fake-scp has no bind/HTTPServer" \
+  grep -E '0\.0\.0\.0|HTTPServer|socket\.bind' \
+    "${PROJECT_DIR}/tests/fixtures/fake-scp"
+
 hostkey_py_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" "$FAKE_KEYSCAN" \
   "$LAX_HOSTKEY_PUB" "$HOME" <<'PY' || hostkey_py_rc=$?

@@ -1,17 +1,20 @@
-# Fleet operator guide (0.2.9)
+# Fleet operator guide (0.3.0)
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, incrementally syncs audit into a local
-`fleet.db`, and retires nodes after a final sync. Transport is **system
-OpenSSH**. It does not listen on a port, does not run as root, and does not
-use `/etc/vincula`.
+`fleet.db`, retires nodes after a final sync, and **replaces a physical
+instance** (`node replace`) while keeping the logical `node_id`. Transport is
+**system OpenSSH**. It does not listen on a port, does not run as root, and
+does not use `/etc/vincula`.
 
 SPEC `vcl fleet <sub>` **≡** this binary: `vcl-fleet <sub>`. The node helper
 `vcl` / `vincula` has **no** `fleet` subcommand.
 
-Full identity contract (including `--user-id`): [`identity.md`](identity.md).
-Gate: [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md) ·
-[`known-issues-0.2.9.md`](known-issues-0.2.9.md).
+Backup format and fresh-node restore: [`backup.md`](backup.md).
+Full identity contract (including `--user-id` and replace semantics):
+[`identity.md`](identity.md).
+Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
+[`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Prerequisites
 
@@ -19,11 +22,12 @@ Gate: [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md) ·
 | --- | --- |
 | Python | **3.10+** on PATH (`py -3` / `python` on Windows, `python3` on Unix) |
 | SSH | **system OpenSSH client** (`ssh.exe` / `scp.exe` / `ssh-keyscan.exe` on Windows; `ssh` / `scp` / `ssh-keyscan` on Linux/macOS) |
-| Node | 0.2.9 (or later) with `vcl identity --json`, `vcl user * --json`, and `vcl audit export --after N --jsonl` reachable as the SSH user (default `root`) |
-| Not bundled | CPython, OpenSSH, paramiko, pip packages |
+| Node | 0.3.0 (or later) with `vcl identity --json`, `vcl user * --json`, `vcl audit export --after N --jsonl`, `vcl backup create --json`, and `vcl restore` reachable as the SSH user (default `root`) |
+| Not bundled | CPython, OpenSSH, paramiko, pip packages, `age` |
 
 Vincula does not ship a management HTTP API. The only workstation → node
-channel is SSH.
+channel is SSH. `scp` of **backup archives** (`.tar` / `.tar.age`) and
+reissue CSV is allowed. Do **not** routinely `scp` live `accounting.db`.
 
 ## Paths
 
@@ -33,13 +37,19 @@ channel is SSH.
 | Windows | `%APPDATA%\vincula\` (usually `C:\Users\<user>\AppData\Roaming\vincula`) |
 | Linux / macOS | `${XDG_CONFIG_HOME:-~/.config}/vincula/` |
 | Registry | `$FLEET_HOME/fleet.json` (schema **2**; **does not store** `instance_id` or passwords) |
-| Audit cache | `$FLEET_HOME/fleet.db` (schema **1**; controller-local, not node SoT) |
+| Audit cache + instance history | `$FLEET_HOME/fleet.db` (schema **2**; controller-local, not node SoT) |
 | Last probe | `$FLEET_HOME/last-status.json` (health summary, not source of truth) |
 | Retired snapshot | `$FLEET_HOME/retired/<name>/` (identity / cursor / last-status; not a 0.3.0 backup) |
+| Replace backups | `$FLEET_HOME/backups/` (**0700**; pulled secretless `.tar`, files **0600**) |
+| Reissue CSV | `$FLEET_HOME/reissue-<name>-<UTC>.csv` (**0600**) unless `--output` |
 | Host keys | user default `known_hosts` (`%USERPROFILE%\.ssh\known_hosts` / `~/.ssh/known_hosts`) |
 
 `fleet.json` schema 1 is read and rewritten as schema 2 (`status` =
 `active` \| `disabled` \| `retired`). There is **no** automatic schema 2→1.
+
+`fleet.db` schema **1 → 2** adds `instance_history` (explicit migrate +
+backfill from `sync_cursor`). There is **no** automatic schema 2→1. A
+schema-2 `fleet.db` is not understood by a 0.2.9 controller.
 
 ## Windows 11
 
@@ -55,6 +65,11 @@ bin\vcl-fleet.cmd init
 ```
 
 `bin\vcl-fleet.cmd` locates `lib\vincula-fleet.py` beside `bin\` or one level up.
+
+`node replace` locally verifies the archive by loading `lib/vincula-backup.py`
+next to `vincula-fleet.py`. That file is in a repo checkout and the node
+tarball; the **shipped controller zip does not include it**. See
+[`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Linux / macOS
 
@@ -75,9 +90,11 @@ python3 bin/vcl-fleet init
 | `vcl-fleet node add NAME --host HOST` | SSH `vcl identity --json` and register |
 | `vcl-fleet node list` | `NAME NODE_ID SSH_HOST USER ENABLED STATUS` |
 | `vcl-fleet node show NAME` | One record |
-| `vcl-fleet node set NAME --host NEW_HOST` | Change `ssh_host` only; **`node_id` stays** |
+| `vcl-fleet node set NAME --host NEW_HOST` | **Endpoint rebind.** Change `ssh_host` only; **`node_id` stays**; credentials stay |
+| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | **Physical replace.** Secretless backup → restore on new host; new `instance_id`; rotate keys; reissue CSV |
+| `vcl-fleet node instances NAME` | `instance_history` table for that logical node |
 | `vcl-fleet node disable NAME` / `enable NAME` | Flip `active` ↔ `disabled`. Retired nodes cannot be enabled |
-| `vcl-fleet node retire NAME` | Final sync, snapshot, mark `retired` (history kept) |
+| `vcl-fleet node retire NAME` | Final sync, snapshot, mark `retired` (history kept). Not a replace |
 | `vcl-fleet user add TAG --nodes a,b` | Same `user_id`, per-node credentials. PARTIAL → exit **2** |
 | `vcl-fleet user list` / `show TAG` | Aggregate by `user_id` (SSH failure → PARTIAL, exit 2) |
 | `vcl-fleet user enable\|disable\|rotate TAG --node N` | Single-node mutation; **`--node` required** |
@@ -88,13 +105,37 @@ python3 bin/vcl-fleet init
 | `vcl-fleet stats user\|top users\|top hosts\|node NAME --days N` | `daily_usage` with **node** attribution |
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet version` | `vcl-fleet 0.2.9` |
+| `vcl-fleet version` | `vcl-fleet 0.3.0-dev` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.
 `--instance-id` is accepted and **ignored** (not stored).
 
-Not in 0.2.9: backup/restore, `vcl snapshot export`, UI, `replace-node`.
+`node replace` flags: `--host` (required), `--host-key SHA256:…` (required),
+`--output CSV`, `--from-backup FILE`, `--json`.
+
+Not in 0.3.0: localhost UI, age passphrase, `vcl snapshot export`.
+
+## Rebind vs replace
+
+| | `node set` (rebind) | `node replace` (replace) |
+| --- | --- | --- |
+| When | Same VPS, new SSH IP/hostname (or user/port) | New physical machine for the **same** logical `node_id` |
+| Credentials / Reality / Clash | **Kept** | **Rotated** (secretless restore) |
+| `instance_id` | Unchanged | Newly minted; ≠ `node_id`; ≠ old instance |
+| Backup / restore | None | Secretless `vcl backup create` → `vcl restore` on the new host |
+| Host key | Does **not** auto-pin (0.2.9 behaviour) | **Must** `--host-key SHA256:…` |
+| Registry | `ssh_host` (etc.) | `ssh_host` new; `status` stays `active`; **not** `retired` |
+| `fleet.json` `instance_id` | Still not stored | Still not stored |
+| `instance_history` | No extra row | Old instance `retired`; new row `active` |
+| Sync cursor | Unchanged | `instance_id` updated; **`last_event_id` kept**; no auto `--reseed` |
+
+`retired` still means you **abandoned the logical `node_id`**. Replacing a
+VPS is not retire. `node enable` on a retired name still dies:
+`retired node cannot be enabled; replacement is 0.3.0`.
+
+Replace **never** sends `--include-secrets`. Key reuse is node-side
+`vcl restore --include-secrets` only ([`backup.md`](backup.md)).
 
 ## First node add (`--host-key`)
 
@@ -129,8 +170,9 @@ Offline register (mock / unreachable host, still listed):
 python3 bin/vcl-fleet node add sg --host 203.0.113.12 --offline --node-id <uuid>
 ```
 
-Changing a node's IP later: `node set` does **not** rewrite `known_hosts`.
-Pin again with `--host-key` or edit OpenSSH `known_hosts` yourself.
+Changing a node's IP later **on the same instance**: `node set` does **not**
+rewrite `known_hosts`. Pin again with `--host-key` or edit OpenSSH
+`known_hosts` yourself. A **new** VPS is `node replace`, which must pin.
 
 ### Host-key policy (D14)
 
@@ -140,6 +182,71 @@ Default: OpenSSH user `known_hosts`. The controller never passes:
 - `UserKnownHostsFile=/dev/null`
 
 and never points `UserKnownHostsFile` at an empty file.
+
+## `node replace` (operator checklist)
+
+NEW_HOST must already run a **0.3.0** node (bootstrap complete enough that
+`vcl identity --json` works). The controller does not install sing-box.
+
+```bash
+python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
+python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:... \
+  --from-backup /path/to/node-<uuid>-<ts>.tar --output /tmp/reissue-lax.csv --json
+python3 bin/vcl-fleet node instances lax
+```
+
+```text
+1. NAME must be status=active (retired/disabled → die)
+2. --host-key required (non-TTY, same rule as node add)
+3. pin the new host key to user known_hosts (ssh-keyscan is candidates only)
+4. unless --from-backup:
+     final sync on the old host (CURSOR_EXPIRED → stop; print --reseed; no backup)
+     SSH old: vcl backup create --json   (secretless only)
+     scp archive to $FLEET_HOME/backups/ (0700 / 0600)
+     local verify via vincula-backup.py (same parser as the node)
+5. --from-backup FILE: skip 4a–4c (old host already dead). WARN: sync tail may be lost. Still verify FILE
+6. scp archive to NEW_HOST /tmp/vincula-restore.tar
+7. SSH new: vcl restore … --replace-node <registry node_id> --server NEW_HOST --output /tmp/reissue.csv
+   (controller argv; fixture fake-ssh accepts --replace-node. Node CLI restore is fresh-node only — see backup.md)
+8. SSH new: vcl identity --json  → node_id = registry; instance_id ≠ old and ≠ node_id
+9. SSH new: vcl verify --json    → not ok → do **not** rewrite registry; print remediation (`node set` back to old host). No automatic rollback of the new VPS restore
+10. scp reissue.csv → --output (default $FLEET_HOME/reissue-<name>-<UTC>.csv) 0600
+11. instance_history: old instance retired_at=now; insert new active
+12. fleet.json ssh_host=NEW_HOST (atomic); status still active; still no instance_id in JSON
+13. sync_cursor.instance_id=new; **keep last_event_id** (accounting.db restored; event_id continuous)
+14. best-effort SSH old host disable users (same as retire, keep the last enabled). Failure WARN. No uninstall
+15. stdout: old/new instance_id, new ssh_host, CSV path. Logical node not retired
+```
+
+`--json` schema_version 1:
+`ok, name, node_id, old_instance_id, new_instance_id, ssh_host, reissue_csv, state=SUCCESS|FAILED`.
+
+Timeouts: backup/restore SSH uses `SSH_BACKUP_TIMEOUT_SECONDS = 120`.
+`scp` is `$VCL_FLEET_SCP` (default `scp` / `scp.exe`); OpenSSH list argv only.
+
+After a successful replace, `vcl-fleet sync --node NAME` WARNs
+`instance changed, node_id stable` and **does not** clear the cursor. Do
+**not** auto `--reseed`. If retention already opened a hole, remediation is
+still `vcl-fleet sync --reseed NAME` — not another restore.
+`--reseed` wipes that node’s local `audit_events` + `daily_usage` and does
+**not** delete `instance_history`.
+
+## `node instances`
+
+Answers: “which physical instance served `lax` in this period?”
+
+```text
+INSTANCE_ID STARTED RETIRED ENDPOINT SSH STATUS
+```
+
+`status` ∈ `active` \| `retired`. At most one `active` row per `node_id`.
+`instance_id` is UUID and ≠ `node_id`. SoT is **`fleet.db`**, not
+`fleet.json`.
+
+Schema 1→2 backfill: each `sync_cursor` row with a non-empty `instance_id`
+becomes one `active` history row (`started_at=last_sync_at` or now;
+`ssh_host` from `fleet.json`). Active nodes with no cursor do not invent a
+row.
 
 ## User provisioning
 
@@ -199,6 +306,9 @@ alice,lax,<uuid>,vless://…@203.0.113.10:443…
 alice,tokyo,<uuid>,vless://…@203.0.113.11:443…
 ```
 
+Replace reissue CSV is a different header (`old_credential_id`,
+`new_credential_id`); see [`backup.md`](backup.md).
+
 ### Import
 
 CSV header **must** be `tag,display_name,department,nodes`. `nodes` is
@@ -238,13 +348,17 @@ after+1`, or empty DB), the node reports `CURSOR_EXPIRED`. The controller
 does **not** import a hole: cursor `status=expired`, overall exit **2**,
 remediation `vcl-fleet sync --reseed NAME`. `--reseed NAME` deletes that
 node's local `audit_events` + `daily_usage`, resets `last_event_id=0`, then
-pulls `--after 0` (the remaining window). Reseed is **not** a 0.3.0
-consistent SQLite snapshot.
+pulls `--after 0` (the remaining window). Reseed is **not** a backup;
+`instance_history` is **not** erased.
+
+**Replace does not auto-reseed.** After replace, `last_event_id` is kept.
+Immediate `sync --node NAME` continues `--after` that id on the new
+instance. If the old host’s retention already opened a hole before the
+final sync, you still `--reseed` — you do not restore again.
 
 Cursor lives on disk in `fleet.db`. A new controller process reading the
-same file continues from the last committed `event_id` (original AC-2.8-09
-cursor semantics, landed here). Re-running sync is idempotent
-(`COUNT(*)` and cursor stay put).
+same file continues from the last committed `event_id`. Re-running sync is
+idempotent (`COUNT(*)` and cursor stay put).
 
 ## Fleet audit / stats
 
@@ -293,6 +407,9 @@ placeholders (`SSH=-`, no SSH). Unreachable nodes cannot be retired
 (no final sync). Do **not** auto-uninstall. Do **not** delete `fleet.db`
 rows for that `node_id`.
 
+Retire abandons the **logical** node. To keep `node_id` on new hardware,
+use `node replace`.
+
 ## `status` / `verify`
 
 `vcl-fleet status` columns:
@@ -317,7 +434,7 @@ Disabled and retired nodes are omitted unless `--all` (then `DISABLED` /
 SSH/PROXY/ACCOUNTING `FAIL`. `--json` is schema 1.
 
 `vcl-fleet verify` adds version, registry `node_id` match, and clock skew.
-A new `instance_id` with the same `node_id` (reinstall) prints
+A new `instance_id` with the same `node_id` (reinstall / replace) prints
 `WARN: instance changed, node_id stable` and does **not** rewrite registry
 `node_id`. `--json` includes `warnings` / `checks`.
 
@@ -346,11 +463,22 @@ ssh root@<host> vcl user list --json
 ssh root@<host> vcl user show TAG --json
 ssh root@<host> vcl user enable|disable|rotate TAG --json
 ssh root@<host> vcl audit export --after EVENT_ID --jsonl
+ssh root@<host> vcl backup create [--json]
+ssh root@<host> vcl backup verify FILE [--json]
+ssh root@<host> vcl restore FILE [--server HOST] [--reissue-output CSV] [--json]
+```
+
+Allowed `scp` (archives and CSV only):
+
+```text
+scp … root@OLD:/var/backups/vincula/node-*.tar  $FLEET_HOME/backups/
+scp … $FLEET_HOME/backups/*.tar  root@NEW:/tmp/vincula-restore.tar
+scp … root@NEW:/tmp/reissue.csv  $FLEET_HOME/reissue-*.csv
 ```
 
 Do **not** routinely `scp /var/lib/vincula/accounting.db`. Live SQLite copy is
-not a consistent snapshot (0.3.0). User add/rotate uses mutation timeout 60s
-(sing-box restart); read-only probes stay 20s.
+not a consistent snapshot. User add/rotate uses mutation timeout 60s
+(sing-box restart); backup/restore 120s; read-only probes stay 20s.
 
 ## Tests / mock SSH
 
@@ -358,23 +486,26 @@ not a consistent snapshot (0.3.0). User add/rotate uses mutation timeout 60s
 export VCL_FLEET_HOME=/tmp/fleet-home
 export VCL_FLEET_SSH=/path/to/tests/fixtures/fake-ssh
 export VCL_FLEET_SSH_KEYSCAN=/path/to/tests/fixtures/fake-ssh-keyscan
+export VCL_FLEET_SCP=/path/to/tests/fixtures/fake-scp
 export VCL_FAKE_STATE_DIR=/tmp/fake-state
 ```
 
-CI uses three fixtures: lax (healthy), tokyo (accounting STALE), sg (SSH FAIL).
-AC-2.9-01 “two nodes” = **lax + tokyo fixtures**, not two public VPS.
+CI uses fixtures: lax (healthy), tokyo (accounting STALE), sg (SSH FAIL),
+lax2 (`203.0.113.18`, replace target). AC-2.9-01 “two nodes” = **lax + tokyo
+fixtures**. AC-3.0 replace = **lax → lax2 fixtures**, not two public VPS.
 
-## Explicitly not in 0.2.9
+## Explicitly not in 0.3.0
 
-backup/restore, age, Python SQLite Backup API, `vcl snapshot export`,
-`replace-node`, UI, routine `scp accounting.db`, billing-grade accounting,
-node `vcl fleet` subcommand, distributed rollback **guarantee**, blocking 90-day
-retention for cursors, retire auto-uninstall / erase `fleet.db`.
+localhost-only UI (0.3.1), age passphrase, `vcl snapshot export`, routine
+`scp accounting.db`, billing-grade accounting, node `vcl fleet` subcommand,
+distributed rollback **guarantee**, blocking 90-day retention for cursors,
+retire/replace auto-uninstall / erase `fleet.db`, replace `--include-secrets`,
+automatic `--reseed` after replace.
 
 ## AC-2.9 matrix (01–12)
 
-Evidence is **fake-ssh multi-node fixtures**. Mock is not live VPS. Full
-Status / Code / Test / Remaining risk table:
+Fleet Users & Audit evidence remains **fake-ssh multi-node fixtures**. Mock
+is not live VPS. Full Status / Code / Test / Remaining risk table:
 [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md).
 
 | ID | Criterion | Fixture evidence pointer |
@@ -391,3 +522,24 @@ Status / Code / Test / Remaining risk table:
 | AC-2.9-10 | No management API port | Static grep: no `socket.bind` / `HTTPServer` in `lib/vincula-fleet.py`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd` |
 | AC-2.9-11 | Node `--user-id`; plain add still generates; controller injects | `tests/test.sh` explicit / generated / duplicate `user_id`; fleet add shares one UUID |
 | AC-2.9-12 | `audit export --after` + idempotent sync; gap → `CURSOR_EXPIRED` + `--reseed` | `tests/test.sh` export/CURSOR_EXPIRED; `tests/test-fleet.sh` reseed / hole not imported |
+
+## AC-3.0 matrix (01–12)
+
+Backup / restore / replace. Evidence is **fixtures** unless noted.
+AC-3.0-11 is **LIVE-only** (must not be marked PASS from unit tests).
+Full table: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
+
+| ID | Criterion | Fixture evidence pointer |
+| --- | --- | --- |
+| AC-3.0-01 | Default backup has identity / audit / accounting | `tests/test.sh` `AC-3.0-01 fixture PASS: default backup includes identity and accounting` |
+| AC-3.0-02 | Default backup is secretless; no encryption required | `AC-3.0-02 fixture PASS: default backup is secretless without encryption` |
+| AC-3.0-03 | Secret-bearing backup requires age; exact missing-age error | `AC-3.0-03 fixture PASS: missing age dies with exact ERROR and writes no tar` |
+| AC-3.0-04 | Verify detects damage | `AC-3.0-04 fixture PASS: verify detects bit-flip checksum mismatch` |
+| AC-3.0-05 | Replace keeps `node_id` | node restore + `AC-3.0-05/06/07/10 replace keeps node_id…` |
+| AC-3.0-06 | Replace mints new `instance_id` ≠ `node_id` | same |
+| AC-3.0-07 | Safe replace rotates Reality and credentials | same |
+| AC-3.0-08 | `user_id` unchanged | `AC-3.0-08 fixture PASS: restore keeps user_id` |
+| AC-3.0-09 | History accounting/audit still queryable | `AC-3.0-09 fixture PASS` + `AC-3.0-09 replace sync keeps old instance rows and cursor` |
+| AC-3.0-10 | Reissue CSV correct | `AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id` |
+| AC-3.0-11 | Old credential links fail after revoke | **PARTIAL / LIVE-only.** Fixture: inbound omits old uuid. Not PASS |
+| AC-3.0-12 | Failed restore does not destroy target or source | `AC-3.0-12 fixture PASS`; fleet replace fail inject leaves old `ssh_host` |

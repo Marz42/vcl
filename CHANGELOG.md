@@ -2,6 +2,68 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.3.0
+
+Backup / Replace / Restore。记账仍为 **approximate / Clash polling**（非计费级）。**未** bump `state.json` / `users.json` / accounting / `fleet.json` schema。新产品合同：backup schema **1**；`fleet.db` schema **1 → 2**（`instance_history`）。
+
+### 默认备份（secretless）
+
+- `vcl backup create`：身份 + 审计 + accounting；**不含**有效密钥；**不**要求 age
+- 归档渲染剥离 `state.json` `node.reality_private_key`、`users.json` `credentials[].uuid`、`config.toml` `clash_api_secret`（键不存在，不是空值）
+- 保留 `node_id` / `instance_id` / `user_id` / `credential_id` 历史 / accounting
+- accounting 快照只用 Python `sqlite3.Connection.backup()`（live WAL 安全）。禁止把 `cp` / 例行 `scp` live `accounting.db` 当快照
+- 布局 backup schema **1**：`manifest.json` + 上述成员；外层 **0600**；默认 `/var/backups/vincula/node-<node_id>-<UTC>.tar`
+
+### 含密钥备份（age）
+
+- `vcl backup create --include-secrets --age-recipient FILE`：三份 canonical **原样** + 整包 age（`-R` recipient 文件）
+- 缺 age 二进制：精确 `ERROR: Secret-bearing backup requires age.`（D17）
+- 缺口令模式：0.3.0 **不**实现 `age -p` / `VCL_AGE_PASSPHRASE`
+- 禁止写出未加密的 secret-bearing tar；外层 `.tar.age`
+- `vcl backup verify FILE [--age-identity FILE]`：损坏 → `checksum_mismatch` 等；restore 在任何 mutation 之前强制 verify
+
+### Restore（fresh-node）
+
+- `vcl restore FILE`：目标已有 `VERSION` → 永远拒绝 `Refusing to overwrite an existing Vincula install.`
+- **无** `--replace-node` 节点旗标（`vcl help` 不文档化；传入则拒绝）
+- Safe 模式：保留备份 `node_id` / `user_id` / accounting `event_id`；**新** `instance_id`（≠ `node_id`）；旋转 Reality、Clash、active VLESS uuid；写 reissue CSV（`user,node,old_credential_id,new_credential_id,vless_uri`，0600）
+- `--include-secrets`：复用密钥但仍 mint 新 `instance_id`；`secret-mode restore reused credentials; no reissue CSV`
+- 事务：verify → `pre-restore-<UTC>/` safety → stage → health；失败滚回目标；**永不改**源归档
+- 公网 endpoint 取 **目标** `server`/`listen`/`port`（`--server HOST` 可覆盖）；`service_account` 保持目标
+
+### Fleet replace vs rebind
+
+- `vcl-fleet node set`：**endpoint rebind**。同一物理实例，只改 `ssh_host`；凭据 / `instance_id` / Reality **全部保留**
+- `vcl-fleet node replace NAME --host NEW --host-key SHA256:…`：**物理实例替换**。只走 secretless 备份；强制 `--host-key`；不把逻辑节点标 `retired`
+- `vcl-fleet node instances NAME`：查 `instance_history`（哪段时期哪台物理实例服务了该逻辑节点）
+- replace 后更新 `sync_cursor.instance_id`、**保留** `last_event_id`、**不**自动 `--reseed`。`CURSOR_EXPIRED` 仍用 0.2.9 `--reseed`；reseed 不删 `instance_history`
+- `--from-backup FILE`：旧机已死时的逃生口（可能丢 sync 尾巴），不是默认
+
+### Schema / 产物
+
+- backup `schema_version` **1**（新合同）
+- `fleet.db` schema **1 → 2**（`instance_history`）。`fleet.json` schema **仍为 2**（仍不存 `instance_id`）
+- `state.json` schema **仍为 2**；`users.json` schema **仍为 2**；accounting schema **仍为 3**（无 DDL）
+- 节点 `release.lock` **9** 个 first-party 文件（加 `lib/vincula-backup.py`）
+- 控制器 zip **四**成员不变（`README-controller.md`、`bin/vcl-fleet`、`bin/vcl-fleet.cmd`、`lib/vincula-fleet.py`）；无 installer、无 `release.lock`。`node replace` 本地 verify 从 `vincula-fleet.py` 同目录加载 `vincula-backup.py`（仓库布局有；zip 不含）
+
+### 明确不做
+
+- localhost UI（**0.3.1**）、age 口令、`vcl snapshot export` 别名
+- 例行 `scp accounting.db`、计费级计量、节点 `vcl fleet` 子命令、replace 路径 `--include-secrets`、无 VERSION 检查的覆盖 restore、自动 `--reseed`
+
+### 迁移
+
+- 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.9` → `0.3.0`
+- allowlist **含** `0.2.9`，**不含** `0.3.0` / `0.3.0-dev`
+- 升级 **不**旋转 UUID / Reality（与既有 migrate 相同）。替换旋转只走 restore / `node replace`
+- D18：`730` 从 0.2.9 来 **preserve**
+- 不提供自动 fleet.db 2→1；回滚见 `docs/release-readiness-0.3.0.md`
+
+### 验收摘要
+
+AC-3.0-01…12 的 fixture / 静态证据见 `docs/release-readiness-0.3.0.md`。已知限制见 `docs/known-issues-0.3.0.md`。AC-3.0-11 为 **LIVE-only**，单测不得报 PASS。0.3.0 **不**套用 D20 24h soak 门槛。MINOR bump 理由：backup/restore 合同（§9.3），不是同世代 milestone。
+
 ## 0.2.9
 
 Fleet Users & Audit。记账仍为 **approximate / Clash polling**（非计费级）。accounting schema **仍为 3**；`users.json` schema **仍为 2**；`state.json` schema **仍为 2**。

@@ -1,4 +1,4 @@
-# 身份合同（0.2.9）
+# 身份合同（0.3.0）
 
 `node_id` 是逻辑节点身份，永久冻结。`instance_id` 是一次物理安装。二者均为 UUID，且 **不得相等**。
 
@@ -7,7 +7,7 @@
 | | `node_id` | `instance_id` |
 | --- | --- | --- |
 | 含义 | 逻辑服务节点 / 线路 | 该逻辑节点的一次物理部署 |
-| 寿命 | 节点存在期间不变 | 随重装 / 替换而变（替换见 0.3.0） |
+| 寿命 | 节点存在期间不变 | 随重装 / 替换而变（`vcl restore` / `vcl-fleet node replace`） |
 | 可变操作 | `name` 可改；改 IP / hostname **不**改 `node_id` | 当前安装 mint 一次后幂等保留 |
 | 禁止 | **禁止重铸**；不引入第二套逻辑 ID | **禁止**复制 `node_id` |
 
@@ -22,23 +22,24 @@
 | `state.json` `node.instance_id` | **SoT**。schema 2 必填 UUID |
 | `config.toml` | **不写**。继续只镜像 `node_id`（历史双写，0.2.8 不扩大） |
 | `accounting.db` `connections.instance_id` | 新 INSERT 从 SoT 读取后写入；**不**把 DB 当 SoT |
-| `fleet.json` | **不存** `instance_id`（远程节点才是当前物理实例的权威） |
+| `fleet.json` | **不存** `instance_id`（远程节点才是当前物理实例的权威；年表在 `fleet.db` `instance_history`） |
 
 accountd 通过 `VCL_STATE_FILE`（默认 `/etc/vincula/state.json`）读 `node.instance_id`。读不到 → SQL NULL（少计身份）。**禁止**回退复制 `node_id`。
 
 `ON CONFLICT UPDATE` 不得改已有行的 `instance_id`（继续的 0.2.7 世代保持 NULL）。
 
-## `state.json` schema 1 → 2（0.2.9 保持 2）
+## `state.json` schema 1 → 2（0.3.0 保持 2）
 
-| | 0.2.7 | 0.2.8 / 0.2.9 |
-| --- | --- | --- |
-| `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） |
-| `users.json.schema_version` | `2` | `2`（不变；`--user-id` 是 CLI） |
-| accounting `meta.schema_version` | `3` | **`3`**（无 DDL） |
-| `fleet.json.schema_version` | — | 0.2.8 = `1`；**0.2.9 = `2`**（`status`） |
-| `fleet.db` | — | 0.2.9 schema **`1`**（工作站本地） |
+| | 0.2.7 | 0.2.8 / 0.2.9 | 0.3.0 |
+| --- | --- | --- | --- |
+| `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） | **`2`**（不 bump；strip 只发生在备份归档里） |
+| `users.json.schema_version` | `2` | `2` | **`2`** |
+| accounting `meta.schema_version` | `3` | **`3`**（无 DDL） | **`3`** |
+| `fleet.json.schema_version` | — | 0.2.8 = `1`；**0.2.9 = `2`**（`status`） | **`2`** |
+| `fleet.db` | — | 0.2.9 schema **`1`** | schema **`2`**（`instance_history`） |
+| backup `schema_version` | — | — | **`1`**（新合同） |
 
-产品版本 bump **不**自动改 accounting schema。0.2.9 不提供自动 state 2→1 或 fleet.json 2→1；节点回滚 = 恢复 `backup_existing_install` 备份 + 0.2.8 安装器。
+产品版本 bump **不**自动改 accounting / state / users schema。0.3.0 不提供自动 state 2→1、fleet.json 2→1 或 fleet.db 2→1。节点回滚 = 恢复 `backup_existing_install` 备份 + **0.2.9** 安装器。工作站 schema-2 `fleet.db` 对 0.2.9 控制器不受理。替换旋转密钥 **不**走升级安装器，只走 `vcl restore` / `vcl-fleet node replace`。
 
 ## NULL 含义（D5）
 
@@ -56,13 +57,53 @@ physical instance identity was not tracked at that time
 fresh install 0.2.8+:    node_id=UUID() 且 instance_id=UUID() 且 instance_id ≠ node_id
 upgrade 0.2.7 → 0.2.8:   保留现有 node_id；为当前物理安装 mint instance_id=UUID()
 upgrade 0.2.8 → 0.2.9:   保留 node_id 与 instance_id（不重 mint）
-已是 0.2.8/0.2.9 再跑安装器: 保留 node_id 与 instance_id（幂等，不重 mint）
-重装/替换（0.3.0）:      同 node_id，新 instance_id —— 0.2.9 只预留语义，不实现 replace-node
+upgrade 0.2.9 → 0.3.0-dev: 保留 node_id 与 instance_id（不重 mint；不旋转 Reality / uuid）
+已是 0.2.8+ 再跑安装器:  保留 node_id 与 instance_id（幂等，不重 mint）
+重装/替换（0.3.0）:      同 node_id，新 instance_id —— `vcl restore FILE`（fresh-node）或 `vcl-fleet node replace`
 0.2.7 历史 accounting 行: instance_id IS NULL 保持 NULL
 新 INSERT（新连接或新 generation）: 写入当前 instance_id
 ```
 
 mint 后若偶然 `instance_id == node_id`，再 mint 一次；仍相等则失败。禁止 `instance_id = node_id` 复制。
+
+## 实例年表与替换语义（0.3.0）
+
+逻辑节点（`node_id`）可以换物理机器。替换 = 保留逻辑身份与历史，旋转短寿秘密与物理实例。
+
+| | 保留 | 新 mint / 旋转 |
+| --- | --- | --- |
+| 逻辑身份 | `node_id`、每个用户 `user_id` | `instance_id`（UUID，且 ≠ `node_id`、≠ 旧实例） |
+| 凭据 | 历史 `credential_id` 行（revoked） | Safe 模式：新 Reality 密钥对、新 Clash secret、新 active VLESS uuid |
+| 审计 | accounting `event_id` 历史（行上的旧 `instance_id` **不**回填） | 新连接写入**新** `instance_id` |
+| 公网 | Reality handshake / SNI（备份里的） | `server` / `listen` / `port` 取 **新** VPS（`--server`） |
+
+节点 CLI：`vcl restore FILE` 只接受 **fresh node**（无 `VERSION`）。已安装拒绝覆盖。没有 `--replace-node` 旗标。详见 [`backup.md`](backup.md)。
+
+控制器：
+
+| 命令 | 语义 |
+| --- | --- |
+| `vcl-fleet node set NAME --host X` | **rebind**。同一物理实例，只改 `fleet.json` `ssh_host`。凭据 / `instance_id` / Reality **全留** |
+| `vcl-fleet node replace NAME --host NEW --host-key SHA256:…` | **replace**。secretless 备份 → 新主机 restore → 新 `instance_id`、旋转密钥、reissue CSV。逻辑节点 **不**标 `retired` |
+
+`instance_history` 的 SoT 是工作站 **`fleet.db` schema 2**（不是 `fleet.json`，0.2.8/0.2.9 不变量：registry 无 `instance_id`）。
+
+```sql
+CREATE TABLE instance_history (
+  node_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  retired_at TEXT,
+  endpoint TEXT,
+  ssh_host TEXT,
+  status TEXT NOT NULL,
+  PRIMARY KEY (node_id, instance_id)
+);
+```
+
+`status` ∈ `active` \| `retired`。同一 `node_id` **至多一行** `active`。查询：`vcl-fleet node instances NAME`（表头 `INSTANCE_ID STARTED RETIRED ENDPOINT SSH STATUS`）。
+
+replace 成功后：`sync_cursor.instance_id` 更新为新值，**保留** `last_event_id`，**不**自动 `--reseed`。`CURSOR_EXPIRED` 仍用 `vcl-fleet sync --reseed NAME`；reseed 擦本地审计缓存，**不**删 `instance_history`。
 
 ## UUID 格式
 
@@ -82,7 +123,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `schema_version` | int | `1` |
-| `vincula_version` | string | 产品版本（冻结为 `0.2.9`） |
+| `vincula_version` | string | 产品版本（当前树为 `0.3.0-dev`） |
 | `node_id` | UUID | 逻辑节点 ID |
 | `instance_id` | UUID 或 `null` | 当前物理安装；缺则 `null` 且 exit 1 |
 | `node_name` | string | 可改的显示名 |
@@ -91,7 +132,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```json
 {
   "schema_version": 1,
-  "vincula_version": "0.2.9",
+  "vincula_version": "0.3.0-dev",
   "node_id": "<uuid>",
   "instance_id": "<uuid>",
   "node_name": "<str>",
