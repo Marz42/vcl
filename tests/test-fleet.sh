@@ -129,6 +129,12 @@ assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
   grep -q 'INSERT OR IGNORE INTO audit_events' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
 assert_success "vcl-fleet Windows entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_success "build-controller.sh packs vincula-audit.py" \
+  grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "build-controller.sh packs vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "load_audit_module resolves controller lib siblings" \
+  grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 assert_equal "vcl-fleet version" "vcl-fleet 0.3.1-dev" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"

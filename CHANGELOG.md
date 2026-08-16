@@ -6,6 +6,7 @@
 
 Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
 
+- **B3 / P0-02:** 控制器 zip 纳入 `lib/vincula-audit.py` 与 `lib/vincula-backup.py`。解压黑盒（无仓库 `lib/`）覆盖 `version` / `init` / `audit` / `stats` 与 `node replace` fail-closed。删除「zip omits backup.py」断言。`load_audit_module` / `load_backup_module` 从控制器自己的 `lib/` 解析兄弟文件。
 - **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/fleet.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
 
 ## 0.3.0

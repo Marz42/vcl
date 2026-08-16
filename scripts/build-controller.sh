@@ -20,6 +20,8 @@ FILES=(
   bin/vcl-fleet
   bin/vcl-fleet.cmd
   lib/vincula-fleet.py
+  lib/vincula-audit.py
+  lib/vincula-backup.py
 )
 
 printf 'Building %s\n' "$OUT"
@@ -53,6 +55,8 @@ need = (
     f"{prefix}/bin/vcl-fleet",
     f"{prefix}/bin/vcl-fleet.cmd",
     f"{prefix}/lib/vincula-fleet.py",
+    f"{prefix}/lib/vincula-audit.py",
+    f"{prefix}/lib/vincula-backup.py",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
 with zipfile.ZipFile(archive) as zf:

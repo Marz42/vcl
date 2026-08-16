@@ -4,6 +4,7 @@
 **Date:** 2026-08-16 (freeze)  
 **Addendum:** 2026-08-16 — P2-04 honesty; recommendation **NOT READY**.  
 **Addendum:** 2026-08-16 — B2 / P0-01a: `node replace` fail-closed.  
+**Addendum:** 2026-08-16 — B3 / P0-02: controller zip ships audit + backup modules.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -13,7 +14,7 @@ Product freeze dropped `-dev` in Batch 17-freeze. This file remains the 0.3.0 fr
 
 **NOT READY**
 
-(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). Until those P0s close, this 0.3.0 freeze record must not be read as a READY tree. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). **B3 closed P0-02** on the living tree. **P0-01 remains**; until it closes, this 0.3.0 freeze record must not be read as a READY tree. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Addendum (2026-08-16) — external contract audit (P2-04)
 
@@ -41,6 +42,14 @@ Living tree (`0.3.1-dev`): `vcl-fleet node replace` **fail-closes** (exit 2, std
 P0-01 remains open until B10. This batch only stops production misuse and false operator docs.
 
 Living-tree test counts after B2: `bash tests/test.sh` **983**; standalone `bash tests/test-fleet.sh` **390**. The drop vs freeze 1006+413 is the withdrawn fake-ssh replace happy path / injection assertions, replaced by fail-closed + `node instances` coverage.
+
+## Addendum (2026-08-16) — B3 / P0-02 controller zip runtime modules
+
+Living tree (`0.3.1-dev`): `scripts/build-controller.sh` packs **six** files (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`, `lib/vincula-audit.py`, `lib/vincula-backup.py`). `load_audit_module` / `load_backup_module` resolve siblings in the controller’s own `lib/` (zip unpack or repo), not cwd / `PYTHONPATH`. The freeze-era assertion `controller zip omits node-side vincula-backup.py` is deleted. Black-box: unzip `dist/vincula-controller-*.zip` with no repo `lib/` on `sys.path`, then `version` / `init` / `audit` / `stats` plus `node replace` fail-closed.
+
+P0-02 is **closed**. Known P0 on the living tree: **1** (P0-01). Controller zip still has **no** `release.lock` (P2-03). Freeze-era “four members” text below is historical.
+
+Living-tree test counts after B3: `bash tests/test.sh` **998**; standalone `bash tests/test-fleet.sh` **393**.
 
 ### Freeze-era recommendation (historical)
 
@@ -155,7 +164,7 @@ localhost UI (0.3.1), age passphrase, `vcl snapshot export`, routine `scp accoun
 
 ## Policy after freeze
 
-After tag `v0.3.0`, prefer P0/P1 fixes only. The living tree is `0.3.1-dev` (Batch B0). A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake remain required before `READY FOR RC`, **and** P0-01 / P0-02 must close first (this freeze record stays **NOT READY** until then). UI belongs in 0.3.1 Phase B.
+After tag `v0.3.0`, prefer P0/P1 fixes only. The living tree is `0.3.1-dev` (Batch B0). A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake remain required before `READY FOR RC`, **and** P0-01 must close first (P0-02 closed in B3; this freeze record stays **NOT READY** until P0-01 closes). UI belongs in 0.3.1 Phase B.
 
 ## Completion report (SPEC §19)
 

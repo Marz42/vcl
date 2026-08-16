@@ -2,6 +2,8 @@
 
 Workstation Fleet Users & Audit CLI. **No root, no systemd, no `/etc/vincula`.**
 This zip is a user-local tool: it has no installer and no `release.lock`.
+Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py` and
+`vincula-backup.py` (required for `audit` and local backup verify).
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.

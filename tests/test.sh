@@ -863,8 +863,9 @@ assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
   test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
 controller_zip_rc=0
-python3 - "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
+python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
 import sys
 import zipfile
 
@@ -875,6 +876,8 @@ need = (
     f"{prefix}/bin/vcl-fleet",
     f"{prefix}/bin/vcl-fleet.cmd",
     f"{prefix}/lib/vincula-fleet.py",
+    f"{prefix}/lib/vincula-audit.py",
+    f"{prefix}/lib/vincula-backup.py",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
 with zipfile.ZipFile(archive) as zf:
@@ -884,25 +887,210 @@ assert not missing, missing
 for name in names:
     base = name.rstrip("/").rsplit("/", 1)[-1]
     assert base not in forbidden, name
-    assert base != "vincula-backup.py", name
 PY
 if (( controller_zip_rc == 0 )); then
   pass "AC-2.8-11 controller zip members"
 else
   fail "AC-2.8-11 controller zip members"
 fi
-controller_backup_rc=0
-python3 - "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" <<'PY' || controller_backup_rc=$?
+controller_runtime_rc=0
+python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_runtime_rc=$?
 import sys
 import zipfile
-with zipfile.ZipFile(sys.argv[1]) as zf:
-    if any(n.rstrip("/").endswith("vincula-backup.py") for n in zf.namelist()):
-        raise SystemExit(1)
+
+archive, version = sys.argv[1], sys.argv[2]
+prefix = f"vincula-controller-{version}"
+need = (
+    f"{prefix}/lib/vincula-audit.py",
+    f"{prefix}/lib/vincula-backup.py",
+)
+with zipfile.ZipFile(archive) as zf:
+    names = set(zf.namelist())
+missing = [n for n in need if n not in names]
+assert not missing, missing
 PY
-if (( controller_backup_rc == 0 )); then
-  pass "controller zip omits node-side vincula-backup.py"
+if (( controller_runtime_rc == 0 )); then
+  pass "controller zip contains vincula-audit.py"
+  pass "controller zip contains vincula-backup.py"
 else
-  fail "controller zip omits node-side vincula-backup.py"
+  fail "controller zip contains vincula-audit.py"
+  fail "controller zip contains vincula-backup.py"
+fi
+
+# P0-02 / B3: unzip away from the repo and run the zip's vcl-fleet.
+# No PROJECT_DIR/lib on sys.path; loaders must resolve zip lib/ siblings.
+BB_DIR="${TEST_TMP}/controller-zip-blackbox"
+BB_CWD="${BB_DIR}/cwd"
+BB_HOME="${BB_DIR}/fleet-home"
+BB_USER_HOME="${BB_DIR}/user-home"
+mkdir -p "$BB_DIR" "$BB_CWD" "$BB_HOME" "$BB_USER_HOME"
+python3 - "$controller_zip" "$BB_DIR" <<'PY'
+import sys
+import zipfile
+
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+UNPACK="${BB_DIR}/vincula-controller-${VINCULA_VERSION}"
+assert_success "controller zip black-box unpack has vcl-fleet" \
+  test -f "${UNPACK}/bin/vcl-fleet"
+assert_success "controller zip black-box unpack has vincula-audit.py" \
+  test -f "${UNPACK}/lib/vincula-audit.py"
+assert_success "controller zip black-box unpack has vincula-backup.py" \
+  test -f "${UNPACK}/lib/vincula-backup.py"
+
+bb_fleet() {
+  env -u PYTHONPATH -u PYTHONHOME \
+    HOME="$BB_USER_HOME" \
+    VCL_FLEET_HOME="$BB_HOME" \
+    python3 -s "${UNPACK}/bin/vcl-fleet" "$@"
+}
+
+bb_version_rc=0
+bb_version=$(
+  cd "$BB_CWD"
+  bb_fleet version
+) || bb_version_rc=$?
+if (( bb_version_rc == 0 )) && [[ "$bb_version" == "vcl-fleet ${VINCULA_VERSION}" ]]; then
+  pass "controller zip black-box version"
+else
+  fail "controller zip black-box version (rc=${bb_version_rc} out=${bb_version})"
+fi
+
+bb_init_rc=0
+bb_init=$(
+  cd "$BB_CWD"
+  bb_fleet init
+) || bb_init_rc=$?
+if (( bb_init_rc == 0 )) && [[ "$bb_init" == *"Initialized fleet registry"* ]] \
+  && [[ -f "${BB_HOME}/fleet.json" ]]; then
+  pass "controller zip black-box init"
+else
+  fail "controller zip black-box init (rc=${bb_init_rc} out=${bb_init})"
+fi
+
+bb_stats_rc=0
+bb_stats=$(
+  cd "$BB_CWD"
+  bb_fleet stats top users --days 1
+) || bb_stats_rc=$?
+if (( bb_stats_rc == 0 )); then
+  pass "controller zip black-box stats top users"
+else
+  fail "controller zip black-box stats top users (rc=${bb_stats_rc} out=${bb_stats})"
+fi
+
+bb_audit_rc=0
+bb_audit=$(
+  cd "$BB_CWD"
+  bb_fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1
+) || bb_audit_rc=$?
+if [[ "$bb_audit" == *"vincula-audit.py not found"* ]]; then
+  fail "controller zip black-box audit loads zip lib (missing module: ${bb_audit})"
+elif (( bb_audit_rc != 0 )) && [[ "$bb_audit" != *"not found"* ]]; then
+  pass "controller zip black-box audit loads zip lib"
+else
+  fail "controller zip black-box audit loads zip lib (rc=${bb_audit_rc} out=${bb_audit})"
+fi
+
+bb_replace_rc=0
+bb_replace=$(
+  cd "$BB_CWD"
+  bb_fleet node replace lax --host 203.0.113.18 --host-key SHA256:blackbox 2>&1
+) || bb_replace_rc=$?
+if (( bb_replace_rc == 2 )) \
+  && [[ "$bb_replace" == *"NOT IMPLEMENTED against real vcl"* ]] \
+  && [[ "$bb_replace" != *"vincula-backup.py not found"* ]]; then
+  pass "controller zip black-box node replace fail-closed"
+else
+  fail "controller zip black-box node replace fail-closed (rc=${bb_replace_rc} out=${bb_replace})"
+fi
+
+bb_loader_rc=0
+python3 - "$UNPACK" "${PROJECT_DIR}/lib" "$BB_CWD" <<'PY' || bb_loader_rc=$?
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+unpack = Path(sys.argv[1]).resolve()
+repo_lib = Path(sys.argv[2]).resolve()
+cwd = Path(sys.argv[3]).resolve()
+os.chdir(cwd)
+os.environ.pop("PYTHONPATH", None)
+
+
+def _resolved(p: str) -> Path | None:
+    if not p:
+        return None
+    try:
+        return Path(p).resolve()
+    except OSError:
+        return None
+
+
+sys.path[:] = [p for p in sys.path if _resolved(p) != repo_lib]
+assert repo_lib not in [_resolved(p) for p in sys.path], sys.path
+
+fleet_py = unpack / "lib" / "vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("vincula_fleet_zip_bb", fleet_py)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+lib_dir = (unpack / "lib").resolve()
+assert mod._controller_lib_dir() == lib_dir, mod._controller_lib_dir()
+
+audit = mod.load_audit_module()
+backup = mod.load_backup_module()
+assert Path(audit.__file__).resolve() == lib_dir / "vincula-audit.py"
+assert Path(backup.__file__).resolve() == lib_dir / "vincula-backup.py"
+assert callable(audit.parse_rfc3339)
+assert callable(backup.verify_archive)
+verified = backup.verify_archive(lib_dir / "no-such-archive.tar")
+assert verified.get("ok") is not True
+err = str(verified.get("error") or "")
+assert "vincula-backup.py" not in err
+PY
+if (( bb_loader_rc == 0 )); then
+  pass "controller zip black-box load_audit_module uses zip lib"
+  pass "controller zip black-box load_backup_module uses zip lib"
+else
+  fail "controller zip black-box load_audit_module uses zip lib"
+  fail "controller zip black-box load_backup_module uses zip lib"
+fi
+
+bb_path_rc=0
+python3 - "$UNPACK" "${PROJECT_DIR}/lib" "$BB_CWD" <<'PY' || bb_path_rc=$?
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+unpack = Path(sys.argv[1]).resolve()
+repo_lib = Path(sys.argv[2]).resolve()
+cwd = Path(sys.argv[3]).resolve()
+os.chdir(cwd)
+# Adversarial: repo lib on sys.path must not steal sibling loads.
+sys.path.insert(0, str(repo_lib))
+os.environ["PYTHONPATH"] = str(repo_lib)
+
+fleet_py = unpack / "lib" / "vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("vincula_fleet_zip_bb_path", fleet_py)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+lib_dir = (unpack / "lib").resolve()
+audit = mod.load_audit_module()
+backup = mod.load_backup_module()
+assert Path(audit.__file__).resolve() == lib_dir / "vincula-audit.py", audit.__file__
+assert Path(backup.__file__).resolve() == lib_dir / "vincula-backup.py", backup.__file__
+assert Path(audit.__file__).resolve() != repo_lib / "vincula-audit.py"
+assert Path(backup.__file__).resolve() != repo_lib / "vincula-backup.py"
+PY
+if (( bb_path_rc == 0 )); then
+  pass "controller zip black-box loader ignores repo PYTHONPATH"
+else
+  fail "controller zip black-box loader ignores repo PYTHONPATH"
 fi
 assert_success "README mentions vincula-node artifact" \
   grep -q 'vincula-node-' "${PROJECT_DIR}/README.md"

@@ -69,9 +69,9 @@ bin\vcl-fleet.cmd init
 
 `node replace` is **NOT IMPLEMENTED against real vcl** (fail-closed, exit 2).
 When it is re-enabled it will locally verify the archive by loading
-`lib/vincula-backup.py` next to `vincula-fleet.py`. That file is in a repo
-checkout and the node tarball; the **shipped controller zip does not include
-it** (P0-02). See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+`lib/vincula-backup.py` next to `vincula-fleet.py`. The controller zip ships
+`lib/vincula-audit.py` and `lib/vincula-backup.py` beside `vincula-fleet.py`
+(P0-02 / B3). See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Linux / macOS
 

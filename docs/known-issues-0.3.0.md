@@ -4,16 +4,16 @@
 
 **Release recommendation:** **NOT READY** — 2026-08-16 contract audit (P2-04 / remediation batch B1) reclassified P0-01 and P0-02 from “documented limitations” to **P0 blockers**. Freeze-era **READY WITH DOCUMENTED LIMITATIONS** is superseded. Live-evidence gaps (Win11 `vcl-fleet.cmd`, live VPS replace, real `age`, AC-3.0-11 LIVE-only) remain; they are not the reason for NOT READY. 0.3.0 does **not** use the D20 24h soak gate. See [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 
-~~Known P0/P1 at freeze: **0**.~~ **Correction (2026-08-16):** freeze filed the replace argv mismatch and the four-member zip as limitations, then claimed zero P0/P1. Those two items are contract failures. **Known P0: 2** (P0-01, P0-02). This page does not re-assert Known P1 = 0; remaining audit P1/P2 items are tracked in the 0.3.0 external-audit remediation plan (outside this repository).
+~~Known P0/P1 at freeze: **0**.~~ **Correction (2026-08-16):** freeze filed the replace argv mismatch and the four-member zip as limitations, then claimed zero P0/P1. Those two items are contract failures. **B3 (2026-08-16):** P0-02 is closed on the living tree (`0.3.1-dev`) — the controller zip ships `lib/vincula-audit.py` and `lib/vincula-backup.py`. **Known P0: 1** (P0-01). This page does not re-assert Known P1 = 0; remaining audit P1/P2 items are tracked in the 0.3.0 external-audit remediation plan (outside this repository).
 
 ## P0 blockers (post-audit 2026-08-16)
 
-Not product limitations. These break the 0.3.0 replace / controller-zip contract. Fixture green does not close them.
+Not product limitations. Fixture green does not close them. P0-02 is closed on the living tree (B3); P0-01 remains.
 
 | ID | Issue | Notes |
 | --- | --- | --- |
 | **P0-01** | `vcl-fleet node replace` vs real node CLI | **B2 (P0-01a):** CLI fail-closed — exit 2, **NOT IMPLEMENTED against real vcl**; does not rewrite `fleet.json`. Help/docs no longer teach the fake restore argv. Unreachable body still contains `vcl restore … --replace-node NODE_ID --output FILE` pending B10. Real `vcl restore` rejects `--replace-node`, uses `--reissue-output`, and refuses an existing `$STATE_DIR/VERSION`. Fixture `fake-ssh` still implements the old controller protocol (not exercised by living-tree replace tests). **Contract mismatch, not a live-evidence gap.** |
-| **P0-02** | Controller zip missing runtime modules | Zip still four members (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`). `load_backup_module` / `load_audit_module` require `vincula-backup.py` and `vincula-audit.py` beside `vincula-fleet.py`. A zip-only unpack cannot local-verify `node replace` or run `audit`. Tests asserted the backup omission. Was listed under Product limitations as “Controller zip omits `vincula-backup.py`”. |
+| **P0-02** | Controller zip missing runtime modules | **CLOSED (B3).** Zip members now include `lib/vincula-audit.py` and `lib/vincula-backup.py` beside `lib/vincula-fleet.py`. `load_audit_module` / `load_backup_module` resolve those siblings from the controller’s own `lib/` (zip unpack or repo). Black-box: unzip with no repo `lib/` on `sys.path`, then `version` / `init` / `audit` / `stats` plus `node replace` fail-closed. The freeze-era test `controller zip omits node-side vincula-backup.py` is deleted. |
 
 ## Product limitations
 
@@ -64,6 +64,12 @@ Not product limitations. These break the 0.3.0 replace / controller-zip contract
 | No physical replace | `vcl-fleet node replace` vs `node set` rebind; `node instances`. **Post-audit / B2:** CLI fail-closed (NOT IMPLEMENTED against real vcl); **P0-01** remains until B10 |
 | No instance history | `fleet.db` schema 2 `instance_history`; not stored in `fleet.json` |
 | `--reseed` was the only “snapshot” | Consistent node backup is `vcl backup create`; reseed remains a cache wipe |
+
+## Resolved in 0.3.1-dev (living tree)
+
+| Issue | Notes |
+| --- | --- |
+| P0-02 controller zip missing audit/backup | B3: zip ships `lib/vincula-audit.py` and `lib/vincula-backup.py`; black-box unpack runs `version` / `init` / `audit` / `stats`; `node replace` fail-closed still works from the zip |
 
 ## Related docs
 

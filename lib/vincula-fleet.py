@@ -4104,22 +4104,46 @@ _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
 
 
+def _controller_lib_dir() -> Path:
+    """Directory that holds this file and sibling runtime modules.
+
+    Zip unpack, repo checkout, and ``python3 bin/vcl-fleet`` all resolve
+    ``vincula-fleet.py`` to a real path; audit/backup must load from that
+    same ``lib/`` directory. Never cwd, never ``PYTHONPATH``, never a
+    sibling checkout the operator is not running.
+    """
+    here = Path(__file__).resolve()
+    parent = here.parent
+    if parent.name == "__pycache__":
+        parent = parent.parent
+    return parent
+
+
+def _load_controller_sibling(modname: str, filename: str) -> Any:
+    path = _controller_lib_dir() / filename
+    if not path.is_file():
+        die(f"{filename} not found: {path}")
+    existing = sys.modules.get(modname)
+    if existing is not None:
+        existing_file = getattr(existing, "__file__", None)
+        if existing_file is None or Path(existing_file).resolve() != path:
+            del sys.modules[modname]
+    loader = importlib.machinery.SourceFileLoader(modname, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        die(f"cannot load {filename}")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
 def load_audit_module() -> Any:
     """Load lib/vincula-audit.py for parse_rfc3339 / interval-overlap SQL."""
     global _AUDIT_MOD
     if _AUDIT_MOD is not None:
         return _AUDIT_MOD
-    path = Path(__file__).resolve().parent / "vincula-audit.py"
-    if not path.is_file():
-        die(f"vincula-audit.py not found: {path}")
-    loader = importlib.machinery.SourceFileLoader("vincula_audit", str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    if spec is None or spec.loader is None:
-        die("cannot load vincula-audit.py")
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    _AUDIT_MOD = mod
-    return mod
+    _AUDIT_MOD = _load_controller_sibling("vincula_audit", "vincula-audit.py")
+    return _AUDIT_MOD
 
 
 def load_backup_module() -> Any:
@@ -4127,17 +4151,8 @@ def load_backup_module() -> Any:
     global _BACKUP_MOD
     if _BACKUP_MOD is not None:
         return _BACKUP_MOD
-    path = Path(__file__).resolve().parent / "vincula-backup.py"
-    if not path.is_file():
-        die(f"vincula-backup.py not found: {path}")
-    loader = importlib.machinery.SourceFileLoader("vincula_backup", str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    if spec is None or spec.loader is None:
-        die("cannot load vincula-backup.py")
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    _BACKUP_MOD = mod
-    return mod
+    _BACKUP_MOD = _load_controller_sibling("vincula_backup", "vincula-backup.py")
+    return _BACKUP_MOD
 
 
 def fleet_utc_today() -> date:
