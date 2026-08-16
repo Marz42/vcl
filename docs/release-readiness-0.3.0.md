@@ -9,6 +9,7 @@
 **Addendum:** 2026-08-16 — B7 / P1-04: `CURSOR_AHEAD` + strict sync batch validation.  
 **Addendum:** 2026-08-16 — B8 / P1-02: restore is a single atomic transaction.  
 **Addendum:** 2026-08-16 — B9 / P1-03: upgrade preflight captures service state before any mutation.  
+**Addendum:** 2026-08-16 — B10 / P0-01b: `node replace` on the real restore contract.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -18,7 +19,7 @@ Product freeze dropped `-dev` in Batch 17-freeze. This file remains the 0.3.0 fr
 
 **NOT READY**
 
-(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). **B3 closed P0-02** on the living tree. **P0-01 remains**; until it closes, this 0.3.0 freeze record must not be read as a READY tree. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). **B3 closed P0-02** and **B10 closed P0-01** on the living tree. Remaining NOT READY is P1/P2 work plus live VPS evidence (B14), not the replace argv mismatch. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Addendum (2026-08-16) — external contract audit (P2-04)
 
@@ -84,6 +85,14 @@ Living-tree test counts after B8: `bash tests/test.sh` **1076**; standalone `bas
 Living tree (`0.3.1-dev`): `migrate_existing_install` runs file/schema/disk/REALITY/`sing-box check` preflight with no service side effects, then captures sing-box + accountd enabled/active into `SERVICE_STATE` and sets `MIGRATION_STARTED=1` **before** backup or any `systemctl` stop/start. Accounting is snapshotted with Python `sqlite3.Connection.backup()` from the **source-tree** `lib/vincula-backup.py` (accountd stays up). Accountd is stopped only for the file-swap window. `rollback_migration` applies the snapshot exactly (no “unit exists → restart”). `VCL_MIGRATE_FAIL_AFTER=preflight|armed|backup|health-wait|accountd-stop|health|accountd` restores the pretest enabled/active bits.
 
 Living-tree test counts after B9: `bash tests/test.sh` **1091**; standalone `bash tests/test-fleet.sh` **430**.
+
+## Addendum (2026-08-16) — B10 / P0-01b real restore contract
+
+Living tree (`0.3.1-dev`): `vcl-fleet node replace` is callable. Restore argv is `vcl restore FILE --reissue-output FILE --server HOST --json` (no `--replace-node`, no restore `--output`). NEW_HOST must be **runtime-only** (`vincula.sh --runtime-only` or `VCL_RUNTIME_ONLY=1`): sing-box, systemd units, helper, Python libs; **no** `/etc/vincula/VERSION` and no generated identity. Preflight: `test -x /usr/local/bin/vcl` and `test ! -f /etc/vincula/VERSION`. A bootstrapped host (VERSION present) fails without rewriting `fleet.json`. fake-ssh matches the real flags. A contract test feeds the controller argv to real `bin/vincula` `cmd_restore`. Live two-VPS handshake remains B14.
+
+P0-01 is **closed** on the living tree. Known P0: **0**. AC-3.0-05…10 fleet replace are **PASS (fixture)** on the real contract. AC-3.0-11 remains PARTIAL / LIVE-only.
+
+Living-tree test counts after B10: `bash tests/test.sh` **1142**; standalone `bash tests/test-fleet.sh` **474**.
 
 ### Freeze-era recommendation (historical)
 

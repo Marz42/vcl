@@ -3,8 +3,8 @@
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, incrementally syncs audit into a local
 `fleet.db`, retires nodes after a final sync, and records physical instances
-(`node instances`). **`node replace` is NOT IMPLEMENTED against real vcl**
-(P0-01; fail-closed). Transport is
+(`node instances`). **`node replace`** is physical instance replacement onto a
+**runtime-only** new host (see below). Transport is
 **system OpenSSH**. It does not listen on a port, does not run as root, and
 does not use `/etc/vincula`.
 
@@ -67,8 +67,7 @@ bin\vcl-fleet.cmd init
 
 `bin\vcl-fleet.cmd` locates `lib\vincula-fleet.py` beside `bin\` or one level up.
 
-`node replace` is **NOT IMPLEMENTED against real vcl** (fail-closed, exit 2).
-When it is re-enabled it will locally verify the archive by loading
+`node replace` locally verifies the archive by loading
 `lib/vincula-backup.py` next to `vincula-fleet.py`. The controller zip ships
 `lib/vincula-audit.py` and `lib/vincula-backup.py` beside `vincula-fleet.py`
 (P0-02 / B3). See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
@@ -93,7 +92,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet node list` | `NAME NODE_ID SSH_HOST USER ENABLED STATUS` |
 | `vcl-fleet node show NAME` | One record |
 | `vcl-fleet node set NAME --host NEW_HOST` | **Endpoint rebind.** Change `ssh_host` only; **`node_id` stays**; credentials stay |
-| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | **NOT IMPLEMENTED against real vcl** (P0-01; fail-closed exit 2). Intended: physical replace. Do not run against a real node |
+| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | Physical replace onto a **runtime-only** NEW_HOST (secretless backup → `vcl restore --reissue-output`) |
 | `vcl-fleet node instances NAME` | `instance_history` table for that logical node |
 | `vcl-fleet node disable NAME` / `enable NAME` | Flip `active` ↔ `disabled`. Retired nodes cannot be enabled |
 | `vcl-fleet node retire NAME` | Final sync, snapshot, mark `retired` (history kept). Not a replace |
@@ -113,20 +112,18 @@ python3 bin/vcl-fleet init
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.
 `--instance-id` is accepted and **ignored** (not stored).
 
-`node replace` flags still parse (`--host`, `--host-key`, `--output`,
-`--from-backup`, `--json`) but the command **always** exits 2 with
-**NOT IMPLEMENTED against real vcl**. It does not teach a working restore
-argv.
+`node replace` flags: `--host` (required), `--host-key SHA256:…` (required),
+`--output` (local reissue CSV dest), `--from-backup FILE`, `--json`. Remote
+restore argv is `vcl restore FILE --reissue-output FILE --server HOST --json`.
+NEW_HOST must already have runtime (`sudo bash vincula.sh --runtime-only`)
+and **must not** have `$STATE_DIR/VERSION`. A fully bootstrapped host is
+refused.
 
 Not in 0.3.0: localhost UI, age passphrase, `vcl snapshot export`.
 
 ## Rebind vs replace
 
-`node replace` is **NOT IMPLEMENTED against real vcl**. The table is the
-**intended** product meaning after the real-CLI contract is fixed (B10).
-Today the CLI fail-closes and does not rewrite the registry.
-
-| | `node set` (rebind) | `node replace` (replace; not callable) |
+| | `node set` (rebind) | `node replace` (replace) |
 | --- | --- | --- |
 | When | Same VPS, new SSH IP/hostname (or user/port) | New physical machine for the **same** logical `node_id` |
 | Credentials / Reality / Clash | **Kept** | **Rotated** (secretless restore) |
@@ -180,8 +177,8 @@ python3 bin/vcl-fleet node add sg --host 203.0.113.12 --offline --node-id <uuid>
 
 Changing a node's IP later **on the same instance**: `node set` does **not**
 rewrite `known_hosts`. Pin again with `--host-key` or edit OpenSSH
-`known_hosts` yourself. A **new** VPS is intended to be `node replace` (must
-pin), but that command is **NOT IMPLEMENTED against real vcl** until B10.
+`known_hosts` yourself. A **new** VPS is `node replace` (must pin). Prepare
+the new host with `sudo bash vincula.sh --runtime-only` first.
 
 ### Host-key policy (D14)
 
@@ -192,26 +189,43 @@ Default: OpenSSH user `known_hosts`. The controller never passes:
 
 and never points `UserKnownHostsFile` at an empty file.
 
-## `node replace` (NOT IMPLEMENTED against real vcl)
+## `node replace`
 
-`vcl-fleet node replace` **fail-closes**: it prints an explicit error
-containing **NOT IMPLEMENTED against real vcl** and exits **2**. It does
-**not** SSH, scp, restore, or rewrite `fleet.json` / `fleet.db`.
-
-This is P0-01 (remediation batch B2). The unimplemented controller path
-would have sent a restore argv the real node CLI rejects. Operator docs
-must not teach that argv. Re-enable only after B10 (real `--reissue-output`,
-runtime-only new host, controller-vs-real-bin contract tests).
+Physical instance replacement of the same logical `node_id`. NEW_HOST must
+be **runtime-only**, not a finished bootstrap:
 
 ```bash
-# exits 2; registry untouched
-python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
-python3 bin/vcl-fleet node instances lax   # still available
+# on the new VPS (no VERSION, no identity)
+sudo bash vincula.sh --runtime-only
+# or: sudo VCL_RUNTIME_ONLY=1 bash vincula.sh
 ```
 
-Node-side DR today: `vcl restore FILE --reissue-output FILE --server HOST`
-on a **fresh** host (no `$STATE_DIR/VERSION`). Then register or `node set`
-as appropriate. See [`backup.md`](backup.md).
+Then from the workstation:
+
+```bash
+python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
+python3 bin/vcl-fleet node instances lax
+```
+
+Flow:
+
+```text
+final sync on OLD (unless --from-backup)
+→ secretless vcl backup create
+→ scp archive to NEW:/tmp/vincula-restore.tar
+→ preflight: test -x /usr/local/bin/vcl && test ! -f /etc/vincula/VERSION
+→ ssh: vcl restore FILE --reissue-output /tmp/reissue.csv --server NEW --json
+→ identity + vcl verify --json
+→ pull reissue CSV
+→ registry ssh_host = NEW; instance_history: old retired, new active
+→ keep sync cursor last_event_id (CURSOR_AHEAD on next sync if the restored
+  DB is behind; then --reseed)
+```
+
+A host that already has `$STATE_DIR/VERSION` is refused; `fleet.json` is not
+rewritten. A host with no `vcl` binary is refused (`install with vincula.sh
+--runtime-only`). The remote restore command uses `--reissue-output` (not a
+restore `--output` flag).
 
 `--reseed` wipes that node’s local `audit_events` + `daily_usage` and does
 **not** delete `instance_history`.
@@ -350,8 +364,7 @@ Sync also fail-closes if remote meta lies: `count` ≠ JSONL rows, `next_cursor`
 with identity. Cursor advances to the remote `next_cursor` only after the
 full batch is validated and imported in one transaction.
 
-**Replace does not auto-reseed** (intended after B10; `node replace` is
-NOT IMPLEMENTED against real vcl today). After a successful replace,
+**Replace does not auto-reseed.** After a successful replace,
 `last_event_id` is kept. Immediate `sync --node NAME` continues `--after`
 that id on the new instance. If the restored DB's max is below that cursor,
 you get `CURSOR_AHEAD` and `--reseed`. If the old host’s retention already
@@ -410,7 +423,7 @@ placeholders (`SSH=-`, no SSH). Unreachable nodes cannot be retired
 rows for that `node_id`.
 
 Retire abandons the **logical** node. Keeping `node_id` on new hardware is
-the intended `node replace` (NOT IMPLEMENTED against real vcl until B10).
+the intended `node replace`.
 
 ## `status` / `verify`
 

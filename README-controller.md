@@ -31,7 +31,7 @@ SSH uses your user `known_hosts` (`%USERPROFILE%\.ssh\known_hosts`).
 ```bat
 bin\vcl-fleet.cmd user add alice --nodes lax,tokyo --display-name Alice
 bin\vcl-fleet.cmd sync
-REM node replace is NOT IMPLEMENTED against real vcl (P0-01a; fail-closed)
+bin\vcl-fleet.cmd node replace lax --host 203.0.113.18 --host-key SHA256:...
 bin\vcl-fleet.cmd node instances lax
 ```
 
@@ -49,7 +49,7 @@ Override with `VCL_FLEET_HOME`.
 ```bash
 python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice
 python3 bin/vcl-fleet sync
-# node replace is NOT IMPLEMENTED against real vcl (P0-01a; fail-closed)
+python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
 python3 bin/vcl-fleet node instances lax
 ```
 
@@ -57,6 +57,6 @@ Operator guide (PARTIAL, `CURSOR_EXPIRED`, retire, **replace vs rebind**):
 see the repo `docs/fleet.md` and `docs/backup.md` (not shipped in this zip).
 
 `node set` is endpoint rebind (credentials stay). `node replace` is
-**NOT IMPLEMENTED against real vcl** (P0-01; fail-closed exit 2) until the
-real-CLI contract is fixed. `node instances NAME` lists physical instances
-over time.
+physical replacement onto a runtime-only host (`vincula.sh --runtime-only`,
+then `vcl restore --reissue-output`). `node instances NAME` lists physical
+instances over time.

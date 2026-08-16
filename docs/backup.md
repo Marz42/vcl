@@ -21,8 +21,8 @@ already lives in `state.json`; VLESS uuid in `users.json`; Clash secret in
 force whole-archive age. Secret-bearing backups are **never** written as
 plaintext tar.
 
-Default restore is **secretless**. `vcl-fleet node replace` is
-**NOT IMPLEMENTED against real vcl** (fail-closed). Do **not**
+Default restore is **secretless**. `vcl-fleet node replace` is secretless
+only. Do **not**
 reuse live keys on a replacement VPS unless you explicitly choose mode B
 (disk died, VPS not compromised).
 
@@ -269,7 +269,6 @@ secret-mode restore reused credentials; no reissue CSV
 ```
 
 This is **not** the replacement default. `vcl-fleet node replace` is
-**NOT IMPLEMENTED against real vcl** (fail-closed); when re-enabled it is
 secretless only. Use secrets restore only when the disk died and the VPS
 was not untrusted.
 
@@ -293,16 +292,17 @@ cut-over is stop the old machine (AC-3.0-11 is LIVE-only).
 
 ## Fleet replace
 
-Physical instance replacement is **intended** to be `vcl-fleet node replace`,
+Physical instance replacement is `vcl-fleet node replace`,
 not `vcl-fleet node set` and not node `vcl restore` with a fake replace flag.
-**Today `node replace` is NOT IMPLEMENTED against real vcl** (P0-01; fail-closed
-exit 2). Do not run it against a real node. Fresh-host restore uses
+NEW_HOST must be **runtime-only** (`sudo bash vincula.sh --runtime-only`):
+runtime present, **no** `$STATE_DIR/VERSION`. Then:
+
 `vcl restore FILE --reissue-output FILE --server HOST`.
 
 | Command | Meaning |
 | --- | --- |
 | `vcl-fleet node set NAME --host X` | **Endpoint rebind.** Same physical instance; only `fleet.json` `ssh_host` (optional user/port). Credentials, `instance_id`, Reality **kept**. No backup/restore |
-| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | **NOT IMPLEMENTED against real vcl.** Intended: physical replace (secretless backup → restore on a new host → new `instance_id`, rotated keys, reissue CSV) |
+| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | Physical replace (secretless backup → restore on a runtime-only host → new `instance_id`, rotated keys, reissue CSV) |
 
 `--host-key` will be required when replace is re-enabled (new VPS, new host
 key). Replace does **not** mark the logical node `retired`. Operator notes:
@@ -320,7 +320,8 @@ the node; controller does not import or advance). Remedy: `vcl-fleet sync
 1. **Routine:** `sudo vcl backup create` (secretless). Copy the `.tar` off-box. Mode **0600**.
 2. **Optional full DR:** install `age`; `age-keygen`; `--include-secrets --age-recipient`. Never leave a plaintext secret tar.
 3. **Verify before you need it:** `vcl backup verify FILE` (`.age` needs `--age-identity`).
-4. **Fresh-node restore:** helper present, **no** `VERSION`. `sudo vcl restore FILE [--server HOST]`. Distribute the reissue CSV. Stop the old VPS.
+4. **Fresh-node restore:** runtime present (`vincula.sh --runtime-only` or a
+   helper already installed), **no** `VERSION`. `sudo vcl restore FILE [--server HOST] [--reissue-output FILE]`. Distribute the reissue CSV. Stop the old VPS.
 5. **Secrets restore:** only when the box was not compromised. `--include-secrets --age-identity`. No CSV of new uuids.
-6. **Fleet:** `node replace` is **NOT IMPLEMENTED against real vcl** (fail-closed). `node set` only to rebind the same instance. Fresh-host: `vcl restore` then register / rebind.
+6. **Fleet:** `node replace` onto a runtime-only NEW_HOST. `node set` only to rebind the same instance. Fresh-host: `vcl restore` then register / rebind.
 7. **Do not** default to key reuse. **Do not** `scp` live `accounting.db`. **Do not** expect unit tests to prove old VLESS links fail (AC-3.0-11).

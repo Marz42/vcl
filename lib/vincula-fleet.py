@@ -172,12 +172,8 @@ SCP_TIMEOUT_SECONDS = 60
 REMOTE_BACKUP_TAR = "/var/backups/vincula/backup.tar"
 REMOTE_RESTORE_TAR = "/tmp/vincula-restore.tar"
 REMOTE_REISSUE_CSV = "/tmp/reissue.csv"
-NODE_REPLACE_NOT_IMPLEMENTED = (
-    "node replace is NOT IMPLEMENTED against real vcl "
-    "(P0-01: controller restore argv is a contract mismatch with the "
-    "node CLI; documented in the 0.3.0 external-audit remediation plan). "
-    "Fail-closed until the real-CLI contract is fixed."
-)
+REMOTE_VCL_BIN = "/usr/local/bin/vcl"
+REMOTE_VERSION_FILE = "/etc/vincula/VERSION"
 CSV_CREDENTIAL_HEADER = ("user", "node", "credential_id", "vless_uri")
 CSV_IMPORT_HEADER = ("tag", "display_name", "department", "nodes")
 CSV_EXPORT_META_HEADER = (
@@ -2245,16 +2241,65 @@ def _cursor_instance_id(node_id: str) -> Optional[str]:
     return _optional_text(row["instance_id"])
 
 
+def build_node_restore_argv(archive: str, server: str) -> list[str]:
+    """Remote argv for ``vcl restore`` on a runtime-only host.
+
+    Must be accepted by real ``bin/vincula cmd_restore``: ``--reissue-output``,
+    no replace-node flag, no restore ``--output``.
+    """
+    return [
+        "vcl",
+        "restore",
+        archive,
+        "--reissue-output",
+        REMOTE_REISSUE_CSV,
+        "--server",
+        server,
+        "--json",
+    ]
+
+
+def preflight_replace_target(
+    node: dict[str, Any],
+    extra: Optional[list[str]] = None,
+) -> None:
+    """New host must have runtime (vcl) and must not have VERSION."""
+    host = str(node["ssh_host"])
+    runtime = ssh_run(
+        host,
+        node["ssh_user"],
+        int(node["ssh_port"]),
+        ["test", "-x", REMOTE_VCL_BIN],
+        batch=True,
+        extra=extra,
+    )
+    if runtime.returncode != 0:
+        die(
+            f"cannot replace: {host} has no Vincula runtime; "
+            "install with: sudo bash vincula.sh --runtime-only"
+        )
+    version = ssh_run(
+        host,
+        node["ssh_user"],
+        int(node["ssh_port"]),
+        ["test", "!", "-f", REMOTE_VERSION_FILE],
+        batch=True,
+        extra=extra,
+    )
+    if version.returncode != 0:
+        die(
+            f"cannot replace: {host} already has VERSION; "
+            "restore is fresh-node only (runtime-only install required)"
+        )
+
+
 @with_fleet_op_lock
 def cmd_node_replace(args: argparse.Namespace) -> int:
     """Physical instance replacement: secretless backup, restore, rotate.
 
-    P0-01a / B2: the CLI is fail-closed. Real ``vcl restore`` rejects the
-    argv this function would send (``--replace-node``, restore ``--output``)
-    and refuses an existing VERSION. Keep the body for B10; do not reach it
-    from ``vcl-fleet node replace``.
+    Real node contract (P0-01b): ``vcl restore FILE --reissue-output FILE
+    --server HOST --json`` on a runtime-only host (no VERSION).
     """
-    die(NODE_REPLACE_NOT_IMPLEMENTED, 2)
     validate_name(args.name)
     as_json = bool(getattr(args, "as_json", False))
     registry = load_registry()
@@ -2268,9 +2313,10 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     new_host, new_user, new_port = parse_ssh_target(
         args.host, None, int(node.get("ssh_port") or 22)
     )
-    extra, _batch = prepare_ssh_host_key(
-        new_host, new_port, getattr(args, "host_key", None)
-    )
+    host_key = _optional_text(getattr(args, "host_key", None))
+    if not host_key:
+        die("node replace requires --host-key SHA256:...")
+    extra, _batch = prepare_ssh_host_key(new_host, new_port, host_key)
     old_node = _node_view(node)
     new_node = _node_view(
         node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
@@ -2348,19 +2394,9 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             f"does not match registry {node['node_id']}"
         )
 
+    preflight_replace_target(new_node, extra=extra)
     scp_push(new_node, local_archive, REMOTE_RESTORE_TAR, extra=extra)
-    restore_cmd = [
-        "vcl",
-        "restore",
-        REMOTE_RESTORE_TAR,
-        "--replace-node",
-        node["node_id"],
-        "--server",
-        new_host,
-        "--output",
-        REMOTE_REISSUE_CSV,
-        "--json",
-    ]
+    restore_cmd = build_node_restore_argv(REMOTE_RESTORE_TAR, new_host)
     ssh_state, restore_doc, restore_detail = ssh_remote_json(
         new_node,
         restore_cmd,
@@ -5175,9 +5211,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="change ssh_host (endpoint rebind; credentials stay)",
         description=(
             "This is endpoint rebind; credentials stay. "
-            "Physical replacement is node replace, which is NOT IMPLEMENTED "
-            "against real vcl (P0-01; fail-closed) until the real-CLI "
-            "contract is fixed."
+            "Physical replacement is node replace (secretless backup → "
+            "restore on a runtime-only host)."
         ),
     )
     p_set.add_argument("name")
@@ -5205,15 +5240,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_replace = node_sub.add_parser(
         "replace",
-        help="NOT IMPLEMENTED against real vcl (P0-01; fail-closed)",
+        help="physical replace onto a runtime-only host (secretless restore)",
         description=(
-            "NOT IMPLEMENTED against real vcl. The controller restore argv "
-            "is a contract mismatch with node vcl restore (fresh-node "
-            "--reissue-output; existing VERSION refused). Fail-closed "
-            "(exit 2) until the real-CLI contract is fixed (P0-01 / B10). "
-            "Does not rewrite fleet.json. This is not node set (endpoint "
-            "rebind; credentials stay). node instances remains available. "
-            "Requires --host-key when the command is re-enabled."
+            "Physical replacement of the same logical node_id. Secretless "
+            "backup of the old host, then vcl restore FILE --reissue-output "
+            "FILE --server HOST --json on NEW_HOST. NEW_HOST must be "
+            "runtime-only (vincula.sh --runtime-only): vcl present, no "
+            "VERSION. A fully bootstrapped host is refused. This is not "
+            "node set (endpoint rebind; credentials stay). Requires "
+            "--host-key SHA256:..."
         ),
     )
     p_replace.add_argument("name")
@@ -5221,6 +5256,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_replace.add_argument(
         "--host-key",
         dest="host_key",
+        required=True,
         help="pin new host-key fingerprint SHA256:... (required)",
     )
     p_replace.add_argument(

@@ -1326,6 +1326,9 @@ def commit_restore_version(
     dest_state_dir.mkdir(parents=True, exist_ok=True)
     text = str(version).rstrip("\n") + "\n"
     _write_private(dest_state_dir / "VERSION", text.encode("utf-8"))
+    marker = dest_state_dir / ".runtime-only"
+    if marker.is_file() or marker.is_symlink():
+        marker.unlink()
     if safety_dir is not None:
         write_restore_marker(Path(safety_dir), "restore-safety", status="committed")
 

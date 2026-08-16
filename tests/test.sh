@@ -334,6 +334,19 @@ if [[ "$verify_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
 else
   pass "verify_existing_install does not remint instance_id"
 fi
+runtime_src=$(sed -n '/^install_runtime_only()/,/^install_new_node()/p' "${PROJECT_DIR}/vincula.sh")
+if [[ "$runtime_src" == *'RUNTIME_ONLY_MARKER'* ]] \
+  && [[ "$runtime_src" != *'atomic_install "$staged_version" "$VERSION_FILE"'* ]] \
+  && [[ "$runtime_src" != *'mint_or_preserve_instance_id'* ]] \
+  && [[ "$runtime_src" != *'render_state '* ]]; then
+  pass "install_runtime_only writes marker and skips VERSION/identity"
+else
+  fail "install_runtime_only writes marker and skips VERSION/identity"
+fi
+assert_success "vincula.sh --help names --runtime-only" \
+  grep -q -- '--runtime-only' <<< "$(bash "${PROJECT_DIR}/vincula.sh" --help)"
+assert_success "vincula.sh --help names VCL_RUNTIME_ONLY" \
+  grep -q 'VCL_RUNTIME_ONLY' <<< "$(bash "${PROJECT_DIR}/vincula.sh" --help)"
 assert_success "self-test server binds localhost only" grep -q '"listen": "127.0.0.1"' "${TEST_TMP}/selftest-server.json"
 assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "socks"' "${TEST_TMP}/selftest-client.json"
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
@@ -1007,12 +1020,13 @@ bb_replace=$(
   cd "$BB_CWD"
   bb_fleet node replace lax --host 203.0.113.18 --host-key SHA256:blackbox 2>&1
 ) || bb_replace_rc=$?
-if (( bb_replace_rc == 2 )) \
-  && [[ "$bb_replace" == *"NOT IMPLEMENTED against real vcl"* ]] \
-  && [[ "$bb_replace" != *"vincula-backup.py not found"* ]]; then
-  pass "controller zip black-box node replace fail-closed"
+if (( bb_replace_rc != 0 )) \
+  && [[ "$bb_replace" == *"unknown node"* ]] \
+  && [[ "$bb_replace" != *"vincula-backup.py not found"* ]] \
+  && [[ "$bb_replace" != *"NOT IMPLEMENTED against real vcl"* ]]; then
+  pass "controller zip black-box node replace reaches real command"
 else
-  fail "controller zip black-box node replace fail-closed (rc=${bb_replace_rc} out=${bb_replace})"
+  fail "controller zip black-box node replace reaches real command (rc=${bb_replace_rc} out=${bb_replace})"
 fi
 
 bb_loader_rc=0
@@ -5871,6 +5885,64 @@ else
   fail "vcl restore refuses existing install without mutation (rc=${exist_rc}, err='${exist_err}')"
 fi
 
+replace_node_rc=0
+replace_node_err=$(
+  VCL_STATE_DIR="$restore_fresh" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+    "${restore_cli_root}/bin/vincula" --replace-node "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" \
+    "${BACKUP_DIR}/restore-src.tar" 2>&1
+) || replace_node_rc=$?
+if (( replace_node_rc != 0 )) \
+  && [[ "$replace_node_err" == *"Restore is fresh-node only; --replace-node is not supported."* ]]; then
+  pass "vcl restore refuses --replace-node"
+else
+  fail "vcl restore refuses --replace-node (rc=${replace_node_rc} err=${replace_node_err})"
+fi
+
+unknown_output_rc=0
+unknown_output_err=$(
+  VCL_STATE_DIR="$restore_fresh" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+    "${restore_cli_root}/bin/vincula" --output /tmp/x \
+    "${BACKUP_DIR}/restore-src.tar" 2>&1
+) || unknown_output_rc=$?
+if (( unknown_output_rc != 0 )) \
+  && [[ "$unknown_output_err" == *"Unknown restore argument: --output"* ]]; then
+  pass "vcl restore refuses --output"
+else
+  fail "vcl restore refuses --output (rc=${unknown_output_rc} err=${unknown_output_err})"
+fi
+
+restore_rt="${restore_cli_root}/runtime-only-dest"
+mkdir -p "$restore_rt"
+printf 'runtime-only\n' > "${restore_rt}/.runtime-only"
+rt_restore_rc=0
+rt_restore_out=$(
+  VCL_STATE_DIR="$restore_rt" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_CONFIG_FILE="${restore_rt}/sing-box-config.json" \
+  VCL_ACCOUNTING_DB_FILE="${restore_rt}/accounting.db" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json \
+    --reissue-output "${restore_backups}/rt-reissue.csv" \
+    "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || rt_restore_rc=$?
+if (( rt_restore_rc == 0 )) \
+  && [[ -f "${restore_rt}/VERSION" ]] \
+  && [[ ! -e "${restore_rt}/.runtime-only" ]] \
+  && [[ -f "${restore_rt}/state.json" ]]; then
+  pass "runtime-only dest restore writes VERSION last and clears marker"
+else
+  fail "runtime-only dest restore writes VERSION last and clears marker (rc=${rt_restore_rc} out=${rt_restore_out})"
+fi
+
 cli_verify_fail_rc=0
 cli_verify_fail_out=$(
   VCL_STATE_DIR="$cli_state" \
@@ -6701,6 +6773,9 @@ assert_success "migrate_existing_install acquires operation lock" \
 install_lock_src=$(sed -n '/^install_new_node()/,/^main()/p' "${PROJECT_DIR}/vincula.sh")
 assert_success "install_new_node acquires operation lock" \
   grep -q 'acquire_vincula_op_lock' <<< "$install_lock_src"
+runtime_lock_src=$(sed -n '/^install_runtime_only()/,/^install_new_node()/p' "${PROJECT_DIR}/vincula.sh")
+assert_success "install_runtime_only acquires operation lock" \
+  grep -q 'acquire_vincula_op_lock' <<< "$runtime_lock_src"
 mutate_lock_src=$(sed -n '/^users_registry_mutate()/,/^users_registry_show()/p' "${PROJECT_DIR}/lib/vincula-common.sh")
 assert_success "users_registry_mutate acquires operation lock" \
   grep -q 'acquire_vincula_op_lock' <<< "$mutate_lock_src"

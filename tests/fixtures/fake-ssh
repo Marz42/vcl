@@ -788,13 +788,9 @@ def _parse_restore_flags(argv: list[str]) -> tuple[str, dict[str, str], bool]:
             flags["include_secrets"] = "1"
             i += 1
             continue
-        if arg in (
-            "--replace-node",
-            "--server",
-            "--output",
-            "--reissue-output",
-            "--age-identity",
-        ):
+        if arg == "--replace-node":
+            raise SystemExit("Restore is fresh-node only; --replace-node is not supported.")
+        if arg in ("--server", "--reissue-output", "--age-identity"):
             if i + 1 >= len(argv):
                 raise SystemExit(f"restore: {arg} requires a value")
             key = arg[2:].replace("-", "_")
@@ -802,11 +798,13 @@ def _parse_restore_flags(argv: list[str]) -> tuple[str, dict[str, str], bool]:
             i += 2
             continue
         if arg.startswith("-"):
-            raise SystemExit(f"restore: unknown option {arg}")
+            raise SystemExit(f"Unknown restore argument: {arg}. Try 'vcl restore --help'.")
         positional.append(arg)
         i += 1
     if not positional:
-        raise SystemExit("usage: vcl restore FILE --replace-node NODE_ID")
+        raise SystemExit(
+            "usage: vcl restore FILE [--age-identity FILE] [--reissue-output FILE] [--json]"
+        )
     return positional[0], flags, as_json
 
 
@@ -823,23 +821,20 @@ def _resolve_restore_archive(alias: str, remote_file: str) -> Path:
 
 
 def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
+    try:
+        remote_file, flags, as_json = _parse_restore_flags(argv)
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: {exc}\n")
+        return 1
     if alias in _fail_aliases("VCL_FAKE_FAIL_RESTORE"):
         sys.stderr.write("fake-ssh: restore failed\n")
         return 1
     if _state_root() is None:
         sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for restore\n")
         return 1
-    try:
-        remote_file, flags, as_json = _parse_restore_flags(argv)
-    except SystemExit as exc:
-        sys.stderr.write(f"fake-ssh: {exc}\n")
-        return 1
-    replace_node = flags.get("replace_node", "").strip()
-    if not replace_node:
-        sys.stderr.write("fake-ssh: restore requires --replace-node NODE_ID\n")
-        return 1
-    if flags.get("include_secrets"):
-        sys.stderr.write("fake-ssh: replace path is secretless; refusing --include-secrets\n")
+    node_dir = _alias_dir(alias)
+    if (node_dir / "VERSION").is_file():
+        sys.stderr.write("ERROR: Refusing to overwrite an existing Vincula install.\n")
         return 1
     backup = _load_backup()
     if backup is None:
@@ -849,12 +844,6 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         archive = _resolve_restore_archive(alias, remote_file)
         verified, members = backup._load_verified_members(archive, None)
         source_id = str(verified.get("source_node_id") or "")
-        if replace_node != source_id:
-            sys.stderr.write(
-                f"ERROR: backup source_node_id {source_id} does not match "
-                f"--replace-node {replace_node}.\n"
-            )
-            return 1
         state = json.loads(members["state.json"].decode("utf-8"))
         users = json.loads(members["users.json"].decode("utf-8"))
         config_toml = members.get("config.toml", b"").decode("utf-8")
@@ -871,7 +860,7 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
             config_toml=config_toml,
             accounting=accounting,
             manifest=verified,
-            include_secrets=False,
+            include_secrets=bool(flags.get("include_secrets")),
             new_instance_id=env_iid,
             new_reality_private=os.environ.get("VCL_RESTORE_REALITY_PRIVATE")
             or "fake-restore-priv",
@@ -891,7 +880,6 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         sys.stderr.write(f"fake-ssh: restore failed: {exc}\n")
         return 1
 
-    node_dir = _alias_dir(alias)
     node = plan["state"].get("node") if isinstance(plan["state"].get("node"), dict) else {}
     identity = {
         "schema_version": 1,
@@ -907,10 +895,14 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
     (node_dir / "config.toml").write_text(str(plan["config_toml"]), encoding="utf-8")
     if plan.get("accounting") is not None:
         (node_dir / "accounting.db").write_bytes(bytes(plan["accounting"]))
-    csv_remote = flags.get("output") or flags.get("reissue_output") or "/tmp/reissue.csv"
+    csv_remote = flags.get("reissue_output") or "/tmp/reissue.csv"
     csv_path = node_dir / Path(csv_remote).name
     if plan["reissue_rows"]:
         backup.write_reissue_csv(csv_path, plan["reissue_rows"])
+    marker = node_dir / ".runtime-only"
+    if marker.is_file() or marker.is_symlink():
+        marker.unlink()
+    (node_dir / "VERSION").write_text("0.3.1-dev\n", encoding="utf-8")
     result = {
         "schema_version": 1,
         "ok": True,
@@ -928,6 +920,45 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         sys.stdout.write(f"instance_id: {plan['new_instance_id']}\n")
         sys.stdout.write(f"reissue_csv: {csv_remote}\n")
     return 0
+
+
+def _fake_fs_path(alias: str, remote_path: str) -> Path:
+    node_dir = _alias_dir(alias)
+    mapping = {
+        "/etc/vincula/VERSION": node_dir / "VERSION",
+        "/etc/vincula/.runtime-only": node_dir / ".runtime-only",
+        "/usr/local/bin/vcl": node_dir / "vcl",
+        "/usr/local/bin/vincula": node_dir / "vcl",
+    }
+    if remote_path in mapping:
+        return mapping[remote_path]
+    return node_dir / Path(remote_path).name
+
+
+def _handle_test(alias: str, argv: list[str]) -> int:
+    """Subset of POSIX test(1) for replace preflight."""
+    args = list(argv)
+    negate = False
+    if args and args[0] == "!":
+        negate = True
+        args = args[1:]
+    if len(args) != 2 or args[0] not in ("-f", "-x", "-e"):
+        sys.stderr.write("fake-ssh: unsupported test argv\n")
+        return 2
+    op, remote_path = args
+    target = _fake_fs_path(alias, remote_path)
+    node_dir = _alias_dir(alias)
+    if op == "-x":
+        present = target.is_file() and os.access(target, os.X_OK)
+        if remote_path in ("/usr/local/bin/vcl", "/usr/local/bin/vincula"):
+            if (node_dir / ".runtime-only").is_file() or (node_dir / "VERSION").is_file():
+                present = True
+    else:
+        present = target.is_file()
+    rc = 0 if present else 1
+    if negate:
+        rc = 0 if rc != 0 else 1
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -983,6 +1014,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     kind, rest = _remote_kind(remote)
+    if kind == "unknown" and rest and rest[0] == "test":
+        return _handle_test(alias, rest[1:])
     if kind == "unknown":
         shown = " ".join(remote) or "(empty)"
         sys.stderr.write(f"fake-ssh: unknown vcl command: {shown}\n")

@@ -45,6 +45,7 @@ readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
 readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
 readonly DEFAULT_CLASH_API_PORT=9090
 readonly VERSION_FILE="${STATE_DIR}/VERSION"
+readonly RUNTIME_ONLY_MARKER="${STATE_DIR}/.runtime-only"
 readonly STATE_FILE="${STATE_DIR}/state.json"
 readonly USERS_FILE="${STATE_DIR}/users.json"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
@@ -154,6 +155,7 @@ vincula v0.3.1-dev
 
 Usage:
   sudo bash vincula.sh
+  sudo bash vincula.sh --runtime-only
   bash vincula.sh --help
   bash vincula.sh --version
 
@@ -161,6 +163,12 @@ Optional environment overrides:
   VCL_SERVER=203.0.113.10      Public address used in the client URI
   VCL_PORT=443                 Listening port
   VCL_REALITY_HOST=example.com REALITY handshake server and SNI
+  VCL_RUNTIME_ONLY=1           Same as --runtime-only
+
+--runtime-only installs the runtime (sing-box binary, systemd units, helper,
+Python libraries) without writing /etc/vincula/VERSION and without generating
+identity. Finish on that host with:
+  sudo vcl restore FILE --reissue-output FILE --server HOST
 
 The normal installation path is non-interactive. Existing vincula v0.3.1-dev
 credentials are preserved when the script is run again. Older 0.1.x and
@@ -188,6 +196,7 @@ rollback_install() {
     "$BINARY_PATH" \
     "$CONFIG_FILE" \
     "$VERSION_FILE" \
+    "$RUNTIME_ONLY_MARKER" \
     "$STATE_FILE" \
     "$USERS_FILE" \
     "$SETTINGS_FILE" \
@@ -1119,6 +1128,39 @@ file=${AUDIT_PY}
 file=${BACKUP_PY}
 file=${ACCOUNTD_UNIT}
 file=${ACCOUNTING_DB_FILE}
+
+directory=${STATE_DIR}
+directory=${SING_BOX_DIR}
+directory=${LIB_DIR}
+directory=${VAR_LIB_VINCULA}
+
+service=sing-box.service
+service=vincula-accountd.service
+EOF
+}
+
+render_runtime_only_manifest() {
+  local output=$1
+  cat > "$output" <<EOF
+schema_version=1
+project=vincula
+project_version=${VINCULA_VERSION}
+mode=runtime-only
+
+file=${BINARY_PATH}
+file=${HELPER_PATH}
+symlink=${HELPER_ALIAS_PATH}
+file=${BINARY_CHECKSUM_FILE}
+file=${RUNTIME_ONLY_MARKER}
+file=${INSTALL_MANIFEST_FILE}
+file=${MANIFEST_FILE}
+file=${SYSTEMD_UNIT}
+file=${LIB_DIR}/vincula-common.sh
+file=${ACCOUNTD_PY}
+file=${STATS_PY}
+file=${AUDIT_PY}
+file=${BACKUP_PY}
+file=${ACCOUNTD_UNIT}
 
 directory=${STATE_DIR}
 directory=${SING_BOX_DIR}
@@ -2075,6 +2117,71 @@ enable_accountd_service() {
   wait_for_accountd_healthy || die "vincula-accountd health check failed; refusing to commit install"
 }
 
+install_runtime_only() {
+  local os_arch arch binary binary_sha archive_sha
+  local staged_checksum staged_manifest staged_install_manifest staged_unit staged_helper staged_common staged_marker root
+
+  acquire_vincula_op_lock
+  if [[ -f "$VERSION_FILE" ]]; then
+    die "Refusing --runtime-only over an existing Vincula install (VERSION present)."
+  fi
+  if [[ -f "$RUNTIME_ONLY_MARKER" ]]; then
+    [[ -x "$HELPER_PATH" && -x "$BINARY_PATH" && -f "$BACKUP_PY" ]] \
+      || die "runtime-only marker present but runtime is incomplete."
+    log_ok "Vincula runtime already installed (no VERSION); finish with vcl restore"
+    return
+  fi
+
+  os_arch=$(uname -m)
+  arch=$(map_arch "$os_arch") || die "Unsupported architecture: ${os_arch}. Only amd64 and arm64 are supported."
+  preflight_clean_install
+  log_ok "Environment supported (${OS_ID} ${OS_VERSION}, ${arch})"
+
+  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+  binary=$(download_sing_box "$arch" "$TMP_DIR")
+  binary_sha=$(sha256sum "$binary" | awk '{print $1}')
+  archive_sha=$(expected_archive_sha256 "$arch")
+
+  staged_checksum="${TMP_DIR}/sing-box.binary.sha256"
+  staged_manifest="${TMP_DIR}/sing-box.lock"
+  staged_install_manifest="${TMP_DIR}/install.manifest"
+  staged_unit="${TMP_DIR}/sing-box.service"
+  staged_helper="${TMP_DIR}/vincula"
+  staged_marker="${TMP_DIR}/runtime-only"
+  staged_common="${TMP_DIR}/vincula-common.sh"
+  root=$(installer_root) || die "Cannot locate installer directory for vincula-common.sh."
+  install -m 0644 "${root}/lib/vincula-common.sh" "$staged_common"
+  printf '%s  %s\n' "$binary_sha" "$BINARY_PATH" > "$staged_checksum"
+  printf 'runtime-only\n' > "$staged_marker"
+  render_manifest "$staged_manifest" "$arch" "$archive_sha" "$binary_sha"
+  render_runtime_only_manifest "$staged_install_manifest"
+  render_systemd_unit "$staged_unit"
+  render_helper "$staged_helper"
+
+  MUTATION_STARTED=1
+  create_service_account
+  install -d -o root -g root -m 0700 "$STATE_DIR"
+  install -d -o root -g "$SERVICE_GROUP" -m 0750 "$SING_BOX_DIR"
+  install -d -o root -g root -m 0755 "$LIB_DIR"
+
+  atomic_install "$binary" "$BINARY_PATH" 0755 root root
+  atomic_install "$staged_checksum" "$BINARY_CHECKSUM_FILE" 0600 root root
+  atomic_install "$staged_manifest" "$MANIFEST_FILE" 0644 root root
+  atomic_install "$staged_install_manifest" "$INSTALL_MANIFEST_FILE" 0644 root root
+  atomic_install "$staged_common" "${LIB_DIR}/vincula-common.sh" 0644 root root
+  atomic_install "$staged_helper" "$HELPER_PATH" 0755 root root
+  ln -sfn "$HELPER_PATH" "$HELPER_ALIAS_PATH"
+  atomic_install "$staged_unit" "$SYSTEMD_UNIT" 0644 root root
+  install_accountd_artifacts
+  validate_accounting_artifacts
+  systemctl daemon-reload >/dev/null
+  atomic_install "$staged_marker" "$RUNTIME_ONLY_MARKER" 0600 root root
+
+  INSTALL_COMMITTED=1
+  log_ok "Vincula runtime installed without identity (no VERSION)"
+  log_info "Finish with: sudo vcl restore FILE --reissue-output FILE --server HOST"
+}
+
 install_new_node() {
   local os_arch arch port reality_host server binary key_output private_key public_key uuid short_id
   local installed_at uri binary_sha archive_sha
@@ -2213,12 +2320,20 @@ install_new_node() {
 }
 
 main() {
+  local runtime_only=0
   case "${1:-}" in
     -h|--help) usage; return ;;
     -V|--version) printf 'vincula %s\n' "$VINCULA_VERSION"; return ;;
+    --runtime-only)
+      [[ $# -eq 1 ]] || die "Unknown argument: $2. Run with --help."
+      runtime_only=1
+      ;;
     "") ;;
     *) die "Unknown argument: $1. Run with --help." ;;
   esac
+  if [[ "${VCL_RUNTIME_ONLY:-}" == "1" ]]; then
+    runtime_only=1
+  fi
 
   [[ -n "${BASH_VERSION:-}" ]] || die "This installer requires bash."
   (( EUID == 0 )) || die "Run this installer as root (for example: sudo bash vincula.sh)."
@@ -2228,7 +2343,12 @@ main() {
   check_systemd
 
   if [[ -f "$VERSION_FILE" ]]; then
+    if (( runtime_only )); then
+      die "Refusing --runtime-only over an existing Vincula install (VERSION present)."
+    fi
     handle_existing_install
+  elif (( runtime_only )); then
+    install_runtime_only
   else
     install_new_node
   fi
