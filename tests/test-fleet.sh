@@ -1784,6 +1784,233 @@ else
   fail "AC-2.9-06 bob exists on lax only after tokyo FAIL inject"
 fi
 
+IMPORT_FLEET_HOME="${TEST_TMP}/fleet-home-import"
+IMPORT_FAKE_STATE="${TEST_TMP}/fake-fleet-import-state"
+export VCL_FLEET_HOME="$IMPORT_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$IMPORT_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "$VCL_FAKE_STATE_DIR"
+assert_success "import-test fleet init" fleet init
+assert_success "import-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "import-test offline add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+
+import_help_rc=0
+import_help=$(fleet user import -h 2>&1) || import_help_rc=$?
+if (( import_help_rc == 0 )) && [[ "$import_help" == *"tag,display_name,department,nodes"* ]] \
+  && [[ "$import_help" == *"--dry-run"* ]]; then
+  pass "user import -h documents CSV header and --dry-run"
+else
+  fail "user import -h documents CSV header and --dry-run (rc=${import_help_rc})"
+fi
+
+cat > "${TEST_TMP}/import-charlie.csv" <<'CSV'
+tag,display_name,department,nodes
+charlie,Charlie,Engineering,"lax,tokyo"
+CSV
+
+dry_rc=0
+dry_out=$(fleet user import "${TEST_TMP}/import-charlie.csv" --dry-run) || dry_rc=$?
+if (( dry_rc == 0 )) && [[ "$dry_out" == *"charlie"* ]] \
+  && [[ "$dry_out" == *"lax,tokyo"* ]] && [[ "$dry_out" == *"No changes were made."* ]]; then
+  pass "user import --dry-run prints plan for quoted lax,tokyo cell"
+else
+  fail "user import --dry-run prints plan for quoted lax,tokyo cell (rc=${dry_rc})"
+fi
+if python3 - "$VCL_FAKE_STATE_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+for alias in ("lax", "tokyo"):
+    path = state / alias / "users.json"
+    if not path.is_file():
+        continue
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert not any(u.get("tag") == "charlie" for u in data.get("users") or []), data
+PY
+then
+  pass "user import --dry-run does not mutate node users"
+else
+  fail "user import --dry-run does not mutate node users"
+fi
+
+cat > "${TEST_TMP}/import-dup.csv" <<'CSV'
+tag,display_name,department,nodes
+erin,Erin,Sales,lax
+erin,Erin2,Sales,tokyo
+CSV
+dup_rc=0
+dup_err=$(fleet user import "${TEST_TMP}/import-dup.csv" 2>&1) || dup_rc=$?
+if (( dup_rc == 1 )) && [[ "$dup_err" == *"duplicate tag erin"* ]] \
+  && [[ "$dup_err" == *"no changes were made"* ]]; then
+  pass "user import rejects duplicate tag in CSV"
+else
+  fail "user import rejects duplicate tag in CSV (rc=${dup_rc} err=${dup_err})"
+fi
+if python3 - "$VCL_FAKE_STATE_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+for alias in ("lax", "tokyo"):
+    path = state / alias / "users.json"
+    if not path.is_file():
+        continue
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert not any(u.get("tag") == "erin" for u in data.get("users") or []), data
+PY
+then
+  pass "duplicate tag import performs zero mutation"
+else
+  fail "duplicate tag import performs zero mutation"
+fi
+
+cat > "${TEST_TMP}/import-mars.csv" <<'CSV'
+tag,display_name,department,nodes
+charlie,Charlie,Engineering,"lax,tokyo"
+frank,Frank,Sales,mars
+CSV
+mars_rc=0
+mars_err=$(fleet user import "${TEST_TMP}/import-mars.csv" 2>&1) || mars_rc=$?
+if (( mars_rc == 1 )) && [[ "$mars_err" == *"unknown node: mars"* ]] \
+  && [[ "$mars_err" == *"no changes were made"* ]]; then
+  pass "user import rejects unknown node mars"
+else
+  fail "user import rejects unknown node mars (rc=${mars_rc} err=${mars_err})"
+fi
+if python3 - "$VCL_FAKE_STATE_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+for alias in ("lax", "tokyo"):
+    path = state / alias / "users.json"
+    if not path.is_file():
+        continue
+    data = json.loads(path.read_text(encoding="utf-8"))
+    tags = {u.get("tag") for u in data.get("users") or []}
+    assert "charlie" not in tags, data
+    assert "frank" not in tags, data
+PY
+then
+  pass "validation failure (unknown node) applies zero rows"
+else
+  fail "validation failure (unknown node) applies zero rows"
+fi
+
+cat > "${TEST_TMP}/import-bad-header.csv" <<'CSV'
+tag,display_name,department
+charlie,Charlie,Engineering
+CSV
+hdr_rc=0
+hdr_err=$(fleet user import "${TEST_TMP}/import-bad-header.csv" 2>&1) || hdr_rc=$?
+if (( hdr_rc == 1 )) && [[ "$hdr_err" == *"tag,display_name,department,nodes"* ]]; then
+  pass "user import rejects inexact CSV header"
+else
+  fail "user import rejects inexact CSV header (rc=${hdr_rc} err=${hdr_err})"
+fi
+
+IMPORT_OUT="${TEST_TMP}/import-charlie-creds.csv"
+import_rc=0
+import_out=$(fleet user import "${TEST_TMP}/import-charlie.csv" --output "$IMPORT_OUT") || import_rc=$?
+if (( import_rc == 0 )); then
+  pass "user import charlie --nodes lax,tokyo exits 0"
+else
+  fail "user import charlie --nodes lax,tokyo exits 0 (rc=${import_rc})"
+fi
+assert_success "import stdout credential CSV header" \
+  grep -q '^user,node,credential_id,vless_uri$' <<< "$import_out"
+
+import_check_rc=0
+python3 - "$import_out" "$IMPORT_OUT" "$VCL_FAKE_STATE_DIR" <<'PY' || import_check_rc=$?
+import csv, io, json, os, sys
+from pathlib import Path
+
+text, out_path, state = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+rows = list(csv.DictReader(io.StringIO(text)))
+assert [r for r in text.splitlines() if r][0] == "user,node,credential_id,vless_uri"
+assert len(rows) == 2, rows
+assert {row["user"] for row in rows} == {"charlie"}, rows
+by_node = {row["node"]: row for row in rows}
+assert set(by_node) == {"lax", "tokyo"}, by_node
+assert by_node["lax"]["credential_id"] != by_node["tokyo"]["credential_id"]
+assert "@203.0.113.10:443" in by_node["lax"]["vless_uri"]
+assert "@203.0.113.11:443" in by_node["tokyo"]["vless_uri"]
+file_rows = list(csv.DictReader(out_path.open(encoding="utf-8")))
+assert {r["node"] for r in file_rows} == {"lax", "tokyo"}
+mode = oct(out_path.stat().st_mode & 0o777)
+assert mode == "0o600", mode
+lax = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+charlie_lax = next(u for u in lax["users"] if u["tag"] == "charlie")
+charlie_tokyo = next(u for u in tokyo["users"] if u["tag"] == "charlie")
+assert charlie_lax["user_id"] == charlie_tokyo["user_id"]
+assert charlie_lax["display_name"] == "Charlie"
+assert charlie_lax["department"] == "Engineering"
+open(state / "charlie_user_id.txt", "w", encoding="utf-8").write(charlie_lax["user_id"])
+PY
+if (( import_check_rc == 0 )); then
+  pass "user import charlie yields two node-specific CSV rows"
+  pass "import --output credential CSV is mode 0600"
+else
+  fail "user import charlie yields two node-specific CSV rows"
+  fail "import --output credential CSV is mode 0600"
+fi
+
+export_need_rc=0
+export_need_err=$(fleet user export --credentials 2>&1) || export_need_rc=$?
+if (( export_need_rc != 0 )) && [[ "$export_need_err" == *"--output"* ]]; then
+  pass "user export --credentials requires --output FILE"
+else
+  fail "user export --credentials requires --output FILE (rc=${export_need_rc} err=${export_need_err})"
+fi
+
+meta_export=$(fleet user export)
+assert_success "user export metadata header is per-node" \
+  grep -q '^tag,display_name,department,user_id,node,enabled$' <<< "$meta_export"
+assert_success "user export metadata includes charlie on lax" \
+  grep -q '^charlie,Charlie,Engineering,.*,lax,true$' <<< "$meta_export"
+assert_success "user export metadata includes charlie on tokyo" \
+  grep -q '^charlie,Charlie,Engineering,.*,tokyo,true$' <<< "$meta_export"
+
+EXPORT_CREDS="${TEST_TMP}/export-credentials.csv"
+export_rc=0
+export_out=$(fleet user export --credentials --output "$EXPORT_CREDS") || export_rc=$?
+if (( export_rc == 0 )) && [[ "$export_out" == *"Credential CSV written to"* ]]; then
+  pass "user export --credentials --output exits 0"
+else
+  fail "user export --credentials --output exits 0 (rc=${export_rc} out=${export_out})"
+fi
+
+export_check_rc=0
+python3 - "$EXPORT_CREDS" "$VCL_FAKE_STATE_DIR" <<'PY' || export_check_rc=$?
+import csv, json, sys
+from pathlib import Path
+path, state = Path(sys.argv[1]), Path(sys.argv[2])
+mode = oct(path.stat().st_mode & 0o777)
+assert mode == "0o600", mode
+rows = list(csv.DictReader(path.open(encoding="utf-8")))
+assert list(rows[0].keys()) == ["user", "node", "credential_id", "vless_uri"], rows[0]
+charlie = [r for r in rows if r["user"] == "charlie"]
+assert {r["node"] for r in charlie} == {"lax", "tokyo"}, charlie
+by_node = {r["node"]: r for r in charlie}
+assert "@203.0.113.10:443" in by_node["lax"]["vless_uri"]
+assert "@203.0.113.11:443" in by_node["tokyo"]["vless_uri"]
+assert by_node["lax"]["credential_id"] != by_node["tokyo"]["credential_id"]
+assert by_node["lax"]["vless_uri"] != by_node["tokyo"]["vless_uri"]
+lax = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+charlie_lax = next(u for u in lax["users"] if u["tag"] == "charlie")
+charlie_tokyo = next(u for u in tokyo["users"] if u["tag"] == "charlie")
+lax_active = next(c for c in charlie_lax["credentials"] if c["status"] == "active")
+tokyo_active = next(c for c in charlie_tokyo["credentials"] if c["status"] == "active")
+assert lax_active["credential_id"] == by_node["lax"]["credential_id"]
+assert tokyo_active["credential_id"] == by_node["tokyo"]["credential_id"]
+PY
+if (( export_check_rc == 0 )); then
+  pass "credentials export is mode 0600 with node-specific URIs"
+else
+  fail "credentials export is mode 0600 with node-specific URIs"
+fi
+
 unset VCL_FAKE_STATE_DIR
 
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"

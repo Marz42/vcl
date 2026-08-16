@@ -46,6 +46,15 @@ SSH_TIMEOUT_SECONDS = 20
 SSH_MUTATION_TIMEOUT_SECONDS = 60
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
 CSV_CREDENTIAL_HEADER = ("user", "node", "credential_id", "vless_uri")
+CSV_IMPORT_HEADER = ("tag", "display_name", "department", "nodes")
+CSV_EXPORT_META_HEADER = (
+    "tag",
+    "display_name",
+    "department",
+    "user_id",
+    "node",
+    "enabled",
+)
 CREDENTIAL_WARN_TAIL = "contains authentication credentials."
 STATUS_JSON_SCHEMA_VERSION = 1
 VERIFY_JSON_SCHEMA_VERSION = 1
@@ -1338,19 +1347,41 @@ def never_report_full_success(doc: dict[str, Any]) -> int:
     return MUTATION_EXIT_SUCCESS if doc.get("state") == OP_SUCCESS else MUTATION_EXIT_PARTIAL
 
 
-def parse_nodes_csv(raw: str) -> list[str]:
+def parse_nodes_cell(raw: str) -> tuple[list[str], Optional[str]]:
+    """Parse a CSV nodes cell (`lax` or `lax,tokyo`). Empty / invalid → error string."""
     parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
     if not parts:
-        die("nodes list is empty")
+        return [], "empty nodes"
     seen: set[str] = set()
     names: list[str] = []
     for name in parts:
-        validate_name(name)
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+            return [], f"invalid node name: {name}"
         if name in seen:
-            die(f"duplicate node in list: {name}")
+            return [], f"duplicate node in list: {name}"
         seen.add(name)
         names.append(name)
+    return names, None
+
+
+def parse_nodes_csv(raw: str) -> list[str]:
+    names, err = parse_nodes_cell(raw)
+    if err:
+        if err == "empty nodes":
+            die("nodes list is empty")
+        die(err)
     return names
+
+
+def node_importable(node: Optional[dict[str, Any]], name: str) -> Optional[str]:
+    """None if the node may be targeted; otherwise a validation error."""
+    if node is None:
+        return f"unknown node: {name}"
+    if node.get("status") == "retired":
+        return f"node is retired: {name}"
+    if not node.get("enabled", True):
+        return f"node is disabled: {name}"
+    return None
 
 
 def target_names_from_add_args(args: argparse.Namespace) -> list[str]:
@@ -1401,11 +1432,11 @@ def warn_credentials(target: str) -> None:
     )
 
 
-def format_credential_csv(tag: str, nodes: list[dict[str, Any]]) -> str:
+def format_credential_entries(entries: list[tuple[str, dict[str, Any]]]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(CSV_CREDENTIAL_HEADER)
-    for row in nodes:
+    for tag, row in entries:
         writer.writerow(
             (
                 tag,
@@ -1415,6 +1446,10 @@ def format_credential_csv(tag: str, nodes: list[dict[str, Any]]) -> str:
             )
         )
     return buf.getvalue()
+
+
+def format_credential_csv(tag: str, nodes: list[dict[str, Any]]) -> str:
+    return format_credential_entries([(tag, row) for row in nodes])
 
 
 def _first_vless_uri(text: str) -> Optional[str]:
@@ -1866,6 +1901,307 @@ def cmd_user_rotate(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_import_csv(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read the import CSV. Returns (rows, errors). Does not SSH."""
+    errors: list[str] = []
+    rows: list[dict[str, Any]] = []
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            raw_fields = list(reader.fieldnames or [])
+            fieldnames = tuple(h.strip() for h in raw_fields if h and str(h).strip())
+            if fieldnames != CSV_IMPORT_HEADER:
+                got = ",".join(fieldnames) if fieldnames else "(empty)"
+                return [], [
+                    "CSV header must be tag,display_name,department,nodes "
+                    f"(got {got})"
+                ]
+            for i, raw in enumerate(reader, start=2):
+                if None in raw:
+                    extras = raw.get(None)
+                    extra_s = (
+                        ",".join(str(x) for x in extras)
+                        if isinstance(extras, (list, tuple))
+                        else str(extras or "")
+                    )
+                    errors.append(
+                        f"line {i}: extra CSV fields ({extra_s}); "
+                        'quote multi-node cells like "lax,tokyo"'
+                    )
+                    continue
+                row = {
+                    (k.strip() if isinstance(k, str) else k): (
+                        v.strip() if isinstance(v, str) else (v or "")
+                    )
+                    for k, v in raw.items()
+                    if k
+                }
+                tag = str(row.get("tag") or "")
+                display_name = str(row.get("display_name") or "")
+                department = str(row.get("department") or "")
+                nodes_raw = str(row.get("nodes") or "")
+                if not tag and not display_name and not department and not nodes_raw:
+                    continue
+                rows.append(
+                    {
+                        "line": i,
+                        "tag": tag,
+                        "display_name": display_name,
+                        "department": department,
+                        "nodes_raw": nodes_raw,
+                        "nodes": [],
+                    }
+                )
+    except FileNotFoundError:
+        die(f"import file not found: {path}")
+    except OSError as exc:
+        die(f"cannot read import file: {exc}")
+    return rows, errors
+
+
+def validate_import_rows(
+    rows: list[dict[str, Any]], registry: dict[str, Any]
+) -> list[str]:
+    """Collect every row error. Mutates row['nodes'] on successful cell parse."""
+    errors: list[str] = []
+    seen: dict[str, int] = {}
+    for row in rows:
+        line = int(row["line"])
+        tag = str(row.get("tag") or "")
+        if not tag:
+            errors.append(f"line {line}: missing tag")
+        elif not NAME_RE.fullmatch(tag):
+            errors.append(f'line {line}: invalid tag "{tag}"')
+        elif tag in seen:
+            errors.append(f"line {line}: duplicate tag {tag}")
+        else:
+            seen[tag] = line
+
+        names, err = parse_nodes_cell(str(row.get("nodes_raw") or ""))
+        if err:
+            errors.append(f"line {line}: {err}")
+            continue
+        row["nodes"] = names
+        for name in names:
+            node = find_by_name(registry, name)
+            msg = node_importable(node, name)
+            if msg:
+                errors.append(f"line {line}: {msg}")
+    return errors
+
+
+def format_import_plan(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "User import dry-run",
+        "",
+        f"Input rows:  {len(rows)}",
+        "TAG DISPLAY_NAME DEPARTMENT NODES",
+    ]
+    for row in rows:
+        display = row.get("display_name") or "-"
+        dept = row.get("department") or "-"
+        nodes = ",".join(row.get("nodes") or [])
+        lines.append(f"{row['tag']} {display} {dept} {nodes}")
+    lines.append("")
+    lines.append("No changes were made.")
+    return "\n".join(lines) + "\n"
+
+
+def format_import_report(reports: list[dict[str, Any]]) -> str:
+    """Human table for a multi-user import: STATE, per tag/node, remediation."""
+    if reports and all(doc.get("state") == OP_SUCCESS for doc in reports):
+        state = OP_SUCCESS
+    elif not reports:
+        state = OP_SUCCESS
+    else:
+        state = OP_PARTIAL
+    lines = [f"STATE {state}", "operation: user.import", ""]
+    lines.append(f"{'TAG':<12} {'NODE':<12} STATUS")
+    rem: list[str] = []
+    for doc in reports:
+        tag = str(doc.get("tag") or "")
+        user_id = str(doc.get("user_id") or "")
+        for row in doc.get("nodes") or []:
+            name = _node_name(row)
+            status = _node_status(row)
+            extra = ""
+            if status == OP_FAILED and row.get("error"):
+                extra = f"  {row['error']}"
+            lines.append(f"{tag:<12} {name:<12} {status}{extra}")
+            if status != OP_SUCCESS:
+                rem.extend(remediation_user_add(tag, user_id, [name]))
+    if rem:
+        lines.append("")
+        lines.append("Remediation:")
+        for cmd in rem:
+            lines.append(f"  {cmd}")
+    return "\n".join(lines) + "\n"
+
+
+def _print_import_errors(errors: list[str]) -> int:
+    sys.stderr.write(
+        "vcl-fleet: user import validation failed; no changes were made.\n"
+    )
+    for err in errors:
+        sys.stderr.write(f"  {err}\n")
+    return 1
+
+
+def cmd_user_import(args: argparse.Namespace) -> int:
+    path = Path(args.csv_file)
+    registry = load_registry()
+    rows, errors = load_import_csv(path)
+    errors.extend(validate_import_rows(rows, registry))
+    if errors:
+        return _print_import_errors(errors)
+
+    if bool(getattr(args, "dry_run", False)):
+        sys.stdout.write(format_import_plan(rows))
+        return 0
+
+    reports: list[dict[str, Any]] = []
+    cred_entries: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        tag = str(row["tag"])
+        user_id = str(uuid.uuid4())
+        nodes = [require_enabled_node(registry, name) for name in row["nodes"]]
+        sys.stderr.write(
+            f"user.import {tag} {OP_PLANNED} nodes={','.join(n['name'] for n in nodes)}\n"
+        )
+        results: list[dict[str, Any]] = []
+        for node in nodes:
+            sys.stderr.write(f"user.import {tag} {OP_APPLYING} {node['name']}\n")
+            results.append(
+                provision_user_on_node(
+                    node,
+                    tag=tag,
+                    user_id=user_id,
+                    display_name=row["display_name"] or None,
+                    department=row["department"] or None,
+                )
+            )
+        doc = mutation_report(
+            results, tag=tag, user_id=user_id, operation="user.import"
+        )
+        reports.append(doc)
+        for node_row in doc["nodes"]:
+            if node_row.get("status") == OP_SUCCESS:
+                cred_entries.append((tag, node_row))
+
+    csv_text = format_credential_entries(cred_entries) if cred_entries else ""
+    output = getattr(args, "output", None)
+    if output and csv_text:
+        write_private_file(Path(output), csv_text)
+        warn_credentials(str(output))
+
+    combined = (
+        OP_SUCCESS
+        if (not reports or all(doc.get("state") == OP_SUCCESS for doc in reports))
+        else OP_PARTIAL
+    )
+    if combined == OP_SUCCESS:
+        if csv_text:
+            warn_credentials("stdout")
+            sys.stdout.write(csv_text)
+        sys.stderr.write(f"STATE {OP_SUCCESS}\n")
+        return MUTATION_EXIT_SUCCESS
+
+    sys.stdout.write(format_import_report(reports))
+    if csv_text:
+        warn_credentials("stdout")
+        sys.stdout.write(csv_text)
+    return MUTATION_EXIT_PARTIAL
+
+
+def _write_csv_text(fieldnames: tuple[str, ...], rows: list[dict[str, Any]]) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf, fieldnames=list(fieldnames), lineterminator="\n", extrasaction="ignore"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def cmd_user_export(args: argparse.Namespace) -> int:
+    credentials = bool(getattr(args, "credentials", False))
+    output = getattr(args, "output", None)
+    if credentials and not output:
+        die("user export --credentials requires --output FILE")
+
+    registry = load_registry()
+    nodes = _selected_nodes(registry, include_all=False)
+    unreachable: list[dict[str, Any]] = []
+    meta_rows: list[dict[str, Any]] = []
+    cred_entries: list[tuple[str, dict[str, Any]]] = []
+
+    for node in nodes:
+        users, err = _list_users_on_node(node)
+        if err is not None:
+            unreachable.append({"name": node["name"], "error": err})
+            continue
+        for user in users or []:
+            tag = str(user.get("tag") or "")
+            uid = str(user.get("user_id") or "")
+            enabled = bool(user.get("enabled"))
+            meta_rows.append(
+                {
+                    "tag": tag,
+                    "display_name": user.get("display_name") or "",
+                    "department": user.get("department") or "",
+                    "user_id": uid,
+                    "node": node["name"],
+                    "enabled": "true" if enabled else "false",
+                }
+            )
+            if not credentials or not tag:
+                continue
+            cred_id = user.get("active_credential_id") or ""
+            uri = ssh_user_link_uri(node, tag)
+            if not cred_id and not uri:
+                continue
+            cred_entries.append(
+                (
+                    tag,
+                    {
+                        "name": node["name"],
+                        "credential_id": cred_id,
+                        "vless_uri": uri or "",
+                    },
+                )
+            )
+
+    if credentials:
+        csv_text = format_credential_entries(cred_entries)
+        write_private_file(Path(str(output)), csv_text)
+        warn_credentials(str(output))
+        sys.stdout.write(f"Credential CSV written to {output}\n")
+        if unreachable:
+            for row in unreachable:
+                sys.stderr.write(
+                    f"vcl-fleet: UNREACHABLE {row['name']}: {row.get('error') or ''}\n"
+                )
+            return MUTATION_EXIT_PARTIAL
+        return 0
+
+    csv_text = _write_csv_text(CSV_EXPORT_META_HEADER, meta_rows)
+    if output:
+        Path(output).write_text(
+            csv_text if csv_text.endswith("\n") else csv_text + "\n",
+            encoding="utf-8",
+        )
+        sys.stdout.write(f"Users CSV written to {output}\n")
+    else:
+        sys.stdout.write(csv_text)
+    if unreachable:
+        for row in unreachable:
+            sys.stderr.write(
+                f"vcl-fleet: UNREACHABLE {row['name']}: {row.get('error') or ''}\n"
+            )
+        return MUTATION_EXIT_PARTIAL
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
@@ -1980,7 +2316,9 @@ def build_parser() -> argparse.ArgumentParser:
             "→ PARTIAL, exit 2, per-node status, and a copy-paste "
             "remediation command. Distributed rollback is not promised "
             "and is not performed. enable/disable/rotate require --node "
-            "(no fleet-wide disable)."
+            "(no fleet-wide disable). import validates the whole CSV "
+            "before any SSH; export --credentials requires --output "
+            "(mode 0600)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2103,6 +2441,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="print JSON (schema_version 1)",
     )
 
+    p_uimport = user_sub.add_parser(
+        "import",
+        help="batch-provision from CSV (validate all rows before any SSH)",
+        description=(
+            "CSV header must be exactly tag,display_name,department,nodes. "
+            "nodes cells are a single name or a quoted comma list "
+            '("lax,tokyo"). Every row is validated (tag, duplicates, '
+            "registered enabled nodes) before any mutation. Validation "
+            "failure → exit 1, zero SSH. Apply uses the same per-node "
+            "add path as user add (one user_id per row). Any node "
+            "FAILED → PARTIAL exit 2. Distributed rollback is not promised."
+        ),
+    )
+    p_uimport.add_argument("csv_file", help="path to users.csv")
+    p_uimport.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the plan and make no changes",
+    )
+    p_uimport.add_argument(
+        "--output",
+        help="write credential CSV (user,node,credential_id,vless_uri) mode 0600",
+    )
+
+    p_uexport = user_sub.add_parser(
+        "export",
+        help="merged per-node user CSV from enabled nodes",
+        description=(
+            "Default: metadata CSV (tag,display_name,department,user_id,"
+            "node,enabled) on stdout or --output. --credentials includes "
+            "vless URIs (user,node,credential_id,vless_uri) and requires "
+            "--output FILE written mode 0600."
+        ),
+    )
+    p_uexport.add_argument(
+        "--credentials",
+        action="store_true",
+        help="include vless URIs (requires --output FILE, mode 0600)",
+    )
+    p_uexport.add_argument(
+        "--output",
+        help="write CSV to FILE (required with --credentials; mode 0600)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -2159,6 +2541,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_user_enable_disable(args, enabled=False)
         if sub == "rotate":
             return cmd_user_rotate(args)
+        if sub == "import":
+            return cmd_user_import(args)
+        if sub == "export":
+            return cmd_user_export(args)
         die(f"unknown user command: {sub}", 2)
     die(f"unknown command: {command}", 2)
     return 2
