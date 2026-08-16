@@ -1,30 +1,52 @@
 # Vincula 0.3.0 Release Readiness
 
-**Tree version:** 0.3.0  
-**Date:** 2026-08-16  
+**Tree version:** 0.3.0 (freeze record). Living tree after Batch B0 is `0.3.1-dev`.  
+**Date:** 2026-08-16 (freeze)  
+**Addendum:** 2026-08-16 — P2-04 honesty; recommendation **NOT READY**  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
-Product freeze dropped `-dev` in Batch 17-freeze.
+Product freeze dropped `-dev` in Batch 17-freeze. This file remains the 0.3.0 freeze record plus the contract-audit addendum. It is **not** a 0.3.1-dev gate document.
 
 ## Release recommendation
 
-**READY WITH DOCUMENTED LIMITATIONS**
+**NOT READY**
 
-Offline / **fixture** evidence for AC-3.0-01…10 and AC-3.0-12 is green. AC-3.0-11 is **PARTIAL / LIVE-only** and is **not** marked PASS from unit tests. Known P0/P1 at this docs gate: **0**. Dual artifacts remain reproducible. Node `release.lock` has **9** first-party files (includes `lib/vincula-backup.py`); the controller zip has **no** lock chain and still **four** members (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`).
+(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). Until those P0s close, this 0.3.0 freeze record must not be read as a READY tree. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+
+## Addendum (2026-08-16) — external contract audit (P2-04)
+
+The freeze docs claimed **Known P0/P1 at freeze: 0** and mapped fixture-green replace plus a four-member controller zip onto `READY WITH DOCUMENTED LIMITATIONS`. The Vincula 0.3.0 external-audit remediation plan (verified against this tree; plan file is outside the repository; this honesty batch is **B1**) found two **contract-level** P0s:
+
+| ID | Contract failure | Why this is not a limitation |
+| --- | --- | --- |
+| **P0-01** | `vcl-fleet node replace` emits `vcl restore … --replace-node … --output`. Real `bin/vincula` `cmd_restore` dies on `--replace-node`, requires `--reissue-output`, and refuses an existing `VERSION`. `tests/fixtures/fake-ssh` implements the controller protocol, not the node CLI. Operator docs require an already-bootstrapped NEW_HOST. | A live VPS would **fail by contract**. “No live replace” was filed as a limitation; the protocol mismatch is a P0. |
+| **P0-02** | `scripts/build-controller.sh` packs four members; the zip omits `lib/vincula-audit.py` and `lib/vincula-backup.py`. `load_audit_module` / `load_backup_module` die if those files are absent. Tests **pass** `controller zip omits node-side vincula-backup.py`. | A zip-only workstation cannot local-verify replace or run `audit`. Member-list packaging is not an accepted product limit; it is a broken artifact contract. |
+
+**Known P0 at this gate: 2** (P0-01, P0-02). ~~Known P0/P1 at this docs gate: **0**.~~ That freeze sentence is **struck**. Do not restore it while these P0s remain. This addendum does not enumerate the audit’s P1/P2 items; it only stops calling them “zero P0/P1”.
+
+The AC matrix, completion report, and test counts below are **unchanged** and are evidence **as of the 0.3.0 freeze**. Read AC-3.0-05…10 **PASS (fixture)** as fake-ssh / fake-scp results, not as “controller restore argv ⊆ real `vcl restore`”. Product remediations are later batches (B2+). Closing P0 in this addendum is not claimed.
+
+### Freeze-era recommendation (historical)
+
+The following block is the Batch 17-freeze text, retained for the record. It is **not** the current recommendation.
+
+**READY WITH DOCUMENTED LIMITATIONS** *(freeze-era; superseded by the addendum)*
+
+Offline / **fixture** evidence for AC-3.0-01…10 and AC-3.0-12 is green. AC-3.0-11 is **PARTIAL / LIVE-only** and is **not** marked PASS from unit tests. ~~Known P0/P1 at this docs gate: **0**.~~ *(struck; post-audit Known P0 = 2.)* Dual artifacts remain reproducible. Node `release.lock` has **9** first-party files (includes `lib/vincula-backup.py`); the controller zip has **no** lock chain and still **four** members (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`).
 
 Per spec §11, documented product limits are acceptable when they are intentional and do not break this milestone’s contract. D20’s 24h soak binds **0.2.7 only** — 0.3.0 must not be held to `READY FOR RC` on soak.
 
-This tree is **not** `READY FOR RC` and **not** `NOT READY FOR RC`:
+Freeze-era table (live-evidence gaps only; **does not** cover P0-01 / P0-02):
 
-| Missing live evidence | Why it is a limitation, not a P0 |
+| Missing live evidence | Why the freeze filed it as a limitation, not a P0 |
 | --- | --- |
 | Windows 11 `vcl-fleet.cmd` on a real workstation | First-class packaging is tested (zip members, `.cmd` launcher). Live OpenSSH Client + Python 3.10+ is operator verification |
-| Live secretless replace on a real VPS | AC-3.0 replace CI bar is **lax → lax2 fixtures**, not two public VPS |
+| Live secretless replace on a real VPS | AC-3.0 replace CI bar is **lax → lax2 fixtures**, not two public VPS. **Post-audit:** even a live run would fail P0-01. |
 | Live `age` on a real node | CI uses `tests/fixtures/fake-age`. Distro `age` + recipient/identity is operator evidence |
 | AC-3.0-11 live VLESS handshake | Fixture proves old uuid ∉ inbound set (**PARTIAL**). Old URI to the **new** IP must fail on a real sing-box before this AC can PASS |
 
-Fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`. Raise to `READY FOR RC` only after **one live VPS secretless replace** **and** old URI failure on the new IP (AC-3.0-11) **and** a real `age` `--include-secrets` round-trip on a real node. Do not treat fake-ssh / fake-age as live evidence.
+Freeze-era path: fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`. Raise to `READY FOR RC` only after **one live VPS secretless replace** **and** old URI failure on the new IP (AC-3.0-11) **and** a real `age` `--include-secrets` round-trip on a real node. Do not treat fake-ssh / fake-age as live evidence. **Post-audit:** that path is blocked until P0-01 and P0-02 close; fixture green is not a contract pass.
 
 ## Scope delivered
 
@@ -45,7 +67,9 @@ Fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`. Raise to `READY
 | AC-3.0-11 live handshake | **MISSING** (LIVE-only; fixture PARTIAL) |
 | Live VPS replace / live age / Win11 live controller | **MISSING** (limitation) |
 
-## Acceptance criteria (AC-3.0-01…12)
+## Acceptance criteria (AC-3.0-01…12) — as of 0.3.0 freeze
+
+Historical freeze matrix. **Not rewritten** in the 2026-08-16 P2-04 addendum. Fixture **PASS** on AC-3.0-05…10 is fake-ssh / fake-scp evidence only; it does not mean the controller restore argv is accepted by real `bin/vincula`.
 
 Evidence strategy = **node unit tests** (`tests/test.sh`) plus **fake-ssh / fake-scp / fake-age fixtures** (`tests/test-fleet.sh`). Unit tests must **not** be marked as live VPS. Soak / live VPS items are not marked PASS from fixtures. AC-3.0-11 must stay **PARTIAL/UNKNOWN** until a live handshake.
 
@@ -116,7 +140,7 @@ localhost UI (0.3.1), age passphrase, `vcl snapshot export`, routine `scp accoun
 
 ## Policy after freeze
 
-After tag `v0.3.0`, prefer P0/P1 fixes only. A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake are required before raising this recommendation to `READY FOR RC`. UI belongs in 0.3.1.
+After tag `v0.3.0`, prefer P0/P1 fixes only. The living tree is `0.3.1-dev` (Batch B0). A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake remain required before `READY FOR RC`, **and** P0-01 / P0-02 must close first (this freeze record stays **NOT READY** until then). UI belongs in 0.3.1 Phase B.
 
 ## Completion report (SPEC §19)
 
@@ -169,7 +193,7 @@ Freeze verification: `bash -n` on all first-party bash (installer, helper, commo
 | `bash tests/test.sh` (sources `tests/test-fleet.sh`) | **1005** | green |
 | `bash tests/test-fleet.sh` (standalone) | **413** | green |
 
-P0/P1 at freeze: **0**. No live Win11 / live VPS replace / live `age` / live 0.2.9→0.3.0 upgrade run.
+~~P0/P1 at freeze: **0**.~~ **Correction (2026-08-16 addendum):** freeze claim struck. Post-audit Known P0: **2** (P0-01, P0-02). Test counts above are unchanged freeze evidence. No live Win11 / live VPS replace / live `age` / live 0.2.9→0.3.0 upgrade run.
 
 ### 8. Failure-injection results
 
@@ -191,7 +215,7 @@ AC-3.0-01…10 and AC-3.0-12: **PASS** on node unit / fake-ssh / fake-scp / fake
 
 ### 10. Known limitations
 
-See [`known-issues-0.3.0.md`](known-issues-0.3.0.md). Headline: no Win11 live `vcl-fleet.cmd`; no live VPS secretless replace; no real `age` on a node; AC-3.0-11 LIVE-only; `--from-backup` may drop the sync tail; old VPS still up ⇒ old IP still accepts old uuid; `fleet.db` 2 irreversible; D20 soak is not a 0.3.0 gate; reseed still wipes local audit cache but not `instance_history`.
+See [`known-issues-0.3.0.md`](known-issues-0.3.0.md). Freeze-era headline (limitations only): no Win11 live `vcl-fleet.cmd`; no live VPS secretless replace; no real `age` on a node; AC-3.0-11 LIVE-only; `--from-backup` may drop the sync tail; old VPS still up ⇒ old IP still accepts old uuid; `fleet.db` 2 irreversible; D20 soak is not a 0.3.0 gate; reseed still wipes local audit cache but not `instance_history`. **Post-audit P0 blockers** (not limitations): P0-01 replace argv vs node CLI; P0-02 controller zip missing audit/backup modules.
 
 ### 11. Version / schema bump explanation
 
@@ -199,9 +223,11 @@ Product bump `0.2.9` → `0.3.0-dev` happened at the start of the milestone (Bat
 
 ### 12. Release recommendation
 
-**READY WITH DOCUMENTED LIMITATIONS**
+Freeze-era (Batch 17-freeze), **superseded** by the 2026-08-16 addendum. Current recommendation at the top of this file is **NOT READY**.
 
-CI fixture all-green, P0/P1=0, no live VPS secretless replace and no live AC-3.0-11 handshake. Raise to `READY FOR RC` only after **one live VPS secretless replace** **and** old URI failure on the new IP **and** a real `age` `--include-secrets` round-trip. Not `NOT READY FOR RC`: documented limits do not break the 0.3.0 contract.
+**READY WITH DOCUMENTED LIMITATIONS** *(historical freeze text)*
+
+CI fixture all-green, ~~P0/P1=0~~ *(struck; post-audit Known P0 = 2)*, no live VPS secretless replace and no live AC-3.0-11 handshake. Raise to `READY FOR RC` only after **one live VPS secretless replace** **and** old URI failure on the new IP **and** a real `age` `--include-secrets` round-trip. Freeze claimed not `NOT READY FOR RC` on the grounds that documented limits do not break the 0.3.0 contract. **Post-audit:** P0-01 and P0-02 **do** break that contract; the current grade is **NOT READY**.
 
 ### Extra (plan §6)
 
