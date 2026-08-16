@@ -2013,6 +2013,114 @@ fi
 
 unset VCL_FAKE_STATE_DIR
 
+EXPORT_FAKE_STATE="${TEST_TMP}/fake-export-state"
+export VCL_FAKE_STATE_DIR="$EXPORT_FAKE_STATE"
+mkdir -p "${VCL_FAKE_STATE_DIR}/lax"
+export_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || export_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+node_id = ident["node_id"]
+instance_id = ident["instance_id"]
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+for i in range(1, 4):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"lax-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 100 * i, 200 * i,
+        ),
+    )
+conn.commit()
+conn.close()
+PY
+if (( export_seed_rc == 0 )); then
+  pass "fake-ssh lax accounting.db fixture seeded"
+else
+  fail "fake-ssh lax accounting.db fixture seeded"
+fi
+
+export_after0_rc=0
+"$FAKE_SSH" 203.0.113.10 -- vcl audit export --after 0 --jsonl \
+  > "${TEST_TMP}/fake-export.out" 2> "${TEST_TMP}/fake-export.err" || export_after0_rc=$?
+if (( export_after0_rc == 0 )); then
+  pass "fake-ssh audit export --after 0 exits 0"
+else
+  fail "fake-ssh audit export --after 0 exits 0 (rc=${export_after0_rc} err=$(cat "${TEST_TMP}/fake-export.err"))"
+fi
+
+export_jsonl_rc=0
+python3 - "${TEST_TMP}/fake-export.out" "${TEST_TMP}/fake-export.err" <<'PY' || export_jsonl_rc=$?
+import json, sys
+from pathlib import Path
+stdout = Path(sys.argv[1]).read_text(encoding="utf-8")
+stderr = Path(sys.argv[2]).read_text(encoding="utf-8")
+lines = [json.loads(ln) for ln in stdout.splitlines() if ln.strip()]
+assert len(lines) >= 1, lines
+assert [r["event_id"] for r in lines] == [1, 2, 3], [r["event_id"] for r in lines]
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert all(r["node_id"] == nid for r in lines)
+assert all(r["instance_id"] == iid for r in lines)
+for key in (
+    "event_id", "connection_id", "generation", "user_id", "user_tag",
+    "node_id", "instance_id", "started_at", "last_seen_at", "closed_at",
+    "destination_host", "destination_ip", "destination_port", "network",
+    "upload_bytes", "download_bytes",
+):
+    assert key in lines[0], key
+meta = json.loads(stderr.strip().splitlines()[-1])
+assert meta["ok"] is True
+assert meta["after"] == 0
+assert meta["count"] == 3
+assert meta["next_cursor"] == 3
+assert meta["earliest_available_event_id"] == 1
+assert meta["node_id"] == nid
+assert meta["instance_id"] == iid
+PY
+if (( export_jsonl_rc == 0 )); then
+  pass "fake-ssh audit export --after 0 emits JSONL plus stderr meta"
+else
+  fail "fake-ssh audit export --after 0 emits JSONL plus stderr meta"
+fi
+
+fail_export_rc=0
+fail_export_err=$(VCL_FAKE_FAIL_EXPORT=lax "$FAKE_SSH" 203.0.113.10 -- \
+  vcl audit export --after 0 --jsonl 2>&1) || fail_export_rc=$?
+if (( fail_export_rc == 1 )); then
+  pass "VCL_FAKE_FAIL_EXPORT=lax makes audit export exit 1"
+else
+  fail "VCL_FAKE_FAIL_EXPORT=lax makes audit export exit 1 (rc=${fail_export_rc})"
+fi
+
+fail_export_alias_rc=0
+fail_export_alias_err=$(VCL_FAKE_FAIL_AUDIT_EXPORT=lax "$FAKE_SSH" 203.0.113.10 -- \
+  vcl audit export --after 0 --jsonl 2>&1) || fail_export_alias_rc=$?
+if (( fail_export_alias_rc == 1 )); then
+  pass "VCL_FAKE_FAIL_AUDIT_EXPORT=lax makes audit export exit 1"
+else
+  fail "VCL_FAKE_FAIL_AUDIT_EXPORT=lax makes audit export exit 1 (rc=${fail_export_alias_rc})"
+fi
+
+unset VCL_FAKE_STATE_DIR
+
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
   grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"

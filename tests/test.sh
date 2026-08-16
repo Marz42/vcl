@@ -574,6 +574,9 @@ assert_success "helper documents vcl accounting status" grep -q 'vcl accounting 
 assert_success "helper documents vcl accounting check" grep -q 'vcl accounting check' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit user" grep -q 'vcl audit user TAG' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit --user-id" grep -q 'vcl audit --user-id UUID' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl audit export" grep -q 'vcl audit export --after' "${TEST_TMP}/vincula"
+assert_success "helper implements audit export" \
+  grep -q 'cmd_audit_export' "${PROJECT_DIR}/bin/vincula"
 assert_failure "accounting status does not prefer JSONL ingest" \
   grep -q 'non-empty events.jsonl' "${PROJECT_DIR}/bin/vincula"
 assert_success "accounting status is Clash poll only" \
@@ -592,6 +595,11 @@ if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit user'; then
   pass "vcl help lists audit"
 else
   fail "vcl help lists audit"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit export --after'; then
+  pass "vcl help lists audit export"
+else
+  fail "vcl help lists audit export"
 fi
 if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl accounting check'; then
   pass "vcl help lists accounting check"
@@ -3393,6 +3401,216 @@ PY
     pass "vincula-audit interval-overlap RFC3339 filters and json"
   else
     fail "vincula-audit interval-overlap RFC3339 filters and json"
+  fi
+
+  EXPORT_DIR="${TEST_TMP}/audit-export029"
+  mkdir -p "$EXPORT_DIR"
+  if python3 - "$EXPORT_DIR" "${PROJECT_DIR}/lib/vincula-audit.py" "${PROJECT_DIR}/lib/vincula-accountd.py" <<'PY'
+import importlib.util, json, sqlite3, subprocess, sys
+from pathlib import Path
+
+base = Path(sys.argv[1])
+audit_py = sys.argv[2]
+accountd_py = sys.argv[3]
+db = base / "accounting.db"
+users = base / "users.json"
+users.write_text(json.dumps({"schema_version": 2, "users": []}), encoding="utf-8")
+
+spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec_a)
+spec_a.loader.exec_module(acct)
+conn = acct.open_db(str(db))
+assert acct.meta_get(conn, "schema_version") == "3"
+
+def insert(i):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"cid-{i}", 0, "u-alice", "node-1", None, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+
+for i in range(1, 104):
+    insert(i)
+conn.execute("DELETE FROM connections WHERE event_id <= 100")
+conn.commit()
+bounds = conn.execute("SELECT MIN(event_id), MAX(event_id), COUNT(*) FROM connections").fetchone()
+assert tuple(bounds) == (101, 103, 3), tuple(bounds)
+conn.close()
+
+spec = importlib.util.spec_from_file_location("vaudit", audit_py)
+audit = importlib.util.module_from_spec(spec)
+sys.modules["vaudit"] = audit
+spec.loader.exec_module(audit)
+
+ro = audit.open_db_readonly(str(db))
+try:
+    ro.execute(
+        "INSERT INTO poll_baseline(connection_id, generation, last_upload_counter, "
+        "last_download_counter, accounted_upload, accounted_download, last_seen_at) "
+        "VALUES ('x',0,0,0,0,0,'2026-08-10T00:00:00Z')"
+    )
+    raise AssertionError("export must not write poll_baseline")
+except sqlite3.OperationalError:
+    pass
+
+status, rows, meta = audit.export_after(ro, 0)
+assert status == "ok", status
+assert [r["event_id"] for r in rows] == [101, 102, 103], [r["event_id"] for r in rows]
+assert list(rows[0].keys()) == list(audit.ROW_KEYS)
+assert meta["ok"] is True
+assert meta["after"] == 0
+assert meta["earliest_available_event_id"] == 101
+assert meta["max_event_id"] == 103
+assert meta["count"] == 3
+assert meta["next_cursor"] == 103
+assert "error" not in meta
+
+status, rows, meta = audit.export_after(ro, 100)
+assert status == "ok", status
+assert [r["event_id"] for r in rows] == [101, 102, 103]
+assert meta["count"] == 3
+
+status, rows, meta = audit.export_after(ro, 99)
+assert status == "CURSOR_EXPIRED", status
+assert rows == []
+assert meta["ok"] is False
+assert meta["error"] == "CURSOR_EXPIRED"
+assert meta["earliest_available_event_id"] == 101
+assert meta["max_event_id"] == 103
+assert meta["count"] == 0
+assert meta["after"] == 99
+
+status, rows, meta = audit.export_after(ro, 101)
+assert status == "ok"
+assert [r["event_id"] for r in rows] == [102, 103]
+assert meta["next_cursor"] == 103
+
+status, rows, meta = audit.export_after(ro, 0, limit=2)
+assert status == "ok"
+assert [r["event_id"] for r in rows] == [101, 102]
+assert meta["count"] == 2
+assert meta["next_cursor"] == 102
+assert meta["max_event_id"] == 103
+assert meta["earliest_available_event_id"] == 101
+status, rows, meta = audit.export_after(ro, meta["next_cursor"], limit=2)
+assert [r["event_id"] for r in rows] == [103]
+assert meta["next_cursor"] == 103
+
+try:
+    audit.export_after(ro, -1)
+    raise AssertionError("negative after must fail")
+except SystemExit:
+    pass
+try:
+    audit.export_after(ro, 0, limit=0)
+    raise AssertionError("limit 0 must fail")
+except SystemExit:
+    pass
+ro.close()
+
+empty = base / "empty.db"
+econn = acct.open_db(str(empty))
+econn.close()
+ero = audit.open_db_readonly(str(empty))
+status, rows, meta = audit.export_after(ero, 0)
+assert status == "ok" and rows == []
+assert meta["earliest_available_event_id"] is None
+assert meta["max_event_id"] is None
+assert meta["count"] == 0
+status, rows, meta = audit.export_after(ero, 5)
+assert status == "CURSOR_EXPIRED" and rows == []
+assert meta["error"] == "CURSOR_EXPIRED"
+assert meta["earliest_available_event_id"] is None
+ero.close()
+
+def run(*extra, dbpath=None, check=True):
+    cmd = [
+        sys.executable, audit_py,
+        "--db", str(dbpath or db), "--users", str(users),
+        *extra,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+out = run("--after", "0", "--jsonl")
+assert out.returncode == 0, out.stderr
+lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+assert [json.loads(ln)["event_id"] for ln in lines] == [101, 102, 103]
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["ok"] is True
+assert meta["count"] == 3
+assert meta["earliest_available_event_id"] == 101
+assert meta["max_event_id"] == 103
+assert meta["next_cursor"] == 103
+assert list(json.loads(lines[0]).keys()) == list(audit.ROW_KEYS)
+
+out = run("--after", "100", "--jsonl")
+assert out.returncode == 0
+assert [json.loads(ln)["event_id"] for ln in out.stdout.splitlines() if ln.strip()] == [
+    101, 102, 103,
+]
+
+out = run("--after", "99", "--jsonl", check=False)
+assert out.returncode == 3, out.returncode
+assert out.stdout.strip() == ""
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["error"] == "CURSOR_EXPIRED"
+assert meta["ok"] is False
+assert meta["earliest_available_event_id"] == 101
+assert meta["count"] == 0
+
+out = run("--after", "0", "--jsonl", "--limit", "1")
+assert out.returncode == 0
+lines = [json.loads(ln) for ln in out.stdout.splitlines() if ln.strip()]
+assert [r["event_id"] for r in lines] == [101]
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["count"] == 1 and meta["next_cursor"] == 101
+out = run("--after", str(meta["next_cursor"]), "--jsonl", "--limit", "1")
+lines = [json.loads(ln) for ln in out.stdout.splitlines() if ln.strip()]
+assert [r["event_id"] for r in lines] == [102]
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["next_cursor"] == 102
+
+out = run(
+    "--after", "0", "--jsonl",
+    "--node-id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "--instance-id", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+)
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+assert meta["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+out = run("--after", "0", "--jsonl", "--from", "2026-08-10T09:00:00Z", check=False)
+assert out.returncode != 0
+assert "mutually exclusive" in out.stderr
+
+out = run("--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z", "--jsonl", check=False)
+assert out.returncode != 0
+
+out = run("--after", "0", "--jsonl", dbpath=empty)
+assert out.returncode == 0
+assert out.stdout.strip() == ""
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["ok"] is True and meta["count"] == 0
+
+chk = sqlite3.connect(db)
+assert chk.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0] == 0
+chk.close()
+print("export-ok")
+PY
+  then
+    pass "vincula-audit export --after jsonl CURSOR_EXPIRED and --limit"
+  else
+    fail "vincula-audit export --after jsonl CURSOR_EXPIRED and --limit"
   fi
 fi
 

@@ -8,14 +8,18 @@ simulated SSH failures.
 User commands require VCL_FAKE_STATE_DIR (each alias gets users.json).
 Identity/status/verify still serve canned fixtures when the state dir is
 unset, matching 0.2.8 tests. Optional identity.json under the state dir
-overrides the canned file.
+overrides the canned file. Audit export reads
+{VCL_FAKE_STATE_DIR}/{alias}/accounting.db (tests create the schema 3
+fixture; do not commit a binary db).
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import uuid
@@ -476,6 +480,182 @@ def _handle_user(alias: str, host: str, argv: list[str]) -> int:
     return 1
 
 
+def _audit_py() -> Path:
+    return HERE.parent.parent / "lib" / "vincula-audit.py"
+
+
+def _load_audit():
+    path = _audit_py()
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("vincula_audit_fake", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _parse_export_flags(argv: list[str]) -> tuple[int, bool, int | None]:
+    after: str | None = None
+    jsonl = False
+    limit: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--jsonl":
+            jsonl = True
+            i += 1
+            continue
+        if arg == "--after":
+            if i + 1 >= len(argv):
+                raise SystemExit("audit export --after requires EVENT_ID")
+            after = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--limit":
+            if i + 1 >= len(argv):
+                raise SystemExit("audit export --limit requires N")
+            limit = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-"):
+            raise SystemExit(f"audit export: unknown option {arg}")
+        raise SystemExit(f"audit export: unexpected argument {arg}")
+    if after is None or not jsonl:
+        raise SystemExit("usage: vcl audit export --after EVENT_ID --jsonl")
+    try:
+        after_n = int(after)
+    except ValueError as exc:
+        raise SystemExit("audit export --after requires a non-negative integer") from exc
+    if after_n < 0:
+        raise SystemExit("audit export --after requires a non-negative integer")
+    limit_n: int | None = None
+    if limit is not None:
+        try:
+            limit_n = int(limit)
+        except ValueError as exc:
+            raise SystemExit("audit export --limit requires an integer >= 1") from exc
+        if limit_n < 1:
+            raise SystemExit("audit export --limit requires an integer >= 1")
+    return after_n, jsonl, limit_n
+
+
+def _inline_export_after(
+    db_path: Path, after: int, limit: int | None
+) -> tuple[str, list[dict], dict]:
+    """Minimal JSONL export when vincula-audit.py cannot be imported."""
+    keys = (
+        "event_id",
+        "connection_id",
+        "generation",
+        "user_id",
+        "user_tag",
+        "node_id",
+        "instance_id",
+        "destination_host",
+        "destination_ip",
+        "destination_port",
+        "network",
+        "upload_bytes",
+        "download_bytes",
+        "started_at",
+        "last_seen_at",
+        "closed_at",
+    )
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT MIN(event_id), MAX(event_id) FROM connections").fetchone()
+        earliest = row[0] if row is not None else None
+        max_event_id = row[1] if row is not None else None
+        expired = after > 0 and (earliest is None or earliest > after + 1)
+        meta = {
+            "ok": not expired,
+            "after": after,
+            "earliest_available_event_id": earliest,
+            "max_event_id": max_event_id,
+            "count": 0,
+            "node_id": None,
+            "instance_id": None,
+            "next_cursor": after,
+        }
+        if expired:
+            meta["ok"] = False
+            meta["error"] = "CURSOR_EXPIRED"
+            return "CURSOR_EXPIRED", [], meta
+        sql = (
+            f"SELECT {', '.join(keys)} FROM connections WHERE event_id > ? "
+            "ORDER BY event_id ASC"
+        )
+        params: list[object] = [after]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = [{k: r[k] for k in keys} for r in conn.execute(sql, params)]
+        meta["count"] = len(rows)
+        meta["next_cursor"] = rows[-1]["event_id"] if rows else after
+        return "ok", rows, meta
+    finally:
+        conn.close()
+
+
+def _handle_audit(alias: str, argv: list[str]) -> int:
+    fail_aliases = _fail_aliases("VCL_FAKE_FAIL_EXPORT") | _fail_aliases(
+        "VCL_FAKE_FAIL_AUDIT_EXPORT"
+    )
+    if alias in fail_aliases:
+        sys.stderr.write("fake-ssh: audit export failed\n")
+        return 1
+    if not argv or argv[0] != "export":
+        shown = " ".join(["vcl", "audit", *argv]).strip()
+        sys.stderr.write(f"fake-ssh: unimplemented: {shown}\n")
+        return 1
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for audit export\n")
+        return 1
+
+    try:
+        after, _jsonl, limit = _parse_export_flags(argv[1:])
+    except SystemExit as exc:
+        sys.stderr.write(f"fake-ssh: {exc}\n")
+        return 1
+
+    db_path = _state_root() / alias / "accounting.db"
+    if not db_path.is_file():
+        sys.stderr.write(f"fake-ssh: accounting.db not found for {alias}\n")
+        return 1
+
+    ident = _load_fixture(alias, "identity")
+    node_id = ident.get("node_id") or None
+    instance_id = ident.get("instance_id") or None
+
+    audit = _load_audit()
+    if audit is not None:
+        conn = audit.open_db_readonly(str(db_path))
+        try:
+            status, rows, meta = audit.export_after(conn, after, limit=limit)
+        finally:
+            conn.close()
+    else:
+        status, rows, meta = _inline_export_after(db_path, after, limit)
+
+    meta["node_id"] = node_id
+    meta["instance_id"] = instance_id
+    for row in rows:
+        row["node_id"] = node_id
+        row["instance_id"] = instance_id
+
+    sys.stderr.write(json.dumps(meta, separators=(",", ":")))
+    sys.stderr.write("\n")
+    if status == "CURSOR_EXPIRED":
+        return 3
+    for row in rows:
+        sys.stdout.write(json.dumps(row, separators=(",", ":")))
+        sys.stdout.write("\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     joined = " ".join(argv)
@@ -528,8 +708,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"fake-ssh: unknown vcl command: {shown}\n")
         return 1
     if kind == "audit":
-        sys.stderr.write("fake-ssh: unimplemented: vcl audit\n")
-        return 1
+        return _handle_audit(alias, rest)
     if kind == "user":
         return _handle_user(alias, host, rest)
     data = _load_fixture(alias, kind)

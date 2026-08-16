@@ -112,6 +112,7 @@ Usage:
   vcl stats top users|departments|hosts [--limit N]
   vcl audit user TAG --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
   vcl audit --user-id UUID --from RFC3339 --to RFC3339 ...
+  vcl audit export --after EVENT_ID --jsonl [--limit N]
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -2537,9 +2538,79 @@ resolve_audit_py() {
   return 1
 }
 
+cmd_audit_export() {
+  local after="" jsonl=0 limit="" audit_py node_id instance_id
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --after)
+        [[ $# -ge 2 ]] || die "audit export --after requires EVENT_ID"
+        after=$2
+        shift 2
+        ;;
+      --jsonl)
+        jsonl=1
+        shift
+        ;;
+      --limit)
+        [[ $# -ge 2 ]] || die "audit export --limit requires N"
+        limit=$2
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'HELP'
+vcl audit export — incremental connection dump (durable event_id cursor)
+
+  vcl audit export --after EVENT_ID --jsonl [--limit N]
+
+--after is exclusive (0 = from the beginning of the available window).
+Stdout is JSONL (one connection object per line). Stderr is one JSON meta line.
+If retention deleted rows after a non-zero cursor, exit 3 with CURSOR_EXPIRED.
+HELP
+        return 0
+        ;;
+      *)
+        die "Unknown audit export argument: $1. Try 'vcl audit export --help'."
+        ;;
+    esac
+  done
+
+  [[ -n "$after" && "$jsonl" -eq 1 ]] || die "usage: vcl audit export --after EVENT_ID --jsonl"
+  [[ "$after" =~ ^[0-9]+$ ]] || die "audit export --after requires a non-negative integer EVENT_ID"
+  if [[ -n "$limit" ]]; then
+    [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "audit export --limit requires an integer >= 1"
+  fi
+
+  require_python3 || die "python3 is required for audit."
+  audit_py=$(resolve_audit_py) || die "Missing vincula-audit.py (expected ${AUDIT_PY})."
+  warn_if_accounting_stale
+
+  node_id=$(node_id_from_settings)
+  instance_id=$(json_quoted_field "$STATE_FILE" instance_id || true)
+
+  local -a args=(
+    "$audit_py"
+    --db "$ACCOUNTING_DB_FILE"
+    --users "$USERS_FILE"
+    --after "$after"
+    --jsonl
+    --node-id "$node_id"
+  )
+  [[ -n "$instance_id" ]] && args+=(--instance-id "$instance_id")
+  [[ -n "$limit" ]] && args+=(--limit "$limit")
+
+  python3 "${args[@]}"
+}
+
 cmd_audit() {
   local fmt="table" user_tag="" user_id="" dest_host="" dest_ip="" node_id=""
   local from_arg="" to_arg="" audit_py
+
+  if [[ "${1:-}" == "export" ]]; then
+    shift
+    cmd_audit_export "$@"
+    return
+  fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2585,9 +2656,11 @@ vcl audit — connection-level interval query (RFC3339)
 
   vcl audit user TAG --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
   vcl audit --user-id UUID --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
+  vcl audit export --after EVENT_ID --jsonl [--limit N]
 
 Window is interval-overlap, not UTC day granularity (that is stats).
 --from and --to are required and must include a timezone (Z or offset).
+export dumps connections after an exclusive event_id cursor as JSONL.
 Accounting mode: approximate / Clash polling.
 HELP
         return 0
