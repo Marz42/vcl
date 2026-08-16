@@ -110,8 +110,8 @@ assert_success "clock skew fail is 300s" \
   grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet schema version is 1" \
-  grep -q 'FLEET_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet schema version is 2" \
+  grep -q 'FLEET_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db schema version is 1" \
   grep -q 'FLEET_DB_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
@@ -141,16 +141,16 @@ python3 - "${VCL_FLEET_HOME}/fleet.json" <<'PY' || init_schema_rc=$?
 import json, sys
 path = sys.argv[1]
 data = json.load(open(path, encoding="utf-8"))
-assert data.get("schema_version") == 1, data
+assert data.get("schema_version") == 2, data
 assert data.get("nodes") == [], data
 assert "instance_id" not in data
 for node in data.get("nodes") or []:
     assert "instance_id" not in node
 PY
 if (( init_schema_rc == 0 )); then
-  pass "init creates schema-1 empty registry"
+  pass "init creates schema-2 empty registry"
 else
-  fail "init creates schema-1 empty registry"
+  fail "init creates schema-2 empty registry"
 fi
 
 assert_success "init is idempotent on empty registry" fleet init
@@ -161,6 +161,8 @@ assert_success "offline add lax" \
 list_out=$(fleet node list)
 assert_success "node list contains lax" grep -q 'lax' <<< "$list_out"
 assert_success "node list contains lax node_id" grep -q "$TEST_NODE_ID" <<< "$list_out"
+assert_success "node list header has STATUS" grep -q 'STATUS' <<< "$list_out"
+assert_success "node list shows active status" grep -q ' active$' <<< "$list_out"
 
 dup_rc=0
 dup_err=$(fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_NODE_ID" 2>&1) || dup_rc=$?
@@ -211,10 +213,14 @@ assert_success "node disable lax" fleet node disable lax
 disable_out=$(fleet node show lax)
 assert_success "node show enabled false after disable" \
   grep -q 'enabled=false' <<< "$disable_out"
+assert_success "node show status disabled after disable" \
+  grep -q 'status=disabled' <<< "$disable_out"
 assert_success "node enable lax" fleet node enable lax
 enable_out=$(fleet node show lax)
 assert_success "node show enabled true after enable" \
   grep -q 'enabled=true' <<< "$enable_out"
+assert_success "node show status active after enable" \
+  grep -q 'status=active' <<< "$enable_out"
 
 assert_failure "fleet.json stores no password" \
   grep -E 'password|passwd' "${VCL_FLEET_HOME}/fleet.json"
@@ -226,7 +232,7 @@ path, node_id = sys.argv[1], sys.argv[2]
 raw = open(path, encoding="utf-8").read()
 assert "instance_id" not in raw
 data = json.load(open(path, encoding="utf-8"))
-assert data.get("schema_version") == 1, data
+assert data.get("schema_version") == 2, data
 assert "instance_id" not in data
 nodes = data.get("nodes") or []
 assert len(nodes) == 1, nodes
@@ -238,11 +244,12 @@ assert node["ssh_host"] == "203.0.113.28"
 assert node["ssh_user"] == "root"
 assert node["ssh_port"] == 22
 assert node["enabled"] is True
+assert node["status"] == "active"
 PY
 if (( roundtrip_rc == 0 )); then
-  pass "fleet.json schema 1 has no instance_id"
+  pass "fleet.json schema 2 has status and no instance_id"
 else
-  fail "fleet.json schema 1 has no instance_id"
+  fail "fleet.json schema 2 has status and no instance_id"
 fi
 
 assert_success "offline add tokyo" \
@@ -800,7 +807,7 @@ raw = open(path, encoding="utf-8").read()
 assert "instance_id" not in raw
 assert "password" not in raw
 data = json.load(open(path, encoding="utf-8"))
-assert data.get("schema_version") == 1
+assert data.get("schema_version") == 2
 names = {n["name"]: n for n in data["nodes"]}
 assert set(names) == {"lax", "tokyo", "sg"}, set(names)
 assert names["lax"]["node_id"] == lax_id
@@ -809,6 +816,9 @@ assert names["sg"]["node_id"] == sg_id
 assert names["lax"]["ssh_host"] == "203.0.113.10"
 assert names["tokyo"]["ssh_host"] == "203.0.113.11"
 assert names["sg"]["ssh_host"] == "203.0.113.12"
+assert names["lax"]["status"] == "active"
+assert names["tokyo"]["status"] == "active"
+assert names["sg"]["status"] == "active"
 PY
 if (( ssh_reg_rc == 0 )); then
   pass "live SSH registry stores remote node_ids without instance_id"
@@ -3214,6 +3224,483 @@ else
 fi
 
 unset VCL_FLEET_STATS_NOW
+
+# --- Batch 11-retire: fleet.json schema 2 + node retire (TASK 38-41) ---
+
+assert_success "node retire is a CLI command" \
+  grep -q 'cmd_node_retire' "${PROJECT_DIR}/lib/vincula-fleet.py"
+retire_help_rc=0
+retire_help=$(fleet node retire -h) || retire_help_rc=$?
+if (( retire_help_rc == 0 )) && [[ "$retire_help" == *"final"* ]] \
+  && [[ "$retire_help" == *"retired"* ]]; then
+  pass "node retire -h documents final sync and retired"
+else
+  fail "node retire -h documents final sync and retired (rc=${retire_help_rc})"
+fi
+
+SCHEMA1_HOME="${TEST_TMP}/fleet-home-schema1"
+mkdir -p "$SCHEMA1_HOME"
+python3 - "$SCHEMA1_HOME" "$TEST_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY'
+import json, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+lax_id, tokyo_id, sg_id = sys.argv[2], sys.argv[3], sys.argv[4]
+doc = {
+    "schema_version": 1,
+    "nodes": [
+        {"node_id": lax_id, "name": "lax", "ssh_host": "203.0.113.10",
+         "ssh_user": "root", "ssh_port": 22, "enabled": True},
+        {"node_id": tokyo_id, "name": "tokyo", "ssh_host": "203.0.113.11",
+         "ssh_user": "root", "ssh_port": 22, "enabled": True},
+        {"node_id": sg_id, "name": "sg", "ssh_host": "203.0.113.12",
+         "ssh_user": "root", "ssh_port": 22, "enabled": False},
+    ],
+}
+(home / "fleet.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+
+SAVED_QUERY_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$SCHEMA1_HOME"
+schema1_list=$(fleet node list)
+assert_success "schema 1 load lists lax" grep -q '^lax ' <<< "$schema1_list"
+assert_success "schema 1 load lists tokyo" grep -q '^tokyo ' <<< "$schema1_list"
+assert_success "schema 1 load lists sg" grep -q '^sg ' <<< "$schema1_list"
+assert_success "schema 1 missing status defaults active for enabled" \
+  grep -q 'lax .* true active' <<< "$schema1_list"
+assert_success "schema 1 missing status defaults disabled for disabled" \
+  grep -q 'sg .* false disabled' <<< "$schema1_list"
+
+schema1_save_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$SCHEMA1_HOME" <<'PY' || schema1_save_rc=$?
+import importlib.util, json, os, sys
+from pathlib import Path
+path, home = sys.argv[1], Path(sys.argv[2])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+registry = mod.load_registry()
+assert registry["schema_version"] == 2
+assert {n["name"]: n["status"] for n in registry["nodes"]} == {
+    "lax": "active", "tokyo": "active", "sg": "disabled"
+}
+mod.save_registry(None, registry)
+data = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+assert data["schema_version"] == 2, data
+assert all("status" in n for n in data["nodes"])
+assert all(n.get("instance_id") is None or "instance_id" not in n for n in data["nodes"])
+raw = (home / "fleet.json").read_text(encoding="utf-8")
+assert "instance_id" not in raw
+assert "password" not in raw
+PY
+if (( schema1_save_rc == 0 )); then
+  pass "schema 1 load upgrades in memory; save writes schema 2 with status"
+else
+  fail "schema 1 load upgrades in memory; save writes schema 2 with status"
+fi
+
+bad_schema_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$TEST_TMP" <<'PY' || bad_schema_rc=$?
+import importlib.util, json, os, sys
+from pathlib import Path
+path, tmp = sys.argv[1], Path(sys.argv[2])
+home = tmp / "fleet-home-schema3"
+home.mkdir(parents=True, exist_ok=True)
+(home / "fleet.json").write_text(
+    json.dumps({"schema_version": 3, "nodes": []}) + "\n", encoding="utf-8"
+)
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+try:
+    mod.load_registry()
+except SystemExit:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+if (( bad_schema_rc == 0 )); then
+  pass "unsupported fleet.json schema 3 is rejected"
+else
+  fail "unsupported fleet.json schema 3 is rejected"
+fi
+
+RETIRE_FLEET_HOME="${TEST_TMP}/fleet-home-retire"
+RETIRE_FAKE_STATE="${TEST_TMP}/fake-retire-state"
+export VCL_FLEET_HOME="$RETIRE_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$RETIRE_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "$VCL_FAKE_STATE_DIR"
+
+assert_success "retire-test fleet init" fleet init
+assert_success "retire-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "retire-test offline add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+
+unknown_retire_rc=0
+unknown_retire_err=$(fleet node retire mars 2>&1) || unknown_retire_rc=$?
+if (( unknown_retire_rc != 0 )) && [[ "$unknown_retire_err" == *"unknown node"* ]]; then
+  pass "retire unknown node is refused"
+else
+  fail "retire unknown node is refused (rc=${unknown_retire_rc} err=${unknown_retire_err})"
+fi
+
+retire_add_rc=0
+fleet user add alice --nodes lax,tokyo --display-name Alice >/dev/null || retire_add_rc=$?
+fleet user add bob --node lax --display-name Bob >/dev/null || retire_add_rc=$?
+if (( retire_add_rc == 0 )); then
+  pass "retire-test provisioned alice (lax+tokyo) and bob (lax)"
+else
+  fail "retire-test provisioned alice (lax+tokyo) and bob (lax) (rc=${retire_add_rc})"
+fi
+
+retire_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/tokyo/identity.json" <<'PY' || retire_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py = sys.argv[1]
+state = Path(sys.argv[2])
+lax_ident = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+tokyo_ident = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+
+lax_users = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+tokyo_users = json.loads((state / "tokyo" / "users.json").read_text(encoding="utf-8"))
+alice = next(u for u in lax_users["users"] if u["tag"] == "alice")
+bob = next(u for u in lax_users["users"] if u["tag"] == "bob")
+assert alice["user_id"] == next(u["user_id"] for u in tokyo_users["users"] if u["tag"] == "alice")
+(state / "alice_user_id.txt").write_text(alice["user_id"], encoding="utf-8")
+(state / "bob_user_id.txt").write_text(bob["user_id"], encoding="utf-8")
+
+def seed(alias, ident, rows):
+    db = state / alias / "accounting.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = acct.open_db(str(db))
+    node_id = ident["node_id"]
+    instance_id = ident["instance_id"]
+    for event_id, connection_id, user_id, tag, host, up, down in rows:
+        conn.execute(
+            """
+            INSERT INTO connections (
+              connection_id, generation, user_id, node_id, instance_id, user_tag,
+              started_at, last_seen_at, closed_at,
+              destination_host, destination_ip, destination_port, network,
+              upload_bytes, download_bytes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                connection_id, 0, user_id, node_id, instance_id, tag,
+                "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+                host, "203.0.113.80", 443, "tcp", up, down,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+alice_uid = alice["user_id"]
+bob_uid = bob["user_id"]
+seed("lax", lax_ident, [
+    (1, "lax-retire-1", alice_uid, "alice", "example.com", 10, 20),
+    (2, "lax-retire-2", alice_uid, "alice", "example.com", 11, 21),
+    (3, "lax-retire-3", alice_uid, "alice", "example.com", 12, 22),
+    (4, "lax-retire-4", bob_uid, "bob", "example.com", 13, 23),
+    (5, "lax-retire-5", alice_uid, "alice", "example.com", 14, 24),
+])
+seed("tokyo", tokyo_ident, [
+    (1, "tokyo-retire-1", alice_uid, "alice", "example.com", 50, 50),
+])
+PY
+if (( retire_seed_rc == 0 )); then
+  pass "retire fixture seeded lax events 1-5 and tokyo event 1"
+else
+  fail "retire fixture seeded lax events 1-5 and tokyo event 1"
+fi
+
+RETIRE_ALICE_UID=$(cat "${VCL_FAKE_STATE_DIR}/alice_user_id.txt")
+
+sync_pre_rc=0
+fleet sync --node lax >/dev/null || sync_pre_rc=$?
+if (( sync_pre_rc == 0 )); then
+  pass "retire-test initial sync lax exits 0"
+else
+  fail "retire-test initial sync lax exits 0 (rc=${sync_pre_rc})"
+fi
+
+fail_retire_rc=0
+fail_retire_err=$(VCL_FAKE_FAIL_EXPORT=lax fleet node retire lax 2>&1) || fail_retire_rc=$?
+if (( fail_retire_rc != 0 )) && [[ "$fail_retire_err" == *"final sync failed"* ]]; then
+  pass "retire fails when final sync export fails"
+else
+  fail "retire fails when final sync export fails (rc=${fail_retire_rc} err=${fail_retire_err})"
+fi
+
+fail_still_active_rc=0
+python3 - "${VCL_FLEET_HOME}/fleet.json" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || fail_still_active_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+node = next(n for n in data["nodes"] if n["name"] == "lax")
+assert node["status"] == "active", node
+assert node["enabled"] is True, node
+assert not (home / "retired" / "lax").is_dir()
+conn = sqlite3.connect(str(home / "fleet.db"))
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+count = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
+).fetchone()[0]
+conn.close()
+assert cur[0] == 5, cur
+assert count == 5, count
+PY
+if (( fail_still_active_rc == 0 )); then
+  pass "failed retire leaves lax active, cursor=5, no snapshot dir"
+else
+  fail "failed retire leaves lax active, cursor=5, no snapshot dir"
+fi
+
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+alice_uid = (state / "alice_user_id.txt").read_text(encoding="utf-8").strip()
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+conn = acct.open_db(str(state / "lax" / "accounting.db"))
+for i in range(6, 9):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"lax-retire-{i}", 0, alice_uid, ident["node_id"], ident["instance_id"],
+            "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.80", 443, "tcp", i, i * 2,
+        ),
+    )
+conn.commit()
+conn.close()
+PY
+
+retire_rc=0
+retire_out=$(fleet node retire lax 2>"${TEST_TMP}/retire-lax.err") || retire_rc=$?
+retire_err=$(cat "${TEST_TMP}/retire-lax.err" 2>/dev/null || true)
+if (( retire_rc == 0 )) \
+  && [[ "$retire_out" == *"historical fleet.db rows were not erased"* ]] \
+  && [[ "$retire_out" == *"status=retired"* ]] \
+  && [[ "$retire_out" == *"vcl uninstall --yes"* ]]; then
+  pass "node retire lax succeeds with preserved-history and uninstall hint"
+else
+  fail "node retire lax succeeds with preserved-history and uninstall hint (rc=${retire_rc} out=${retire_out} err=${retire_err})"
+fi
+
+assert_success "retired snapshot identity.json exists" \
+  test -f "${VCL_FLEET_HOME}/retired/lax/identity.json"
+assert_success "retired snapshot cursor.json exists" \
+  test -f "${VCL_FLEET_HOME}/retired/lax/cursor.json"
+assert_success "retired snapshot last-status.json exists" \
+  test -f "${VCL_FLEET_HOME}/retired/lax/last-status.json"
+
+retire_list=$(fleet node list)
+assert_success "node list still includes retired lax" grep -q '^lax ' <<< "$retire_list"
+assert_success "node list marks lax retired" grep -q 'lax .* false retired' <<< "$retire_list"
+
+ac08_rc=0
+python3 - "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" "$RETIRE_ALICE_UID" \
+  "$VCL_FAKE_STATE_DIR" <<'PY' || ac08_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+home, node_id, alice, state = Path(sys.argv[1]), sys.argv[2], sys.argv[3], Path(sys.argv[4])
+data = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+assert data["schema_version"] == 2
+node = next(n for n in data["nodes"] if n["name"] == "lax")
+assert node["status"] == "retired", node
+assert node["enabled"] is False, node
+tokyo = next(n for n in data["nodes"] if n["name"] == "tokyo")
+assert tokyo["status"] == "active"
+
+ident = json.loads((home / "retired" / "lax" / "identity.json").read_text(encoding="utf-8"))
+assert ident.get("node_id") == node_id, ident
+cursor = json.loads((home / "retired" / "lax" / "cursor.json").read_text(encoding="utf-8"))
+assert cursor["node_id"] == node_id
+assert cursor["last_event_id"] == 8, cursor
+
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
+).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+alice_rows = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=? AND user_id=?",
+    (node_id, alice),
+).fetchone()[0]
+conn.close()
+assert count == 8, count
+assert cur == (8, "ok"), cur
+assert alice_rows >= 1, alice_rows
+
+users = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+enabled = [u["tag"] for u in users["users"] if u.get("enabled")]
+assert enabled == ["bob"], enabled
+disabled = [u["tag"] for u in users["users"] if not u.get("enabled")]
+assert "alice" in disabled
+PY
+if (( ac08_rc == 0 )); then
+  pass "AC-2.9-08 final sync committed cursor=8 before status=retired; last enabled user kept"
+else
+  fail "AC-2.9-08 final sync committed cursor=8 before status=retired; last enabled user kept"
+fi
+
+already_rc=0
+already_err=$(fleet node retire lax 2>&1) || already_rc=$?
+if (( already_rc != 0 )) && [[ "$already_err" == *"already retired"* ]]; then
+  pass "retire of already-retired node is refused"
+else
+  fail "retire of already-retired node is refused (rc=${already_rc} err=${already_err})"
+fi
+
+enable_retired_rc=0
+enable_retired_err=$(fleet node enable lax 2>&1) || enable_retired_rc=$?
+if (( enable_retired_rc != 0 )) \
+  && [[ "$enable_retired_err" == *"retired node cannot be enabled"* ]] \
+  && [[ "$enable_retired_err" == *"0.3.0"* ]]; then
+  pass "retired node cannot be enabled"
+else
+  fail "retired node cannot be enabled (rc=${enable_retired_rc} err=${enable_retired_err})"
+fi
+
+status_default=$(fleet status 2>/dev/null || true)
+assert_failure "status default scope omits retired lax" \
+  grep -Eq '^lax[[:space:]]' <<< "$status_default"
+status_all=$(fleet status --all 2>/dev/null || true)
+assert_success "status --all includes retired lax with SSH=-" \
+  grep -Eq '^lax[[:space:]].*-' <<< "$status_all"
+
+verify_default=$(fleet verify 2>/dev/null || true)
+assert_failure "verify default scope omits retired lax" \
+  grep -Eq '^lax$' <<< "$verify_default"
+verify_all=$(fleet verify --all 2>/dev/null || true)
+assert_success "verify --all shows retired placeholder" \
+  grep -q 'status: retired' <<< "$verify_all"
+
+sync_retired_node_rc=0
+sync_retired_err=$(fleet sync --node lax 2>&1) || sync_retired_node_rc=$?
+if (( sync_retired_node_rc != 0 )) && [[ "$sync_retired_err" == *"retired"* ]]; then
+  pass "sync --node retired lax is refused"
+else
+  fail "sync --node retired lax is refused (rc=${sync_retired_node_rc} err=${sync_retired_err})"
+fi
+
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+alice_uid = (state / "alice_user_id.txt").read_text(encoding="utf-8").strip()
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+conn = acct.open_db(str(state / "lax" / "accounting.db"))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "lax-retire-post", 0, alice_uid, ident["node_id"], ident["instance_id"],
+        "alice",
+        "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+        "example.com", "203.0.113.80", 443, "tcp", 99, 99,
+    ),
+)
+conn.commit()
+conn.close()
+PY
+
+sync_default_rc=0
+sync_default_out=$(fleet sync --json) || sync_default_rc=$?
+if (( sync_default_rc == 0 )); then
+  pass "default sync after retire exits 0"
+else
+  fail "default sync after retire exits 0 (rc=${sync_default_rc} out=${sync_default_out})"
+fi
+
+sync_skip_rc=0
+python3 - "$sync_default_out" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sync_skip_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+names = [n["name"] for n in doc["nodes"]]
+assert "lax" not in names, names
+assert "tokyo" in names, names
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
+).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()[0]
+conn.close()
+assert count == 8, count
+assert cur == 8, cur
+PY
+if (( sync_skip_rc == 0 )); then
+  pass "retired lax excluded from default sync; historical rows unchanged"
+else
+  fail "retired lax excluded from default sync; historical rows unchanged"
+fi
+
+RETIRE_FROM="2026-08-10T00:00:00Z"
+RETIRE_TO="2026-08-11T00:00:00Z"
+audit_after_rc=0
+audit_after=$(fleet audit user alice --from "$RETIRE_FROM" --to "$RETIRE_TO" --json) \
+  || audit_after_rc=$?
+ac09_rc=0
+python3 - "$audit_after" "$audit_after_rc" "$RETIRE_ALICE_UID" <<'PY' || ac09_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+rc = int(sys.argv[2])
+alice = sys.argv[3]
+assert rc == 0, rc
+assert doc["tag"] == "alice"
+assert doc["user_id"] == alice
+nodes = {row["node"] for row in doc["rows"]}
+assert "lax" in nodes, nodes
+assert all(row["user_id"] == alice for row in doc["rows"] if row["node"] == "lax")
+assert any(row["node"] == "lax" for row in doc["rows"])
+PY
+if (( ac09_rc == 0 )); then
+  pass "AC-2.9-09 historical audit still queryable after retire"
+else
+  fail "AC-2.9-09 historical audit still queryable after retire (rc=${audit_after_rc})"
+fi
+
+export VCL_FLEET_HOME="${SAVED_QUERY_HOME}"
 
 unset VCL_FAKE_STATE_DIR
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"

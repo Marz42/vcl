@@ -33,8 +33,14 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.2.9-dev"
-FLEET_SCHEMA_VERSION = 1
+FLEET_SCHEMA_VERSION = 2
+FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_DB_SCHEMA_VERSION = 1
+NODE_STATUS_ACTIVE = "active"
+NODE_STATUS_DISABLED = "disabled"
+NODE_STATUS_RETIRED = "retired"
+NODE_STATUSES = (NODE_STATUS_ACTIVE, NODE_STATUS_DISABLED, NODE_STATUS_RETIRED)
+RETIRE_SKIP_SYNC_ENV = "VCL_FLEET_RETIRE_SKIP_SYNC"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
@@ -112,7 +118,15 @@ UUID_RE = re.compile(
 # Same contract as is_valid_user_tag: lowercase alnum / . _ - ; max 32.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
-NODE_KEYS = ("node_id", "name", "ssh_host", "ssh_user", "ssh_port", "enabled")
+NODE_KEYS = (
+    "node_id",
+    "name",
+    "ssh_host",
+    "ssh_user",
+    "ssh_port",
+    "enabled",
+    "status",
+)
 SSH_TIMEOUT_SECONDS = 20
 SSH_MUTATION_TIMEOUT_SECONDS = 60
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
@@ -933,6 +947,18 @@ def validate_name(name: str) -> None:
         die(f"invalid name: {name}")
 
 
+def node_lifecycle_status(node: dict[str, Any]) -> str:
+    """Return active|disabled|retired. Schema 1 records have no status."""
+    status = node.get("status")
+    if status in NODE_STATUSES:
+        return str(status)
+    return NODE_STATUS_ACTIVE if node.get("enabled", True) else NODE_STATUS_DISABLED
+
+
+def node_is_active(node: dict[str, Any]) -> bool:
+    return node_lifecycle_status(node) == NODE_STATUS_ACTIVE
+
+
 def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         die(f"nodes[{index}] must be an object")
@@ -957,6 +983,12 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         die(f"invalid ssh_port: {ssh_port}")
     if not isinstance(enabled, bool):
         die(f"invalid enabled: {enabled}")
+    status = raw.get("status")
+    if status is None:
+        status = NODE_STATUS_ACTIVE if enabled else NODE_STATUS_DISABLED
+    if not isinstance(status, str) or status not in NODE_STATUSES:
+        die(f"invalid status: {status}")
+    enabled = status == NODE_STATUS_ACTIVE
     return {
         "node_id": node_id,
         "name": name,
@@ -964,6 +996,7 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         "ssh_user": ssh_user.strip(),
         "ssh_port": ssh_port,
         "enabled": enabled,
+        "status": status,
     }
 
 
@@ -974,7 +1007,7 @@ def validate_registry(data: Any) -> dict[str, Any]:
         if _is_forbidden_key(str(key)):
             die("fleet.json must not store SSH passwords")
     ver = data.get("schema_version")
-    if ver != FLEET_SCHEMA_VERSION:
+    if ver not in FLEET_SCHEMA_VERSIONS_READ:
         die(f"unsupported fleet.json schema_version: {ver}")
     nodes_raw = data.get("nodes", [])
     if not isinstance(nodes_raw, list):
@@ -1108,7 +1141,16 @@ def set_host(
 
 def set_enabled(registry: dict[str, Any], name: str, enabled: bool) -> dict[str, Any]:
     node = require_node(registry, name)
-    node["enabled"] = bool(enabled)
+    if node_lifecycle_status(node) == NODE_STATUS_RETIRED:
+        if enabled:
+            die("retired node cannot be enabled; replacement is 0.3.0")
+        die(f"node is retired: {name}")
+    if enabled:
+        node["status"] = NODE_STATUS_ACTIVE
+        node["enabled"] = True
+    else:
+        node["status"] = NODE_STATUS_DISABLED
+        node["enabled"] = False
     return node
 
 
@@ -1169,12 +1211,13 @@ def cmd_node_add(args: argparse.Namespace) -> int:
 
 def cmd_node_list() -> int:
     registry = load_registry()
-    sys.stdout.write("NAME NODE_ID SSH_HOST USER ENABLED\n")
+    sys.stdout.write("NAME NODE_ID SSH_HOST USER ENABLED STATUS\n")
     for node in registry.get("nodes") or []:
         enabled = "true" if node["enabled"] else "false"
+        status = node_lifecycle_status(node)
         sys.stdout.write(
             f"{node['name']} {node['node_id']} {node['ssh_host']} "
-            f"{node['ssh_user']} {enabled}\n"
+            f"{node['ssh_user']} {enabled} {status}\n"
         )
     return 0
 
@@ -1201,8 +1244,250 @@ def cmd_node_enable(name: str, enabled: bool) -> int:
     registry = load_registry()
     set_enabled(registry, name, enabled)
     save_registry(None, registry)
+    node = require_node(registry, name)
     state = "enabled" if enabled else "disabled"
-    sys.stdout.write(f"{name} {state}\n")
+    sys.stdout.write(f"{name} {state} status={node_lifecycle_status(node)}\n")
+    return 0
+
+
+def _retire_skip_sync() -> bool:
+    return os.environ.get(RETIRE_SKIP_SYNC_ENV, "").strip() == "1"
+
+
+def retired_snapshot_dir(name: str) -> Path:
+    return fleet_home() / "retired" / name
+
+
+def ssh_uninstall_hint(node: dict[str, Any]) -> str:
+    user = node["ssh_user"]
+    host = node["ssh_host"]
+    port = int(node.get("ssh_port") or 22)
+    if port == 22:
+        return f"ssh {user}@{host} -- sudo vcl uninstall --yes"
+    return f"ssh -p {port} {user}@{host} -- sudo vcl uninstall --yes"
+
+
+def _cursor_snapshot(node: dict[str, Any]) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "node_id": node["node_id"],
+        "instance_id": None,
+        "last_event_id": 0,
+        "last_sync_at": None,
+        "status": None,
+    }
+    conn = open_fleet_db()
+    try:
+        row = read_sync_cursor_row(conn, node["node_id"])
+    finally:
+        conn.close()
+    if row is None:
+        return doc
+    doc["instance_id"] = row["instance_id"]
+    doc["last_event_id"] = int(row["last_event_id"])
+    doc["last_sync_at"] = row["last_sync_at"]
+    doc["status"] = row["status"]
+    return doc
+
+
+def _last_status_slice(name: str) -> Optional[dict[str, Any]]:
+    path = last_status_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    for rec in data.get("nodes") or []:
+        if isinstance(rec, dict) and rec.get("name") == name:
+            return rec
+    return None
+
+
+def write_retire_snapshot(
+    node: dict[str, Any],
+    *,
+    identity: Optional[dict[str, Any]],
+    last_status: Optional[dict[str, Any]],
+) -> Path:
+    dest = retired_snapshot_dir(node["name"])
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest.parent, 0o700)
+    except OSError:
+        pass
+    try:
+        os.chmod(dest, 0o700)
+    except OSError:
+        pass
+    write_private_file(
+        dest / "identity.json",
+        json.dumps(
+            identity if isinstance(identity, dict) else {},
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )
+    write_private_file(
+        dest / "cursor.json",
+        json.dumps(_cursor_snapshot(node), indent=2, ensure_ascii=False),
+    )
+    slice_doc = last_status if isinstance(last_status, dict) else {}
+    write_private_file(
+        dest / "last-status.json",
+        json.dumps(slice_doc, indent=2, ensure_ascii=False),
+    )
+    hint = ssh_uninstall_hint(node)
+    readme = (
+        f"Node {node['name']} ({node['node_id']}) was retired by vcl-fleet.\n"
+        "The node was not uninstalled. Historical audit rows remain in fleet.db.\n"
+        "This directory is a final-state record (identity, sync cursor, last status),\n"
+        "not a 0.3.0 backup/snapshot.\n"
+        "\n"
+        f"Optional uninstall on the node:\n"
+        f"  {hint}\n"
+    )
+    write_private_file(dest / "README.txt", readme)
+    return dest
+
+
+def disable_remote_users_except_last(
+    node: dict[str, Any],
+) -> tuple[list[str], Optional[str], Optional[str]]:
+    """Disable every enabled user except the last (tag-sorted). Node invariant."""
+    users, err = _list_users_on_node(node)
+    if err is not None:
+        return [], None, err
+    enabled = sorted(
+        [u for u in (users or []) if u.get("enabled")],
+        key=lambda u: str(u.get("tag") or ""),
+    )
+    if not enabled:
+        return [], None, None
+    keep_tag = str(enabled[-1].get("tag") or "") or None
+    disabled: list[str] = []
+    errors: list[str] = []
+    for user in enabled[:-1]:
+        tag = str(user.get("tag") or "")
+        if not tag:
+            continue
+        ssh_state, payload, detail = ssh_remote_json(
+            node,
+            ["vcl", "user", "disable", tag, "--json"],
+            timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+        )
+        ok = (
+            ssh_state == "OK"
+            and isinstance(payload, dict)
+            and payload.get("ok") is True
+        )
+        if ok:
+            disabled.append(tag)
+            continue
+        errors.append(f"{tag}: {detail or 'disable failed'}")
+    err_s = "; ".join(errors) if errors else None
+    return disabled, keep_tag, err_s
+
+
+def _run_final_sync(node: dict[str, Any]) -> dict[str, Any]:
+    """Same machinery as `vcl-fleet sync --node NAME` for one node."""
+    now_iso = format_utc(datetime.now(timezone.utc))
+    conn = open_fleet_db()
+    try:
+        row = sync_one_node(conn, node, now_iso=now_iso)
+    finally:
+        conn.close()
+    sys.stdout.write(format_sync_table([row]))
+    return row
+
+
+def cmd_node_retire(name: str) -> int:
+    validate_name(name)
+    registry = load_registry()
+    node = require_node(registry, name)
+    if node_lifecycle_status(node) == NODE_STATUS_RETIRED:
+        die(f"node already retired: {name}")
+
+    skip_sync = _retire_skip_sync()
+    identity: Optional[dict[str, Any]] = None
+    if skip_sync:
+        sys.stderr.write(
+            f"WARNING: skipping final sync for {name} "
+            f"({RETIRE_SKIP_SYNC_ENV}=1); AC-2.9-08 is not satisfied "
+            "on this path\n"
+        )
+        ssh_state, ident, _detail = ssh_remote_json(
+            node, ["vcl", "identity", "--json"]
+        )
+        if ssh_state == "OK" and isinstance(ident, dict):
+            identity = ident
+    else:
+        if not node_is_active(node):
+            die(
+                f"cannot retire {name}: final sync requires an active node "
+                "(unreachable or disabled nodes cannot be retired)"
+            )
+        ssh_state, ident, ident_detail = ssh_remote_json(
+            node, ["vcl", "identity", "--json"]
+        )
+        if ssh_state != "OK" or not isinstance(ident, dict):
+            die(
+                f"cannot retire {name}: SSH identity failed "
+                f"({ident_detail or 'unreachable'}); final sync required"
+            )
+        remote_id = ident.get("node_id")
+        if remote_id != node["node_id"]:
+            die(
+                f"cannot retire {name}: remote node_id {remote_id} does not "
+                f"match registry {node['node_id']}"
+            )
+        identity = ident
+        sync_row = _run_final_sync(node)
+        status = sync_row.get("status")
+        if status == SYNC_STATUS_EXPIRED:
+            die(
+                f"cannot retire {name}: CURSOR_EXPIRED; "
+                f"run: vcl-fleet sync --reseed {name}"
+            )
+        if status != SYNC_STATUS_OK:
+            die(
+                f"cannot retire {name}: final sync failed "
+                f"({sync_row.get('error') or status}); not marking retired"
+            )
+
+    last_status = _last_status_slice(name)
+    if last_status is None:
+        probe = probe_node(
+            node,
+            controller_utc=datetime.now(timezone.utc),
+            want_verify=False,
+        )
+        last_status = _status_json_node(probe)
+
+    write_retire_snapshot(node, identity=identity, last_status=last_status)
+
+    _disabled, kept, disable_err = disable_remote_users_except_last(node)
+    if disable_err:
+        sys.stderr.write(
+            f"WARNING: {name}: remote user disable was best-effort: "
+            f"{disable_err}\n"
+        )
+
+    registry = load_registry()
+    node = require_node(registry, name)
+    node["status"] = NODE_STATUS_RETIRED
+    node["enabled"] = False
+    save_registry(None, registry)
+
+    hint = ssh_uninstall_hint(node)
+    sys.stdout.write(f"Retired {name} (status=retired, enabled=false).\n")
+    sys.stdout.write("historical fleet.db rows were not erased\n")
+    if kept:
+        sys.stderr.write(
+            f"WARNING: last enabled user {kept} remains on the node "
+            "(node invariant; credentials were not revoked)\n"
+        )
+    sys.stdout.write(f"Uninstall hint: {hint}\n")
+    sys.stdout.write(f"Snapshot: {retired_snapshot_dir(name)}\n")
     return 0
 
 
@@ -1400,7 +1685,16 @@ def probe_node(
     previous_instances: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     row = _empty_probe_row(node)
-    if not node.get("enabled", True):
+    life = node_lifecycle_status(node)
+    if life == NODE_STATUS_RETIRED:
+        row["ssh"] = "-"
+        row["proxy"] = "-"
+        row["accounting"] = "-"
+        row["registry"] = "-"
+        row["clock"] = "-"
+        row["ok"] = True
+        return row
+    if life == NODE_STATUS_DISABLED or not node.get("enabled", True):
         row["ssh"] = "DISABLED"
         row["proxy"] = "DISABLED"
         row["accounting"] = "DISABLED"
@@ -1503,7 +1797,7 @@ def format_status_table(rows: list[dict[str, Any]]) -> str:
     lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<7} {'PROXY':<7} ACCOUNTING"]
     for row in rows:
         instance = "-"
-        if row.get("ssh") not in ("FAIL", "DISABLED") and row.get("instance_id"):
+        if row.get("ssh") not in ("FAIL", "DISABLED", "-") and row.get("instance_id"):
             instance = short_id(row.get("instance_id"))
         lines.append(
             f"{row['name']:<8} {short_id(row.get('node_id')):<8} {instance:<8} "
@@ -1516,6 +1810,10 @@ def format_verify_report(rows: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for row in rows:
         parts.append(row["name"])
+        if row.get("ssh") == "-":
+            parts.append("  status: retired")
+            parts.append("")
+            continue
         if row.get("ssh") == "DISABLED":
             parts.append("  enabled: false")
             parts.append("")
@@ -1632,7 +1930,7 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
     nodes = list(registry.get("nodes") or [])
     if include_all:
         return nodes
-    return [node for node in nodes if node.get("enabled", True)]
+    return [node for node in nodes if node_is_active(node)]
 
 
 def cmd_status(*, as_json: bool, include_all: bool) -> int:
@@ -1921,7 +2219,10 @@ def target_names_from_add_args(args: argparse.Namespace) -> list[str]:
 
 def require_enabled_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
     node = require_node(registry, name)
-    if not node.get("enabled", True):
+    life = node_lifecycle_status(node)
+    if life == NODE_STATUS_RETIRED:
+        die(f"node is retired: {name}")
+    if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
         die(f"node is disabled: {name}")
     return node
 
@@ -2805,7 +3106,15 @@ def sync_one_node(
     if cursor_row is not None:
         prior_instance = cursor_row["instance_id"]
 
-    if not node.get("enabled", True):
+    life = node_lifecycle_status(node)
+    if life == NODE_STATUS_RETIRED:
+        return _sync_result(
+            node,
+            status="RETIRED",
+            after=after,
+            last_event_id=after,
+        )
+    if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
         return _sync_result(
             node,
             status="DISABLED",
@@ -3661,6 +3970,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_disable.add_argument("name")
     p_enable = node_sub.add_parser("enable", help="enable a registered node")
     p_enable.add_argument("name")
+    p_retire = node_sub.add_parser(
+        "retire",
+        help="retire a node after final sync (history is kept)",
+        description=(
+            "Final-sync NAME, write $FLEET_HOME/retired/NAME/ (identity, "
+            "cursor, last-status; not a 0.3.0 backup), disable remote users "
+            "except the last enabled (node invariant), then mark "
+            "status=retired enabled=false. Does not uninstall the node and "
+            "does not erase fleet.db history. Unreachable nodes cannot be "
+            "retired because final sync is required."
+        ),
+    )
+    p_retire.add_argument("name")
 
     p_status = sub.add_parser(
         "status",
@@ -3682,7 +4004,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument(
         "--all",
         action="store_true",
-        help="include disabled nodes (marked DISABLED)",
+        help="include disabled and retired nodes (retired SSH=-; no SSH)",
     )
     p_verify = sub.add_parser(
         "verify",
@@ -3703,7 +4025,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "--all",
         action="store_true",
-        help="include disabled nodes (marked DISABLED)",
+        help="include disabled and retired nodes (retired SSH=-; no SSH)",
     )
     user = sub.add_parser(
         "user",
@@ -3911,7 +4233,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_sel.add_argument(
         "--all",
         action="store_true",
-        help="include disabled nodes (marked DISABLED; no SSH)",
+        help="include disabled nodes (marked DISABLED; no SSH). Retired nodes are skipped.",
     )
     p_sync.add_argument(
         "--reseed",
@@ -4070,6 +4392,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_node_enable(args.name, False)
         if sub == "enable":
             return cmd_node_enable(args.name, True)
+        if sub == "retire":
+            return cmd_node_retire(args.name)
         die(f"unknown node command: {sub}", 2)
     if command == "user":
         sub = args.user_command
