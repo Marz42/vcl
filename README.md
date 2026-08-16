@@ -43,6 +43,7 @@ scripts/
   rc-*.sh                  # 远端 RC / 升级链测试
   freeze-*.sh              # 0.2.4 freeze 辅助（历史）
 tests/test.sh              # 本地单元测试（source tests/test-fleet.sh）
+.github/workflows/ci.yml   # merge gate（unit / concurrency / failure-injection / artifact）
 docs/identity.md           # 身份合同
 docs/fleet.md              # 控制器运维指南
 docs/backup.md             # 备份 / restore / replace
@@ -326,6 +327,21 @@ VCL_INTEGRATION=1 bash tests/test.sh
 ```
 
 Source of Truth：`state.json`（节点/REALITY）+ `users.json`（credential UUID）+ `config.toml`（设置）。由此生成 `config.json` / `owner.uri`。
+
+---
+
+## CI
+
+Merge gate is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). All jobs must be green to merge. The workflow does not use repository secrets.
+
+| Job | What it runs |
+| --- | --- |
+| **unit** | Host `ubuntu-latest`: `bash tests/test.sh` (sources fleet) and standalone `bash tests/test-fleet.sh`. Debian 12 / Debian 13 containers run `tests/test.sh` with `python3` installed (sourced fleet tests run there too). No Ubuntu 26.04 runner is added until GitHub provides one; `ubuntu-latest` is the Ubuntu matrix entry. |
+| **concurrency** | Fail-closed if B6 flock tests are missing, then the same suites (parallel `user add` / lock busy). |
+| **failure-injection** | `bash tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER` (stage / install / health and later boundaries), P1-03 upgrade preflight injects, and P1-05 bad Clash envelopes. |
+| **artifact** | `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`; black-box unzip of `dist/vincula-controller-*.zip` with no repo `lib/`; `sha256sum --check` on the zip sidecar and `controller.lock`; node tarball listing + `release.lock`. |
+
+Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth.
 
 ---
 

@@ -1270,6 +1270,66 @@ assert_success "bootstrap comments require RELEASE_SHA256 in production" \
 assert_success "README documents production bootstrap pin" \
   grep -q '传输损坏' "${PROJECT_DIR}/README.md"
 
+# REQ-CI / B16: GitHub Actions merge gate.
+CI_YML="${PROJECT_DIR}/.github/workflows/ci.yml"
+assert_success "GitHub Actions workflow exists" \
+  test -f "$CI_YML"
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  if python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$CI_YML"; then
+    pass "ci.yml is valid YAML (PyYAML)"
+  else
+    fail "ci.yml is valid YAML (PyYAML)"
+  fi
+else
+  ci_basic_rc=0
+  python3 - "$CI_YML" <<'PY' || ci_basic_rc=$?
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if not text.strip():
+    raise SystemExit("empty workflow")
+if "\t" in text:
+    raise SystemExit("workflow contains tabs")
+if "\njobs:\n" not in text and not text.startswith("jobs:"):
+    raise SystemExit("missing jobs:")
+for needle in ("unit:", "concurrency:", "failure-injection:", "artifact:"):
+    if needle not in text:
+        raise SystemExit(f"missing {needle}")
+PY
+  if (( ci_basic_rc == 0 )); then
+    pass "ci.yml is valid YAML (basic sanity; PyYAML not installed)"
+  else
+    fail "ci.yml is valid YAML (basic sanity; PyYAML not installed)"
+  fi
+fi
+assert_success "ci.yml has unit job" \
+  grep -qE '^  unit:' "$CI_YML"
+assert_success "ci.yml has concurrency job" \
+  grep -qE '^  concurrency:' "$CI_YML"
+assert_success "ci.yml has failure-injection job" \
+  grep -qE '^  failure-injection:' "$CI_YML"
+assert_success "ci.yml has artifact job" \
+  grep -qE '^  artifact:' "$CI_YML"
+assert_success "ci.yml runs debian:12 container tests" \
+  grep -q 'debian:12' "$CI_YML"
+assert_success "ci.yml runs debian:13 container tests" \
+  grep -q 'debian:13' "$CI_YML"
+assert_success "ci.yml runs tests/test.sh" \
+  grep -q 'bash tests/test.sh' "$CI_YML"
+assert_success "ci.yml runs standalone tests/test-fleet.sh" \
+  grep -q 'bash tests/test-fleet.sh' "$CI_YML"
+assert_success "ci.yml builds release and controller artifacts" \
+  grep -q 'scripts/build-release.sh' "$CI_YML"
+assert_success "ci.yml builds controller zip" \
+  grep -q 'scripts/build-controller.sh' "$CI_YML"
+assert_failure "ci.yml does not require repository secrets" \
+  grep -q '${{ secrets.' "$CI_YML"
+assert_failure "ci.yml does not run live upgrade driver" \
+  grep -q 'rc-live-upgrade-driver' "$CI_YML"
+assert_success "README documents GitHub Actions CI" \
+  grep -Fq '.github/workflows/ci.yml' "${PROJECT_DIR}/README.md"
+
 # P2-03 / B13: production bootstrap fail-closed without an external pin.
 BOOT_PKG="${TEST_TMP}/bootstrap-pkg"
 BOOT_ROOT="${BOOT_PKG}/vincula-node-test"

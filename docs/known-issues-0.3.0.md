@@ -79,6 +79,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P2-01 uninstall left `__pycache__` | B11: install validation uses in-process `compile()` (no bytecode write). `cmd_uninstall` / `rollback_install` / `rollback_migration` delete `$LIB_DIR/__pycache__` before `rmdir`, so a complete uninstall leaves no product residue |
 | P2-02 backup verify/copy held whole files in memory | B12: tar verify streams members in 1 MiB chunks; `info.size` over `MAX_MEMBER_BYTES` (1 GiB) or total over `MAX_ARCHIVE_BYTES` (2 GiB) is `invalid_archive` before `extractfile`. `atomic_replace` is a chunked copy. `accounting.db` stays on disk (Backup API + tempfile) |
 | P2-03 incomplete release integrity chain | B13: controller zip writes `controller.lock` + sidecar `.zip.sha256`; `sha256sum -c` verifies. Production bootstrap refuses without `RELEASE_SHA256` (or embed); with a pin, archive must match pin **and** shipped `${URL}.sha256`. Sibling digest from the same URL is transport-only |
+| REQ-CI no GitHub Actions workflow | B16: `.github/workflows/ci.yml` merge gate — unit (`ubuntu-latest` + Debian 12/13 containers), concurrency (B6 flock/busy), failure-injection (restore/upgrade/Clash fixtures in `test.sh`), artifact (build + black-box unzip + sha256). No secrets. Live `rc-live-upgrade-driver` stays manual |
 
 ## Related docs
 

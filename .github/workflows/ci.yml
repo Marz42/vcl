@@ -1,0 +1,149 @@
+# Vincula merge gate (REQ-CI / B16).
+# All jobs below must be green to merge.
+# This workflow does not use repository secrets.
+# Live VPS upgrade chain is a manual gate (READY FOR RC).
+# It is not part of this CI.
+name: ci
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  unit:
+    name: unit (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node tests (sources fleet)
+        run: bash tests/test.sh
+      - name: Standalone fleet tests
+        run: bash tests/test-fleet.sh
+
+  unit-debian:
+    name: unit (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - debian:13
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install test dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash python3 ca-certificates git \
+            coreutils util-linux tar curl
+      - uses: actions/checkout@v4
+      - name: Node tests
+        run: bash tests/test.sh
+
+  concurrency:
+    name: concurrency
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require B6 lock tests
+        run: |
+          set -euo pipefail
+          grep -q 'concurrent user add keeps both tags' tests/test.sh
+          grep -q 'held node lock makes concurrent mutate busy' tests/test.sh
+          grep -q 'held fleet lock makes concurrent node add busy' tests/test-fleet.sh
+      - name: Node + sourced fleet tests
+        run: bash tests/test.sh
+      - name: Standalone fleet lock tests
+        run: bash tests/test-fleet.sh
+
+  failure-injection:
+    name: failure-injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require injection fixtures
+        run: |
+          set -euo pipefail
+          grep -q 'VCL_RESTORE_FAIL_AFTER' tests/test.sh
+          grep -q 'VCL_MIGRATE_FAIL_AFTER' tests/test.sh
+          grep -q 'P1-05 empty object is protocol error' tests/test.sh
+      - name: Node tests (includes restore / upgrade / Clash injects)
+        run: bash tests/test.sh
+
+  artifact:
+    name: artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build node and controller artifacts
+        run: |
+          set -euo pipefail
+          bash scripts/build-release.sh
+          bash scripts/build-controller.sh
+      - name: Verify sidecar digests and release.lock
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          [[ -n "$VERSION" ]]
+          NODE="vincula-node-${VERSION}"
+          CTRL="vincula-controller-${VERSION}"
+          tar -tzf "dist/${NODE}.tar.gz" >/dev/null
+          ( cd dist && sha256sum --check --status "${NODE}.tar.gz.sha256" )
+          ( cd "dist/${NODE}" && sha256sum --check --status release.lock )
+          ( cd dist && sha256sum --check --status "${CTRL}.zip.sha256" )
+      - name: Black-box controller zip (no repo lib/)
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          ZIP="dist/vincula-controller-${VERSION}.zip"
+          BB=$(mktemp -d /tmp/vcl-ci-bb.XXXXXXXX)
+          CWD="${BB}/cwd"
+          HOME_DIR="${BB}/user-home"
+          FLEET_HOME="${BB}/fleet-home"
+          mkdir -p "$CWD" "$HOME_DIR" "$FLEET_HOME"
+          python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$ZIP" "$BB"
+          UNPACK="${BB}/vincula-controller-${VERSION}"
+          test -f "${UNPACK}/bin/vcl-fleet"
+          test -f "${UNPACK}/lib/vincula-audit.py"
+          test -f "${UNPACK}/lib/vincula-backup.py"
+          test -f "${UNPACK}/controller.lock"
+          ( cd "$UNPACK" && sha256sum --check --status controller.lock )
+          bb_fleet() {
+            env -u PYTHONPATH -u PYTHONHOME \
+              HOME="$HOME_DIR" \
+              VCL_FLEET_HOME="$FLEET_HOME" \
+              python3 -s "${UNPACK}/bin/vcl-fleet" "$@"
+          }
+          version_out=$(cd "$CWD" && bb_fleet version)
+          [[ "$version_out" == "vcl-fleet ${VERSION}" ]]
+          ( cd "$CWD" && bb_fleet init )
+          test -f "${FLEET_HOME}/fleet.json"
+          audit_err=$(cd "$CWD" && bb_fleet audit user alice \
+            --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || true
+          [[ "$audit_err" != *"vincula-audit.py not found"* ]]
+          [[ "$audit_err" != *"vincula-backup.py not found"* ]]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vincula-dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error

@@ -13,6 +13,7 @@
 **Addendum:** 2026-08-17 — B11 / P2-01: uninstall leaves no `__pycache__`.  
 **Addendum:** 2026-08-17 — B12 / P2-02: streaming backup verify and size caps.  
 **Addendum:** 2026-08-17 — B13 / P2-03: controller sha256 manifest and fail-closed bootstrap pin.  
+**Addendum:** 2026-08-17 — B16 / REQ-CI: GitHub Actions merge gate (`.github/workflows/ci.yml`).  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -120,6 +121,14 @@ Living tree (`0.3.1-dev`): `scripts/build-controller.sh` writes `controller.lock
 P2-03 is **closed** on the living tree.
 
 Living-tree test counts after B13: `bash tests/test.sh` **1184**; standalone `bash tests/test-fleet.sh` **476**.
+
+## Addendum (2026-08-17) — B16 / REQ-CI GitHub Actions merge gate
+
+Living tree (`0.3.1-dev`): `.github/workflows/ci.yml` is the merge gate. Jobs: **unit** (`ubuntu-latest` runs `tests/test.sh` + standalone `tests/test-fleet.sh`; `unit-debian` matrix runs `tests/test.sh` in `debian:12` and `debian:13` containers with `python3` installed), **concurrency** (fail-closed unless B6 flock/busy tests exist, then the suites), **failure-injection** (full `tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER`, P1-03 `VCL_MIGRATE_FAIL_AFTER`, and P1-05 bad Clash envelopes), **artifact** (`scripts/build-release.sh` + `scripts/build-controller.sh`, black-box unzip of the controller zip with no repo `lib/`, `sha256sum --check` on the zip sidecar and `controller.lock`, node tarball listing + `release.lock`). No repository secrets. Live `scripts/rc-live-upgrade-driver.sh` is **not** in this workflow.
+
+This is the in-repo evidence row for 发行门禁「CI 全绿（`.github/workflows/ci.yml`）」. Local `test.sh` green alone is not that row. GHA-only; no local `act` dry-run required.
+
+Living-tree test counts after B16: `bash tests/test.sh` **1199**; standalone `bash tests/test-fleet.sh` **476**.
 
 ### Freeze-era recommendation (historical)
 
