@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-VCL_FLEET_VERSION = "0.2.8"
+VCL_FLEET_VERSION = "0.2.9-dev"
 FLEET_SCHEMA_VERSION = 1
 CLOCK_SKEW_WARN_SECONDS = 30
 CLOCK_SKEW_FAIL_SECONDS = 300
