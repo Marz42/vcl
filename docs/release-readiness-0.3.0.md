@@ -12,6 +12,7 @@
 **Addendum:** 2026-08-16 — B10 / P0-01b: `node replace` on the real restore contract.  
 **Addendum:** 2026-08-17 — B11 / P2-01: uninstall leaves no `__pycache__`.  
 **Addendum:** 2026-08-17 — B12 / P2-02: streaming backup verify and size caps.  
+**Addendum:** 2026-08-17 — B13 / P2-03: controller sha256 manifest and fail-closed bootstrap pin.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -111,6 +112,14 @@ Living tree (`0.3.1-dev`): `verify_archive` / `_read_tar_members` reject a membe
 P2-02 is **closed** on the living tree.
 
 Living-tree test counts after B12: `bash tests/test.sh` **1167**; standalone `bash tests/test-fleet.sh` **474**.
+
+## Addendum (2026-08-17) — B13 / P2-03 controller sha256 and bootstrap pin
+
+Living tree (`0.3.1-dev`): `scripts/build-controller.sh` writes `controller.lock` (member list + sha256 per file) inside the zip and an independent sidecar `dist/vincula-controller-<ver>.zip.sha256`. The build verifies both (`sha256sum --check` on the sidecar and on the unpacked lock). `vincula-bootstrap.sh` production mode **requires** `RELEASE_SHA256` or a non-empty `EMBEDDED_RELEASE_SHA256`; missing pin is fail-closed. With a pin, the archive must match the pin **and** the shipped `${RELEASE_URL}.sha256`. Fetching the sibling digest from the same URL only detects transport corruption, not origin replacement of both files. `--allow-insecure-sibling-digest` is non-production only.
+
+P2-03 is **closed** on the living tree.
+
+Living-tree test counts after B13: `bash tests/test.sh` **1184**; standalone `bash tests/test-fleet.sh` **476**.
 
 ### Freeze-era recommendation (historical)
 

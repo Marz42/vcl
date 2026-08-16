@@ -1,7 +1,10 @@
 # Vincula controller (`vcl-fleet`)
 
 Workstation Fleet Users & Audit CLI. **No root, no systemd, no `/etc/vincula`.**
-This zip is a user-local tool: it has no installer and no `release.lock`.
+This zip is a user-local tool: it has no installer and no node `release.lock`.
+Integrity: `controller.lock` (per-member SHA-256) inside the zip, plus an
+independent sidecar `vincula-controller-<version>.zip.sha256`. Verify with
+`sha256sum -c` on the sidecar, then `sha256sum -c controller.lock` after unzip.
 Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py` and
 `vincula-backup.py` (required for `audit` and local backup verify).
 

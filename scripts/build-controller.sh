@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build the workstation controller zip under dist/ from the canonical repo root.
-# User-local tool: no release.lock and no installer integrity chain.
+# Integrity: per-member controller.lock inside the zip, plus an independent
+# sidecar dist/vincula-controller-<ver>.zip.sha256. Not a node release.lock /
+# installer chain (no vincula.sh).
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -14,6 +16,7 @@ NAME="vincula-controller-${VERSION}"
 DIST_ROOT="${ROOT}/dist"
 OUT="${DIST_ROOT}/${NAME}"
 ARCHIVE="${DIST_ROOT}/${NAME}.zip"
+SIDECAR="${ARCHIVE}.sha256"
 
 FILES=(
   README-controller.md
@@ -23,6 +26,15 @@ FILES=(
   lib/vincula-audit.py
   lib/vincula-backup.py
 )
+
+command -v python3 >/dev/null 2>&1 || {
+  printf 'ERROR: python3 is required to write the controller zip\n' >&2
+  exit 1
+}
+command -v sha256sum >/dev/null 2>&1 || {
+  printf 'ERROR: sha256sum is required to write controller integrity files\n' >&2
+  exit 1
+}
 
 printf 'Building %s\n' "$OUT"
 rm -rf --one-file-system -- "$OUT"
@@ -34,12 +46,24 @@ for f in "${FILES[@]}"; do
 done
 chmod 0755 "${OUT}/bin/vcl-fleet"
 
-command -v python3 >/dev/null 2>&1 || {
-  printf 'ERROR: python3 is required to write the controller zip\n' >&2
-  exit 1
-}
+(
+  cd "$OUT"
+  : > controller.lock
+  for f in "${FILES[@]}"; do
+    sha256sum -- "$f" >> controller.lock
+  done
+)
 
-rm -f -- "$ARCHIVE"
+while read -r digest path; do
+  [[ -n "${digest:-}" && -n "${path:-}" ]] || continue
+  actual=$(sha256sum -- "${OUT}/${path}" | awk '{print $1}')
+  [[ "$actual" == "$digest" ]] || {
+    printf 'ERROR: controller.lock mismatch for %s (lock=%s actual=%s)\n' "$path" "$digest" "$actual" >&2
+    exit 1
+  }
+done < "${OUT}/controller.lock"
+
+rm -f -- "$ARCHIVE" "$SIDECAR"
 (
   cd "$DIST_ROOT"
   python3 -m zipfile -c "$(basename "$ARCHIVE")" "$NAME"
@@ -57,6 +81,7 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/controller.lock",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
 with zipfile.ZipFile(archive) as zf:
@@ -70,6 +95,36 @@ for name in names:
         raise SystemExit(f"forbidden zip member: {name}")
 PY
 
+VERIFY_DIR=$(mktemp -d /tmp/vincula-controller-verify.XXXXXXXX)
+cleanup_verify() { rm -rf --one-file-system -- "$VERIFY_DIR"; }
+trap cleanup_verify EXIT
+python3 - "$ARCHIVE" "$VERIFY_DIR" <<'PY'
+import sys
+import zipfile
+
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+(
+  cd "${VERIFY_DIR}/${NAME}"
+  sha256sum --check --status controller.lock
+) || {
+  printf 'ERROR: unpacked controller.lock failed sha256sum --check\n' >&2
+  exit 1
+}
+cleanup_verify
+trap - EXIT
+
+(
+  cd "$DIST_ROOT"
+  sha256sum -- "$(basename "$ARCHIVE")" > "$(basename "$SIDECAR")"
+  sha256sum --check --status "$(basename "$SIDECAR")"
+) || {
+  printf 'ERROR: controller zip failed sidecar SHA-256 check\n' >&2
+  exit 1
+}
+
 printf 'wrote %s\n' "$OUT"
 printf 'wrote %s\n' "$ARCHIVE"
-printf 'OK controller zip (no release.lock)\n'
+printf 'wrote %s\n' "$SIDECAR"
+cat "$SIDECAR"
+printf 'OK controller zip (controller.lock + zip sha256)\n'

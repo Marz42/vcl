@@ -135,6 +135,10 @@ assert_success "build-controller.sh packs vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "build-controller.sh packs vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "build-controller.sh writes controller.lock" \
+  grep -q 'controller.lock' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "build-controller.sh writes zip sha256 sidecar" \
+  grep -q 'zip.sha256' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 

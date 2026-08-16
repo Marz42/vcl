@@ -62,7 +62,7 @@ bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
 # → dist/vincula-node-0.3.0/  与  dist/vincula-node-0.3.0.tar.gz (+ .sha256)
 bash scripts/build-controller.sh
-# → dist/vincula-controller-0.3.0/  与  dist/vincula-controller-0.3.0.zip
+# → dist/vincula-controller-0.3.0.zip (+ .sha256) 与 zip 内 controller.lock
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -87,15 +87,21 @@ sudo bash vincula.sh
 
 ### 3. 可选：bootstrap 拉 tarball
 
+生产必须带外部 pin（`RELEASE_SHA256` 或发布工程写入的 `EMBEDDED_RELEASE_SHA256`）。缺 pin 会直接拒绝。脚本还会拉 `${RELEASE_URL}.sha256`：pin、该文件、archive 三者必须一致。
+
+从同一 URL 拉 `.sha256` **只能**发现传输损坏，**不能**发现源站把 tar 和 `.sha256` 一起换掉。生产必须把 digest 钉在环境变量 / 镜像 / embed 里，不要把兄弟 `.sha256` 当成 pin。
+
 ```bash
 sudo env RELEASE_URL='https://example.com/vincula-node-0.3.0.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
 
+非生产才允许 `--allow-insecure-sibling-digest`（无 pin 时用兄弟 `.sha256`）。不要在生产用。
+
 **不支持** `curl | bash` 单文件安装（必须同目录有 `bin/` + `lib/`）。
 
-工作站控制器是另一个产物（zip，无 installer / 无 `release.lock`）。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key、user/sync/retire/replace 与 AC-3.0 见 [`docs/fleet.md`](docs/fleet.md)。
+工作站控制器是另一个产物（zip，无 installer / 无节点 `release.lock`）。zip 内有 `controller.lock`（各成员 sha256），旁边有 `vincula-controller-<ver>.zip.sha256`。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key、user/sync/retire/replace 与 AC-3.0 见 [`docs/fleet.md`](docs/fleet.md)。
 
 ### 环境变量
 

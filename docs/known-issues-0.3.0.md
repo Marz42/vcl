@@ -32,7 +32,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | `--reseed` still wipes the local audit cache | Deletes that node’s `audit_events` + `daily_usage`, cursor=0. Does **not** erase `instance_history`. Not a substitute for `vcl backup create` |
 | D20 soak is not a 0.3.0 gate | 24h soak binds **0.2.7 only** |
 | PARTIAL has no distributed rollback | Exit 2 + per-node status + `--user-id` remediation. Unchanged from 0.2.9 |
-| Controller is a local tool | No installer, no systemd, no `/etc/vincula`, **no `release.lock` chain** |
+| Controller is a local tool | No installer, no systemd, no `/etc/vincula`. Not a node `release.lock`. Living tree: `controller.lock` inside the zip + sidecar `vincula-controller-<ver>.zip.sha256` (P2-03 / B13) |
 | Windows workstation | Needs **Python 3.10+** on PATH and **system OpenSSH Client**. Neither is bundled |
 | Clock skew thresholds | Frozen: WARN `>30s`, FAIL `>300s` check `audit-clock-health`. Not tunable |
 | No public management port | Workstation → node is SSH only. Controller does not listen |
@@ -78,6 +78,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P1-03 upgrade preflight stopped accountd before backup, with no recovery | B9: read-only preflight (files, schema, disk, REALITY, `sing-box check`) runs before any service mutation. `SERVICE_STATE` is captured and `MIGRATION_STARTED` is armed before backup. SQLite snapshot uses source-tree `snapshot_sqlite` (Backup API); accountd is stopped only for the file-swap window. Rollback restores the exact pretest enabled/active bits |
 | P2-01 uninstall left `__pycache__` | B11: install validation uses in-process `compile()` (no bytecode write). `cmd_uninstall` / `rollback_install` / `rollback_migration` delete `$LIB_DIR/__pycache__` before `rmdir`, so a complete uninstall leaves no product residue |
 | P2-02 backup verify/copy held whole files in memory | B12: tar verify streams members in 1 MiB chunks; `info.size` over `MAX_MEMBER_BYTES` (1 GiB) or total over `MAX_ARCHIVE_BYTES` (2 GiB) is `invalid_archive` before `extractfile`. `atomic_replace` is a chunked copy. `accounting.db` stays on disk (Backup API + tempfile) |
+| P2-03 incomplete release integrity chain | B13: controller zip writes `controller.lock` + sidecar `.zip.sha256`; `sha256sum -c` verifies. Production bootstrap refuses without `RELEASE_SHA256` (or embed); with a pin, archive must match pin **and** shipped `${URL}.sha256`. Sibling digest from the same URL is transport-only |
 
 ## Related docs
 

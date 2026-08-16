@@ -70,7 +70,9 @@ bin\vcl-fleet.cmd init
 `node replace` locally verifies the archive by loading
 `lib/vincula-backup.py` next to `vincula-fleet.py`. The controller zip ships
 `lib/vincula-audit.py` and `lib/vincula-backup.py` beside `vincula-fleet.py`
-(P0-02 / B3). See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+(P0-02 / B3). The zip also ships `controller.lock` (member list + sha256) and a
+sidecar `vincula-controller-<ver>.zip.sha256` (P2-03 / B13). Verify with
+`sha256sum -c`. See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Linux / macOS
 

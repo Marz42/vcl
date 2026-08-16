@@ -994,6 +994,13 @@ assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
   test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+assert_success "controller zip sidecar sha256 exists" \
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256"
+if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+  pass "controller zip sha256sum -c verifies"
+else
+  fail "controller zip sha256sum -c verifies"
+fi
 controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
 controller_zip_rc=0
 python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
@@ -1009,6 +1016,7 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/controller.lock",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
 with zipfile.ZipFile(archive) as zf:
@@ -1068,6 +1076,19 @@ assert_success "controller zip black-box unpack has vincula-audit.py" \
   test -f "${UNPACK}/lib/vincula-audit.py"
 assert_success "controller zip black-box unpack has vincula-backup.py" \
   test -f "${UNPACK}/lib/vincula-backup.py"
+assert_success "controller zip contains controller.lock manifest" \
+  test -f "${UNPACK}/controller.lock"
+if ( cd "$UNPACK" && sha256sum --check --status controller.lock ); then
+  pass "controller.lock verifies unpacked members"
+else
+  fail "controller.lock verifies unpacked members"
+fi
+assert_success "controller.lock lists vincula-fleet.py" \
+  grep -q 'lib/vincula-fleet.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists vincula-audit.py" \
+  grep -q 'lib/vincula-audit.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${UNPACK}/controller.lock"
 
 bb_fleet() {
   env -u PYTHONPATH -u PYTHONHOME \
@@ -1228,6 +1249,104 @@ assert_success "README mentions vincula-node artifact" \
   grep -q 'vincula-node-' "${PROJECT_DIR}/README.md"
 assert_success "README mentions vincula-controller artifact" \
   grep -q 'vincula-controller-' "${PROJECT_DIR}/README.md"
+
+# P2-03 / B13: controller sidecar digest is a real check (tamper → fail).
+TAMPER_DIR="${TEST_TMP}/controller-zip-tamper"
+mkdir -p "$TAMPER_DIR"
+cp -a "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" \
+  "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256" \
+  "$TAMPER_DIR/"
+printf 'x' >> "${TAMPER_DIR}/vincula-controller-${VINCULA_VERSION}.zip"
+if ( cd "$TAMPER_DIR" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+  fail "controller zip sha256sum -c rejects a tampered zip"
+else
+  pass "controller zip sha256sum -c rejects a tampered zip"
+fi
+
+assert_success "bootstrap documents sibling digest is not a production pin" \
+  grep -q 'transport corruption' "${PROJECT_DIR}/vincula-bootstrap.sh"
+assert_success "bootstrap comments require RELEASE_SHA256 in production" \
+  grep -q 'required in production' "${PROJECT_DIR}/vincula-bootstrap.sh"
+assert_success "README documents production bootstrap pin" \
+  grep -q '传输损坏' "${PROJECT_DIR}/README.md"
+
+# P2-03 / B13: production bootstrap fail-closed without an external pin.
+BOOT_PKG="${TEST_TMP}/bootstrap-pkg"
+BOOT_ROOT="${BOOT_PKG}/vincula-node-test"
+mkdir -p "$BOOT_ROOT"
+cat > "${BOOT_ROOT}/vincula.sh" <<'EOS'
+#!/usr/bin/env bash
+printf 'bootstrap-installer-ok\n'
+exit 0
+EOS
+chmod 0755 "${BOOT_ROOT}/vincula.sh"
+(
+  cd "$BOOT_ROOT"
+  sha256sum -- vincula.sh > release.lock
+)
+BOOT_ARCHIVE="${TEST_TMP}/bootstrap-node.tar.gz"
+tar -C "$BOOT_PKG" -czf "$BOOT_ARCHIVE" vincula-node-test
+BOOT_PIN=$(sha256sum "$BOOT_ARCHIVE" | awk '{print $1}')
+printf '%s  %s\n' "$BOOT_PIN" "bootstrap-node.tar.gz" > "${BOOT_ARCHIVE}.sha256"
+BOOT_URL="file://${BOOT_ARCHIVE}"
+BOOT_WRONG=$(python3 -c 'print("0" * 64)')
+
+boot_nopin_rc=0
+boot_nopin=$(
+  env -u RELEASE_SHA256 -u EMBEDDED_RELEASE_SHA256 -u VCL_ALLOW_INSECURE_SIBLING_DIGEST \
+    RELEASE_URL="$BOOT_URL" \
+    bash "${PROJECT_DIR}/vincula-bootstrap.sh" 2>&1
+) || boot_nopin_rc=$?
+if (( boot_nopin_rc != 0 )) \
+  && [[ "$boot_nopin" == *"RELEASE_SHA256"* ]] \
+  && [[ "$boot_nopin" == *"transport corruption"* ]]; then
+  pass "bootstrap without pin refuses in production"
+else
+  fail "bootstrap without pin refuses in production (rc=${boot_nopin_rc} out=${boot_nopin})"
+fi
+
+boot_badpin_rc=0
+boot_badpin=$(
+  env -u EMBEDDED_RELEASE_SHA256 -u VCL_ALLOW_INSECURE_SIBLING_DIGEST \
+    RELEASE_URL="$BOOT_URL" \
+    RELEASE_SHA256="$BOOT_WRONG" \
+    bash "${PROJECT_DIR}/vincula-bootstrap.sh" 2>&1
+) || boot_badpin_rc=$?
+if (( boot_badpin_rc != 0 )) && [[ "$boot_badpin" == *"SHA-256 mismatch"* ]]; then
+  pass "bootstrap with mismatched pin refuses"
+else
+  fail "bootstrap with mismatched pin refuses (rc=${boot_badpin_rc} out=${boot_badpin})"
+fi
+
+printf '%s  %s\n' "$BOOT_WRONG" "bootstrap-node.tar.gz" > "${BOOT_ARCHIVE}.sha256"
+boot_badsib_rc=0
+boot_badsib=$(
+  env -u EMBEDDED_RELEASE_SHA256 -u VCL_ALLOW_INSECURE_SIBLING_DIGEST \
+    RELEASE_URL="$BOOT_URL" \
+    RELEASE_SHA256="$BOOT_PIN" \
+    bash "${PROJECT_DIR}/vincula-bootstrap.sh" 2>&1
+) || boot_badsib_rc=$?
+if (( boot_badsib_rc != 0 )) && [[ "$boot_badsib" == *"does not match RELEASE_SHA256 pin"* ]]; then
+  pass "bootstrap with pin vs mismatched shipped digest refuses"
+else
+  fail "bootstrap with pin vs mismatched shipped digest refuses (rc=${boot_badsib_rc} out=${boot_badsib})"
+fi
+printf '%s  %s\n' "$BOOT_PIN" "bootstrap-node.tar.gz" > "${BOOT_ARCHIVE}.sha256"
+
+boot_ok_rc=0
+boot_ok=$(
+  env -u EMBEDDED_RELEASE_SHA256 -u VCL_ALLOW_INSECURE_SIBLING_DIGEST \
+    RELEASE_URL="$BOOT_URL" \
+    RELEASE_SHA256="$BOOT_PIN" \
+    bash "${PROJECT_DIR}/vincula-bootstrap.sh" 2>&1
+) || boot_ok_rc=$?
+if (( boot_ok_rc == 0 )) \
+  && [[ "$boot_ok" == *"archive sha256 verified"* ]] \
+  && [[ "$boot_ok" == *"bootstrap-installer-ok"* ]]; then
+  pass "bootstrap with pin and matching archive succeeds"
+else
+  fail "bootstrap with pin and matching archive succeeds (rc=${boot_ok_rc} out=${boot_ok})"
+fi
 
 assert_success "stats/connections warn on stale accounting" \
   grep -q 'warn_if_accounting_stale' "${PROJECT_DIR}/bin/vincula"
