@@ -1250,7 +1250,7 @@ is_vincula_backup_dir() {
   [[ -d "$dir" ]] || return 1
   if [[ -f "${dir}/${BACKUP_MARKER}" ]]; then
     grep -q '^project=vincula$' "${dir}/${BACKUP_MARKER}" || return 1
-    grep -Eq '^type=(migration-backup|mutation-backup)$' "${dir}/${BACKUP_MARKER}" || return 1
+    grep -Eq '^type=(migration-backup|mutation-backup|restore-safety|restore-rollback)$' "${dir}/${BACKUP_MARKER}" || return 1
     return 0
   fi
   [[ -f "${dir}/state.json" ]] || return 1

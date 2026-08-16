@@ -581,8 +581,8 @@ assert_success "helper documents vcl backup create" \
   grep -q 'vcl backup create' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl backup verify" \
   grep -q 'vcl backup verify FILE' "${TEST_TMP}/vincula"
-assert_success "helper documents vcl restore --replace-node" \
-  grep -q 'vcl restore FILE --replace-node' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl restore FILE" \
+  grep -q 'vcl restore FILE \[--include-secrets\]' "${TEST_TMP}/vincula"
 assert_success "helper implements backup create" \
   grep -q 'cmd_backup_create' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper implements audit export" \
@@ -623,10 +623,15 @@ if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl backup verify FILE'; th
 else
   fail "vcl help lists backup verify"
 fi
-if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl restore FILE --replace-node'; then
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl restore FILE \[--include-secrets\]'; then
   pass "vcl help lists restore"
 else
   fail "vcl help lists restore"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q -- '--replace-node NODE_ID'; then
+  fail "vcl help must not document --replace-node"
+else
+  pass "vcl help must not document --replace-node"
 fi
 if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl accounting check'; then
   pass "vcl help lists accounting check"
@@ -4878,6 +4883,426 @@ if (( bogus_rc != 0 )) && [[ "$bogus_err" == *"Unknown backup subcommand"* ]]; t
   pass "vcl backup unknown subcommand dies"
 else
   fail "vcl backup unknown subcommand dies (rc=${bogus_rc}, err='${bogus_err}')"
+fi
+
+# --- 0.3.0 vcl restore (fresh-node, reissue, transaction) ---
+assert_success "helper implements cmd_restore" \
+  grep -q '^cmd_restore()' "${PROJECT_DIR}/bin/vincula"
+assert_success "restore CLI names --reissue-output" \
+  grep -q -- '--reissue-output' "${PROJECT_DIR}/bin/vincula"
+assert_success "restore refuses existing VERSION" \
+  grep -q 'Refusing to overwrite an existing Vincula install.' "${PROJECT_DIR}/bin/vincula"
+assert_success "restore skip-health hook is test-only env" \
+  grep -q 'VCL_RESTORE_SKIP_HEALTH' "${PROJECT_DIR}/bin/vincula"
+assert_success "restore fail-after hook lives in backup.py" \
+  grep -q 'VCL_RESTORE_FAIL_AFTER' "${PROJECT_DIR}/lib/vincula-backup.py"
+if python3 - "${PROJECT_DIR}/lib/vincula-backup.py" <<'PY'
+from pathlib import Path
+import sys
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+i = src.index("def apply_restore")
+j = src.index("def parse_args")
+body = src[i:j]
+assert body.index("_load_verified_members") < body.index("_safety_copy_existing"), body[:400]
+assert body.index("preflight_restore") < body.index("_safety_copy_existing")
+assert "verify_archive" in body
+PY
+then
+  pass "apply_restore verifies and preflights before safety backup"
+else
+  fail "apply_restore verifies and preflights before safety backup"
+fi
+
+if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" "${PROJECT_DIR}/lib/vincula-accountd.py" "${PROJECT_DIR}/tests/fixtures/fake-age" <<'PY'
+import csv, importlib.util, io, json, os, sqlite3, stat, sys, tarfile
+from pathlib import Path
+
+base = Path(sys.argv[1])
+backup_py = sys.argv[2]
+accountd_py = sys.argv[3]
+fake_age = Path(sys.argv[4])
+spec_b = importlib.util.spec_from_file_location("vbackup", backup_py)
+mod = importlib.util.module_from_spec(spec_b)
+spec_b.loader.exec_module(mod)
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+active_uuid = "11111111-1111-4111-8111-111111111111"
+revoked_uuid = "22222222-2222-4222-8222-222222222222"
+active_cid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+revoked_cid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+new_iid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+new_cid = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+new_uuid = "33333333-3333-4333-8333-333333333333"
+new_priv, new_pub, new_sid = "new-priv", "new-pub", "deadbeefdeadbeef"
+new_clash = "new-clash-secret"
+
+archive = base / "node-secretless.tar"
+tamper = base / "tamper.tar"
+secrets_archive = base / "node-secrets.tar.age"
+identity = base / "age-identity.txt"
+state_dir = base / "node"
+db = state_dir / "accounting.db"
+assert archive.is_file() and tamper.is_file() and secrets_archive.is_file()
+
+# pin event_id=5 on the live source db, then snapshot a dedicated restore archive
+conn = sqlite3.connect(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        5, "conn-event5", 0, "u-alice", node_id, instance_id, "alice",
+        "2026-08-16T02:00:00Z", "2026-08-16T02:05:00Z", "2026-08-16T02:05:00Z",
+        "history.example", "203.0.113.10", 443, "tcp", 1, 2,
+    ),
+)
+conn.commit()
+conn.close()
+restore_src = base / "restore-src.tar"
+mod.create_backup(state_dir, db, include_secrets=False, output=restore_src)
+
+os.environ["VCL_AGE_BIN"] = str(fake_age)
+
+# TASK 16: preflight
+try:
+    mod.preflight_restore({"secret_bearing": False}, installed=True, include_secrets=False)
+    raise AssertionError("preflight must refuse installed")
+except mod.RestoreError as exc:
+    assert exc.message == mod.EXISTING_INSTALL_MSG, exc.message
+    assert exc.code == "existing_install"
+try:
+    mod.preflight_restore({"secret_bearing": False}, installed=False, include_secrets=True)
+    raise AssertionError("preflight must refuse include-secrets on secretless")
+except mod.RestoreError as exc:
+    assert exc.message == mod.INCLUDE_SECRETS_MSG
+
+# TASK 17–19: fresh-node safe restore
+fresh = base / "fresh-dest"
+fresh.mkdir()
+fresh_db = base / "fresh-accounting.db"
+csv_path = base / "reissue.csv"
+safety = base / "pre-restore-safe"
+target_sa = {
+    "user": "sing-box", "uid": 42, "group": "sing-box", "gid": 42,
+    "home": "/var/lib/sing-box", "shell": "/usr/sbin/nologin",
+    "created_by_vincula": True, "group_created_by_vincula": True,
+}
+result = mod.apply_restore(
+    restore_src, fresh,
+    dest_accounting_db=fresh_db,
+    include_secrets=False,
+    reissue_output=csv_path,
+    safety_dir=safety,
+    server="198.51.100.20",
+    service_account=target_sa,
+    new_instance_id=new_iid,
+    new_reality_private=new_priv,
+    new_reality_public=new_pub,
+    new_reality_short_id=new_sid,
+    new_clash_secret=new_clash,
+    reissue_ids={active_cid: {"credential_id": new_cid, "uuid": new_uuid}},
+    project_version="0.3.0-dev",
+    now="2026-08-16T12:00:00Z",
+)
+assert result["ok"] is True
+assert result["schema_version"] == 1
+assert result["mode"] == "safe"
+assert result["node_id"] == node_id
+assert result["instance_id"] == new_iid
+assert result["instance_id"] != node_id
+assert result["instance_id"] != instance_id
+assert result["source_instance_id"] == instance_id
+assert result["users_reissued"] == 1
+assert result["reissue_csv"] == str(csv_path)
+
+st = json.loads((fresh / "state.json").read_text(encoding="utf-8"))
+assert st["node"]["node_id"] == node_id
+assert st["node"]["instance_id"] == new_iid
+assert st["node"]["reality_private_key"] == new_priv
+assert st["node"]["reality_public_key"] == new_pub
+assert st["node"]["server"] == "198.51.100.20"
+assert st["service_account"]["uid"] == 42
+assert st["node"]["reality_private_key"] != "sekrit"
+
+usr = json.loads((fresh / "users.json").read_text(encoding="utf-8"))
+alice = usr["users"][0]
+assert alice["user_id"] == "u-alice"
+assert alice["tag"] == "alice"
+creds = {c["credential_id"]: c for c in alice["credentials"]}
+assert creds[active_cid]["status"] == "revoked"
+assert "uuid" not in creds[active_cid]
+assert creds[revoked_cid]["status"] == "revoked"
+assert "uuid" not in creds[revoked_cid]
+assert creds[new_cid]["status"] == "active"
+assert creds[new_cid]["uuid"] == new_uuid
+assert new_cid != active_cid
+
+toml = (fresh / "config.toml").read_text(encoding="utf-8")
+assert 'clash_api_secret = "new-clash-secret"' in toml
+assert 'server = "198.51.100.20"' in toml
+assert 'node_id = "%s"' % node_id in toml
+
+acct = sqlite3.connect(str(fresh_db))
+row5 = acct.execute(
+    "SELECT event_id, instance_id, user_id FROM connections WHERE event_id=5"
+).fetchone()
+assert row5 == (5, instance_id, "u-alice"), row5
+acct.close()
+
+assert (fresh / "VERSION").read_text(encoding="utf-8").strip() == "0.3.0-dev"
+with csv_path.open(encoding="utf-8", newline="") as fh:
+    rows = list(csv.DictReader(fh))
+assert [r["user"] for r in rows] == ["alice"]
+assert rows[0]["node"] == "lax"
+assert rows[0]["old_credential_id"] == active_cid
+assert rows[0]["new_credential_id"] == new_cid
+assert rows[0]["new_credential_id"] != rows[0]["old_credential_id"]
+assert rows[0]["vless_uri"].startswith("vless://%s@" % new_uuid)
+assert new_pub in rows[0]["vless_uri"]
+assert "198.51.100.20" in rows[0]["vless_uri"]
+assert revoked_cid not in csv_path.read_text(encoding="utf-8")
+assert stat.S_IMODE(csv_path.stat().st_mode) == 0o600
+
+# existing install refused; dest bytes unchanged
+installed = base / "installed-dest"
+installed.mkdir()
+keep = b'{"keep":"state"}\n'
+(installed / "state.json").write_bytes(keep)
+(installed / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+try:
+    mod.apply_restore(
+        restore_src, installed,
+        new_instance_id=new_iid,
+        new_reality_private=new_priv,
+        new_reality_public=new_pub,
+        new_reality_short_id=new_sid,
+        new_clash_secret=new_clash,
+    )
+    raise AssertionError("must refuse existing VERSION")
+except mod.RestoreError as exc:
+    assert exc.code == "existing_install"
+    assert exc.message == mod.EXISTING_INSTALL_MSG
+assert (installed / "state.json").read_bytes() == keep
+
+# corrupt backup refused before mutation
+fresh2 = base / "fresh-corrupt"
+fresh2.mkdir()
+before = b"pre-mutation\n"
+(fresh2 / "state.json").write_bytes(before)
+try:
+    mod.apply_restore(
+        tamper, fresh2,
+        new_instance_id=new_iid,
+        new_reality_private=new_priv,
+        new_reality_public=new_pub,
+        new_reality_short_id=new_sid,
+        new_clash_secret=new_clash,
+    )
+    raise AssertionError("corrupt archive must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "checksum_mismatch", exc.code
+assert (fresh2 / "state.json").read_bytes() == before
+assert not (fresh2 / "VERSION").exists()
+
+# TASK 20: secrets restore reuses UUIDs, still new instance_id
+sec_dest = base / "secrets-dest"
+sec_dest.mkdir()
+sec_db = base / "secrets-accounting.db"
+sec_result = mod.apply_restore(
+    secrets_archive, sec_dest,
+    dest_accounting_db=sec_db,
+    age_identity=identity,
+    include_secrets=True,
+    new_instance_id=new_iid,
+    project_version="0.3.0-dev",
+)
+assert sec_result["ok"] is True
+assert sec_result["mode"] == "secrets"
+assert sec_result["reissue_csv"] is None
+assert sec_result["users_reissued"] == 0
+assert sec_result["instance_id"] == new_iid
+sec_st = json.loads((sec_dest / "state.json").read_text(encoding="utf-8"))
+assert sec_st["node"]["reality_private_key"] == "sekrit"
+assert sec_st["node"]["instance_id"] == new_iid
+assert sec_st["node"]["node_id"] == node_id
+sec_usr = json.loads((sec_dest / "users.json").read_text(encoding="utf-8"))
+assert [c["uuid"] for u in sec_usr["users"] for c in u["credentials"]] == [
+    active_uuid, revoked_uuid,
+]
+assert 'clash_api_secret = "clash-sekrit"' in (sec_dest / "config.toml").read_text(encoding="utf-8")
+
+# mid-restore failure: leftover dest restored from safety
+leftover = base / "leftover-dest"
+leftover.mkdir()
+leftover_state = b'{"keep":true}\n'
+(leftover / "state.json").write_bytes(leftover_state)
+fail_safety = base / "pre-restore-fail"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "stage"
+try:
+    mod.apply_restore(
+        restore_src, leftover, safety_dir=fail_safety,
+        new_instance_id=new_iid, new_reality_private=new_priv,
+        new_reality_public=new_pub, new_reality_short_id=new_sid,
+        new_clash_secret=new_clash,
+    )
+    raise AssertionError("stage inject must raise")
+except mod.RestoreError as exc:
+    assert exc.code == "injected_failure"
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+assert (leftover / "state.json").read_bytes() == leftover_state
+assert not (leftover / "VERSION").exists()
+assert fail_safety.is_dir()
+assert (fail_safety / "state.json").read_bytes() == leftover_state
+marker = (fail_safety / ".vincula-backup").read_text(encoding="utf-8")
+assert "type=restore-rollback" in marker or "status=rolled-back" in marker
+
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "install"
+fail_safety2 = base / "pre-restore-fail2"
+try:
+    mod.apply_restore(
+        restore_src, leftover, safety_dir=fail_safety2,
+        new_instance_id=new_iid, new_reality_private=new_priv,
+        new_reality_public=new_pub, new_reality_short_id=new_sid,
+        new_clash_secret=new_clash,
+    )
+    raise AssertionError("install inject must raise")
+except mod.RestoreError as exc:
+    assert exc.code == "injected_failure"
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+assert (leftover / "state.json").read_bytes() == leftover_state
+assert not (leftover / "VERSION").exists()
+
+# TASK 21: verify --json contracts
+ok_doc = mod.verify_archive(archive)
+assert ok_doc["ok"] is True
+assert ok_doc["schema_version"] == 1
+assert isinstance(ok_doc.get("files"), list) and ok_doc["files"]
+assert all("path" in f and "sha256" in f for f in ok_doc["files"])
+bad_doc = mod.verify_archive(tamper)
+assert bad_doc == {"schema_version": 1, "ok": False, "error": "checksum_mismatch"}, bad_doc
+PY
+then
+  pass "restore preflight refuses existing install and secretless --include-secrets"
+  pass "safe restore keeps node_id and mints new instance_id"
+  pass "safe restore rotates Reality keys and credential UUIDs"
+  pass "safe restore preserves user_id metadata and accounting event_id=5"
+  pass "safe restore writes 0600 reissue CSV with five columns"
+  pass "restore to existing VERSION is refused without mutation"
+  pass "corrupt backup is refused before dest mutation"
+  pass "secrets restore reuses UUIDs and Reality private key"
+  pass "mid-restore failure restores safety backup (AC-3.0-12)"
+  pass "backup verify --json success/failure contracts"
+else
+  fail "restore preflight refuses existing install and secretless --include-secrets"
+  fail "safe restore keeps node_id and mints new instance_id"
+  fail "safe restore rotates Reality keys and credential UUIDs"
+  fail "safe restore preserves user_id metadata and accounting event_id=5"
+  fail "safe restore writes 0600 reissue CSV with five columns"
+  fail "restore to existing VERSION is refused without mutation"
+  fail "corrupt backup is refused before dest mutation"
+  fail "secrets restore reuses UUIDs and Reality private key"
+  fail "mid-restore failure restores safety backup (AC-3.0-12)"
+  fail "backup verify --json success/failure contracts"
+fi
+
+# CLI: vcl restore FILE on a fresh STATE_DIR; existing VERSION refused
+restore_cli_root="${TEST_TMP}/restore-cli"
+restore_fresh="${restore_cli_root}/fresh"
+restore_backups="${restore_cli_root}/backups"
+mkdir -p "${restore_cli_root}/bin" "$restore_fresh" "$restore_backups"
+ln -sfn "${PROJECT_DIR}/lib" "${restore_cli_root}/lib"
+sed -e 's|^main "$@"$|cmd_restore "$@"|' \
+    "${PROJECT_DIR}/bin/vincula" > "${restore_cli_root}/bin/vincula"
+chmod +x "${restore_cli_root}/bin/vincula"
+cli_restore() {
+  VCL_STATE_DIR="$restore_fresh" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_ACCOUNTING_DB_FILE="${restore_fresh}/accounting.db" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" "$@"
+}
+cli_restore_rc=0
+cli_restore_out=$(cli_restore --json --reissue-output "${restore_backups}/cli-reissue.csv" \
+  "${BACKUP_DIR}/restore-src.tar" 2>/dev/null) || cli_restore_rc=$?
+printf '%s\n' "$cli_restore_out" > "${restore_backups}/restore.json"
+cli_restore_parse=0
+python3 - "${restore_backups}/restore.json" <<'PY' || cli_restore_parse=$?
+import json, sys
+doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+assert doc["ok"] is True
+assert doc["schema_version"] == 1
+assert doc["mode"] == "safe"
+assert doc["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+assert doc["instance_id"] == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+assert doc["instance_id"] != doc["source_instance_id"]
+assert doc["reissue_csv"]
+PY
+if (( cli_restore_rc == 0 && cli_restore_parse == 0 )); then
+  pass "vcl restore --json fresh-node contract"
+else
+  fail "vcl restore --json fresh-node contract (rc=${cli_restore_rc}, parse=${cli_restore_parse}, out='${cli_restore_out}')"
+fi
+if [[ -f "${restore_backups}/cli-reissue.csv" ]]; then
+  cli_csv_mode=$(stat -c '%a' "${restore_backups}/cli-reissue.csv" 2>/dev/null || stat -f '%OLp' "${restore_backups}/cli-reissue.csv")
+  assert_equal "vcl restore reissue CSV is 0600" "600" "$cli_csv_mode"
+else
+  fail "vcl restore reissue CSV is 0600"
+fi
+
+# existing VERSION refused via CLI; dest unchanged
+restore_exist="${restore_cli_root}/exist"
+mkdir -p "$restore_exist"
+printf '%s\n' '{"keep":"yes"}' > "${restore_exist}/state.json"
+printf '%s\n' "0.3.0-dev" > "${restore_exist}/VERSION"
+exist_before=$(cat "${restore_exist}/state.json")
+exist_rc=0
+exist_err=$(
+  VCL_STATE_DIR="$restore_exist" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" "${BACKUP_DIR}/restore-src.tar" 2>&1
+) || exist_rc=$?
+if (( exist_rc != 0 )) && [[ "$exist_err" == *"Refusing to overwrite an existing Vincula install."* ]] \
+   && [[ "$(cat "${restore_exist}/state.json")" == "$exist_before" ]]; then
+  pass "vcl restore refuses existing install without mutation"
+else
+  fail "vcl restore refuses existing install without mutation (rc=${exist_rc}, err='${exist_err}')"
+fi
+
+cli_verify_fail_rc=0
+cli_verify_fail_out=$(
+  VCL_STATE_DIR="$cli_state" \
+  VCL_BACKUP_ROOT="$cli_backups" \
+    "${cli_root}/bin/vincula" verify --json "${BACKUP_DIR}/tamper.tar" 2>/dev/null
+) || cli_verify_fail_rc=$?
+printf '%s\n' "$cli_verify_fail_out" > "${cli_backups}/verify-fail.json"
+cli_verify_fail_parse=0
+python3 - "${cli_backups}/verify-fail.json" <<'PY' || cli_verify_fail_parse=$?
+import json, sys
+doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+assert doc == {"schema_version": 1, "ok": False, "error": "checksum_mismatch"}, doc
+PY
+if (( cli_verify_fail_rc != 0 && cli_verify_fail_parse == 0 )); then
+  pass "vcl backup verify --json failure contract"
+else
+  fail "vcl backup verify --json failure contract (rc=${cli_verify_fail_rc}, parse=${cli_verify_fail_parse})"
 fi
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then

@@ -13,9 +13,9 @@ readonly URI_FILE="${STATE_DIR}/owner.uri"
 readonly VERSION_FILE="${STATE_DIR}/VERSION"
 readonly CHECKSUM_FILE="${STATE_DIR}/sing-box.binary.sha256"
 readonly INSTALL_MANIFEST_FILE="${STATE_DIR}/install.manifest"
-readonly CONFIG_FILE="/etc/sing-box/config.json"
+readonly CONFIG_FILE="${VCL_CONFIG_FILE:-/etc/sing-box/config.json}"
 readonly SING_BOX_DIR="/etc/sing-box"
-readonly BINARY_PATH="/usr/local/bin/sing-box"
+readonly BINARY_PATH="${VCL_SING_BOX_BIN:-/usr/local/bin/sing-box}"
 readonly HELPER_PATH="/usr/local/bin/vincula"
 readonly HELPER_ALIAS_PATH="/usr/local/bin/vcl"
 readonly LIB_DIR="/usr/local/lib/vincula"
@@ -116,7 +116,7 @@ Usage:
   vcl audit export --after EVENT_ID --jsonl [--limit N]
   vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
   vcl backup verify FILE [--age-identity FILE] [--json]
-  vcl restore FILE --replace-node NODE_ID [--include-secrets] [--age-identity FILE] [--output CSV] [--server HOST] [--json]
+  vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -553,7 +553,7 @@ is_vincula_backup_dir() {
   [[ -d "$dir" ]] || return 1
   if [[ -f "${dir}/${BACKUP_MARKER}" ]]; then
     grep -q '^project=vincula$' "${dir}/${BACKUP_MARKER}" || return 1
-    grep -Eq '^type=(migration-backup|mutation-backup)$' "${dir}/${BACKUP_MARKER}" || return 1
+    grep -Eq '^type=(migration-backup|mutation-backup|restore-safety|restore-rollback)$' "${dir}/${BACKUP_MARKER}" || return 1
     return 0
   fi
   [[ -f "${dir}/state.json" ]] || return 1
@@ -2724,7 +2724,7 @@ vcl backup — node identity/audit archive (secretless default)
 
   vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
   vcl backup verify FILE [--age-identity FILE] [--json]
-  vcl restore FILE --replace-node NODE_ID [--include-secrets] [--age-identity FILE] [--output CSV] [--server HOST] [--json]
+  vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
 
 Default create writes $BACKUP_ROOT/node-<node_id>-<UTC>.tar (0600).
 --include-secrets keeps Reality/VLESS/Clash secrets and requires age (--age-recipient FILE).
@@ -2858,6 +2858,197 @@ cmd_backup() {
   esac
 }
 
+cmd_restore_usage() {
+  cat <<'HELP'
+vcl restore — restore a backup onto a fresh node (no existing VERSION)
+
+  vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
+
+Safe mode (default) preserves node_id / user metadata / accounting, mints a new
+instance_id, and rotates Reality keys, Clash secret, and credential UUIDs.
+--include-secrets reuses those secrets from a secret-bearing age archive.
+Restore refuses if $STATE_DIR/VERSION exists.
+HELP
+}
+
+rollback_restore_target() {
+  local safety=$1 name path
+  [[ -n "$safety" && -d "$safety" ]] || return 1
+  for name in state.json users.json config.toml VERSION owner.uri; do
+    if [[ -f "${safety}/${name}" ]]; then
+      case "$name" in
+        state.json) path=$STATE_FILE ;;
+        users.json) path=$USERS_FILE ;;
+        config.toml) path=$SETTINGS_FILE ;;
+        VERSION) path=$VERSION_FILE ;;
+        owner.uri) path=$URI_FILE ;;
+        *) continue ;;
+      esac
+      install -m 0600 "${safety}/${name}" "$path"
+    else
+      case "$name" in
+        state.json) rm -f "$STATE_FILE" ;;
+        users.json) rm -f "$USERS_FILE" ;;
+        config.toml) rm -f "$SETTINGS_FILE" ;;
+        VERSION) rm -f "$VERSION_FILE" ;;
+        owner.uri) rm -f "$URI_FILE" ;;
+      esac
+    fi
+  done
+  if [[ -f "${safety}/accounting.db" ]]; then
+    install -D -m 0600 "${safety}/accounting.db" "$ACCOUNTING_DB_FILE"
+  elif [[ -e "$ACCOUNTING_DB_FILE" ]]; then
+    rm -f "$ACCOUNTING_DB_FILE"
+  fi
+  if [[ -f "${safety}/.vincula-backup" ]]; then
+    printf 'status=rolled-back\n' >> "${safety}/.vincula-backup"
+  fi
+}
+
+cmd_restore() {
+  local file="" identity="" reissue_output="" include_secrets=0 server="" json=0
+  local backup_py stamp safety instance_id private_key public_key short_id clash_secret
+  local key_output restore_rc port
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --age-identity)
+        [[ $# -ge 2 ]] || die "restore --age-identity requires FILE"
+        identity=$2
+        shift 2
+        ;;
+      --reissue-output)
+        [[ $# -ge 2 ]] || die "restore --reissue-output requires FILE"
+        reissue_output=$2
+        shift 2
+        ;;
+      --include-secrets)
+        include_secrets=1
+        shift
+        ;;
+      --server)
+        [[ $# -ge 2 ]] || die "restore --server requires HOST"
+        server=$2
+        shift 2
+        ;;
+      --json)
+        json=1
+        shift
+        ;;
+      --replace-node)
+        die "Restore is fresh-node only; --replace-node is not supported."
+        ;;
+      -h|--help)
+        cmd_restore_usage
+        return 0
+        ;;
+      --*)
+        die "Unknown restore argument: $1. Try 'vcl restore --help'."
+        ;;
+      *)
+        if [[ -n "$file" ]]; then
+          die "restore accepts only one FILE. Try 'vcl restore --help'."
+        fi
+        file=$1
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$file" ]] || die "usage: vcl restore FILE [--age-identity FILE] [--reissue-output FILE] [--json]"
+  [[ -f "$file" ]] || die "backup file not found: ${file}"
+  if [[ -f "$VERSION_FILE" ]]; then
+    die "Refusing to overwrite an existing Vincula install."
+  fi
+
+  require_python3 || die "python3 is required for restore."
+  backup_py=$(resolve_backup_py) || die "Missing vincula-backup.py (expected ${BACKUP_PY})."
+
+  instance_id=${VCL_RESTORE_INSTANCE_ID:-}
+  if [[ -z "$instance_id" ]]; then
+    instance_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  fi
+  private_key=${VCL_RESTORE_REALITY_PRIVATE:-}
+  public_key=${VCL_RESTORE_REALITY_PUBLIC:-}
+  short_id=${VCL_RESTORE_REALITY_SHORT_ID:-}
+  if [[ -z "$private_key" || -z "$public_key" || -z "$short_id" ]]; then
+    [[ -x "$BINARY_PATH" ]] || die "sing-box is required to generate Reality keys for restore."
+    key_output=$("$BINARY_PATH" generate reality-keypair)
+    private_key=$(sed -n 's/^PrivateKey:[[:space:]]*//p' <<< "$key_output" | head -n 1)
+    public_key=$(sed -n 's/^PublicKey:[[:space:]]*//p' <<< "$key_output" | head -n 1)
+    short_id=$("$BINARY_PATH" generate rand --hex 8)
+  fi
+  clash_secret=${VCL_RESTORE_CLASH_SECRET:-}
+  if [[ -z "$clash_secret" ]]; then
+    clash_secret=$(generate_clash_api_secret)
+  fi
+
+  install -d -m 0700 "$BACKUP_ROOT"
+  stamp=$(date -u +'%Y%m%dT%H%M%SZ')
+  safety="${BACKUP_ROOT}/pre-restore-${stamp}"
+  if [[ -z "$reissue_output" ]]; then
+    reissue_output="${BACKUP_ROOT}/reissue-${stamp}.csv"
+  fi
+
+  if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" != "1" ]]; then
+    if systemctl cat vincula-accountd.service >/dev/null 2>&1; then
+      systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
+    fi
+  fi
+
+  local -a args=(
+    "$backup_py"
+    restore
+    "$file"
+    --target-state-dir "$STATE_DIR"
+    --target-accounting-db "$ACCOUNTING_DB_FILE"
+    --safety-dir "$safety"
+    --reissue-output "$reissue_output"
+    --new-instance-id "$instance_id"
+    --new-reality-private "$private_key"
+    --new-reality-public "$public_key"
+    --new-reality-short-id "$short_id"
+    --new-clash-secret "$clash_secret"
+    --project-version "$VINCULA_VERSION"
+  )
+  [[ -n "$identity" ]] && args+=(--age-identity "$identity")
+  (( include_secrets )) && args+=(--include-secrets)
+  [[ -n "$server" ]] && args+=(--server "$server")
+  (( json )) && args+=(--json)
+
+  restore_rc=0
+  python3 "${args[@]}" || restore_rc=$?
+  if (( restore_rc != 0 )); then
+    return "$restore_rc"
+  fi
+
+  if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" == "1" ]]; then
+    return 0
+  fi
+
+  install -d -m 0750 "$(dirname -- "$CONFIG_FILE")"
+  if ! render_config_from_registry "$CONFIG_FILE" "$USERS_FILE"; then
+    rollback_restore_target "$safety" || true
+    die "failed to render sing-box config after restore; rolled back from ${safety}."
+  fi
+  if [[ -x "$BINARY_PATH" ]]; then
+    if ! "$BINARY_PATH" check -c "$CONFIG_FILE" >/dev/null; then
+      rollback_restore_target "$safety" || true
+      die "sing-box check failed after restore; rolled back from ${safety}."
+    fi
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now sing-box.service >/dev/null 2>&1 || true
+  systemctl enable --now vincula-accountd.service >/dev/null 2>&1 || true
+  port=$(toml_get "$SETTINGS_FILE" port || true)
+  [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
+  if ! wait_healthy "$port"; then
+    rollback_restore_target "$safety" || true
+    systemctl restart sing-box.service >/dev/null 2>&1 || true
+    die "sing-box did not become healthy after restore; rolled back from ${safety}."
+  fi
+}
+
 cmd_link() {
   [[ -r "$URI_FILE" ]] || die "Owner URI is missing."
   cat "$URI_FILE"
@@ -2893,6 +3084,10 @@ main() {
           die "Unknown uninstall option: ${1}. Use 'vcl uninstall' or 'vcl uninstall --yes'."
           ;;
       esac
+      ;;
+    restore)
+      require_root restore
+      cmd_restore "$@"
       ;;
     *)
       require_root "$command"
