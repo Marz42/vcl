@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "vincula_version": "0.3.0-dev",
+  "vincula_version": "0.3.0",
   "node_id": "c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc",
   "instance_id": "c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc",
   "node_name": "copied",

@@ -103,7 +103,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.3.0-dev" \
+assert_equal "runs when read from standard input" "vincula 0.3.0" \
   "$(bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -127,8 +127,8 @@ assert_success "migrates from 0.2.6" is_supported_upgrade_from 0.2.6
 assert_success "migrates from 0.2.7" is_supported_upgrade_from 0.2.7
 assert_success "migrates from 0.2.8" is_supported_upgrade_from 0.2.8
 assert_success "migrates from 0.2.9" is_supported_upgrade_from 0.2.9
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.0-dev
-assert_failure "does not migrate 0.3.0" is_supported_upgrade_from 0.3.0
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.0
+assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
 assert_equal "D18 730 from 0.2.5 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.5 730)"
@@ -328,7 +328,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.3.0-dev"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.3.0"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -758,8 +758,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.3.0-dev" \
-  grep -q 'Vincula-Version: 0.3.0-dev' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.3.0" \
+  grep -q 'Vincula-Version: 0.3.0' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -4280,7 +4280,7 @@ state_dir = base / "node"
 state_dir.mkdir(parents=True, exist_ok=True)
 state_doc = {
     "schema_version": 2,
-    "project_version": "0.3.0-dev",
+    "project_version": "0.3.0",
     "sing_box_version": "1.13.18",
     "architecture": "amd64",
     "installed_at": "2026-08-16T00:00:00Z",
@@ -4339,7 +4339,7 @@ users_doc = {
         }
     ],
 }
-toml_text = """project_version = "0.3.0-dev"
+toml_text = """project_version = "0.3.0"
 sing_box_version = "1.13.18"
 architecture = "amd64"
 node_id = "%s"
@@ -4359,7 +4359,7 @@ billing_cycle_start_day = 1
 (state_dir / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
 (state_dir / "users.json").write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
 (state_dir / "config.toml").write_text(toml_text, encoding="utf-8")
-(state_dir / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(state_dir / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 orig_state = (state_dir / "state.json").read_bytes()
 orig_users = (state_dir / "users.json").read_bytes()
 orig_toml = (state_dir / "config.toml").read_bytes()
@@ -4520,7 +4520,7 @@ assert [c["credential_id"] for c in tar_creds] == [active_cid, revoked_cid]
 assert [c["status"] for c in tar_creds] == ["active", "revoked"]
 assert tar_creds[1]["revoked_at"] == "2026-08-01T00:00:00Z"
 assert "clash_api_secret" not in members["config.toml"].decode("utf-8")
-assert members["VERSION"] == b"0.3.0-dev\n"
+assert members["VERSION"] == b"0.3.0\n"
 
 db_copy = base / "from-tar.db"
 db_copy.write_bytes(members["accounting.db"])
@@ -4540,7 +4540,7 @@ assert list(manifest)[:8] == [
     "source_instance_id", "included_components", "secret_bearing", "encryption",
 ], list(manifest)
 assert manifest["schema_version"] == 1
-assert manifest["vincula_version"] == "0.3.0-dev"
+assert manifest["vincula_version"] == "0.3.0"
 assert manifest["created_at"] == created
 assert manifest["source_node_id"] == node_id
 assert manifest["source_instance_id"] == instance_id
@@ -5007,7 +5007,7 @@ result = mod.apply_restore(
     new_reality_short_id=new_sid,
     new_clash_secret=new_clash,
     reissue_ids={active_cid: {"credential_id": new_cid, "uuid": new_uuid}},
-    project_version="0.3.0-dev",
+    project_version="0.3.0",
     now="2026-08-16T12:00:00Z",
 )
 assert result["ok"] is True
@@ -5055,7 +5055,7 @@ row5 = acct.execute(
 assert row5 == (5, instance_id, "u-alice"), row5
 acct.close()
 
-assert (fresh / "VERSION").read_text(encoding="utf-8").strip() == "0.3.0-dev"
+assert (fresh / "VERSION").read_text(encoding="utf-8").strip() == "0.3.0"
 with csv_path.open(encoding="utf-8", newline="") as fh:
     rows = list(csv.DictReader(fh))
 assert [r["user"] for r in rows] == ["alice"]
@@ -5074,7 +5074,7 @@ installed = base / "installed-dest"
 installed.mkdir()
 keep = b'{"keep":"state"}\n'
 (installed / "state.json").write_bytes(keep)
-(installed / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(installed / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 try:
     mod.apply_restore(
         restore_src, installed,
@@ -5120,7 +5120,7 @@ sec_result = mod.apply_restore(
     age_identity=identity,
     include_secrets=True,
     new_instance_id=new_iid,
-    project_version="0.3.0-dev",
+    project_version="0.3.0",
 )
 assert sec_result["ok"] is True
 assert sec_result["mode"] == "secrets"
@@ -5266,7 +5266,7 @@ fi
 restore_exist="${restore_cli_root}/exist"
 mkdir -p "$restore_exist"
 printf '%s\n' '{"keep":"yes"}' > "${restore_exist}/state.json"
-printf '%s\n' "0.3.0-dev" > "${restore_exist}/VERSION"
+printf '%s\n' "0.3.0" > "${restore_exist}/VERSION"
 exist_before=$(cat "${restore_exist}/state.json")
 exist_rc=0
 exist_err=$(

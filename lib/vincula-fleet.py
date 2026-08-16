@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.3.0-dev"
+VCL_FLEET_VERSION = "0.3.0"
 FLEET_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_DB_SCHEMA_VERSION = 2

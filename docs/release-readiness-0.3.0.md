@@ -1,11 +1,11 @@
 # Vincula 0.3.0 Release Readiness
 
-**Tree version:** 0.3.0-dev  
+**Tree version:** 0.3.0  
 **Date:** 2026-08-16  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
-Product freeze (drop `-dev`) is Batch 17-freeze, not this docs gate.
+Product freeze dropped `-dev` in Batch 17-freeze.
 
 ## Release recommendation
 
@@ -30,7 +30,7 @@ Fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`. Raise to `READY
 
 | Item | Status |
 | --- | --- |
-| Product version `0.3.0-dev` (freeze drops `-dev`) | PASS — constants + tests |
+| Product version `0.3.0` (no `-dev`) | PASS — constants + tests |
 | Upgrade allowlist includes `0.2.9`, excludes `0.3.0` / `0.3.0-dev` | PASS (unit) |
 | `state.json` schema stays **2**; strip only in the archive | PASS (unit) |
 | `users.json` schema stays **2** | PASS (unit) |
@@ -114,6 +114,102 @@ There is **no** automatic `fleet.db` schema 2→1 downgrade. Node-side schemas w
 
 localhost UI (0.3.1), age passphrase, `vcl snapshot export`, routine `scp accounting.db`, billing-grade accounting, node `vcl fleet` subcommand, silent `display_name` merge, distributed rollback **guarantee**, blocking 90-day retention for cursors, retire/replace auto-uninstall / erase `fleet.db`, replace `--include-secrets`, restore without a VERSION check.
 
-## Policy after this docs gate
+## Policy after freeze
 
-Freeze (`0.3.0-dev` → `0.3.0`) is the next batch. After tag `v0.3.0`, prefer P0/P1 fixes only. A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake are required before raising this recommendation to `READY FOR RC`. UI belongs in 0.3.1.
+After tag `v0.3.0`, prefer P0/P1 fixes only. A live VPS secretless replace, live `age` on a real node, and AC-3.0-11 live handshake are required before raising this recommendation to `READY FOR RC`. UI belongs in 0.3.1.
+
+## Completion report (SPEC §19)
+
+Filled at freeze `0.3.0` (Batch 17-freeze). Historical 0.2.9/0.2.8/0.2.7 docs and `docs/specs/` were not rewritten.
+
+### 1. Changed files
+
+**Milestone (0.2.9 → 0.3.0):** `vincula.sh`, `bin/vincula`, `lib/vincula-common.sh`, `lib/vincula-backup.py` (new), `lib/vincula-fleet.py`, `lib/vincula-accountd.service`, `scripts/build-release.sh`, `scripts/gen-release-lock.sh`, `tests/test.sh`, `tests/test-fleet.sh`, `tests/fixtures/fake-age` (new), `tests/fixtures/fake-scp` (new), `tests/fixtures/fake-ssh`, `tests/fixtures/fake-ssh-keyscan`, identity fixtures (`identity-sample.json`, `nodes/{lax,tokyo,copied,lax2}/identity.json`, `lax/identity-reinstall.json`, `lax2/{hostkey.pub,status.json,verify.json}`), `README.md`, `README-controller.md`, `CHANGELOG.md`, `docs/backup.md` (new), `docs/fleet.md`, `docs/identity.md`, `docs/known-issues-0.3.0.md` (new), `docs/release-readiness-0.3.0.md` (new), `release.lock`, `vincula.sh.sha256`.
+
+**Freeze-only (drop `-dev` + lock regen):** the product stamps above plus `vincula-bootstrap.sh` comment URLs (`0.2.9` → `0.3.0` tarball examples), `docs/accounting-reliability.md` title (collector unchanged through 0.3.0), and regenerated `release.lock` / `vincula.sh.sha256`. Fleet files remain **out** of the node lock.
+
+Node first-party lock members stay **9**: `vincula.sh`, `vincula-bootstrap.sh`, `bin/vincula`, `lib/vincula-common.sh`, `lib/vincula-accountd.py`, `lib/vincula-stats.py`, `lib/vincula-audit.py`, `lib/vincula-backup.py`, `lib/vincula-accountd.service`. No `vincula-fleet.py`.
+
+### 2. Schema changes
+
+| Format | 0.2.9 | 0.3.0 | Notes |
+| --- | --- | --- | --- |
+| Product `VINCULA_VERSION` / `VCL_FLEET_VERSION` | `0.2.9` | **`0.3.0`** | Freeze dropped `-dev` only |
+| `state.json.schema_version` | 2 | **2** | Strip of `reality_private_key` is archive-only |
+| `users.json.schema_version` | 2 | **2** | Strip of `credentials[].uuid` is archive-only |
+| accounting `meta.schema_version` | 3 | **3** | No DDL; snapshot is `Connection.backup()` |
+| `fleet.json.schema_version` | 2 | **2** | Still no `instance_id` |
+| `fleet.db` `meta.schema_version` | 1 | **2** | `instance_history`; explicit 1→2 migrate |
+| backup `schema_version` | — | **1** | New contract |
+
+### 3. CLI changes
+
+**Node:** `vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]`; `vcl backup verify FILE [--age-identity FILE] [--json]`; `vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]`. Restore is **fresh-node only** (existing `VERSION` refused with `Refusing to overwrite an existing Vincula install.`). `--replace-node` is not a supported node flag (explicit die). No node `vcl fleet` subcommand. No `vcl snapshot export` alias.
+
+**Controller:** `vcl-fleet node replace NAME --host HOST --host-key SHA256:… [--output FILE] [--from-backup FILE] [--json]`; `vcl-fleet node instances NAME [--json]`. `node set` remains endpoint rebind (credentials stay). Replace is secretless-only; requires `--host-key`. PARTIAL / `CURSOR_EXPIRED` / `--reseed` unchanged from 0.2.9.
+
+### 4. Migration path
+
+Supported sources: `0.1.0`–`0.1.5` and `0.2.0`–`0.2.9` → **0.3.0**. Allowlist includes `0.2.9`, excludes `0.3.0` / `0.3.0-dev`. Same-version re-run verifies both planes and does not rotate credentials or remint `instance_id`. D18 does **not** re-migrate daily=730 from 0.2.9. Workstation: `fleet.db` 1→2 on next open (`instance_history` + backfill from `sync_cursor`). Node state/users/accounting/`fleet.json` schemas unchanged. Rotation of Reality / uuid happens only on `vcl restore` / `vcl-fleet node replace`, not on upgrade.
+
+### 5. Rollback path
+
+No automatic `fleet.db` 2→1. Node schemas were not bumped. Nodes: restore `backup_existing_install` **and** the matching **0.2.9** installer. A 0.3.0 `vcl backup create` archive is **not** the 0.2.9 rollback vehicle. Workstation: replace the zip with the 0.2.9 controller; restore a pre-upgrade `$FLEET_HOME`. Schema-2 `fleet.db` is unsupported on a 0.2.9 binary.
+
+### 6. Security impact
+
+No new listen port (`socket.bind` / `HTTPServer` absent on backup.py, fake-age, fake-scp, fleet). Default backup is secretless; secret-bearing backups are whole-archive age (`-R` / `-i`), never plaintext tar. Archive / CSV / `.tar.age` mode **0600**; `$BACKUP_ROOT` and `$FLEET_HOME/backups/` **0700**. D14 unchanged: no `StrictHostKeyChecking=no`, no `UserKnownHostsFile=/dev/null`, no paramiko, OpenSSH argv lists only; replace requires `--host-key`. Controller remains non-root, no systemd, no `/etc/vincula`. Node `release.lock` **9** files; controller zip still has **no** lock.
+
+### 7. Tests executed
+
+Freeze verification: `bash -n` on all first-party bash (installer, helper, common, scripts, `tests/test.sh`, `tests/test-fleet.sh`); `python3 -m py_compile` on `lib/*.py`, `bin/vcl-fleet`, `tests/fixtures/fake-{age,scp,ssh,ssh-keyscan}`; `bash tests/test.sh` (sources fleet); `bash tests/test-fleet.sh` (standalone); `bash scripts/gen-release-lock.sh`.
+
+| Suite | Count | Result |
+| --- | --- | --- |
+| `bash tests/test.sh` (sources `tests/test-fleet.sh`) | **1005** | green |
+| `bash tests/test-fleet.sh` (standalone) | **413** | green |
+
+P0/P1 at freeze: **0**. No live Win11 / live VPS replace / live `age` / live 0.2.9→0.3.0 upgrade run.
+
+### 8. Failure-injection results
+
+| Inject | Result |
+| --- | --- |
+| Bit-flip tar member (manifest sha unchanged) | verify + restore non-zero; `error=checksum_mismatch`; dest unchanged |
+| Tar without `manifest.json` | `missing_manifest`; dest unchanged |
+| Existing `VERSION` + `vcl restore FILE` | exact overwrite refusal; dest bytes unchanged |
+| `PATH` without age + `--include-secrets` | exact `ERROR: Secret-bearing backup requires age.`; no plaintext secret tar |
+| `VCL_RESTORE_FAIL_AFTER=stage` (after stage, before install) | target equals pre-restore; source tar sha256 unchanged; `pre-restore-*` kept; second restore without hook succeeds |
+| `VCL_RESTORE_FAIL_AFTER=health` | CLI rolls back target; source intact |
+| `VCL_FAKE_FAIL_RESTORE` / backup-create fail / scp fail / verify-fail `--from-backup` | replace aborts; `fleet.json` `ssh_host` stays old; no new `instance_history` active |
+| `--from-backup` whose `source_node_id` ≠ registry | refused; registry `node_id` / old host unchanged |
+| Replace then cursor gap | `CURSOR_EXPIRED` + `--reseed` guidance; `--reseed` keeps `instance_history` |
+
+### 9. Acceptance criteria matrix
+
+AC-3.0-01…10 and AC-3.0-12: **PASS** on node unit / fake-ssh / fake-scp / fake-age as tabulated above. AC-3.0-11: **PARTIAL / UNKNOWN** (LIVE-only). Fixture proves old uuid ∉ inbound set — **not** marked PASS. None marked PASS from live VPS or soak.
+
+### 10. Known limitations
+
+See [`known-issues-0.3.0.md`](known-issues-0.3.0.md). Headline: no Win11 live `vcl-fleet.cmd`; no live VPS secretless replace; no real `age` on a node; AC-3.0-11 LIVE-only; `--from-backup` may drop the sync tail; old VPS still up ⇒ old IP still accepts old uuid; `fleet.db` 2 irreversible; D20 soak is not a 0.3.0 gate; reseed still wipes local audit cache but not `instance_history`.
+
+### 11. Version / schema bump explanation
+
+Product bump `0.2.9` → `0.3.0-dev` happened at the start of the milestone (Batch 13-version) because of the backup/restore contract (§9.3 MINOR), not a state/users/accounting schema bump. Freeze only removes `-dev`. Persistence bumps: backup schema **1** (new); `fleet.db` **1→2** (`instance_history`). `state.json` / `users.json` / accounting / `fleet.json` stay at 2 / 2 / 3 / 2.
+
+### 12. Release recommendation
+
+**READY WITH DOCUMENTED LIMITATIONS**
+
+CI fixture all-green, P0/P1=0, no live VPS secretless replace and no live AC-3.0-11 handshake. Raise to `READY FOR RC` only after **one live VPS secretless replace** **and** old URI failure on the new IP **and** a real `age` `--include-secrets` round-trip. Not `NOT READY FOR RC`: documented limits do not break the 0.3.0 contract.
+
+### Extra (plan §6)
+
+13. **Backup schema 1:** `manifest.json` + `state.json` / `users.json` / `config.toml` / `accounting.db` / `VERSION`. Secretless strip: drop `node.reality_private_key`, `credentials[].uuid`, `clash_api_secret` (keys absent, not empty).
+14. **age:** recipient file `-R` / identity `-i`. Exact `ERROR: Secret-bearing backup requires age.` (D17). No passphrase mode.
+15. **fleet.db 1→2:** `instance_history` SoT is `fleet.db`, not `fleet.json`.
+16. **CURSOR_EXPIRED:** replace updates `sync_cursor.instance_id`, keeps `last_event_id`, does **not** auto `--reseed`. History instance rows survive reseed.
+17. **AC-3.0-11** must not be marked PASS from unit tests. Readiness LIVE strategy: old URI → new IP:443 fails; new URI succeeds; stop old VPS.
+18. **Dual artifacts:** node `release.lock` **9** files (includes `lib/vincula-backup.py`; fleet **not** in lock). Controller zip still **four** members (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`) and **no** lock / installer. Local replace verify loads `vincula-backup.py` from the same `lib/` as `vincula-fleet.py` (repo layout); zip does not embed it.
+
+**Confirmed non-goals:** localhost UI, age passphrase, `vcl snapshot export`.

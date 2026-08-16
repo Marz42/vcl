@@ -1,4 +1,4 @@
-# vincula V0.3.0-dev
+# vincula V0.3.0
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -60,9 +60,9 @@ dist/                      # 生成物（gitignore，勿手改）
 ```bash
 bash scripts/gen-release-lock.sh
 bash scripts/build-release.sh
-# → dist/vincula-node-0.3.0-dev/  与  dist/vincula-node-0.3.0-dev.tar.gz (+ .sha256)
+# → dist/vincula-node-0.3.0/  与  dist/vincula-node-0.3.0.tar.gz (+ .sha256)
 bash scripts/build-controller.sh
-# → dist/vincula-controller-0.3.0-dev/  与  dist/vincula-controller-0.3.0-dev.zip
+# → dist/vincula-controller-0.3.0/  与  dist/vincula-controller-0.3.0.zip
 ```
 
 ### 2. 拷到 VPS 后安装
@@ -88,7 +88,7 @@ sudo bash vincula.sh
 ### 3. 可选：bootstrap 拉 tarball
 
 ```bash
-sudo env RELEASE_URL='https://example.com/vincula-node-0.3.0-dev.tar.gz' \
+sudo env RELEASE_URL='https://example.com/vincula-node-0.3.0.tar.gz' \
   RELEASE_SHA256='...' \
   bash vincula-bootstrap.sh
 ```
@@ -240,7 +240,7 @@ vcl uninstall --yes
 
 现有 UUID `node_id`（`state.json` `node.node_id` / `config.toml` `node_id` / `users.json` credentials / accounting）**就是逻辑节点 ID**，永久冻结。`name` 可改；改 IP / hostname **不**改 `node_id`。**禁止重铸**，也不引入第二套逻辑 ID。
 
-`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。`0.2.8` → `0.2.9` → `0.3.0-dev` 升级 **不**重 mint。重装/替换（`vcl restore` / `vcl-fleet node replace`）保留 `node_id`，新 mint `instance_id`。
+`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。`0.2.8` → `0.2.9` → `0.3.0` 升级 **不**重 mint。重装/替换（`vcl restore` / `vcl-fleet node replace`）保留 `node_id`，新 mint `instance_id`。
 
 Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器注入同一 `--user-id` 到每个节点。详见 [`docs/identity.md`](docs/identity.md)。
 
@@ -288,7 +288,7 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 - `0.2.6` → `0.2.7`（accounting schema 2→3，不可逆）
 - `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 - `0.2.8` → **0.2.9**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
-- `0.2.9` → **0.3.0-dev**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
+- `0.2.9` → **0.3.0**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 

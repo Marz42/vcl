@@ -57,7 +57,7 @@ physical instance identity was not tracked at that time
 fresh install 0.2.8+:    node_id=UUID() 且 instance_id=UUID() 且 instance_id ≠ node_id
 upgrade 0.2.7 → 0.2.8:   保留现有 node_id；为当前物理安装 mint instance_id=UUID()
 upgrade 0.2.8 → 0.2.9:   保留 node_id 与 instance_id（不重 mint）
-upgrade 0.2.9 → 0.3.0-dev: 保留 node_id 与 instance_id（不重 mint；不旋转 Reality / uuid）
+upgrade 0.2.9 → 0.3.0:   保留 node_id 与 instance_id（不重 mint；不旋转 Reality / uuid）
 已是 0.2.8+ 再跑安装器:  保留 node_id 与 instance_id（幂等，不重 mint）
 重装/替换（0.3.0）:      同 node_id，新 instance_id —— `vcl restore FILE`（fresh-node）或 `vcl-fleet node replace`
 0.2.7 历史 accounting 行: instance_id IS NULL 保持 NULL
@@ -123,7 +123,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `schema_version` | int | `1` |
-| `vincula_version` | string | 产品版本（当前树为 `0.3.0-dev`） |
+| `vincula_version` | string | 产品版本（冻结为 `0.3.0`） |
 | `node_id` | UUID | 逻辑节点 ID |
 | `instance_id` | UUID 或 `null` | 当前物理安装；缺则 `null` 且 exit 1 |
 | `node_name` | string | 可改的显示名 |
@@ -132,7 +132,7 @@ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```json
 {
   "schema_version": 1,
-  "vincula_version": "0.3.0-dev",
+  "vincula_version": "0.3.0",
   "node_id": "<uuid>",
   "instance_id": "<uuid>",
   "node_name": "<str>",

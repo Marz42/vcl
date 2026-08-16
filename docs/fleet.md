@@ -105,7 +105,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet stats user\|top users\|top hosts\|node NAME --days N` | `daily_usage` with **node** attribution |
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet version` | `vcl-fleet 0.3.0-dev` |
+| `vcl-fleet version` | `vcl-fleet 0.3.0` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.

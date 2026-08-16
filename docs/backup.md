@@ -83,7 +83,7 @@ Unknown `manifest.schema_version` → verify/restore refuse.
 ```json
 {
   "schema_version": 1,
-  "vincula_version": "0.3.0-dev",
+  "vincula_version": "0.3.0",
   "created_at": "2026-08-16T06:00:00Z",
   "source_node_id": "<uuid>",
   "source_instance_id": "<uuid>",

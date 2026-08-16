@@ -4,7 +4,7 @@
 
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** — fixture coverage for backup / restore / `node replace` is green; there is no Windows 11 live `vcl-fleet.cmd` run, no live VPS secretless replace, no real `age` on a production node, and AC-3.0-11 remains LIVE-only. 0.3.0 does **not** use the D20 24h soak gate. See [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 
-Known P0/P1 at this docs gate: **0**.
+Known P0/P1 at freeze: **0**.
 
 ## Product limitations
 

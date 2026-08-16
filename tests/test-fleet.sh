@@ -130,9 +130,9 @@ assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
 assert_success "vcl-fleet Windows entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 
-assert_equal "vcl-fleet version" "vcl-fleet 0.3.0-dev" \
+assert_equal "vcl-fleet version" "vcl-fleet 0.3.0" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
-assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.0-dev" \
+assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.0" \
   "$(fleet version)"
 
 node_help=$(fleet node -h)
@@ -1011,7 +1011,7 @@ if (( verify_rc != 0 )); then
 else
   fail "verify three-fixture exits non-zero (sg FAIL) (rc=${verify_rc})"
 fi
-assert_success "verify reports lax version" grep -q '0.3.0-dev' <<< "$verify_out"
+assert_success "verify reports lax version" grep -q '0.3.0' <<< "$verify_out"
 assert_success "verify reports lax node_id" grep -q "$LAX_REMOTE_NODE_ID" <<< "$verify_out"
 assert_success "verify reports lax instance_id" \
   grep -q 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' <<< "$verify_out"
@@ -1042,7 +1042,7 @@ need = [
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
 assert nodes["lax"]["ok"] is True
-assert nodes["lax"]["vincula_version"] == "0.3.0-dev"
+assert nodes["lax"]["vincula_version"] == "0.3.0"
 assert nodes["lax"]["node_id"] == lax_id
 assert nodes["lax"]["ssh"] == "OK"
 assert nodes["lax"]["proxy"] == "OK"
@@ -4170,7 +4170,7 @@ node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 lax = state / "lax"
 state_doc = {
-    "schema_version": 2, "project_version": "0.3.0-dev",
+    "schema_version": 2, "project_version": "0.3.0",
     "sing_box_version": "1.13.18", "architecture": "amd64",
     "installed_at": "2026-08-16T00:00:00Z",
     "node": {
@@ -4196,7 +4196,7 @@ users = {"schema_version": 2, "users": [{
         "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
     }],
 }]}
-toml = """project_version = "0.3.0-dev"
+toml = """project_version = "0.3.0"
 sing_box_version = "1.13.18"
 architecture = "amd64"
 node_id = "%s"
@@ -4216,7 +4216,7 @@ lax.mkdir(parents=True, exist_ok=True)
 (lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
 (lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
 (lax / "config.toml").write_text(toml, encoding="utf-8")
-(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 conn = acct.open_db(str(lax / "accounting.db"))
 conn.execute(
     """INSERT INTO connections (
@@ -4412,7 +4412,7 @@ node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 lax = state / "lax"
 state_doc = {
-    "schema_version": 2, "project_version": "0.3.0-dev",
+    "schema_version": 2, "project_version": "0.3.0",
     "sing_box_version": "1.13.18", "architecture": "amd64",
     "installed_at": "2026-08-16T00:00:00Z",
     "node": {
@@ -4438,7 +4438,7 @@ users = {"schema_version": 2, "users": [{
         "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
     }],
 }]}
-toml = """project_version = "0.3.0-dev"
+toml = """project_version = "0.3.0"
 sing_box_version = "1.13.18"
 architecture = "amd64"
 node_id = "%s"
@@ -4457,7 +4457,7 @@ billing_cycle_start_day = 1
 (lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
 (lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
 (lax / "config.toml").write_text(toml, encoding="utf-8")
-(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 conn = acct.open_db(str(lax / "accounting.db"))
 for i in range(1, 6):
     conn.execute(
@@ -4791,7 +4791,7 @@ lax = state / "lax"
 lax2 = state / "lax2"
 shutil.copyfile(ident_src, lax2 / "identity.json")
 state_doc = {
-    "schema_version": 2, "project_version": "0.3.0-dev",
+    "schema_version": 2, "project_version": "0.3.0",
     "sing_box_version": "1.13.18", "architecture": "amd64",
     "installed_at": "2026-08-16T00:00:00Z",
     "node": {
@@ -4817,7 +4817,7 @@ users = {"schema_version": 2, "users": [{
         "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
     }],
 }]}
-toml = """project_version = "0.3.0-dev"
+toml = """project_version = "0.3.0"
 sing_box_version = "1.13.18"
 architecture = "amd64"
 node_id = "%s"
@@ -4836,7 +4836,7 @@ billing_cycle_start_day = 1
 (lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
 (lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
 (lax / "config.toml").write_text(toml, encoding="utf-8")
-(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 conn = acct.open_db(str(lax / "accounting.db"))
 conn.execute(
     """INSERT INTO connections (
@@ -4876,7 +4876,7 @@ other_users["users"][0]["credentials"][0]["node_id"] = other_id
     (lax / "config.toml").read_text(encoding="utf-8").replace(node_id, other_id),
     encoding="utf-8",
 )
-(other_state / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+(other_state / "VERSION").write_text("0.3.0\n", encoding="utf-8")
 shutil.copyfile(lax / "accounting.db", other_state / "accounting.db")
 mod.create_backup(other_state, other_state / "accounting.db", include_secrets=False, output=wrong)
 verified = mod.verify_archive(wrong)

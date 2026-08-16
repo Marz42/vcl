@@ -894,7 +894,7 @@ def toml_set(text: str, key: str, value: Any) -> str:
 def write_restore_marker(dir_path: Path, marker_type: str, status: str = "") -> None:
     dir_path.mkdir(parents=True, exist_ok=True)
     version = os.environ.get("VCL_RESTORE_VERSION") or os.environ.get(
-        "VINCULA_VERSION", "0.3.0-dev"
+        "VINCULA_VERSION", "0.3.0"
     )
     payload = (
         "project=vincula\n"
@@ -1387,7 +1387,7 @@ def apply_restore(
         version = (
             project_version
             or str(plan["state"].get("project_version") or "")
-            or "0.3.0-dev"
+            or "0.3.0"
         )
         _write_private(dest_state_dir / "VERSION", (version + "\n").encode("utf-8"))
         written.append("VERSION")
