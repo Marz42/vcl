@@ -4180,6 +4180,388 @@ assert_success "soak protocol is LIVE-ONLY and not a CI gate" \
 assert_success "soak protocol documents 24h READY FOR RC" \
   grep -q 'AC-2.7-09' "${PROJECT_DIR}/scripts/soak-0.2.7.sh"
 
+# --- 0.3.0 vincula-backup.py strip/tar ---
+assert_success "python3 can compile vincula-backup" \
+  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins schema 1" \
+  grep -q 'BACKUP_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module uses sqlite3 Connection.backup" \
+  grep -q 'src_conn.backup(dest_conn)' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_failure "backup snapshot does not shutil.copyfile the live db" \
+  grep -q 'shutil.copyfile' "${PROJECT_DIR}/lib/vincula-backup.py"
+BACKUP_DIR="${TEST_TMP}/backup030"
+mkdir -p "$BACKUP_DIR"
+if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" "${PROJECT_DIR}/lib/vincula-accountd.py" <<'PY'
+import contextlib, importlib.util, io, json, os, sqlite3, stat, sys, tarfile
+from pathlib import Path
+
+base = Path(sys.argv[1])
+backup_py = sys.argv[2]
+accountd_py = sys.argv[3]
+
+spec_b = importlib.util.spec_from_file_location("vbackup", backup_py)
+mod = importlib.util.module_from_spec(spec_b)
+spec_b.loader.exec_module(mod)
+spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec_a)
+spec_a.loader.exec_module(acct)
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+active_uuid = "11111111-1111-4111-8111-111111111111"
+revoked_uuid = "22222222-2222-4222-8222-222222222222"
+active_cid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+revoked_cid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+state_dir = base / "node"
+state_dir.mkdir(parents=True, exist_ok=True)
+state_doc = {
+    "schema_version": 2,
+    "project_version": "0.3.0-dev",
+    "sing_box_version": "1.13.18",
+    "architecture": "amd64",
+    "installed_at": "2026-08-16T00:00:00Z",
+    "node": {
+        "node_id": node_id,
+        "instance_id": instance_id,
+        "node_name": "lax",
+        "server": "203.0.113.10",
+        "listen": "0.0.0.0",
+        "port": 443,
+        "reality_handshake_server": "www.cloudflare.com",
+        "reality_server_name": "www.cloudflare.com",
+        "reality_private_key": "sekrit",
+        "reality_public_key": "pub",
+        "reality_short_id": "abcd1234",
+    },
+    "service_account": {
+        "user": "sing-box",
+        "uid": 1000,
+        "group": "sing-box",
+        "gid": 1000,
+        "home": "/var/lib/sing-box",
+        "shell": "/usr/sbin/nologin",
+        "created_by_vincula": True,
+        "group_created_by_vincula": True,
+    },
+}
+users_doc = {
+    "schema_version": 2,
+    "users": [
+        {
+            "user_id": "u-alice",
+            "tag": "alice",
+            "display_name": "Alice",
+            "department": "eng",
+            "enabled": True,
+            "created_at": "2026-08-01T00:00:00Z",
+            "credentials": [
+                {
+                    "credential_id": active_cid,
+                    "node_id": node_id,
+                    "uuid": active_uuid,
+                    "status": "active",
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "revoked_at": None,
+                },
+                {
+                    "credential_id": revoked_cid,
+                    "node_id": node_id,
+                    "uuid": revoked_uuid,
+                    "status": "revoked",
+                    "created_at": "2026-07-01T00:00:00Z",
+                    "revoked_at": "2026-08-01T00:00:00Z",
+                },
+            ],
+        }
+    ],
+}
+toml_text = """project_version = "0.3.0-dev"
+sing_box_version = "1.13.18"
+architecture = "amd64"
+node_id = "%s"
+node_name = "lax"
+server = "203.0.113.10"
+listen = "0.0.0.0"
+port = 443
+reality_handshake_server = "www.cloudflare.com"
+reality_server_name = "www.cloudflare.com"
+clash_api_port = 9090
+clash_api_secret = "clash-sekrit"
+accounting_raw_retention_days = 90
+accounting_daily_retention_days = 90
+billing_cycle_start_day = 1
+""" % node_id
+
+(state_dir / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
+(state_dir / "users.json").write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
+(state_dir / "config.toml").write_text(toml_text, encoding="utf-8")
+(state_dir / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+orig_state = (state_dir / "state.json").read_bytes()
+orig_users = (state_dir / "users.json").read_bytes()
+orig_toml = (state_dir / "config.toml").read_bytes()
+
+db = state_dir / "accounting.db"
+conn = acct.open_db(str(db))
+assert acct.meta_get(conn, "schema_version") == "3"
+
+def insert_row(cid, closed):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            cid, 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-16T01:00:00Z", "2026-08-16T01:05:00Z", closed,
+            "example.com", "203.0.113.10", 443, "tcp", 10, 20,
+        ),
+    )
+
+insert_row("conn-closed", "2026-08-16T01:05:00Z")
+insert_row("conn-open", None)
+conn.commit()
+assert conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0] == 2
+conn.close()
+
+# TASK 7: strip pure functions + include-secrets verbatim
+stripped_state, stripped_users, stripped_toml = mod.strip_secretless(
+    state_doc, users_doc, toml_text
+)
+assert "reality_private_key" not in stripped_state["node"], stripped_state["node"]
+assert stripped_state["node"]["node_id"] == node_id
+assert stripped_state["node"]["instance_id"] == instance_id
+assert stripped_state["node"]["reality_public_key"] == "pub"
+assert "service_account" in stripped_state
+uuids = [
+    c.get("uuid")
+    for u in stripped_users["users"]
+    for c in u["credentials"]
+]
+assert uuids == [None, None], uuids
+creds = stripped_users["users"][0]["credentials"]
+assert creds[0]["credential_id"] == active_cid
+assert creds[0]["status"] == "active"
+assert creds[1]["credential_id"] == revoked_cid
+assert creds[1]["status"] == "revoked"
+assert creds[1]["revoked_at"] == "2026-08-01T00:00:00Z"
+assert stripped_users["users"][0]["user_id"] == "u-alice"
+assert "clash_api_secret" not in stripped_toml
+assert "clash_api_port = 9090" in stripped_toml
+mod.assert_secretless(stripped_state, stripped_users, stripped_toml)
+try:
+    mod.assert_secretless(state_doc, users_doc, toml_text)
+    raise AssertionError("verbatim secrets must fail assert_secretless")
+except ValueError:
+    pass
+verbatim_state = mod.copy_verbatim(state_doc)
+assert verbatim_state["node"]["reality_private_key"] == "sekrit"
+assert state_doc["node"]["reality_private_key"] == "sekrit"
+
+# TASK 8: WAL-safe snapshot; open rows preserved; later writes not in snap
+wal_src = base / "wal-live.db"
+acct_wal = acct.open_db(str(wal_src))
+acct_wal.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "wal-open", 0, "u-alice", node_id, instance_id, "alice",
+        "2026-08-16T02:00:00Z", "2026-08-16T02:01:00Z", None,
+        "open.example", "203.0.113.11", 443, "tcp", 1, 2,
+    ),
+)
+acct_wal.commit()
+wal_snap = base / "wal-snap.db"
+mod.db_snapshot(wal_src, wal_snap)
+acct_wal.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "wal-after", 0, "u-alice", node_id, instance_id, "alice",
+        "2026-08-16T03:00:00Z", "2026-08-16T03:01:00Z", None,
+        "after.example", "203.0.113.12", 443, "tcp", 3, 4,
+    ),
+)
+acct_wal.commit()
+snap_conn = sqlite3.connect(str(wal_snap))
+assert snap_conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+cids = [r[0] for r in snap_conn.execute("SELECT connection_id FROM connections ORDER BY event_id")]
+assert cids == ["wal-open"], cids
+open_closed = snap_conn.execute(
+    "SELECT closed_at FROM connections WHERE connection_id='wal-open'"
+).fetchone()[0]
+assert open_closed is None, open_closed
+src_cids = [r[0] for r in acct_wal.execute("SELECT connection_id FROM connections ORDER BY event_id")]
+assert src_cids == ["wal-open", "wal-after"], src_cids
+snap_conn.close()
+acct_wal.close()
+
+# TASK 9–10: secretless tar + manifest + verify
+archive = base / "node-secretless.tar"
+created = "2026-08-16T06:00:00Z"
+result = mod.create_backup(
+    state_dir, db, include_secrets=False, output=archive, created_at=created
+)
+assert result["ok"] is True
+assert result["secret_bearing"] is False
+assert result["encryption"] == "none"
+assert result["backup_schema_version"] == 1
+assert result["source_node_id"] == node_id
+assert result["source_instance_id"] == instance_id
+assert not str(archive).endswith(".age")
+mode = stat.S_IMODE(archive.stat().st_mode)
+assert mode == 0o600, oct(mode)
+assert (state_dir / "state.json").read_bytes() == orig_state
+assert (state_dir / "users.json").read_bytes() == orig_users
+assert (state_dir / "config.toml").read_bytes() == orig_toml
+
+with tarfile.open(archive, "r:") as tf:
+    names = tf.getnames()
+assert names[0] == "manifest.json", names
+assert "components/" not in "".join(names)
+assert set(names) == {
+    "manifest.json", "state.json", "users.json", "config.toml", "accounting.db", "VERSION",
+}, names
+
+members = {}
+with tarfile.open(archive, "r:") as tf:
+    for info in tf.getmembers():
+        members[info.name] = tf.extractfile(info).read()
+
+tar_state = json.loads(members["state.json"])
+assert "reality_private_key" not in tar_state["node"]
+assert "reality_private_key" not in members["state.json"].decode("utf-8")
+assert tar_state["node"]["node_id"] == node_id
+assert tar_state["node"]["instance_id"] == instance_id
+tar_users = json.loads(members["users.json"])
+assert '"uuid"' not in members["users.json"].decode("utf-8")
+assert tar_users["users"][0]["user_id"] == "u-alice"
+tar_creds = tar_users["users"][0]["credentials"]
+assert [c["credential_id"] for c in tar_creds] == [active_cid, revoked_cid]
+assert [c["status"] for c in tar_creds] == ["active", "revoked"]
+assert tar_creds[1]["revoked_at"] == "2026-08-01T00:00:00Z"
+assert "clash_api_secret" not in members["config.toml"].decode("utf-8")
+assert members["VERSION"] == b"0.3.0-dev\n"
+
+db_copy = base / "from-tar.db"
+db_copy.write_bytes(members["accounting.db"])
+acct_tar = sqlite3.connect(str(db_copy))
+assert acct_tar.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+rows = acct_tar.execute(
+    "SELECT connection_id, closed_at FROM connections ORDER BY event_id"
+).fetchall()
+assert len(rows) == 2, rows
+assert rows[0][0] == "conn-closed" and rows[0][1] is not None
+assert rows[1][0] == "conn-open" and rows[1][1] is None
+acct_tar.close()
+
+manifest = json.loads(members["manifest.json"])
+assert list(manifest)[:8] == [
+    "schema_version", "vincula_version", "created_at", "source_node_id",
+    "source_instance_id", "included_components", "secret_bearing", "encryption",
+], list(manifest)
+assert manifest["schema_version"] == 1
+assert manifest["vincula_version"] == "0.3.0-dev"
+assert manifest["created_at"] == created
+assert manifest["source_node_id"] == node_id
+assert manifest["source_instance_id"] == instance_id
+assert manifest["secret_bearing"] is False
+assert manifest["encryption"] == "none"
+assert "manifest.json" not in [f["path"] for f in manifest["files"]]
+assert manifest["included_components"] == [
+    "state.json", "users.json", "config.toml", "accounting.db", "VERSION",
+]
+
+verified = mod.verify_manifest(archive)
+assert verified.get("ok") is True, verified
+assert verified["schema_version"] == 1
+archive_ok = mod.verify_archive(archive)
+assert archive_ok.get("ok") is True, archive_ok
+
+# include-secrets rendering keeps the three secrets (no plaintext tar)
+secrets_dir = base / "secrets-parts"
+secrets_dir.mkdir()
+secret_parts = mod.assemble_components(
+    state_dir, secrets_dir, accounting_db=db, include_secrets=True
+)
+sec_state = json.loads(secret_parts["state.json"].read_text(encoding="utf-8"))
+assert sec_state["node"]["reality_private_key"] == "sekrit"
+sec_users = json.loads(secret_parts["users.json"].read_text(encoding="utf-8"))
+sec_uuids = [c["uuid"] for u in sec_users["users"] for c in u["credentials"]]
+assert sec_uuids == [active_uuid, revoked_uuid], sec_uuids
+assert "clash_api_secret = \"clash-sekrit\"" in secret_parts["config.toml"].read_text(
+    encoding="utf-8"
+)
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    try:
+        mod.create_backup(state_dir, db, include_secrets=True, output=base / "nope.tar")
+        raise AssertionError("include-secrets without recipient must die")
+    except SystemExit:
+        pass
+assert "Secret-bearing backup requires --age-recipient FILE." in err.getvalue()
+
+# verify_manifest: checksum mismatch + secret_bearing flag
+tamper = base / "tamper.tar"
+with tarfile.open(archive, "r:") as src, tarfile.open(tamper, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    for info in src.getmembers():
+        data = src.extractfile(info).read()
+        if info.name == "users.json":
+            data = data.replace(active_cid.encode("utf-8"), b"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        dst.addfile(info, __import__("io").BytesIO(data))
+mismatch = mod.verify_manifest(tamper)
+assert mismatch.get("ok") is False and mismatch.get("error") == "checksum_mismatch", mismatch
+
+flag_bad = base / "flag-bad.tar"
+bad_manifest = dict(manifest)
+bad_manifest["secret_bearing"] = True
+bad_manifest["encryption"] = "none"
+with tarfile.open(archive, "r:") as src, tarfile.open(flag_bad, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    for info in src.getmembers():
+        data = src.extractfile(info).read()
+        if info.name == "manifest.json":
+            data = (json.dumps(bad_manifest, indent=2) + "\n").encode("utf-8")
+            info.size = len(data)
+        dst.addfile(info, __import__("io").BytesIO(data))
+flag_result = mod.verify_manifest(flag_bad)
+assert flag_result.get("ok") is False and flag_result.get("error") == "secret_bearing_unencrypted", flag_result
+PY
+then
+  pass "secretless backup strips reality_private_key"
+  pass "secretless users keep credential_id history without uuid"
+  pass "secretless config.toml drops clash_api_secret"
+  pass "include-secrets rendering keeps secrets verbatim"
+  pass "sqlite backup API snapshot is consistent under WAL"
+  pass "backup tar manifest schema 1 with per-file sha256"
+  pass "verify_manifest checks sha256 and secret-bearing flag"
+  pass "secretless archive is 0600 and not age-encrypted"
+else
+  fail "secretless backup strips reality_private_key"
+  fail "secretless users keep credential_id history without uuid"
+  fail "secretless config.toml drops clash_api_secret"
+  fail "include-secrets rendering keeps secrets verbatim"
+  fail "sqlite backup API snapshot is consistent under WAL"
+  fail "backup tar manifest schema 1 with per-file sha256"
+  fail "verify_manifest checks sha256 and secret-bearing flag"
+  fail "secretless archive is 0600 and not age-encrypted"
+fi
+
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
   # shellcheck disable=SC1091
   source "${TEST_DIR}/test-fleet.sh"
