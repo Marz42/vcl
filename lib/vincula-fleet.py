@@ -43,6 +43,14 @@ SSH_TIMEOUT_SECONDS = 20
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
 STATUS_JSON_SCHEMA_VERSION = 1
 VERIFY_JSON_SCHEMA_VERSION = 1
+# D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
+OP_PLANNED = "PLANNED"
+OP_APPLYING = "APPLYING"
+OP_SUCCESS, OP_FAILED = "SUCCESS", "FAILED"
+OP_PARTIAL = "PARTIAL"
+MUTATION_SCHEMA_VERSION = 1
+MUTATION_EXIT_SUCCESS = 0
+MUTATION_EXIT_PARTIAL = 2
 HOST_KEY_TYPES = (
     "ssh-ed25519",
     "ssh-rsa",
@@ -1101,6 +1109,194 @@ def cmd_verify(*, as_json: bool, include_all: bool) -> int:
     else:
         sys.stdout.write(format_verify_report(rows))
     return 0 if payload["ok"] else 1
+
+
+def _node_name(node: Any) -> str:
+    if isinstance(node, dict):
+        return str(node.get("name") or node.get("node") or "")
+    return str(node)
+
+
+def _node_status(row: dict[str, Any]) -> str:
+    status = row.get("status")
+    if status in (OP_SUCCESS, OP_FAILED):
+        return str(status)
+    if "ok" in row:
+        return OP_SUCCESS if row["ok"] else OP_FAILED
+    return OP_FAILED
+
+
+def _node_result_row(node: Any, ok: bool, detail: Any = None) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "name": _node_name(node),
+        "status": OP_SUCCESS if ok else OP_FAILED,
+        "credential_id": None,
+        "vless_uri": None,
+        "error": None,
+    }
+    extra = detail if isinstance(detail, dict) else {}
+    if extra:
+        if extra.get("credential_id") is not None:
+            row["credential_id"] = extra.get("credential_id")
+        if extra.get("vless_uri") is not None:
+            row["vless_uri"] = extra.get("vless_uri")
+    if ok:
+        return row
+    if extra:
+        err = extra.get("error")
+        row["error"] = str(err) if err is not None else "failed"
+        return row
+    if detail is None:
+        row["error"] = "failed"
+        return row
+    row["error"] = str(detail)
+    return row
+
+
+def plan_mutation(
+    nodes: list[Any],
+    *,
+    operation: str = "user.add",
+    tag: str = "",
+    user_id: str = "",
+) -> dict[str, Any]:
+    """Return a mutation document in PLANNED (no SSH)."""
+    return {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "operation": operation,
+        "tag": tag,
+        "user_id": user_id,
+        "state": OP_PLANNED,
+        "planned_nodes": [_node_name(node) for node in nodes],
+        "nodes": [],
+        "remediation": [],
+    }
+
+
+def record_result(
+    results: Optional[list[dict[str, Any]]],
+    node: Any,
+    ok: bool,
+    detail: Any = None,
+) -> list[dict[str, Any]]:
+    """Append one per-node SUCCESS/FAILED row; does not mutate *results*."""
+    acc = list(results or [])
+    acc.append(_node_result_row(node, ok, detail))
+    return acc
+
+
+def plan_state(node_results: list[dict[str, Any]]) -> str:
+    """Empty → PLANNED; all SUCCESS → SUCCESS; else PARTIAL (including all-failed)."""
+    if not node_results:
+        return OP_PLANNED
+    if all(_node_status(row) == OP_SUCCESS for row in node_results):
+        return OP_SUCCESS
+    return OP_PARTIAL
+
+
+def final_state(results: list[dict[str, Any]]) -> str:
+    """Terminal state: SUCCESS only if every node succeeded; else PARTIAL."""
+    return plan_state(results)
+
+
+def mark_applying(doc: dict[str, Any]) -> dict[str, Any]:
+    out = dict(doc)
+    out["state"] = OP_APPLYING
+    return out
+
+
+def remediation_user_add(tag: str, user_id: str, failed_names: list[str]) -> list[str]:
+    return [
+        f"vcl-fleet user add {tag} --nodes {name} --user-id {user_id}"
+        for name in failed_names
+    ]
+
+
+def mutation_report(
+    results: list[dict[str, Any]],
+    *,
+    tag: str = "",
+    user_id: str = "",
+    operation: str = "user.add",
+) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = []
+    for row in results:
+        item = dict(row)
+        item["name"] = _node_name(item)
+        item["status"] = _node_status(item)
+        item.setdefault("credential_id", None)
+        item.setdefault("vless_uri", None)
+        item.setdefault("error", None)
+        nodes.append(item)
+    state = plan_state(nodes)
+    failed_names = [row["name"] for row in nodes if row["status"] != OP_SUCCESS]
+    remediation: list[str] = []
+    if state == OP_PARTIAL:
+        remediation = remediation_user_add(tag, user_id, failed_names)
+    return {
+        "schema_version": MUTATION_SCHEMA_VERSION,
+        "operation": operation,
+        "tag": tag,
+        "user_id": user_id,
+        "state": state,
+        "nodes": nodes,
+        "remediation": remediation,
+    }
+
+
+def format_partial_report(doc: dict[str, Any]) -> str:
+    """Human table: STATE, per-node SUCCESS|FAILED, optional Remediation block."""
+    state = str(doc.get("state") or plan_state(list(doc.get("nodes") or [])))
+    lines = [f"STATE {state}"]
+    operation = doc.get("operation")
+    if operation:
+        lines.append(f"operation: {operation}")
+    tag = doc.get("tag") or ""
+    if tag:
+        lines.append(f"tag: {tag}")
+    user_id = doc.get("user_id") or ""
+    if user_id:
+        lines.append(f"user_id: {user_id}")
+    lines.append("")
+    lines.append(f"{'NODE':<12} STATUS")
+    nodes = list(doc.get("nodes") or [])
+    for row in nodes:
+        name = _node_name(row)
+        status = _node_status(row)
+        extra = ""
+        if status == OP_FAILED and row.get("error"):
+            extra = f"  {row['error']}"
+        lines.append(f"{name:<12} {status}{extra}")
+    rem = list(doc.get("remediation") or [])
+    if not rem and state == OP_PARTIAL:
+        rem = remediation_user_add(
+            tag,
+            user_id,
+            [_node_name(row) for row in nodes if _node_status(row) != OP_SUCCESS],
+        )
+    if rem:
+        lines.append("")
+        lines.append("Remediation:")
+        for cmd in rem:
+            lines.append(f"  {cmd}")
+    return "\n".join(lines) + "\n"
+
+
+def render_partial_report(
+    results: list[dict[str, Any]],
+    *,
+    tag: str = "",
+    user_id: str = "",
+    operation: str = "user.add",
+) -> str:
+    return format_partial_report(
+        mutation_report(results, tag=tag, user_id=user_id, operation=operation)
+    )
+
+
+def never_report_full_success(doc: dict[str, Any]) -> int:
+    """Exit 0 only for SUCCESS; PARTIAL (including all-failed) is 2."""
+    return MUTATION_EXIT_SUCCESS if doc.get("state") == OP_SUCCESS else MUTATION_EXIT_PARTIAL
 
 
 def build_parser() -> argparse.ArgumentParser:

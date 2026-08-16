@@ -1210,6 +1210,115 @@ assert_success "AC-2.8-07 duplicate live add names node_id" \
 assert_failure "AC-2.8-07 duplicate live add does not register lax-reinstall" \
   grep -q 'lax-reinstall' "${VCL_FLEET_HOME}/fleet.json"
 
+assert_success "PARTIAL OP_SUCCESS/OP_FAILED constants" \
+  grep -q 'OP_SUCCESS, OP_FAILED = "SUCCESS", "FAILED"' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "PARTIAL exit code is 2" \
+  grep -q 'MUTATION_EXIT_PARTIAL = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+partial_fn_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || partial_fn_rc=$?
+import importlib.util
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+uid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+assert mod.OP_SUCCESS == "SUCCESS"
+assert mod.OP_FAILED == "FAILED"
+assert mod.OP_PARTIAL == "PARTIAL"
+assert mod.OP_PLANNED == "PLANNED"
+assert mod.OP_APPLYING == "APPLYING"
+assert mod.MUTATION_EXIT_SUCCESS == 0
+assert mod.MUTATION_EXIT_PARTIAL == 2
+
+planned = mod.plan_mutation(["lax", "tokyo"], tag="alice", user_id=uid)
+assert planned["state"] == "PLANNED"
+assert planned["planned_nodes"] == ["lax", "tokyo"]
+assert planned["nodes"] == []
+assert mod.plan_state([]) == "PLANNED"
+assert mod.final_state([]) == "PLANNED"
+applying = mod.mark_applying(planned)
+assert applying["state"] == "APPLYING"
+assert planned["state"] == "PLANNED"
+
+ok_results = []
+ok_results = mod.record_result(
+    ok_results, "lax", True, {"credential_id": "c-lax", "vless_uri": "vless://lax"}
+)
+ok_results = mod.record_result(
+    ok_results, "tokyo", True, {"credential_id": "c-tokyo", "vless_uri": "vless://tokyo"}
+)
+assert [row["status"] for row in ok_results] == ["SUCCESS", "SUCCESS"]
+assert mod.plan_state(ok_results) == "SUCCESS"
+assert mod.final_state(ok_results) == "SUCCESS"
+ok_doc = mod.mutation_report(ok_results, tag="alice", user_id=uid)
+assert ok_doc["state"] == "SUCCESS"
+assert ok_doc["remediation"] == []
+assert mod.never_report_full_success(ok_doc) == 0
+ok_report = mod.format_partial_report(ok_doc)
+assert ok_report.splitlines()[0] == "STATE SUCCESS"
+assert "lax" in ok_report and "tokyo" in ok_report
+assert "Remediation:" not in ok_report
+
+mix = []
+mix = mod.record_result(
+    mix, "lax", True, {"credential_id": "c-lax", "vless_uri": "vless://lax"}
+)
+mix = mod.record_result(mix, "tokyo", False, "ssh exit 1: boom")
+assert mod.plan_state(mix) == "PARTIAL"
+assert mod.final_state(mix) == "PARTIAL"
+assert mod.final_state(mix) != "SUCCESS"
+mix_doc = mod.mutation_report(mix, tag="alice", user_id=uid)
+assert mix_doc["state"] == "PARTIAL"
+assert [(n["name"], n["status"]) for n in mix_doc["nodes"]] == [
+    ("lax", "SUCCESS"),
+    ("tokyo", "FAILED"),
+]
+assert mix_doc["nodes"][1]["error"] == "ssh exit 1: boom"
+expect_cmd = f"vcl-fleet user add alice --nodes tokyo --user-id {uid}"
+assert mix_doc["remediation"] == [expect_cmd]
+mix_report = mod.format_partial_report(mix_doc)
+assert mix_report.splitlines()[0] == "STATE PARTIAL"
+assert "tokyo" in mix_report
+assert "FAILED" in mix_report
+assert "lax" in mix_report
+assert "--user-id" in mix_report
+assert uid in mix_report
+assert expect_cmd in mix_report
+assert "Remediation:" in mix_report
+assert mod.render_partial_report(mix, tag="alice", user_id=uid) == mix_report
+assert mod.never_report_full_success(mix_doc) == 2
+
+all_fail = []
+all_fail = mod.record_result(all_fail, "lax", False, "ssh exit 1: lax")
+all_fail = mod.record_result(all_fail, "tokyo", False, "ssh exit 1: tokyo")
+assert mod.plan_state(all_fail) == "PARTIAL"
+assert mod.final_state(all_fail) == "PARTIAL"
+assert mod.final_state(all_fail) != "SUCCESS"
+fail_doc = mod.mutation_report(all_fail, tag="bob", user_id=uid)
+assert fail_doc["state"] == "PARTIAL"
+assert fail_doc["state"] != "SUCCESS"
+assert all(n["status"] == "FAILED" for n in fail_doc["nodes"])
+assert [n["name"] for n in fail_doc["nodes"]] == ["lax", "tokyo"]
+assert fail_doc["remediation"] == [
+    f"vcl-fleet user add bob --nodes lax --user-id {uid}",
+    f"vcl-fleet user add bob --nodes tokyo --user-id {uid}",
+]
+fail_report = mod.format_partial_report(fail_doc)
+assert fail_report.splitlines()[0] == "STATE PARTIAL"
+assert "STATE SUCCESS" not in fail_report
+assert mod.never_report_full_success(fail_doc) == 2
+assert "rollback" not in fail_report.lower()
+PY
+if (( partial_fn_rc == 0 )); then
+  pass "PARTIAL state machine: all-ok SUCCESS, one-fail/all-fail PARTIAL, exit 0/2"
+else
+  fail "PARTIAL state machine: all-ok SUCCESS, one-fail/all-fail PARTIAL, exit 0/2"
+fi
+
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
   grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"
