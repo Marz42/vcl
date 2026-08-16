@@ -788,6 +788,259 @@ else
   fail "live SSH registry stores remote node_ids without instance_id"
 fi
 
+clock_fn_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || clock_fn_rc=$?
+import importlib.util
+import sys
+from datetime import datetime, timedelta, timezone
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+now = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
+assert mod.clock_skew_result(now, now)[0] == "OK"
+assert mod.clock_skew_result(now, now + timedelta(seconds=30))[0] == "OK"
+assert mod.clock_skew_result(now, now + timedelta(seconds=31))[0] == "WARN"
+assert mod.clock_skew_result(now, now + timedelta(seconds=300))[0] == "WARN"
+assert mod.clock_skew_result(now, now + timedelta(seconds=301))[0] == "FAIL"
+fail_state, fail_detail = mod.clock_skew_result(now, now + timedelta(seconds=301))
+assert fail_state == "FAIL"
+assert mod.CLOCK_SKEW_FAIL_CHECK in fail_detail
+assert str(mod.CLOCK_SKEW_FAIL_SECONDS) in fail_detail
+warn_state, warn_detail = mod.clock_skew_result(now, now + timedelta(seconds=31))
+assert warn_state == "WARN"
+assert str(mod.CLOCK_SKEW_WARN_SECONDS) in warn_detail
+missing = mod.clock_skew_from_identity(now, {"node_id": "x"})
+assert missing[0] == "FAIL"
+assert mod.CLOCK_SKEW_FAIL_CHECK in missing[1]
+stale = {
+    "ok": False,
+    "proxy": {"ok": True},
+    "accounting": {"ok": False, "heartbeat": "stale"},
+}
+healthy = {
+    "ok": True,
+    "proxy": {"ok": True},
+    "accounting": {"ok": True, "heartbeat": "fresh"},
+}
+proxy_fail = {
+    "ok": False,
+    "proxy": {"ok": False},
+    "accounting": {"ok": True, "heartbeat": "fresh"},
+}
+acct_fail = {
+    "ok": False,
+    "proxy": {"ok": True},
+    "accounting": {"ok": False, "heartbeat": "missing"},
+}
+assert mod.classify_proxy(healthy) == "OK"
+assert mod.classify_accounting(healthy) == "OK"
+assert mod.classify_accounting(stale) == "STALE"
+assert mod.classify_proxy(proxy_fail) == "FAIL"
+assert mod.classify_accounting(acct_fail) == "FAIL"
+assert mod.classify_proxy(None) == "UNKNOWN"
+assert mod.classify_accounting(None) == "UNKNOWN"
+PY
+if (( clock_fn_rc == 0 )); then
+  pass "clock_skew_result 0=OK 31=WARN 301=FAIL; accounting stale vs fail"
+else
+  fail "clock_skew_result 0=OK 31=WARN 301=FAIL; accounting stale vs fail"
+fi
+
+verify_help=$(fleet verify --help)
+assert_success "verify --help mentions 30" grep -q '30' <<< "$verify_help"
+assert_success "verify --help mentions 300" grep -q '300' <<< "$verify_help"
+assert_success "verify --help mentions audit-clock-health" \
+  grep -q 'audit-clock-health' <<< "$verify_help"
+assert_success "status --help lists NODE_ID column" \
+  grep -q 'NODE_ID' <<< "$(fleet status --help)"
+
+status_rc=0
+status_out=$(fleet status 2>&1) || status_rc=$?
+if (( status_rc != 0 )); then
+  pass "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL)"
+else
+  fail "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL) (rc=${status_rc})"
+fi
+assert_success "status table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING" \
+  grep -Eq 'NAME.+NODE_ID.+INSTANCE.+SSH.+PROXY.+ACCOUNTING' <<< "$status_out"
+assert_success "AC-2.8-03 status lax OK/OK/OK" \
+  grep -Eq '^lax[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+OK[[:space:]]*$' <<< "$status_out"
+assert_success "AC-2.8-03 status tokyo OK/OK/STALE" \
+  grep -Eq '^tokyo[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+STALE[[:space:]]*$' <<< "$status_out"
+assert_success "AC-2.8-03 status sg FAIL/UNKNOWN/UNKNOWN" \
+  grep -Eq '^sg[[:space:]].*[[:space:]]FAIL[[:space:]]+UNKNOWN[[:space:]]+UNKNOWN[[:space:]]*$' <<< "$status_out"
+
+status_json_rc=0
+status_json=$(fleet status --json 2>/dev/null) || status_json_rc=$?
+if (( status_json_rc != 0 )); then
+  pass "status --json exits non-zero with sg FAIL"
+else
+  fail "status --json exits non-zero with sg FAIL (rc=${status_json_rc})"
+fi
+status_json_shape_rc=0
+python3 - "$status_json" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY' || status_json_shape_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+lax_id, tokyo_id, sg_id = sys.argv[2:5]
+assert list(doc)[:4] == ["schema_version", "ok", "controller_utc", "nodes"], list(doc)
+assert doc["schema_version"] == 1
+assert doc["ok"] is False
+nodes = {n["name"]: n for n in doc["nodes"]}
+assert set(nodes) == {"lax", "tokyo", "sg"}, set(nodes)
+for name, node_id in (("lax", lax_id), ("tokyo", tokyo_id), ("sg", sg_id)):
+    assert nodes[name]["node_id"] == node_id
+    assert list(nodes[name])[:7] == [
+        "name", "node_id", "instance_id", "enabled", "ssh", "proxy", "accounting"
+    ]
+assert nodes["lax"]["ssh"] == "OK"
+assert nodes["lax"]["proxy"] == "OK"
+assert nodes["lax"]["accounting"] == "OK"
+assert nodes["lax"]["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+assert nodes["tokyo"]["ssh"] == "OK"
+assert nodes["tokyo"]["proxy"] == "OK"
+assert nodes["tokyo"]["accounting"] == "STALE"
+assert nodes["sg"]["ssh"] == "FAIL"
+assert nodes["sg"]["proxy"] == "UNKNOWN"
+assert nodes["sg"]["accounting"] == "UNKNOWN"
+assert nodes["sg"]["instance_id"] is None
+PY
+if (( status_json_shape_rc == 0 )); then
+  pass "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+else
+  fail "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+fi
+
+verify_rc=0
+verify_out=$(fleet verify 2>&1) || verify_rc=$?
+if (( verify_rc != 0 )); then
+  pass "verify three-fixture exits non-zero (sg FAIL)"
+else
+  fail "verify three-fixture exits non-zero (sg FAIL) (rc=${verify_rc})"
+fi
+assert_success "verify reports lax version" grep -q '0.2.8-dev' <<< "$verify_out"
+assert_success "verify reports lax node_id" grep -q "$LAX_REMOTE_NODE_ID" <<< "$verify_out"
+assert_success "verify reports lax instance_id" \
+  grep -q 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' <<< "$verify_out"
+assert_success "verify lax ssh OK" grep -q 'ssh: OK' <<< "$verify_out"
+assert_success "verify sg SSH FAIL" grep -q 'SSH unreachable' <<< "$verify_out"
+assert_success "verify tokyo accounting STALE" grep -q 'accounting: STALE' <<< "$verify_out"
+
+verify_json_rc=0
+verify_json=$(fleet verify --json 2>/dev/null) || verify_json_rc=$?
+if (( verify_json_rc != 0 )); then
+  pass "verify --json exits non-zero with sg FAIL"
+else
+  fail "verify --json exits non-zero with sg FAIL (rc=${verify_json_rc})"
+fi
+verify_json_shape_rc=0
+python3 - "$verify_json" "$LAX_REMOTE_NODE_ID" <<'PY' || verify_json_shape_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+lax_id = sys.argv[2]
+assert doc["schema_version"] == 1
+assert doc["ok"] is False
+assert "controller_utc" in doc
+nodes = {n["name"]: n for n in doc["nodes"]}
+need = [
+    "name", "ok", "vincula_version", "node_id", "instance_id", "enabled",
+    "ssh", "proxy", "accounting", "registry", "clock", "clock_skew_seconds",
+    "warnings", "checks",
+]
+assert list(nodes["lax"]) == need, list(nodes["lax"])
+assert nodes["lax"]["ok"] is True
+assert nodes["lax"]["vincula_version"] == "0.2.8-dev"
+assert nodes["lax"]["node_id"] == lax_id
+assert nodes["lax"]["ssh"] == "OK"
+assert nodes["lax"]["proxy"] == "OK"
+assert nodes["lax"]["accounting"] == "OK"
+assert nodes["lax"]["registry"] == "OK"
+assert nodes["lax"]["clock"] == "OK"
+assert nodes["tokyo"]["ok"] is True
+assert nodes["tokyo"]["accounting"] == "STALE"
+assert nodes["sg"]["ok"] is False
+assert nodes["sg"]["ssh"] == "FAIL"
+assert nodes["sg"]["proxy"] == "UNKNOWN"
+assert nodes["sg"]["accounting"] == "UNKNOWN"
+assert nodes["sg"]["clock"] == "UNKNOWN"
+PY
+if (( verify_json_shape_rc == 0 )); then
+  pass "verify --json shape: lax pass, tokyo STALE, sg FAIL"
+else
+  fail "verify --json shape: lax pass, tokyo STALE, sg FAIL"
+fi
+
+assert_success "disable sg for stale-only status" fleet node disable sg
+stale_status_rc=0
+stale_status=$(fleet status 2>&1) || stale_status_rc=$?
+if (( stale_status_rc == 0 )); then
+  pass "status exits 0 when only accounting STALE remains"
+else
+  fail "status exits 0 when only accounting STALE remains (rc=${stale_status_rc})"
+fi
+assert_failure "status without --all omits disabled sg" \
+  grep -Eq '^sg[[:space:]]' <<< "$stale_status"
+assert_success "status --all shows disabled sg" \
+  grep -Eq '^sg[[:space:]].*DISABLED' <<< "$(fleet status --all)"
+stale_verify_rc=0
+fleet verify >/dev/null 2>&1 || stale_verify_rc=$?
+if (( stale_verify_rc == 0 )); then
+  pass "verify exits 0 when sg is disabled and tokyo is STALE"
+else
+  fail "verify exits 0 when sg is disabled and tokyo is STALE (rc=${stale_verify_rc})"
+fi
+assert_success "re-enable sg" fleet node enable sg
+
+CLOCK_FLEET_HOME="${TEST_TMP}/fleet-home-clock"
+SAVED_STATUS_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${CLOCK_FLEET_HOME}"
+assert_success "clock-skew fleet home init" fleet init
+assert_success "clock-skew register lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+export VCL_FAKE_CLOCK_SKEW_SECONDS=45
+warn_rc=0
+warn_out=$(fleet verify 2>&1) || warn_rc=$?
+if (( warn_rc == 0 )); then
+  pass "clock skew 45s verify still exits 0"
+else
+  fail "clock skew 45s verify still exits 0 (rc=${warn_rc})"
+fi
+assert_success "clock skew 45s prints WARN" grep -q 'WARN' <<< "$warn_out"
+assert_success "clock skew 45s warn names 30s threshold" grep -q '30' <<< "$warn_out"
+unset VCL_FAKE_CLOCK_SKEW_SECONDS
+
+export VCL_FAKE_CLOCK_SKEW_SECONDS=400
+fail_clock_rc=0
+fail_clock_out=$(fleet verify 2>&1) || fail_clock_rc=$?
+if (( fail_clock_rc != 0 )); then
+  pass "clock skew 400s verify exits non-zero"
+else
+  fail "clock skew 400s verify exits non-zero (rc=${fail_clock_rc})"
+fi
+assert_success "clock skew 400s names audit-clock-health" \
+  grep -q 'audit-clock-health' <<< "$fail_clock_out"
+fail_clock_json=$(fleet verify --json 2>/dev/null) || true
+clock_json_rc=0
+python3 - "$fail_clock_json" <<'PY' || clock_json_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["ok"] is False
+node = doc["nodes"][0]
+assert node["clock"] == "FAIL"
+assert node["ok"] is False
+names = [c.get("name") for c in node.get("checks") or []]
+assert "audit-clock-health" in names, names
+PY
+if (( clock_json_rc == 0 )); then
+  pass "clock skew 400s --json FAIL check is audit-clock-health"
+else
+  fail "clock skew 400s --json FAIL check is audit-clock-health"
+fi
+unset VCL_FAKE_CLOCK_SKEW_SECONDS
+export VCL_FLEET_HOME="${SAVED_STATUS_HOME}"
+
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then
   export HOME="${FLEET_SAVED_HOME}"

@@ -2,8 +2,8 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64. OpenSSH via the system ssh/ssh.exe binary (injectable
-with VCL_FLEET_SSH) and ssh-keyscan (VCL_FLEET_SSH_KEYSCAN).
+hashlib, base64, datetime. OpenSSH via the system ssh/ssh.exe binary
+(injectable with VCL_FLEET_SSH) and ssh-keyscan (VCL_FLEET_SSH_KEYSCAN).
 No pip, no paramiko, no cryptography package. No root, no systemd, no
 /etc/vincula.
 
@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,8 +41,8 @@ FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
 NODE_KEYS = ("node_id", "name", "ssh_host", "ssh_user", "ssh_port", "enabled")
 SSH_TIMEOUT_SECONDS = 20
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
-STATUS_NOT_WIRED = "SSH status not wired; wait for 0.2.8 Phase 7"
-VERIFY_NOT_WIRED = "SSH verify not wired; wait for 0.2.8 Phase 7"
+STATUS_JSON_SCHEMA_VERSION = 1
+VERIFY_JSON_SCHEMA_VERSION = 1
 HOST_KEY_TYPES = (
     "ssh-ed25519",
     "ssh-rsa",
@@ -76,6 +77,10 @@ def fleet_home() -> Path:
 
 def fleet_registry_path() -> Path:
     return fleet_home() / "fleet.json"
+
+
+def last_status_path() -> Path:
+    return fleet_home() / "last-status.json"
 
 
 def ssh_bin() -> str:
@@ -654,13 +659,457 @@ def cmd_node_enable(name: str, enabled: bool) -> int:
     return 0
 
 
+def format_utc(dt: datetime) -> str:
+    return _as_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def parse_rfc3339_utc(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("empty utc_now")
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    return _as_utc(datetime.fromisoformat(raw))
+
+
+def clock_skew_result(
+    controller_utc: datetime, remote_utc: datetime
+) -> tuple[str, str]:
+    """Compare controller UTC vs remote UTC. Returns (OK|WARN|FAIL, detail)."""
+    delta = abs((_as_utc(controller_utc) - _as_utc(remote_utc)).total_seconds())
+    if delta > CLOCK_SKEW_FAIL_SECONDS:
+        return (
+            "FAIL",
+            (
+                f"{CLOCK_SKEW_FAIL_CHECK}: drift {delta:.0f}s exceeds "
+                f"{CLOCK_SKEW_FAIL_SECONDS}s"
+            ),
+        )
+    if delta > CLOCK_SKEW_WARN_SECONDS:
+        return (
+            "WARN",
+            f"clock drift {delta:.0f}s exceeds {CLOCK_SKEW_WARN_SECONDS}s",
+        )
+    return ("OK", f"clock drift {delta:.0f}s")
+
+
+def clock_skew_from_identity(
+    controller_utc: datetime, ident: Optional[dict[str, Any]]
+) -> tuple[str, str, Optional[float]]:
+    if not ident or ident.get("utc_now") in (None, ""):
+        return (
+            "FAIL",
+            f"{CLOCK_SKEW_FAIL_CHECK}: remote utc_now missing",
+            None,
+        )
+    try:
+        remote = parse_rfc3339_utc(str(ident.get("utc_now")))
+    except (ValueError, TypeError):
+        return (
+            "FAIL",
+            f"{CLOCK_SKEW_FAIL_CHECK}: remote utc_now unreadable",
+            None,
+        )
+    state, detail = clock_skew_result(controller_utc, remote)
+    delta = abs((_as_utc(controller_utc) - remote).total_seconds())
+    return (state, detail, delta)
+
+
+def short_id(value: Optional[str]) -> str:
+    if not value:
+        return "-"
+    return value[:8] if len(value) > 8 else value
+
+
+def _stdout_json(proc: subprocess.CompletedProcess[str]) -> Optional[Any]:
+    text = (proc.stdout or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def ssh_remote_json(
+    node: dict[str, Any], remote_cmd: list[str]
+) -> tuple[str, Optional[dict[str, Any]], str]:
+    """SSH a remote vcl --json command.
+
+    SSH unreachable (exit 255 / timeout / connect failure) → ssh FAIL.
+    Remote vcl status/verify may exit 1 with valid JSON; that is SSH OK.
+    """
+    proc = ssh_run(
+        node["ssh_host"],
+        node["ssh_user"],
+        node["ssh_port"],
+        remote_cmd,
+        batch=True,
+    )
+    detail = _ssh_failure_detail(proc)
+    if proc.returncode == 255:
+        return "FAIL", None, detail
+    payload = _stdout_json(proc)
+    if not isinstance(payload, dict):
+        return "OK", None, detail or "remote JSON missing or invalid"
+    return "OK", payload, ""
+
+
+def classify_proxy(status_doc: Optional[dict[str, Any]]) -> str:
+    if status_doc is None:
+        return "UNKNOWN"
+    proxy = status_doc.get("proxy")
+    if not isinstance(proxy, dict):
+        return "FAIL"
+    return "OK" if proxy.get("ok") is True else "FAIL"
+
+
+def classify_accounting(status_doc: Optional[dict[str, Any]]) -> str:
+    if status_doc is None:
+        return "UNKNOWN"
+    acct = status_doc.get("accounting")
+    if not isinstance(acct, dict):
+        return "FAIL"
+    if acct.get("heartbeat") == "stale":
+        return "STALE"
+    return "OK" if acct.get("ok") is True else "FAIL"
+
+
+def status_is_fail(row: dict[str, Any]) -> bool:
+    return row.get("ssh") == "FAIL" or row.get("proxy") == "FAIL" or row.get(
+        "accounting"
+    ) == "FAIL"
+
+
+def verify_is_fail(row: dict[str, Any]) -> bool:
+    return status_is_fail(row) or row.get("registry") == "FAIL" or row.get("clock") == "FAIL"
+
+
+def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": node["name"],
+        "node_id": node["node_id"],
+        "instance_id": None,
+        "enabled": bool(node.get("enabled", True)),
+        "vincula_version": None,
+        "ssh": "OK",
+        "proxy": "UNKNOWN",
+        "accounting": "UNKNOWN",
+        "registry": "UNKNOWN",
+        "clock": "UNKNOWN",
+        "clock_detail": "",
+        "clock_skew_seconds": None,
+        "ssh_detail": "",
+        "warnings": [],
+        "checks": [],
+        "ok": True,
+    }
+
+
+def probe_node(
+    node: dict[str, Any],
+    *,
+    controller_utc: datetime,
+    want_verify: bool,
+    previous_instances: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    row = _empty_probe_row(node)
+    if not node.get("enabled", True):
+        row["ssh"] = "DISABLED"
+        row["proxy"] = "DISABLED"
+        row["accounting"] = "DISABLED"
+        row["registry"] = "DISABLED"
+        row["clock"] = "DISABLED"
+        row["ok"] = True
+        return row
+
+    ssh_state, ident, ident_detail = ssh_remote_json(
+        node, ["vcl", "identity", "--json"]
+    )
+    if ssh_state != "OK":
+        row["ssh"] = "FAIL"
+        row["ssh_detail"] = ident_detail
+        row["ok"] = False
+        return row
+    if ident is None:
+        row["ssh"] = "OK"
+        row["proxy"] = "FAIL"
+        row["accounting"] = "FAIL"
+        row["ssh_detail"] = ident_detail
+        row["clock"] = "FAIL"
+        row["clock_detail"] = f"{CLOCK_SKEW_FAIL_CHECK}: remote utc_now missing"
+        row["ok"] = False
+        return row
+
+    row["instance_id"] = ident.get("instance_id") or None
+    row["vincula_version"] = ident.get("vincula_version")
+    clock_state, clock_detail, skew = clock_skew_from_identity(controller_utc, ident)
+    row["clock"] = clock_state
+    row["clock_detail"] = clock_detail
+    row["clock_skew_seconds"] = skew
+    if clock_state == "WARN":
+        row["warnings"].append(clock_detail)
+    if clock_state == "FAIL":
+        row["checks"].append(
+            {
+                "name": CLOCK_SKEW_FAIL_CHECK,
+                "ok": False,
+                "detail": clock_detail,
+            }
+        )
+
+    remote_nid = ident.get("node_id")
+    if isinstance(remote_nid, str) and remote_nid == node["node_id"]:
+        row["registry"] = "OK"
+        prev = (previous_instances or {}).get(node["name"])
+        if prev and row["instance_id"] and prev != row["instance_id"]:
+            row["warnings"].append("instance changed, node_id stable")
+    else:
+        row["registry"] = "FAIL"
+
+    ssh_state, status_doc, status_detail = ssh_remote_json(
+        node, ["vcl", "status", "--json"]
+    )
+    if ssh_state != "OK":
+        row["ssh"] = "FAIL"
+        row["ssh_detail"] = status_detail
+        row["proxy"] = "UNKNOWN"
+        row["accounting"] = "UNKNOWN"
+        row["ok"] = False
+        return row
+    if status_doc is None:
+        row["proxy"] = "FAIL"
+        row["accounting"] = "FAIL"
+        row["ssh_detail"] = status_detail
+    else:
+        row["proxy"] = classify_proxy(status_doc)
+        row["accounting"] = classify_accounting(status_doc)
+
+    if want_verify:
+        v_ssh, verify_doc, v_detail = ssh_remote_json(
+            node, ["vcl", "verify", "--json"]
+        )
+        if v_ssh != "OK":
+            row["ssh"] = "FAIL"
+            row["ssh_detail"] = v_detail
+            row["proxy"] = "UNKNOWN"
+            row["accounting"] = "UNKNOWN"
+            row["ok"] = False
+            return row
+        if isinstance(verify_doc, dict):
+            acct = verify_doc.get("accounting")
+            if isinstance(acct, dict):
+                for check in acct.get("checks") or []:
+                    if isinstance(check, dict):
+                        row["checks"].append(
+                            {
+                                "name": check.get("name"),
+                                "ok": bool(check.get("ok")),
+                                "detail": check.get("detail"),
+                            }
+                        )
+
+    row["ok"] = not verify_is_fail(row)
+    return row
+
+
+def format_status_table(rows: list[dict[str, Any]]) -> str:
+    lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<7} {'PROXY':<7} ACCOUNTING"]
+    for row in rows:
+        instance = "-"
+        if row.get("ssh") not in ("FAIL", "DISABLED") and row.get("instance_id"):
+            instance = short_id(row.get("instance_id"))
+        lines.append(
+            f"{row['name']:<8} {short_id(row.get('node_id')):<8} {instance:<8} "
+            f"{row['ssh']:<7} {row['proxy']:<7} {row['accounting']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def format_verify_report(rows: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for row in rows:
+        parts.append(row["name"])
+        if row.get("ssh") == "DISABLED":
+            parts.append("  enabled: false")
+            parts.append("")
+            continue
+        parts.append(f"  version: {row.get('vincula_version') or '-'}")
+        parts.append(f"  node_id: {row.get('node_id') or '-'}")
+        parts.append(f"  instance_id: {row.get('instance_id') or '-'}")
+        parts.append(f"  ssh: {row['ssh']}")
+        parts.append(f"  proxy: {row['proxy']}")
+        parts.append(f"  accounting: {row['accounting']}")
+        parts.append(f"  registry: {row['registry']}")
+        parts.append(f"  clock: {row['clock']}")
+        if row.get("clock_detail"):
+            parts.append(f"  clock_detail: {row['clock_detail']}")
+        if row.get("ssh_detail") and row["ssh"] == "FAIL":
+            parts.append(f"  ssh_detail: {row['ssh_detail']}")
+        for warning in row.get("warnings") or []:
+            parts.append(f"  WARN: {warning}")
+        if row["ssh"] == "FAIL":
+            parts.append("  FAIL: SSH unreachable")
+        if row["proxy"] == "FAIL":
+            parts.append("  FAIL: PROXY")
+        if row["accounting"] == "FAIL":
+            parts.append("  FAIL: ACCOUNTING")
+        if row["registry"] == "FAIL":
+            parts.append("  FAIL: registry node_id mismatch")
+        if row["clock"] == "FAIL":
+            parts.append(f"  FAIL: {row.get('clock_detail') or CLOCK_SKEW_FAIL_CHECK}")
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _status_json_node(row: dict[str, Any]) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "name": row["name"],
+        "node_id": row["node_id"],
+        "instance_id": row.get("instance_id"),
+        "enabled": row.get("enabled", True),
+        "ssh": row["ssh"],
+        "proxy": row["proxy"],
+        "accounting": row["accounting"],
+    }
+    if row.get("ssh_detail"):
+        doc["ssh_detail"] = row["ssh_detail"]
+    return doc
+
+
+def _verify_json_node(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": row["name"],
+        "ok": bool(row.get("ok")),
+        "vincula_version": row.get("vincula_version"),
+        "node_id": row["node_id"],
+        "instance_id": row.get("instance_id"),
+        "enabled": row.get("enabled", True),
+        "ssh": row["ssh"],
+        "proxy": row["proxy"],
+        "accounting": row["accounting"],
+        "registry": row["registry"],
+        "clock": row["clock"],
+        "clock_skew_seconds": row.get("clock_skew_seconds"),
+        "warnings": list(row.get("warnings") or []),
+        "checks": list(row.get("checks") or []),
+    }
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(prefix=".last-status.", suffix=".tmp", dir=str(parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_last_status(payload: dict[str, Any]) -> None:
+    _atomic_write_json(last_status_path(), payload)
+
+
+def load_previous_instance_ids() -> dict[str, str]:
+    path = last_status_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[str, str] = {}
+    for node in data.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        name = node.get("name")
+        instance_id = node.get("instance_id")
+        if isinstance(name, str) and isinstance(instance_id, str) and instance_id:
+            out[name] = instance_id
+    return out
+
+
+def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[str, Any]]:
+    nodes = list(registry.get("nodes") or [])
+    if include_all:
+        return nodes
+    return [node for node in nodes if node.get("enabled", True)]
+
+
+def cmd_status(*, as_json: bool, include_all: bool) -> int:
+    registry = load_registry()
+    controller_utc = datetime.now(timezone.utc)
+    rows = [
+        probe_node(node, controller_utc=controller_utc, want_verify=False)
+        for node in _selected_nodes(registry, include_all)
+    ]
+    payload = {
+        "schema_version": STATUS_JSON_SCHEMA_VERSION,
+        "ok": not any(status_is_fail(row) for row in rows),
+        "controller_utc": format_utc(controller_utc),
+        "nodes": [_status_json_node(row) for row in rows],
+    }
+    write_last_status(payload)
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_status_table(rows))
+    return 0 if payload["ok"] else 1
+
+
+def cmd_verify(*, as_json: bool, include_all: bool) -> int:
+    registry = load_registry()
+    controller_utc = datetime.now(timezone.utc)
+    previous = load_previous_instance_ids()
+    rows = [
+        probe_node(
+            node,
+            controller_utc=controller_utc,
+            want_verify=True,
+            previous_instances=previous,
+        )
+        for node in _selected_nodes(registry, include_all)
+    ]
+    payload = {
+        "schema_version": VERIFY_JSON_SCHEMA_VERSION,
+        "ok": not any(verify_is_fail(row) for row in rows),
+        "controller_utc": format_utc(controller_utc),
+        "nodes": [_verify_json_node(row) for row in rows],
+    }
+    write_last_status(payload)
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_verify_report(rows))
+    return 0 if payload["ok"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
         description=(
             "Vincula fleet controller. Registers nodes over OpenSSH "
-            "(vcl identity --json) or with --offline; status/verify land "
-            "in a later 0.2.8 phase."
+            "(vcl identity --json) or with --offline. status/verify probe "
+            "enabled nodes over SSH using remote vcl --json contracts."
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -711,16 +1160,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_enable = node_sub.add_parser("enable", help="enable a registered node")
     p_enable.add_argument("name")
 
-    sub.add_parser("status", help="remote status over SSH (Phase 7)")
-    sub.add_parser(
+    p_status = sub.add_parser(
+        "status",
+        help="remote status table: NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING",
+        description=(
+            "Probe enabled nodes over SSH (vcl identity --json and "
+            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
+            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
+            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
+            "Exit 1 if any node is SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+        ),
+    )
+    p_status.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+    p_status.add_argument(
+        "--all",
+        action="store_true",
+        help="include disabled nodes (marked DISABLED)",
+    )
+    p_verify = sub.add_parser(
         "verify",
-        help="remote verify over SSH (Phase 7)",
+        help="aggregate remote identity/status/verify and clock skew",
         description=(
             f"Clock skew: WARN if drift exceeds {CLOCK_SKEW_WARN_SECONDS}s; "
             f"FAIL check {CLOCK_SKEW_FAIL_CHECK} if drift exceeds "
             f"{CLOCK_SKEW_FAIL_SECONDS}s (5 minutes)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_verify.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+    p_verify.add_argument(
+        "--all",
+        action="store_true",
+        help="include disabled nodes (marked DISABLED)",
     )
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
@@ -740,9 +1221,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "init":
         return cmd_init()
     if command == "status":
-        die(STATUS_NOT_WIRED, 2)
+        return cmd_status(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "verify":
-        die(VERIFY_NOT_WIRED, 2)
+        return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "node":
         sub = args.node_command
         if sub is None:
