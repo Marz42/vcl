@@ -62,4 +62,5 @@ see the repo `docs/fleet.md` and `docs/backup.md` (not shipped in this zip).
 `node set` is endpoint rebind (credentials stay). `node replace` is
 physical replacement onto a runtime-only host (`vincula.sh --runtime-only`,
 then `vcl restore --reissue-output`). `node instances NAME` lists physical
-instances over time.
+instances over time. Fixture-green replace is not live VPS evidence; the
+repo runbook is `docs/live-replace-checklist.md`.

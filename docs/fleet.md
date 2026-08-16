@@ -16,6 +16,7 @@ Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
 Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
 [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+Live two-VPS replace (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
 
 ## Prerequisites
 
@@ -208,6 +209,11 @@ Then from the workstation:
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
 python3 bin/vcl-fleet node instances lax
 ```
+
+Living-tree **fixture** replace is a contract pass (B10). **Live** two-VPS
+evidence is still missing (B14 deferred). Run
+[`live-replace-checklist.md`](live-replace-checklist.md) on real hosts before
+calling replace RC-ready. Do not treat fake-ssh as that pass.
 
 Flow:
 
@@ -509,8 +515,10 @@ export VCL_FAKE_STATE_DIR=/tmp/fake-state
 
 CI uses fixtures: lax (healthy), tokyo (accounting STALE), sg (SSH FAIL),
 lax2 (`203.0.113.18`, intended replace target). AC-2.9-01 “two nodes” =
-**lax + tokyo fixtures**. Living-tree `node replace` is fail-closed (P0-01a);
-lax → lax2 fixture replace is **not** a contract pass (B10).
+**lax + tokyo fixtures**. Living-tree `node replace` is callable on the real
+restore contract (runtime-only NEW_HOST, `--reissue-output`). lax → lax2 is
+**PASS (fixture)** only. Live two-VPS evidence is B14
+([`live-replace-checklist.md`](live-replace-checklist.md); not yet run).
 
 ## Explicitly not in 0.3.0
 

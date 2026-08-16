@@ -47,6 +47,7 @@ tests/test.sh              # 本地单元测试（source tests/test-fleet.sh）
 docs/identity.md           # 身份合同
 docs/fleet.md              # 控制器运维指南
 docs/backup.md             # 备份 / restore / replace
+docs/live-replace-checklist.md  # B14 live VPS 操作清单（证据未跑）
 dist/                      # 生成物（gitignore，勿手改）
 ```
 
@@ -235,6 +236,8 @@ sudo vcl restore FILE.tar.age --include-secrets --age-identity /root/age-identit
 `sudo bash vincula.sh --runtime-only`（装运行时、**不**写 VERSION），再由控制器
 `vcl restore FILE --reissue-output FILE --server HOST`。不要用 `node set` 冒充换机。
 节点侧也可在 **runtime-only / fresh host** 上手动 `vcl restore FILE --reissue-output FILE`。
+节点 **没有** `--replace-node` 旗标。夹具合同已对齐（B10）；**两台真 VPS 的 live 证据尚未跑**，
+操作清单：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。
 格式、CSV、DR 清单：[`docs/backup.md`](docs/backup.md)。
 
 ### 卸载
@@ -263,7 +266,10 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace：[`docs/fleet.md`](docs/fleet.md)。
 
-AC 证据是 **fake-ssh 多节点夹具**（lax + tokyo；replace 用 lax2），不是 live VPS。发行建议见 [`docs/release-readiness-0.3.0.md`](docs/release-readiness-0.3.0.md)。
+AC 证据是 **fake-ssh 多节点夹具**（lax + tokyo；replace 用 lax2），不是 live VPS。
+`node replace` 的夹具合同已落地；**不要**把夹具绿当成真机换机已验证。Live 操作清单：
+[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。发行建议仍是 **NOT READY**：
+[`docs/release-readiness-0.3.0.md`](docs/release-readiness-0.3.0.md)。
 
 ```bash
 python3 bin/vcl-fleet version
@@ -305,6 +311,8 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 
 远端升级链实测（Debian 13，止于 0.2.6）：[`docs/rc-live-upgrade-0.2.4-0.2.6.md`](docs/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
 
+Live secretless replace / AC-3.0-11 / 真机 `age` / Win11 `vcl-fleet.cmd`：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)（B14 **尚未跑**；证据 [`docs/evidence/0.3.1-live/`](docs/evidence/0.3.1-live/) 现为 NOT RUN）。夹具全绿不是 live PASS。
+
 ```bash
 # 编排机示例
 export VCL_RC_HOST=x.x.x.x VCL_RC_USER=root VCL_RC_PASS='...' VCL_SERVER=$VCL_RC_HOST
@@ -341,7 +349,7 @@ Merge gate is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.
 | **failure-injection** | `bash tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER` (stage / install / health and later boundaries), P1-03 upgrade preflight injects, and P1-05 bad Clash envelopes. |
 | **artifact** | `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`; black-box unzip of `dist/vincula-controller-*.zip` with no repo `lib/`; `sha256sum --check` on the zip sidecar and `controller.lock`; node tarball listing + `release.lock`. |
 
-Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth.
+Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth. Live secretless replace is the same class of manual gate: [`docs/live-replace-checklist.md`](docs/live-replace-checklist.md) (B14, not yet run).
 
 ---
 

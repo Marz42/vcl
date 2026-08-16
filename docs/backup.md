@@ -4,6 +4,7 @@ Node **identity / audit archives** and physical-instance replacement.
 Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
 [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 Fleet replace: [`fleet.md`](fleet.md). Identity: [`identity.md`](identity.md).
+Live two-VPS runbook (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
 
 `require_root`. `vcl backup *` also `require_install`. The node helper has
 **no** `fleet` subcommand.
@@ -332,9 +333,11 @@ runtime present, **no** `$STATE_DIR/VERSION`. Then:
 | `vcl-fleet node set NAME --host X` | **Endpoint rebind.** Same physical instance; only `fleet.json` `ssh_host` (optional user/port). Credentials, `instance_id`, Reality **kept**. No backup/restore |
 | `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | Physical replace (secretless backup → restore on a runtime-only host → new `instance_id`, rotated keys, reissue CSV) |
 
-`--host-key` will be required when replace is re-enabled (new VPS, new host
-key). Replace does **not** mark the logical node `retired`. Operator notes:
-[`fleet.md`](fleet.md). Intended replace keeps `sync_cursor.last_event_id`.
+`--host-key SHA256:…` is **required**. Replace does **not** mark the logical
+node `retired`. Fixture replace is not live evidence; the two-VPS runbook is
+[`live-replace-checklist.md`](live-replace-checklist.md) (B14, not yet run).
+Operator notes: [`fleet.md`](fleet.md). Intended replace keeps
+`sync_cursor.last_event_id`.
 If `--from-backup` restored an older `accounting.db` whose `MAX(event_id)` is
 below that cursor, the next `vcl-fleet sync` is **CURSOR_AHEAD** (exit 3 on
 the node; controller does not import or advance). Remedy: `vcl-fleet sync

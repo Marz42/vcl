@@ -6,7 +6,11 @@
 
 Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
 
+**Summary:** B0–B13 and B16 closed every audited P0/P1/P2 plus REQ-CI on the living tree (Known P0: **0**; `bash tests/test.sh` **1199**, standalone `bash tests/test-fleet.sh` **476**). B14 live two-VPS evidence and B15 UI are **deferred**; freeze-record recommendation stays **NOT READY**. Operator runbook: `docs/live-replace-checklist.md`.
+
 - **B16 / REQ-CI:** GitHub Actions `.github/workflows/ci.yml` is the merge gate: **unit** (`ubuntu-latest` plus Debian 12/13 containers), **concurrency** (B6 flock / busy), **failure-injection** (restore / upgrade / Clash fixtures already in `tests/test.sh`), and **artifact** (build node tarball + controller zip, black-box unzip, `sha256sum --check`). No repository secrets. Live `rc-live-upgrade-driver` stays manual.
+- **B15:** Localhost Audit UI (Phase B) is **deferred** until B14 live-replace policy allows it. Not started on this tree.
+- **B14 / P0-01c:** Live VPS secretless replace + AC-3.0-11 handshake is **deferred**. Docs-only: `docs/live-replace-checklist.md` (operator runbook) and `docs/evidence/0.3.1-live/` (NOT RUN). Win11 live `vcl-fleet.cmd` and real `age` belong to the same evidence pass. Fixture replace is not live PASS.
 - **B13 / P2-03:** Controller zip writes `controller.lock` (per-member sha256) and an independent sidecar `dist/vincula-controller-<ver>.zip.sha256`; `sha256sum -c` is the verification step. `vincula-bootstrap.sh` fail-closes in production without `RELEASE_SHA256` (or a baked-in embed). With a pin, the archive must match **both** the pin and the shipped `${URL}.sha256`. Fetching the sibling digest from the same URL only detects transport corruption, not origin replacement.
 - **B12 / P2-02:** Backup verify and `atomic_replace` stream in 1 MiB chunks. Per-member cap 1 GiB (`MAX_MEMBER_BYTES`), total uncompressed cap 2 GiB (`MAX_ARCHIVE_BYTES`); JSON/text members 16 MiB. Oversized archives are `invalid_archive` before a full read. `accounting.db` is never held as a whole-file bytes object (SQLite Backup API snapshot + tempfile extract + chunked copy).
 - **B11 / P2-01:** Install validation compiles Python with `compile(..., "exec")` and does not write `__pycache__`. `vcl uninstall` and installer rollback remove product-owned `$LIB_DIR/__pycache__` so a complete uninstall leaves that directory empty.
@@ -19,6 +23,8 @@ Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/
 - **B4 / P1-01:** SSH 远程命令用 `shlex.join` 合成一条 POSIX 引用字符串；校验 `ssh_user` / `ssh_host`（DNS/IPv4/IPv6，拒绝控制字符与 shell 元字符）以及 `display_name` / `department`（拒绝 ASCII 控制字符与换行）。节点 CLI / CSV import 同步拒绝。对抗测试覆盖空格、`;`、backtick、`$()`、换行。
 - **B3 / P0-02:** 控制器 zip 纳入 `lib/vincula-audit.py` 与 `lib/vincula-backup.py`。解压黑盒（无仓库 `lib/`）覆盖 `version` / `init` / `audit` / `stats` 与 `node replace` fail-closed。删除「zip omits backup.py」断言。`load_audit_module` / `load_backup_module` 从控制器自己的 `lib/` 解析兄弟文件。
 - **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/fleet.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
+- **B1 / P2-04:** Freeze-record honesty. `docs/release-readiness-0.3.0.md` / `docs/known-issues-0.3.0.md` recommendation **NOT READY**; Known P0/P1 = 0 struck; P0-01 / P0-02 reclassified from limitations to contract blockers. Fixture PASS is not a live replace contract.
+- **B0:** Living tree stamped `0.3.1-dev` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests). Frozen tag `v0.3.0` unchanged. Upgrade allowlist still ends at `0.2.9`.
 
 ## 0.3.0
 
