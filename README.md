@@ -29,8 +29,11 @@ Gate / 已知限制：[`docs/release-readiness-0.2.7.md`](docs/release-readiness
 ```text
 vincula.sh                 # 安装 / 迁移入口
 vincula-bootstrap.sh       # 从 URL 拉 tarball 安装
-bin/vincula                # 运行时 CLI（安装为 vcl / vincula）
-lib/                       # common / accountd / stats / audit / unit
+bin/vincula                # 节点运行时 CLI（安装为 vcl / vincula；无 fleet 子命令）
+bin/vcl-fleet              # 工作站控制器（Unix）
+bin/vcl-fleet.cmd          # 工作站控制器（Windows 11）
+lib/                       # common / accountd / stats / audit / fleet / unit
+lib/vincula-fleet.py       # 控制器实现（stdlib + 系统 OpenSSH）
 scripts/
   build-release.sh         # 节点产物 dist/vincula-node-<ver>.tar.gz
   build-controller.sh      # 控制器产物 dist/vincula-controller-<ver>.zip
@@ -38,12 +41,13 @@ scripts/
   soak-0.2.7.sh            # LIVE-ONLY 24h soak 协议（不在 CI 跑）
   rc-*.sh                  # 远端 RC / 升级链测试
   freeze-*.sh              # 0.2.4 freeze 辅助（历史）
-tests/test.sh              # 本地单元测试
-docs/                      # 手册、gate、证据索引
+tests/test.sh              # 本地单元测试（source tests/test-fleet.sh）
+docs/identity.md           # 身份合同
+docs/fleet.md              # 控制器运维指南
 dist/                      # 生成物（gitignore，勿手改）
 ```
 
-源码以 **仓库根目录** 为准。节点部署只用 `scripts/build-release.sh` 生成的 `dist/vincula-node-<version>/`；工作站控制器用 `scripts/build-controller.sh` 生成的 `dist/vincula-controller-<version>.zip`。不要手改 `dist/` 或旧 `release/`。
+源码以 **仓库根目录** 为准。节点部署只用 `scripts/build-release.sh` 生成的 `dist/vincula-node-<version>.tar.gz`；工作站控制器用 `scripts/build-controller.sh` 生成的 `dist/vincula-controller-<version>.zip`。不要手改 `dist/` 或旧 `release/`。
 
 ---
 
@@ -87,6 +91,8 @@ sudo env RELEASE_URL='https://example.com/vincula-node-0.2.8-dev.tar.gz' \
 ```
 
 **不支持** `curl | bash` 单文件安装（必须同目录有 `bin/` + `lib/`）。
+
+工作站控制器是另一个产物（zip，无 installer / 无 `release.lock`）。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key 与 AC-2.8 见 [`docs/fleet.md`](docs/fleet.md)。
 
 ### 环境变量
 
@@ -206,6 +212,22 @@ vcl uninstall --yes
 
 ---
 
+## Fleet Foundation（工作站控制器）
+
+0.2.8 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 对节点做只读 `vcl identity|status|verify --json`。
+
+节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、status/verify 含义：[`docs/fleet.md`](docs/fleet.md)。
+
+```bash
+python3 bin/vcl-fleet version
+python3 bin/vcl-fleet init
+python3 bin/vcl-fleet node add lax --host 203.0.113.10 --host-key SHA256:...
+python3 bin/vcl-fleet status
+python3 bin/vcl-fleet verify
+```
+
+---
+
 ## 升级
 
 同机重跑安装器：
@@ -231,7 +253,7 @@ bash scripts/rc-live-upgrade-driver.sh
 
 ```bash
 bash -n vincula.sh bin/vincula lib/vincula-common.sh
-python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py lib/vincula-audit.py
+python3 -m py_compile lib/vincula-accountd.py lib/vincula-stats.py lib/vincula-audit.py lib/vincula-fleet.py
 bash tests/test.sh
 bash scripts/gen-release-lock.sh   # 改过节点 first-party 后必跑
 bash scripts/build-release.sh      # vincula-node-<ver>.tar.gz

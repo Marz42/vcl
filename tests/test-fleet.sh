@@ -455,6 +455,30 @@ assert_failure "vcl-fleet never sets StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/bin/vcl-fleet"
 assert_failure "vcl-fleet never sets UserKnownHostsFile=/dev/null" \
   grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/bin/vcl-fleet"
+assert_failure "vcl-fleet.cmd never sets StrictHostKeyChecking=no" \
+  grep -q 'StrictHostKeyChecking=no' "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_failure "vcl-fleet.cmd never sets UserKnownHostsFile=/dev/null" \
+  grep -q 'UserKnownHostsFile=/dev/null' "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_failure "AC-2.8-02 controller has no bind" \
+  grep -E '0\.0\.0\.0|HTTPServer|socket\.bind' \
+    "${PROJECT_DIR}/lib/vincula-fleet.py" \
+    "${PROJECT_DIR}/bin/vcl-fleet" \
+    "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_failure "AC-2.8-02 controller has no listen/http.server" \
+  grep -E 'http\.server|socket\.listen|socket\.socket' \
+    "${PROJECT_DIR}/lib/vincula-fleet.py" \
+    "${PROJECT_DIR}/bin/vcl-fleet" \
+    "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_failure "AC-2.8-10 shipped controller has no StrictHostKeyChecking=no" \
+  grep -q 'StrictHostKeyChecking=no' \
+    "${PROJECT_DIR}/lib/vincula-fleet.py" \
+    "${PROJECT_DIR}/bin/vcl-fleet" \
+    "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+assert_failure "AC-2.8-10 shipped controller has no UserKnownHostsFile=/dev/null" \
+  grep -q 'UserKnownHostsFile=/dev/null' \
+    "${PROJECT_DIR}/lib/vincula-fleet.py" \
+    "${PROJECT_DIR}/bin/vcl-fleet" \
+    "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 
 hostkey_py_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" "$FAKE_KEYSCAN" \
@@ -1040,6 +1064,165 @@ else
 fi
 unset VCL_FAKE_CLOCK_SKEW_SECONDS
 export VCL_FLEET_HOME="${SAVED_STATUS_HOME}"
+
+# --- Batch 7-ac: named AC-2.8 identity / port / duplicate checks ---
+
+ac_28_identity() {
+  local uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  local ids_rc=0
+  python3 - "${VCL_FLEET_HOME}/fleet.json" "$uuid_re" <<'PY' || ids_rc=$?
+import json, re, sys
+path, uuid_re = sys.argv[1], sys.argv[2]
+raw = open(path, encoding="utf-8").read()
+assert "instance_id" not in raw
+data = json.load(open(path, encoding="utf-8"))
+nodes = data.get("nodes") or []
+assert nodes, nodes
+seen = set()
+for node in nodes:
+    nid = node["node_id"]
+    assert re.fullmatch(uuid_re, nid), nid
+    assert nid not in seen, nid
+    seen.add(nid)
+    assert "instance_id" not in node
+PY
+  if (( ids_rc == 0 )); then
+    pass "AC-2.8-04 node_id is a stable UUID in registry (not recast)"
+  else
+    fail "AC-2.8-04 node_id is a stable UUID in registry (not recast)"
+  fi
+
+  local before after nid_before host_before nid_after host_after
+  before=$(python3 - "${VCL_FLEET_HOME}/fleet.json" <<'PY'
+import json, sys
+nodes = {n["name"]: n for n in json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]}
+print(nodes["lax"]["node_id"])
+print(nodes["lax"]["ssh_host"])
+PY
+)
+  nid_before=$(sed -n '1p' <<< "$before")
+  host_before=$(sed -n '2p' <<< "$before")
+  assert_success "AC-2.8-06 node set lax host for identity check" \
+    fleet node set lax --host 203.0.113.28
+  after=$(python3 - "${VCL_FLEET_HOME}/fleet.json" <<'PY'
+import json, sys
+nodes = {n["name"]: n for n in json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]}
+print(nodes["lax"]["node_id"])
+print(nodes["lax"]["ssh_host"])
+PY
+)
+  nid_after=$(sed -n '1p' <<< "$after")
+  host_after=$(sed -n '2p' <<< "$after")
+  assert_equal "AC-2.8-06 ssh_host change does not alter node_id" "$nid_before" "$nid_after"
+  assert_equal "AC-2.8-06 ssh_host updated" "203.0.113.28" "$host_after"
+  assert_success "AC-2.8-06 restore lax ssh_host" \
+    fleet node set lax --host "$host_before"
+}
+
+ac_28_identity
+
+reinstall_cmp_rc=0
+python3 - \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity-reinstall.json" <<'PY' || reinstall_cmp_rc=$?
+import json, sys
+a = json.load(open(sys.argv[1], encoding="utf-8"))
+b = json.load(open(sys.argv[2], encoding="utf-8"))
+assert a["node_name"] == b["node_name"] == "lax"
+assert a["node_id"] == b["node_id"]
+assert a["instance_id"] != b["instance_id"]
+assert a["instance_id"] != a["node_id"]
+assert b["instance_id"] != b["node_id"]
+PY
+if (( reinstall_cmp_rc == 0 )); then
+  pass "AC-2.8-05 reinstall fixture keeps node_id and mints a new instance_id"
+else
+  fail "AC-2.8-05 reinstall fixture keeps node_id and mints a new instance_id"
+fi
+
+assert_success "disable sg for reinstall verify" fleet node disable sg
+base_re_rc=0
+fleet verify >/dev/null 2>&1 || base_re_rc=$?
+if (( base_re_rc == 0 )); then
+  pass "AC-2.8-05 baseline verify writes last-status before reinstall"
+else
+  fail "AC-2.8-05 baseline verify writes last-status before reinstall (rc=${base_re_rc})"
+fi
+lax_nid_before=$(python3 - "${VCL_FLEET_HOME}/fleet.json" <<'PY'
+import json, sys
+nodes = {n["name"]: n for n in json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]}
+print(nodes["lax"]["node_id"])
+PY
+)
+export VCL_FAKE_REINSTALL=1
+reinstall_rc=0
+reinstall_out=$(fleet verify 2>&1) || reinstall_rc=$?
+if (( reinstall_rc == 0 )); then
+  pass "AC-2.8-05 reinstall verify still exits 0 (WARN, not FAIL)"
+else
+  fail "AC-2.8-05 reinstall verify still exits 0 (WARN, not FAIL) (rc=${reinstall_rc})"
+fi
+assert_success "AC-2.8-05 verify WARNs instance changed, node_id stable" \
+  grep -q 'instance changed, node_id stable' <<< "$reinstall_out"
+reinstall_json_rc=0
+python3 - "${VCL_FLEET_HOME}/last-status.json" "$LAX_REMOTE_NODE_ID" \
+  "${VCL_FLEET_HOME}/fleet.json" <<'PY' || reinstall_json_rc=$?
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+lax_id, registry_path = sys.argv[2], sys.argv[3]
+nodes = {n["name"]: n for n in doc["nodes"]}
+lax = nodes["lax"]
+assert lax["node_id"] == lax_id
+assert lax["instance_id"] == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+assert "instance changed, node_id stable" in (lax.get("warnings") or []), lax
+assert lax["ok"] is True
+raw = open(registry_path, encoding="utf-8").read()
+assert "instance_id" not in raw
+reg = json.load(open(registry_path, encoding="utf-8"))
+reg_lax = next(n for n in reg["nodes"] if n["name"] == "lax")
+assert reg_lax["node_id"] == lax_id
+PY
+if (( reinstall_json_rc == 0 )); then
+  pass "AC-2.8-05 registry node_id unchanged and instance_id not stored"
+else
+  fail "AC-2.8-05 registry node_id unchanged and instance_id not stored"
+fi
+unset VCL_FAKE_REINSTALL
+lax_nid_after=$(python3 - "${VCL_FLEET_HOME}/fleet.json" <<'PY'
+import json, sys
+nodes = {n["name"]: n for n in json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]}
+print(nodes["lax"]["node_id"])
+PY
+)
+assert_equal "AC-2.8-05 registry node_id identical after reinstall verify" \
+  "$lax_nid_before" "$lax_nid_after"
+assert_success "re-enable sg after reinstall verify" fleet node enable sg
+
+dup_named_rc=0
+dup_named_err=$(fleet node add lax-reinstall --host 203.0.113.10 --host-key "$LAX_HOST_KEY" 2>&1) || dup_named_rc=$?
+if (( dup_named_rc != 0 )); then
+  pass "AC-2.8-07 live add of already-registered node_id refused"
+else
+  fail "AC-2.8-07 live add of already-registered node_id refused"
+fi
+assert_success "AC-2.8-07 duplicate live add names node_id" \
+  grep -q 'duplicate node_id' <<< "$dup_named_err"
+assert_failure "AC-2.8-07 duplicate live add does not register lax-reinstall" \
+  grep -q 'lax-reinstall' "${VCL_FLEET_HOME}/fleet.json"
+
+assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md documents vcl-fleet.cmd" \
+  grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md documents --host-key" \
+  grep -q -- '--host-key' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md names CLOCK_SKEW_WARN_SECONDS 30" \
+  grep -q 'CLOCK_SKEW_WARN_SECONDS = 30' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md names CLOCK_SKEW_FAIL_SECONDS 300" \
+  grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md has AC-2.8-01" \
+  grep -q 'AC-2.8-01' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/fleet.md has AC-2.8-10" \
+  grep -q 'AC-2.8-10' "${PROJECT_DIR}/docs/fleet.md"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then

@@ -367,6 +367,8 @@ assert_success "diagnose reports untestable external reachability" grep -q 'cann
 assert_success "diagnose includes REALITY self-test" grep -q 'REALITY end-to-end self-test' "${TEST_TMP}/vincula"
 assert_success "helper status checks listener ownership" grep -q 'owned by sing-box' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl identity" grep -q 'vcl identity' "${PROJECT_DIR}/bin/vincula"
+assert_failure "node helper usage has no fleet" \
+  grep -q 'vcl fleet' "${PROJECT_DIR}/bin/vincula"
 identity_src=$(awk '/^cmd_identity\(\)/,/^cmd_status\(\)/ {print}' "${PROJECT_DIR}/bin/vincula")
 if [[ "$identity_src" == *'json_quoted_field "$STATE_FILE" instance_id'* ]]; then
   pass "cmd_identity reads instance_id from state.json"

@@ -101,10 +101,18 @@ def _remote_kind(remote: list[str]) -> str:
 
 def _load_fixture(name: str, kind: str) -> dict:
     path = NODES / name / f"{kind}.json"
+    reinstall = os.environ.get("VCL_FAKE_REINSTALL", "").strip()
+    if reinstall and name == "lax" and kind == "identity":
+        alt = NODES / "lax" / "identity-reinstall.json"
+        if alt.is_file():
+            path = alt
     with path.open(encoding="utf-8") as fh:
         data = json.load(fh)
     if isinstance(data, dict) and "utc_now" in data:
         data["utc_now"] = _utc_now()
+    override = os.environ.get("VCL_FAKE_INSTANCE_ID", "").strip()
+    if override and isinstance(data, dict) and "instance_id" in data:
+        data["instance_id"] = override
     return data
 
 

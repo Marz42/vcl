@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "vincula_version": "0.2.8-dev",
+  "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "instance_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "node_name": "lax",
+  "utc_now": "2026-08-16T00:00:00Z"
+}
