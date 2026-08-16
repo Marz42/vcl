@@ -837,6 +837,114 @@ if [[ "$uninstall_src_fn" == *'-shm'* ]]; then
 else
   fail "cmd_uninstall removal loop includes -shm"
 fi
+if [[ "$uninstall_src_fn" == *remove_product_pycache* ]]; then
+  pass "cmd_uninstall removes product __pycache__"
+else
+  fail "cmd_uninstall removes product __pycache__"
+fi
+if [[ "$rollback_fn" == *remove_product_pycache* ]]; then
+  pass "rollback_install removes product __pycache__"
+else
+  fail "rollback_install removes product __pycache__"
+fi
+rollback_mig_fn=$(awk '
+  /^rollback_migration\(\)/ {in_fn=1}
+  in_fn {print}
+  /^}$/ && in_fn {exit}
+' "${PROJECT_DIR}/vincula.sh")
+if [[ "$rollback_mig_fn" == *remove_product_pycache* ]]; then
+  pass "rollback_migration removes product __pycache__"
+else
+  fail "rollback_migration removes product __pycache__"
+fi
+validate_fn=$(awk '/^validate_accounting_artifacts\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh")
+if [[ "$validate_fn" == *'python3 -m py_compile'* ]]; then
+  fail "validate_accounting_artifacts does not use py_compile"
+else
+  pass "validate_accounting_artifacts does not use py_compile"
+fi
+if [[ "$validate_fn" == *python_syntax_check* ]]; then
+  pass "validate_accounting_artifacts uses python_syntax_check"
+else
+  fail "validate_accounting_artifacts uses python_syntax_check"
+fi
+
+# P2-01: install-validate must not write bytecode; uninstall leaves LIB_DIR empty.
+p201_lib="${TEST_TMP}/p201-lib"
+mkdir -p "$p201_lib"
+cp "${PROJECT_DIR}/lib/vincula-accountd.py" \
+  "${PROJECT_DIR}/lib/vincula-stats.py" \
+  "${PROJECT_DIR}/lib/vincula-audit.py" \
+  "${PROJECT_DIR}/lib/vincula-backup.py" \
+  "$p201_lib/"
+python3 -m py_compile "${p201_lib}/vincula-accountd.py"
+if [[ -d "${p201_lib}/__pycache__" ]]; then
+  pass "py_compile writes __pycache__ (baseline)"
+  rm -rf --one-file-system -- "${p201_lib}/__pycache__"
+else
+  fail "py_compile writes __pycache__ (baseline)"
+fi
+p201_validate_ok=1
+for p201_py in vincula-accountd.py vincula-stats.py vincula-audit.py vincula-backup.py; do
+  if ! python_syntax_check "${p201_lib}/${p201_py}"; then
+    p201_validate_ok=0
+  fi
+done
+shopt -s nullglob
+p201_pycs=("${p201_lib}"/*.pyc "${p201_lib}"/*.pyo "${p201_lib}"/__pycache__/*)
+shopt -u nullglob
+if (( p201_validate_ok == 1 )) && [[ ! -e "${p201_lib}/__pycache__" ]] && (( ${#p201_pycs[@]} == 0 )); then
+  pass "install-validate syntax check does not create __pycache__"
+else
+  fail "install-validate syntax check does not create __pycache__"
+fi
+printf 'def broken(\n' > "${TEST_TMP}/p201-broken.py"
+if python_syntax_check "${TEST_TMP}/p201-broken.py" >/dev/null 2>&1; then
+  fail "python_syntax_check rejects invalid syntax"
+else
+  pass "python_syntax_check rejects invalid syntax"
+fi
+assert_failure "syntax-error check does not create __pycache__" \
+  test -d "${TEST_TMP}/__pycache__"
+
+p201_block="${TEST_TMP}/p201-block"
+mkdir -p "${p201_block}/__pycache__"
+printf 'bytecode\n' > "${p201_block}/__pycache__/vincula-accountd.cpython-312.pyc"
+if rmdir -- "$p201_block" 2>/dev/null; then
+  fail "pycache prevents rmdir of LIB_DIR"
+  mkdir -p "$p201_block"
+else
+  pass "pycache prevents rmdir of LIB_DIR"
+fi
+remove_product_pycache "$p201_block" >/dev/null
+if [[ ! -e "${p201_block}/__pycache__" ]] && rmdir -- "$p201_block" 2>/dev/null && [[ ! -e "$p201_block" ]]; then
+  pass "simulated uninstall removes pycache"
+else
+  fail "simulated uninstall removes pycache"
+fi
+
+# Zero residue: listed LIB_DIR files + pycache gone, directory itself empty.
+p201_empty="${TEST_TMP}/p201-empty-lib"
+mkdir -p "${p201_empty}/__pycache__"
+printf 'py\n' > "${p201_empty}/vincula-accountd.py"
+printf 'py\n' > "${p201_empty}/vincula-stats.py"
+printf 'py\n' > "${p201_empty}/vincula-audit.py"
+printf 'py\n' > "${p201_empty}/vincula-backup.py"
+printf 'sh\n' > "${p201_empty}/vincula-common.sh"
+printf 'lock\n' > "${p201_empty}/sing-box.lock"
+printf 'pyc\n' > "${p201_empty}/__pycache__/mod.cpython-312.pyc"
+remove_product_pycache "$p201_empty" >/dev/null
+remove_managed_file "${p201_empty}/vincula-accountd.py" >/dev/null
+remove_managed_file "${p201_empty}/vincula-stats.py" >/dev/null
+remove_managed_file "${p201_empty}/vincula-audit.py" >/dev/null
+remove_managed_file "${p201_empty}/vincula-backup.py" >/dev/null
+remove_managed_file "${p201_empty}/vincula-common.sh" >/dev/null
+remove_managed_file "${p201_empty}/sing-box.lock" >/dev/null
+if remove_directory_if_empty "$p201_empty" >/dev/null && [[ ! -e "$p201_empty" ]]; then
+  pass "LIB_DIR empty after uninstall of listed files + pycache"
+else
+  fail "LIB_DIR empty after uninstall of listed files + pycache"
+fi
 if awk '/^preflight_clean_install\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'rm -f'; then
   pass "preflight refusal message contains rm -f guidance"
 else

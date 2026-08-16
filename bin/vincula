@@ -476,6 +476,25 @@ remove_directory_if_empty() {
   return 1
 }
 
+remove_product_pycache() {
+  local lib_dir=${1:-$LIB_DIR}
+  local cache
+  [[ -n "$lib_dir" && "$lib_dir" == /* ]] || return 0
+  cache="${lib_dir}/__pycache__"
+  if [[ -L "$cache" ]]; then
+    rm -f -- "$cache"
+    printf '✓ Removed %s\n' "$cache"
+    return 0
+  fi
+  if [[ -d "$cache" ]]; then
+    rm -rf --one-file-system -- "$cache"
+    printf '✓ Removed %s\n' "$cache"
+  elif [[ -e "$cache" ]]; then
+    rm -f -- "$cache"
+    printf '✓ Removed %s\n' "$cache"
+  fi
+}
+
 verify_binary_matches_checksum() {
   local checksum_file=$1
   [[ -f "$checksum_file" ]] || return 1
@@ -797,6 +816,7 @@ cmd_uninstall() {
   if ! remove_directory_if_empty "$STATE_DIR"; then
     preserved=1
   fi
+  remove_product_pycache "$LIB_DIR"
   if ! remove_directory_if_empty "$LIB_DIR"; then
     preserved=1
   fi

@@ -94,6 +94,14 @@ P0-01 is **closed** on the living tree. Known P0: **0**. AC-3.0-05…10 fleet re
 
 Living-tree test counts after B10: `bash tests/test.sh` **1142**; standalone `bash tests/test-fleet.sh` **474**.
 
+## Addendum (2026-08-17) — B11 / P2-01 no pycache residue
+
+Living tree (`0.3.1-dev`): `validate_accounting_artifacts` syntax-checks staged Python with `compile(source, filename, "exec")` (`python3 -B`); it does **not** call `python3 -m py_compile`, so install validation does not create `$LIB_DIR/__pycache__`. Runtime imports may still write bytecode; `cmd_uninstall`, `rollback_install`, and `rollback_migration` remove product-owned `$LIB_DIR/__pycache__` with `rm -rf --one-file-system` before `rmdir`. After uninstall of listed lib files + pycache, `$LIB_DIR` is gone.
+
+P2-01 is **closed** on the living tree.
+
+Living-tree test counts after B11: `bash tests/test.sh` **1154**; standalone `bash tests/test-fleet.sh` **474**.
+
 ### Freeze-era recommendation (historical)
 
 The following block is the Batch 17-freeze text, retained for the record. It is **not** the current recommendation.

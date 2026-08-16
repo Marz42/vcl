@@ -221,6 +221,7 @@ rollback_install() {
     rm -f -- "$path".new.*
   done
 
+  remove_product_pycache "$LIB_DIR"
   rmdir -- "$STATE_DIR" "$SING_BOX_DIR" "$LIB_DIR" >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_SING_BOX" >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_VINCULA" >/dev/null 2>&1 || true
@@ -285,6 +286,8 @@ rollback_migration() {
     rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
     cp -a -- "${MIGRATION_BACKUP}/accounting.db" "$ACCOUNTING_DB_FILE"
   fi
+
+  remove_product_pycache "$LIB_DIR"
 
   systemctl daemon-reload >/dev/null 2>&1 || true
 
@@ -1258,6 +1261,22 @@ remove_directory_if_empty() {
   return 1
 }
 
+remove_product_pycache() {
+  local lib_dir=${1:-$LIB_DIR}
+  local cache
+  [[ -n "$lib_dir" && "$lib_dir" == /* ]] || return 0
+  cache="${lib_dir}/__pycache__"
+  if [[ -L "$cache" ]]; then
+    rm -f -- "$cache"
+    return 0
+  fi
+  if [[ -d "$cache" ]]; then
+    rm -rf --one-file-system -- "$cache"
+  elif [[ -e "$cache" ]]; then
+    rm -f -- "$cache"
+  fi
+}
+
 verify_binary_matches_checksum() {
   local checksum_file=$1
   [[ -f "$checksum_file" ]] || return 1
@@ -2034,16 +2053,22 @@ install_accountd_artifacts() {
   fi
 }
 
+python_syntax_check() {
+  local path=$1
+  [[ -f "$path" ]] || return 1
+  python3 -B -c 'import sys; p=sys.argv[1]; compile(open(p, encoding="utf-8").read(), p, "exec")' "$path"
+}
+
 validate_accounting_artifacts() {
   [[ -f "$ACCOUNTD_PY" ]] || die "Missing accounting daemon ${ACCOUNTD_PY}"
   [[ -f "$STATS_PY" ]] || die "Missing stats helper ${STATS_PY}"
   [[ -f "$AUDIT_PY" ]] || die "Missing audit helper ${AUDIT_PY}"
   [[ -f "$BACKUP_PY" ]] || die "Missing backup helper ${BACKUP_PY}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
-  python3 -m py_compile "$ACCOUNTD_PY" || die "vincula-accountd.py failed py_compile"
-  python3 -m py_compile "$STATS_PY" || die "vincula-stats.py failed py_compile"
-  python3 -m py_compile "$AUDIT_PY" || die "vincula-audit.py failed py_compile"
-  python3 -m py_compile "$BACKUP_PY" || die "vincula-backup.py failed py_compile"
+  python_syntax_check "$ACCOUNTD_PY" || die "vincula-accountd.py failed syntax check"
+  python_syntax_check "$STATS_PY" || die "vincula-stats.py failed syntax check"
+  python_syntax_check "$AUDIT_PY" || die "vincula-audit.py failed syntax check"
+  python_syntax_check "$BACKUP_PY" || die "vincula-backup.py failed syntax check"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"
   fi
