@@ -127,6 +127,7 @@ CSV_EXPORT_META_HEADER = (
 CREDENTIAL_WARN_TAIL = "contains authentication credentials."
 STATUS_JSON_SCHEMA_VERSION = 1
 VERIFY_JSON_SCHEMA_VERSION = 1
+SYNC_JSON_SCHEMA_VERSION = 1
 # D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
 OP_PLANNED = "PLANNED"
 OP_APPLYING = "APPLYING"
@@ -496,6 +497,132 @@ def import_export_jsonl(
     return import_audit_batch(
         node_id, instance_id, rows, now_iso=now_iso, conn=conn
     )
+
+
+def parse_export_jsonl(text: str) -> list[dict[str, Any]]:
+    """Parse audit-export JSONL (one object per line). Blank lines skipped."""
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate((text or "").splitlines(), start=1):
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"JSONL line {lineno} is not JSON: {exc}") from exc
+        if not isinstance(obj, dict):
+            raise ValueError(f"JSONL line {lineno} is not an object")
+        rows.append(obj)
+    return rows
+
+
+def parse_export_meta(stderr: str) -> Optional[dict[str, Any]]:
+    """Last JSON object on stderr is the export meta contract."""
+    for line in reversed((stderr or "").splitlines()):
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and (
+            "after" in obj or "error" in obj or "ok" in obj
+        ):
+            return obj
+    return None
+
+
+def read_sync_cursor_row(
+    conn: sqlite3.Connection, node_id: str
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT instance_id, last_event_id, last_sync_at, status
+        FROM sync_cursor WHERE node_id = ?
+        """,
+        (node_id,),
+    ).fetchone()
+
+
+def write_sync_cursor(
+    conn: sqlite3.Connection,
+    *,
+    node_id: str,
+    instance_id: Optional[str],
+    last_event_id: int,
+    status: str,
+    now_iso: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO sync_cursor (
+          node_id, instance_id, last_event_id, last_sync_at, status
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (node_id, instance_id, last_event_id, now_iso, status),
+    )
+
+
+def mark_cursor_status(
+    conn: sqlite3.Connection,
+    node_id: str,
+    *,
+    instance_id: Optional[str],
+    status: str,
+    now_iso: str,
+) -> int:
+    """Set cursor status without advancing last_event_id. Returns that id."""
+    last_event_id = _cursor_last_event_id(conn, node_id)
+    row = read_sync_cursor_row(conn, node_id)
+    inst = instance_id
+    if inst is None and row is not None:
+        inst = row["instance_id"]
+    write_sync_cursor(
+        conn,
+        node_id=node_id,
+        instance_id=inst,
+        last_event_id=last_event_id,
+        status=status,
+        now_iso=now_iso,
+    )
+    return last_event_id
+
+
+def reseed_node_local(
+    conn: sqlite3.Connection,
+    node_id: str,
+    *,
+    instance_id: Optional[str] = None,
+    now_iso: Optional[str] = None,
+) -> None:
+    """Drop local audit/daily rows for node_id and reset the cursor to 0."""
+    validate_node_id(node_id)
+    if now_iso is None:
+        now_iso = format_utc(datetime.now(timezone.utc))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM audit_events WHERE node_id = ?", (node_id,))
+        conn.execute("DELETE FROM daily_usage WHERE node_id = ?", (node_id,))
+        write_sync_cursor(
+            conn,
+            node_id=node_id,
+            instance_id=instance_id,
+            last_event_id=0,
+            status=SYNC_STATUS_OK,
+            now_iso=now_iso,
+        )
+        conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+
+
+def remediation_sync_reseed(name: str) -> str:
+    return f"vcl-fleet sync --reseed {name}"
 
 
 def ssh_bin() -> str:
@@ -2594,6 +2721,344 @@ def cmd_user_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_result(
+    node: dict[str, Any],
+    *,
+    status: str,
+    after: int = 0,
+    last_event_id: int = 0,
+    inserted: int = 0,
+    ignored: int = 0,
+    skipped_unlabeled: int = 0,
+    instance_id: Optional[str] = None,
+    error: Optional[str] = None,
+    earliest: Any = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "name": node["name"],
+        "node_id": node["node_id"],
+        "instance_id": instance_id,
+        "status": status,
+        "after": after,
+        "last_event_id": last_event_id,
+        "inserted": inserted,
+        "ignored": ignored,
+        "skipped_unlabeled": skipped_unlabeled,
+        "error": error,
+        "earliest_available_event_id": earliest,
+        "remediation": None,
+    }
+    if status == SYNC_STATUS_EXPIRED:
+        row["remediation"] = remediation_sync_reseed(node["name"])
+    return row
+
+
+def sync_target_nodes(
+    registry: dict[str, Any],
+    *,
+    node_name: Optional[str],
+    include_all: bool,
+    reseed_name: Optional[str],
+) -> list[dict[str, Any]]:
+    if node_name and include_all:
+        die("--node and --all are mutually exclusive")
+    if reseed_name and node_name and reseed_name != node_name:
+        die("--reseed must target the same node as --node")
+    if node_name:
+        validate_name(node_name)
+        return [require_enabled_node(registry, node_name)]
+    if reseed_name and not include_all:
+        validate_name(reseed_name)
+        return [require_enabled_node(registry, reseed_name)]
+    return _selected_nodes(registry, include_all)
+
+
+def ssh_audit_export(
+    node: dict[str, Any], after: int
+) -> subprocess.CompletedProcess[str]:
+    return ssh_run(
+        node["ssh_host"],
+        node["ssh_user"],
+        node["ssh_port"],
+        ["vcl", "audit", "export", "--after", str(after), "--jsonl"],
+        batch=True,
+        timeout=SSH_TIMEOUT_SECONDS,
+    )
+
+
+def sync_one_node(
+    conn: sqlite3.Connection,
+    node: dict[str, Any],
+    *,
+    now_iso: str,
+) -> dict[str, Any]:
+    """Sync one node. Cursor advances only after a successful import commit."""
+    node_id = node["node_id"]
+    cursor_row = read_sync_cursor_row(conn, node_id)
+    after = int(cursor_row["last_event_id"]) if cursor_row is not None else 0
+    prior_instance = None
+    if cursor_row is not None:
+        prior_instance = cursor_row["instance_id"]
+
+    if not node.get("enabled", True):
+        return _sync_result(
+            node,
+            status="DISABLED",
+            after=after,
+            last_event_id=after,
+        )
+
+    ssh_state, ident, ident_detail = ssh_remote_json(
+        node, ["vcl", "identity", "--json"]
+    )
+    if ssh_state != "OK" or not isinstance(ident, dict):
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=None,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            error=ident_detail or "identity unreachable",
+        )
+
+    remote_nid = ident.get("node_id")
+    if not isinstance(remote_nid, str) or remote_nid != node_id:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=_optional_text(ident.get("instance_id")),
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=_optional_text(ident.get("instance_id")),
+            error="registry node_id mismatch",
+        )
+
+    remote_iid = _optional_text(ident.get("instance_id"))
+    if prior_instance and remote_iid and prior_instance != remote_iid:
+        sys.stderr.write(
+            f"WARNING: {node['name']}: instance changed, node_id stable "
+            f"({prior_instance} → {remote_iid})\n"
+        )
+
+    proc = ssh_audit_export(node, after)
+    detail = _ssh_failure_detail(proc)
+    meta = parse_export_meta(proc.stderr or "")
+    earliest = None if meta is None else meta.get("earliest_available_event_id")
+
+    if proc.returncode == 255:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error=detail or "ssh unreachable",
+        )
+
+    expired = proc.returncode == 3 or (
+        isinstance(meta, dict) and meta.get("error") == "CURSOR_EXPIRED"
+    )
+    if expired:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_EXPIRED,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_EXPIRED,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error="CURSOR_EXPIRED",
+            earliest=earliest,
+        )
+
+    if proc.returncode != 0:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error=detail or f"audit export exit {proc.returncode}",
+        )
+
+    try:
+        rows = parse_export_jsonl(proc.stdout or "")
+    except ValueError as exc:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error=str(exc),
+        )
+
+    try:
+        imported = import_export_jsonl(
+            node_id, remote_iid, rows, now_iso, conn=conn
+        )
+    except SystemExit as exc:
+        last_event_id = mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=remote_iid,
+            status=SYNC_STATUS_ERROR,
+            now_iso=now_iso,
+        )
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=last_event_id,
+            instance_id=remote_iid,
+            error=f"audit import failed (exit {exc.code})",
+        )
+
+    return _sync_result(
+        node,
+        status=SYNC_STATUS_OK,
+        after=after,
+        last_event_id=int(imported["last_event_id"]),
+        inserted=int(imported["inserted"]),
+        ignored=int(imported["ignored"]),
+        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        instance_id=remote_iid,
+    )
+
+
+def format_sync_table(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        f"{'NAME':<8} {'STATUS':<8} {'AFTER':<8} {'CURSOR':<8} INSERTED"
+    ]
+    remediations: list[str] = []
+    for row in rows:
+        lines.append(
+            f"{row['name']:<8} {row['status']:<8} {row.get('after', 0):<8} "
+            f"{row.get('last_event_id', 0):<8} {row.get('inserted', 0)}"
+        )
+        if row["status"] == SYNC_STATUS_EXPIRED:
+            lines.append(
+                f"  CURSOR_EXPIRED after={row.get('after')} "
+                f"earliest_available_event_id="
+                f"{row.get('earliest_available_event_id')}"
+            )
+            if row.get("remediation"):
+                remediations.append(str(row["remediation"]))
+        elif row["status"] == SYNC_STATUS_ERROR and row.get("error"):
+            lines.append(f"  ERROR: {row['error']}")
+    if remediations:
+        lines.append("Remediation:")
+        for cmd in remediations:
+            lines.append(f"  {cmd}")
+    return "\n".join(lines) + "\n"
+
+
+def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    failed = [
+        row
+        for row in rows
+        if row.get("status") in (SYNC_STATUS_EXPIRED, SYNC_STATUS_ERROR)
+    ]
+    state = OP_SUCCESS if not failed else OP_PARTIAL
+    remediation = [
+        row["remediation"]
+        for row in rows
+        if row.get("remediation")
+    ]
+    return {
+        "schema_version": SYNC_JSON_SCHEMA_VERSION,
+        "operation": "sync",
+        "ok": state == OP_SUCCESS,
+        "state": state,
+        "nodes": rows,
+        "remediation": remediation,
+    }
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    registry = load_registry()
+    node_name = (getattr(args, "node", None) or "").strip() or None
+    reseed_name = (getattr(args, "reseed", None) or "").strip() or None
+    include_all = bool(getattr(args, "all", False))
+    as_json = bool(getattr(args, "as_json", False))
+    now_iso = format_utc(datetime.now(timezone.utc))
+
+    if reseed_name:
+        validate_name(reseed_name)
+
+    targets = sync_target_nodes(
+        registry,
+        node_name=node_name,
+        include_all=include_all,
+        reseed_name=reseed_name,
+    )
+
+    conn = open_fleet_db()
+    try:
+        if reseed_name:
+            seed_node = require_enabled_node(registry, reseed_name)
+            reseed_node_local(
+                conn,
+                seed_node["node_id"],
+                now_iso=now_iso,
+            )
+            if not as_json:
+                sys.stderr.write(
+                    f"reseed {reseed_name}: local audit_events and "
+                    "daily_usage deleted; cursor=0\n"
+                )
+        rows = [sync_one_node(conn, node, now_iso=now_iso) for node in targets]
+    finally:
+        conn.close()
+
+    doc = sync_report(rows)
+    if as_json:
+        sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_sync_table(rows))
+    if doc["state"] != OP_SUCCESS:
+        return MUTATION_EXIT_PARTIAL
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vcl-fleet",
@@ -2877,6 +3342,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="write CSV to FILE (required with --credentials; mode 0600)",
     )
 
+    p_sync = sub.add_parser(
+        "sync",
+        help="incremental audit import from enabled nodes",
+        description=(
+            "For each enabled node (or --node NAME / --all), read the "
+            "durable sync_cursor (0 if none), SSH "
+            "`vcl audit export --after CURSOR --jsonl`, and import via "
+            "INSERT OR IGNORE in one transaction. The cursor advances "
+            "only after a successful import COMMIT. Remote CURSOR_EXPIRED "
+            "(exit 3) does not import; status=expired and overall exit 2. "
+            "Reseed with --reseed NAME: delete that node's local "
+            "audit_events and daily_usage, reset cursor to 0, then pull "
+            "the remaining window. Reseed is not a 0.3.0 snapshot. "
+            "Any expired or error node → PARTIAL exit 2."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sync_sel = p_sync.add_mutually_exclusive_group()
+    sync_sel.add_argument(
+        "--node",
+        dest="node",
+        help="sync a single enabled node",
+    )
+    sync_sel.add_argument(
+        "--all",
+        action="store_true",
+        help="include disabled nodes (marked DISABLED; no SSH)",
+    )
+    p_sync.add_argument(
+        "--reseed",
+        metavar="NAME",
+        help="wipe local audit for NAME, reset cursor to 0, then export --after 0",
+    )
+    p_sync.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -2898,6 +3403,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_status(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "verify":
         return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
+    if command == "sync":
+        return cmd_sync(args)
     if command == "node":
         sub = args.node_command
         if sub is None:

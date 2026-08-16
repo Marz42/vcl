@@ -2340,6 +2340,480 @@ fi
 
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"
 
+assert_success "cmd_sync is defined" \
+  grep -q 'def cmd_sync(' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "sync --reseed flag exists" \
+  grep -q -- '--reseed' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "sync uses audit export --after" \
+  grep -q 'audit", "export", "--after"' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+SYNC_FLEET_HOME="${TEST_TMP}/fleet-home-sync"
+SYNC_FAKE_STATE="${TEST_TMP}/fake-sync-state"
+export VCL_FLEET_HOME="$SYNC_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$SYNC_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax"
+
+assert_success "sync-test fleet init" fleet init
+assert_success "sync-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+sync_help_rc=0
+sync_help=$(fleet sync -h) || sync_help_rc=$?
+if (( sync_help_rc == 0 )) && [[ "$sync_help" == *"--reseed"* ]] \
+  && [[ "$sync_help" == *"--node"* ]] && [[ "$sync_help" == *"CURSOR_EXPIRED"* ]]; then
+  pass "sync -h documents --node/--reseed/CURSOR_EXPIRED"
+else
+  fail "sync -h documents --node/--reseed/CURSOR_EXPIRED (rc=${sync_help_rc})"
+fi
+
+unknown_sync_rc=0
+unknown_sync_err=$(fleet sync --node mars 2>&1) || unknown_sync_rc=$?
+if (( unknown_sync_rc != 0 )) && [[ "$unknown_sync_err" == *"unknown node"* ]]; then
+  pass "sync --node unknown dies"
+else
+  fail "sync --node unknown dies (rc=${unknown_sync_rc} err=${unknown_sync_err})"
+fi
+
+seed_sync_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || seed_sync_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+node_id = ident["node_id"]
+instance_id = ident["instance_id"]
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+for i in range(1, 6):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"lax-sync-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+conn.commit()
+conn.close()
+PY
+if (( seed_sync_rc == 0 )); then
+  pass "sync fixture seeded lax accounting.db events 1-5"
+else
+  fail "sync fixture seeded lax accounting.db events 1-5"
+fi
+
+sync1_rc=0
+sync1_out=$(fleet sync --node lax --json) || sync1_rc=$?
+if (( sync1_rc == 0 )); then
+  pass "initial sync --node lax exits 0"
+else
+  fail "initial sync --node lax exits 0 (rc=${sync1_rc} out=${sync1_out})"
+fi
+
+sync1_check_rc=0
+python3 - "$sync1_out" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sync1_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+assert doc["schema_version"] == 1
+assert doc["ok"] is True
+assert doc["state"] == "SUCCESS"
+assert doc["operation"] == "sync"
+assert len(doc["nodes"]) == 1
+row = doc["nodes"][0]
+assert row["name"] == "lax"
+assert row["status"] == "ok"
+assert row["after"] == 0
+assert row["last_event_id"] == 5
+assert row["inserted"] == 5
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 5, count
+assert cur == (5, "ok"), cur
+PY
+if (( sync1_check_rc == 0 )); then
+  pass "initial sync after 0 imports 5 events and cursor=5"
+else
+  fail "initial sync after 0 imports 5 events and cursor=5"
+fi
+
+# New process, same fleet.db: cursor is durable (AC-2.9 / former AC-2.8-09).
+sync2_rc=0
+sync2_out=$(fleet sync --node lax --json) || sync2_rc=$?
+if (( sync2_rc == 0 )); then
+  pass "restart sync (new process) exits 0"
+else
+  fail "restart sync (new process) exits 0 (rc=${sync2_rc})"
+fi
+
+sync2_check_rc=0
+python3 - "$sync2_out" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sync2_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+assert doc["ok"] is True
+row = doc["nodes"][0]
+assert row["status"] == "ok"
+assert row["after"] == 5
+assert row["last_event_id"] == 5
+assert row["inserted"] == 0
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()[0]
+conn.close()
+assert count == 5, count
+assert cur == 5, cur
+PY
+if (( sync2_check_rc == 0 )); then
+  pass "controller restart continues from cursor; COUNT stays 5"
+else
+  fail "controller restart continues from cursor; COUNT stays 5"
+fi
+
+incr_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || incr_seed_rc=$?
+import importlib.util, json, sqlite3, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+node_id = ident["node_id"]
+instance_id = ident["instance_id"]
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+conn = sqlite3.connect(str(db))
+for i in (6, 7):
+    conn.execute(
+        """
+        INSERT INTO connections (
+          connection_id, generation, user_id, node_id, instance_id, user_tag,
+          started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"lax-sync-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            "2026-08-11T08:00:00Z", "2026-08-11T09:00:00Z", "2026-08-11T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+        ),
+    )
+conn.commit()
+conn.close()
+PY
+if (( incr_seed_rc == 0 )); then
+  pass "incremental fixture appended events 6-7"
+else
+  fail "incremental fixture appended events 6-7"
+fi
+
+sync3_rc=0
+sync3_out=$(fleet sync --node lax --json) || sync3_rc=$?
+sync3_check_rc=0
+python3 - "$sync3_out" "$sync3_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sync3_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+row = doc["nodes"][0]
+assert row["after"] == 5
+assert row["last_event_id"] == 7
+assert row["inserted"] == 2
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+ids = [r[0] for r in conn.execute(
+    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+)]
+conn.close()
+assert count == 7, count
+assert ids == [1, 2, 3, 4, 5, 6, 7], ids
+PY
+if (( sync3_check_rc == 0 )); then
+  pass "incremental sync imports new rows after cursor"
+else
+  fail "incremental sync imports new rows after cursor"
+fi
+
+sync4_rc=0
+sync4_out=$(fleet sync --node lax --json) || sync4_rc=$?
+sync4_check_rc=0
+python3 - "$sync4_out" "$sync4_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sync4_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+row = doc["nodes"][0]
+assert row["inserted"] == 0
+assert row["last_event_id"] == 7
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+conn.close()
+assert count == 7, count
+PY
+if (( sync4_check_rc == 0 )); then
+  pass "idempotent re-run does not duplicate rows"
+else
+  fail "idempotent re-run does not duplicate rows"
+fi
+
+fail_sync_rc=0
+fail_sync_out=$(VCL_FAKE_FAIL_EXPORT=lax fleet sync --node lax --json 2>/dev/null) || fail_sync_rc=$?
+fail_sync_err=$(VCL_FAKE_FAIL_EXPORT=lax fleet sync --node lax 2>&1 >/dev/null) || true
+fail_check_rc=0
+python3 - "$fail_sync_out" "$fail_sync_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || fail_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+assert doc["ok"] is False
+assert doc["state"] == "PARTIAL"
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert row["last_event_id"] == 7
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 7, count
+assert cur[0] == 7, cur
+assert cur[1] == "error", cur
+PY
+if (( fail_check_rc == 0 )); then
+  pass "VCL_FAKE_FAIL_EXPORT does not advance cursor"
+else
+  fail "VCL_FAKE_FAIL_EXPORT does not advance cursor"
+fi
+
+retry_sync_rc=0
+retry_sync_out=$(fleet sync --node lax --json) || retry_sync_rc=$?
+retry_check_rc=0
+python3 - "$retry_sync_out" "$retry_sync_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || retry_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+assert doc["ok"] is True
+row = doc["nodes"][0]
+assert row["status"] == "ok"
+assert row["last_event_id"] == 7
+assert row["inserted"] == 0
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 7
+assert cur == (7, "ok"), cur
+PY
+if (( retry_check_rc == 0 )); then
+  pass "retry after VCL_FAKE_FAIL_EXPORT succeeds from same cursor"
+else
+  fail "retry after VCL_FAKE_FAIL_EXPORT succeeds from same cursor"
+fi
+
+expire_prep_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || expire_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+
+state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
+acct.execute("DELETE FROM connections WHERE event_id <= 3")
+row = acct.execute("SELECT MIN(event_id), COUNT(*) FROM connections").fetchone()
+acct.commit()
+acct.close()
+assert row[0] == 4, row
+assert row[1] == 4, row  # 4,5,6,7 remain
+fleet = sqlite3.connect(str(home / "fleet.db"))
+fleet.execute(
+    "UPDATE sync_cursor SET last_event_id=1, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+fleet.commit()
+fleet.close()
+PY
+if (( expire_prep_rc == 0 )); then
+  pass "CURSOR_EXPIRED fixture: MIN=4 and cursor forced to 1"
+else
+  fail "CURSOR_EXPIRED fixture: MIN=4 and cursor forced to 1"
+fi
+
+expire_rc=0
+expire_out=$(fleet sync --node lax --json) || expire_rc=$?
+expire_human=$(fleet sync --node lax 2>&1) || true
+expire_check_rc=0
+python3 - "$expire_out" "$expire_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" \
+  "$expire_human" <<'PY' || expire_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+assert doc["ok"] is False
+assert doc["state"] == "PARTIAL"
+row = doc["nodes"][0]
+assert row["status"] == "expired"
+assert row["error"] == "CURSOR_EXPIRED"
+assert row["after"] == 1
+assert row["last_event_id"] == 1
+assert row["inserted"] == 0
+assert row["remediation"] == "vcl-fleet sync --reseed lax"
+assert "vcl-fleet sync --reseed lax" in doc["remediation"]
+human = sys.argv[5]
+assert "CURSOR_EXPIRED" in human
+assert "--reseed lax" in human
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert count == 7, count  # expired must not hollow-overwrite
+assert cur == (1, "expired"), cur
+PY
+if (( expire_check_rc == 0 )); then
+  pass "CURSOR_EXPIRED reports reseed and does not import a hole"
+else
+  fail "CURSOR_EXPIRED reports reseed and does not import a hole"
+fi
+
+reseed_rc=0
+reseed_out=$(fleet sync --reseed lax --json 2>/dev/null) || reseed_rc=$?
+reseed_check_rc=0
+python3 - "$reseed_out" "$reseed_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || reseed_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 0, sys.argv[2]
+assert doc["ok"] is True
+row = doc["nodes"][0]
+assert row["status"] == "ok"
+assert row["after"] == 0
+assert row["last_event_id"] == 7
+assert row["inserted"] == 4  # remaining window 4-7
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+ids = [r[0] for r in conn.execute(
+    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+)]
+cur = conn.execute(
+    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+daily = conn.execute("SELECT SUM(connection_count) FROM daily_usage WHERE node_id=?", (node_id,)).fetchone()[0]
+conn.close()
+assert count == 4, count
+assert ids == [4, 5, 6, 7], ids
+assert cur == (7, "ok"), cur
+assert daily == 4, daily
+PY
+if (( reseed_check_rc == 0 )); then
+  pass "--reseed lax replaces local rows with remaining export window"
+else
+  fail "--reseed lax replaces local rows with remaining export window"
+fi
+
+unlabeled_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" <<'PY' || unlabeled_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+
+path, home, node_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+before = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+blank = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
+).fetchone()[0]
+assert blank == 0
+result = mod.import_export_jsonl(
+    node_id,
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    [
+        {
+            "event_id": 99,
+            "connection_id": "unlabeled",
+            "generation": 0,
+            "user_id": "u-alice",
+            "user_tag": "alice",
+            "node_id": "",
+            "started_at": "2026-08-12T08:00:00Z",
+            "last_seen_at": "2026-08-12T09:00:00Z",
+            "upload_bytes": 1,
+            "download_bytes": 1,
+        },
+        {
+            "event_id": 100,
+            "connection_id": "no-nid",
+            "generation": 0,
+            "user_id": "u-alice",
+            "started_at": "2026-08-12T08:00:00Z",
+            "last_seen_at": "2026-08-12T09:00:00Z",
+        },
+    ],
+    "2026-08-16T06:00:00Z",
+    conn=conn,
+)
+assert result["inserted"] == 0
+assert result["skipped_unlabeled"] == 2
+after = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+blank2 = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
+).fetchone()[0]
+assert after == before == 4
+assert blank2 == 0
+conn.close()
+PY
+if (( unlabeled_rc == 0 )); then
+  pass "jsonl rows missing node_id are not stored"
+else
+  fail "jsonl rows missing node_id are not stored"
+fi
+
+unset VCL_FAKE_STATE_DIR
+export VCL_FLEET_HOME="${SAVED_DB_HOME}"
+
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
   grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"
