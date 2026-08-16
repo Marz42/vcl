@@ -154,6 +154,12 @@ SCP_TIMEOUT_SECONDS = 60
 REMOTE_BACKUP_TAR = "/var/backups/vincula/backup.tar"
 REMOTE_RESTORE_TAR = "/tmp/vincula-restore.tar"
 REMOTE_REISSUE_CSV = "/tmp/reissue.csv"
+NODE_REPLACE_NOT_IMPLEMENTED = (
+    "node replace is NOT IMPLEMENTED against real vcl "
+    "(P0-01: controller restore argv is a contract mismatch with the "
+    "node CLI; documented in the 0.3.0 external-audit remediation plan). "
+    "Fail-closed until the real-CLI contract is fixed."
+)
 CSV_CREDENTIAL_HEADER = ("user", "node", "credential_id", "vless_uri")
 CSV_IMPORT_HEADER = ("tag", "display_name", "department", "nodes")
 CSV_EXPORT_META_HEADER = (
@@ -1875,7 +1881,14 @@ def _cursor_instance_id(node_id: str) -> Optional[str]:
 
 
 def cmd_node_replace(args: argparse.Namespace) -> int:
-    """Physical instance replacement: secretless backup, restore, rotate."""
+    """Physical instance replacement: secretless backup, restore, rotate.
+
+    P0-01a / B2: the CLI is fail-closed. Real ``vcl restore`` rejects the
+    argv this function would send (``--replace-node``, restore ``--output``)
+    and refuses an existing VERSION. Keep the body for B10; do not reach it
+    from ``vcl-fleet node replace``.
+    """
+    die(NODE_REPLACE_NOT_IMPLEMENTED, 2)
     validate_name(args.name)
     as_json = bool(getattr(args, "as_json", False))
     registry = load_registry()
@@ -4698,7 +4711,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="change ssh_host (endpoint rebind; credentials stay)",
         description=(
             "This is endpoint rebind; credentials stay. "
-            "Physical replacement is node replace."
+            "Physical replacement is node replace, which is NOT IMPLEMENTED "
+            "against real vcl (P0-01; fail-closed) until the real-CLI "
+            "contract is fixed."
         ),
     )
     p_set.add_argument("name")
@@ -4726,14 +4741,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_replace = node_sub.add_parser(
         "replace",
-        help="replace the physical instance (rotate secrets; not a rebind)",
+        help="NOT IMPLEMENTED against real vcl (P0-01; fail-closed)",
         description=(
-            "Physical instance replacement: secretless backup from the old "
-            "host, restore onto NEW_HOST (already bootstrapped), mint a new "
-            "instance_id, rotate credentials, and write a reissue CSV. "
-            "This is not node set (endpoint rebind; credentials stay). "
-            "Requires --host-key. Does not mark the logical node retired "
-            "and does not auto-reseed fleet.db."
+            "NOT IMPLEMENTED against real vcl. The controller restore argv "
+            "is a contract mismatch with node vcl restore (fresh-node "
+            "--reissue-output; existing VERSION refused). Fail-closed "
+            "(exit 2) until the real-CLI contract is fixed (P0-01 / B10). "
+            "Does not rewrite fleet.json. This is not node set (endpoint "
+            "rebind; credentials stay). node instances remains available. "
+            "Requires --host-key when the command is re-enabled."
         ),
     )
     p_replace.add_argument("name")

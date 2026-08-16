@@ -4,7 +4,9 @@
 
 ## 0.3.1-dev
 
-Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Tree stamp only in this commit; functional batches follow. Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
+Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B remains localhost UI). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist still ends at `0.2.9` (does **not** add `0.3.0` or `0.3.1-dev`).
+
+- **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/fleet.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
 
 ## 0.3.0
 

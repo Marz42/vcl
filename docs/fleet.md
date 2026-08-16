@@ -2,8 +2,9 @@
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, incrementally syncs audit into a local
-`fleet.db`, retires nodes after a final sync, and **replaces a physical
-instance** (`node replace`) while keeping the logical `node_id`. Transport is
+`fleet.db`, retires nodes after a final sync, and records physical instances
+(`node instances`). **`node replace` is NOT IMPLEMENTED against real vcl**
+(P0-01; fail-closed). Transport is
 **system OpenSSH**. It does not listen on a port, does not run as root, and
 does not use `/etc/vincula`.
 
@@ -11,7 +12,7 @@ SPEC `vcl fleet <sub>` **≡** this binary: `vcl-fleet <sub>`. The node helper
 `vcl` / `vincula` has **no** `fleet` subcommand.
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
-Full identity contract (including `--user-id` and replace semantics):
+Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
 Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
 [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
@@ -66,10 +67,11 @@ bin\vcl-fleet.cmd init
 
 `bin\vcl-fleet.cmd` locates `lib\vincula-fleet.py` beside `bin\` or one level up.
 
-`node replace` locally verifies the archive by loading `lib/vincula-backup.py`
-next to `vincula-fleet.py`. That file is in a repo checkout and the node
-tarball; the **shipped controller zip does not include it**. See
-[`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+`node replace` is **NOT IMPLEMENTED against real vcl** (fail-closed, exit 2).
+When it is re-enabled it will locally verify the archive by loading
+`lib/vincula-backup.py` next to `vincula-fleet.py`. That file is in a repo
+checkout and the node tarball; the **shipped controller zip does not include
+it** (P0-02). See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Linux / macOS
 
@@ -91,7 +93,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet node list` | `NAME NODE_ID SSH_HOST USER ENABLED STATUS` |
 | `vcl-fleet node show NAME` | One record |
 | `vcl-fleet node set NAME --host NEW_HOST` | **Endpoint rebind.** Change `ssh_host` only; **`node_id` stays**; credentials stay |
-| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | **Physical replace.** Secretless backup → restore on new host; new `instance_id`; rotate keys; reissue CSV |
+| `vcl-fleet node replace NAME --host NEW_HOST --host-key SHA256:…` | **NOT IMPLEMENTED against real vcl** (P0-01; fail-closed exit 2). Intended: physical replace. Do not run against a real node |
 | `vcl-fleet node instances NAME` | `instance_history` table for that logical node |
 | `vcl-fleet node disable NAME` / `enable NAME` | Flip `active` ↔ `disabled`. Retired nodes cannot be enabled |
 | `vcl-fleet node retire NAME` | Final sync, snapshot, mark `retired` (history kept). Not a replace |
@@ -111,14 +113,20 @@ python3 bin/vcl-fleet init
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.
 `--instance-id` is accepted and **ignored** (not stored).
 
-`node replace` flags: `--host` (required), `--host-key SHA256:…` (required),
-`--output CSV`, `--from-backup FILE`, `--json`.
+`node replace` flags still parse (`--host`, `--host-key`, `--output`,
+`--from-backup`, `--json`) but the command **always** exits 2 with
+**NOT IMPLEMENTED against real vcl**. It does not teach a working restore
+argv.
 
 Not in 0.3.0: localhost UI, age passphrase, `vcl snapshot export`.
 
 ## Rebind vs replace
 
-| | `node set` (rebind) | `node replace` (replace) |
+`node replace` is **NOT IMPLEMENTED against real vcl**. The table is the
+**intended** product meaning after the real-CLI contract is fixed (B10).
+Today the CLI fail-closes and does not rewrite the registry.
+
+| | `node set` (rebind) | `node replace` (replace; not callable) |
 | --- | --- | --- |
 | When | Same VPS, new SSH IP/hostname (or user/port) | New physical machine for the **same** logical `node_id` |
 | Credentials / Reality / Clash | **Kept** | **Rotated** (secretless restore) |
@@ -172,7 +180,8 @@ python3 bin/vcl-fleet node add sg --host 203.0.113.12 --offline --node-id <uuid>
 
 Changing a node's IP later **on the same instance**: `node set` does **not**
 rewrite `known_hosts`. Pin again with `--host-key` or edit OpenSSH
-`known_hosts` yourself. A **new** VPS is `node replace`, which must pin.
+`known_hosts` yourself. A **new** VPS is intended to be `node replace` (must
+pin), but that command is **NOT IMPLEMENTED against real vcl** until B10.
 
 ### Host-key policy (D14)
 
@@ -183,51 +192,27 @@ Default: OpenSSH user `known_hosts`. The controller never passes:
 
 and never points `UserKnownHostsFile` at an empty file.
 
-## `node replace` (operator checklist)
+## `node replace` (NOT IMPLEMENTED against real vcl)
 
-NEW_HOST must already run a **0.3.0** node (bootstrap complete enough that
-`vcl identity --json` works). The controller does not install sing-box.
+`vcl-fleet node replace` **fail-closes**: it prints an explicit error
+containing **NOT IMPLEMENTED against real vcl** and exits **2**. It does
+**not** SSH, scp, restore, or rewrite `fleet.json` / `fleet.db`.
+
+This is P0-01 (remediation batch B2). The unimplemented controller path
+would have sent a restore argv the real node CLI rejects. Operator docs
+must not teach that argv. Re-enable only after B10 (real `--reissue-output`,
+runtime-only new host, controller-vs-real-bin contract tests).
 
 ```bash
+# exits 2; registry untouched
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
-python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:... \
-  --from-backup /path/to/node-<uuid>-<ts>.tar --output /tmp/reissue-lax.csv --json
-python3 bin/vcl-fleet node instances lax
+python3 bin/vcl-fleet node instances lax   # still available
 ```
 
-```text
-1. NAME must be status=active (retired/disabled → die)
-2. --host-key required (non-TTY, same rule as node add)
-3. pin the new host key to user known_hosts (ssh-keyscan is candidates only)
-4. unless --from-backup:
-     final sync on the old host (CURSOR_EXPIRED → stop; print --reseed; no backup)
-     SSH old: vcl backup create --json   (secretless only)
-     scp archive to $FLEET_HOME/backups/ (0700 / 0600)
-     local verify via vincula-backup.py (same parser as the node)
-5. --from-backup FILE: skip 4a–4c (old host already dead). WARN: sync tail may be lost. Still verify FILE
-6. scp archive to NEW_HOST /tmp/vincula-restore.tar
-7. SSH new: vcl restore … --replace-node <registry node_id> --server NEW_HOST --output /tmp/reissue.csv
-   (controller argv; fixture fake-ssh accepts --replace-node. Node CLI restore is fresh-node only — see backup.md)
-8. SSH new: vcl identity --json  → node_id = registry; instance_id ≠ old and ≠ node_id
-9. SSH new: vcl verify --json    → not ok → do **not** rewrite registry; print remediation (`node set` back to old host). No automatic rollback of the new VPS restore
-10. scp reissue.csv → --output (default $FLEET_HOME/reissue-<name>-<UTC>.csv) 0600
-11. instance_history: old instance retired_at=now; insert new active
-12. fleet.json ssh_host=NEW_HOST (atomic); status still active; still no instance_id in JSON
-13. sync_cursor.instance_id=new; **keep last_event_id** (accounting.db restored; event_id continuous)
-14. best-effort SSH old host disable users (same as retire, keep the last enabled). Failure WARN. No uninstall
-15. stdout: old/new instance_id, new ssh_host, CSV path. Logical node not retired
-```
+Node-side DR today: `vcl restore FILE --reissue-output FILE --server HOST`
+on a **fresh** host (no `$STATE_DIR/VERSION`). Then register or `node set`
+as appropriate. See [`backup.md`](backup.md).
 
-`--json` schema_version 1:
-`ok, name, node_id, old_instance_id, new_instance_id, ssh_host, reissue_csv, state=SUCCESS|FAILED`.
-
-Timeouts: backup/restore SSH uses `SSH_BACKUP_TIMEOUT_SECONDS = 120`.
-`scp` is `$VCL_FLEET_SCP` (default `scp` / `scp.exe`); OpenSSH list argv only.
-
-After a successful replace, `vcl-fleet sync --node NAME` WARNs
-`instance changed, node_id stable` and **does not** clear the cursor. Do
-**not** auto `--reseed`. If retention already opened a hole, remediation is
-still `vcl-fleet sync --reseed NAME` — not another restore.
 `--reseed` wipes that node’s local `audit_events` + `daily_usage` and does
 **not** delete `instance_history`.
 
@@ -351,10 +336,11 @@ node's local `audit_events` + `daily_usage`, resets `last_event_id=0`, then
 pulls `--after 0` (the remaining window). Reseed is **not** a backup;
 `instance_history` is **not** erased.
 
-**Replace does not auto-reseed.** After replace, `last_event_id` is kept.
-Immediate `sync --node NAME` continues `--after` that id on the new
-instance. If the old host’s retention already opened a hole before the
-final sync, you still `--reseed` — you do not restore again.
+**Replace does not auto-reseed** (intended after B10; `node replace` is
+NOT IMPLEMENTED against real vcl today). After a successful replace,
+`last_event_id` is kept. Immediate `sync --node NAME` continues `--after`
+that id on the new instance. If the old host’s retention already opened a
+hole before the final sync, you still `--reseed` — you do not restore again.
 
 Cursor lives on disk in `fleet.db`. A new controller process reading the
 same file continues from the last committed `event_id`. Re-running sync is
@@ -407,8 +393,8 @@ placeholders (`SSH=-`, no SSH). Unreachable nodes cannot be retired
 (no final sync). Do **not** auto-uninstall. Do **not** delete `fleet.db`
 rows for that `node_id`.
 
-Retire abandons the **logical** node. To keep `node_id` on new hardware,
-use `node replace`.
+Retire abandons the **logical** node. Keeping `node_id` on new hardware is
+the intended `node replace` (NOT IMPLEMENTED against real vcl until B10).
 
 ## `status` / `verify`
 
@@ -491,8 +477,9 @@ export VCL_FAKE_STATE_DIR=/tmp/fake-state
 ```
 
 CI uses fixtures: lax (healthy), tokyo (accounting STALE), sg (SSH FAIL),
-lax2 (`203.0.113.18`, replace target). AC-2.9-01 “two nodes” = **lax + tokyo
-fixtures**. AC-3.0 replace = **lax → lax2 fixtures**, not two public VPS.
+lax2 (`203.0.113.18`, intended replace target). AC-2.9-01 “two nodes” =
+**lax + tokyo fixtures**. Living-tree `node replace` is fail-closed (P0-01a);
+lax → lax2 fixture replace is **not** a contract pass (B10).
 
 ## Explicitly not in 0.3.0
 

@@ -84,7 +84,7 @@ mint 后若偶然 `instance_id == node_id`，再 mint 一次；仍相等则失�
 | 命令 | 语义 |
 | --- | --- |
 | `vcl-fleet node set NAME --host X` | **rebind**。同一物理实例，只改 `fleet.json` `ssh_host`。凭据 / `instance_id` / Reality **全留** |
-| `vcl-fleet node replace NAME --host NEW --host-key SHA256:…` | **replace**。secretless 备份 → 新主机 restore → 新 `instance_id`、旋转密钥、reissue CSV。逻辑节点 **不**标 `retired` |
+| `vcl-fleet node replace NAME --host NEW --host-key SHA256:…` | **NOT IMPLEMENTED against real vcl**（P0-01a；fail-closed）。意图：secretless 备份 → 新主机 restore → 新 `instance_id`、旋转密钥、reissue CSV。逻辑节点 **不**标 `retired` |
 
 `instance_history` 的 SoT 是工作站 **`fleet.db` schema 2**（不是 `fleet.json`，0.2.8/0.2.9 不变量：registry 无 `instance_id`）。
 

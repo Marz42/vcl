@@ -12,7 +12,7 @@ Not product limitations. These break the 0.3.0 replace / controller-zip contract
 
 | ID | Issue | Notes |
 | --- | --- | --- |
-| **P0-01** | `vcl-fleet node replace` vs real node CLI | Controller SSHes `vcl restore … --replace-node NODE_ID --output FILE`. Real `vcl restore` rejects `--replace-node`, uses `--reissue-output`, and refuses an existing `$STATE_DIR/VERSION`. Fixture `fake-ssh` implements the controller protocol. Operator docs require an already-bootstrapped NEW_HOST. **Contract mismatch, not a live-evidence gap.** A completed-bootstrap real VPS replace fails at restore. Was listed under Product limitations as “Fleet replace argv vs node CLI”. |
+| **P0-01** | `vcl-fleet node replace` vs real node CLI | **B2 (P0-01a):** CLI fail-closed — exit 2, **NOT IMPLEMENTED against real vcl**; does not rewrite `fleet.json`. Help/docs no longer teach the fake restore argv. Unreachable body still contains `vcl restore … --replace-node NODE_ID --output FILE` pending B10. Real `vcl restore` rejects `--replace-node`, uses `--reissue-output`, and refuses an existing `$STATE_DIR/VERSION`. Fixture `fake-ssh` still implements the old controller protocol (not exercised by living-tree replace tests). **Contract mismatch, not a live-evidence gap.** |
 | **P0-02** | Controller zip missing runtime modules | Zip still four members (`README-controller.md`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`, `lib/vincula-fleet.py`). `load_backup_module` / `load_audit_module` require `vincula-backup.py` and `vincula-audit.py` beside `vincula-fleet.py`. A zip-only unpack cannot local-verify `node replace` or run `audit`. Tests asserted the backup omission. Was listed under Product limitations as “Controller zip omits `vincula-backup.py`”. |
 
 ## Product limitations
@@ -46,7 +46,7 @@ Not product limitations. These break the 0.3.0 replace / controller-zip contract
 | --- | --- |
 | Windows 11 live `vcl-fleet.cmd` | **Not run.** Packaging tests cover zip members and `.cmd` launcher |
 | Live SSH against real VPS | **Not run.** CI uses `tests/fixtures/fake-ssh` / `fake-scp` |
-| Live secretless `node replace` | **Not run.** Fixture replace (lax → 203.0.113.18 / lax2) is green. **P0-01:** fixture protocol ≠ real `vcl restore`; live would fail on a bootstrapped host |
+| Live secretless `node replace` | **Not run.** Living-tree CLI is fail-closed (P0-01a). Former fixture replace (lax → lax2) is **not** a contract pass |
 | Live `age` on a real node | **Not run.** CI uses `tests/fixtures/fake-age`. Distro `age` + recipient/identity files are operator evidence |
 | AC-3.0-11 live handshake | **Not run.** Old URI to the **new** IP:443 must fail; new URI must succeed; then stop the old VPS |
 | Live 0.2.9 → 0.3.0 upgrade | Allowlist + schema-unchanged unit tests PASS. No live RC-host upgrade run for 0.3.0 |
@@ -61,7 +61,7 @@ Not product limitations. These break the 0.3.0 replace / controller-zip contract
 | No backup format | Backup schema 1; secretless default; Python SQLite Backup API |
 | No age contract | `--include-secrets` + recipient file; D17 exact missing-age line |
 | No `vcl restore` | Fresh-node restore; safety directory; reissue CSV; INV-05 rollback |
-| No physical replace | `vcl-fleet node replace` vs `node set` rebind; `node instances`. **Post-audit:** fixture / fake-ssh only; **P0-01** blocks the real node CLI |
+| No physical replace | `vcl-fleet node replace` vs `node set` rebind; `node instances`. **Post-audit / B2:** CLI fail-closed (NOT IMPLEMENTED against real vcl); **P0-01** remains until B10 |
 | No instance history | `fleet.db` schema 2 `instance_history`; not stored in `fleet.json` |
 | `--reseed` was the only “snapshot” | Consistent node backup is `vcl backup create`; reseed remains a cache wipe |
 

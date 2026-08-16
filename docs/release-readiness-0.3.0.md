@@ -2,7 +2,8 @@
 
 **Tree version:** 0.3.0 (freeze record). Living tree after Batch B0 is `0.3.1-dev`.  
 **Date:** 2026-08-16 (freeze)  
-**Addendum:** 2026-08-16 — P2-04 honesty; recommendation **NOT READY**  
+**Addendum:** 2026-08-16 — P2-04 honesty; recommendation **NOT READY**.  
+**Addendum:** 2026-08-16 — B2 / P0-01a: `node replace` fail-closed.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -26,6 +27,20 @@ The freeze docs claimed **Known P0/P1 at freeze: 0** and mapped fixture-green re
 **Known P0 at this gate: 2** (P0-01, P0-02). ~~Known P0/P1 at this docs gate: **0**.~~ That freeze sentence is **struck**. Do not restore it while these P0s remain. This addendum does not enumerate the audit’s P1/P2 items; it only stops calling them “zero P0/P1”.
 
 The AC matrix, completion report, and test counts below are **unchanged** and are evidence **as of the 0.3.0 freeze**. Read AC-3.0-05…10 **PASS (fixture)** as fake-ssh / fake-scp results, not as “controller restore argv ⊆ real `vcl restore`”. Product remediations are later batches (B2+). Closing P0 in this addendum is not claimed.
+
+## Addendum (2026-08-16) — B2 / P0-01a fail-closed
+
+Living tree (`0.3.1-dev`): `vcl-fleet node replace` **fail-closes** (exit 2, stderr **NOT IMPLEMENTED against real vcl**). It does not rewrite `fleet.json` / `fleet.db`. Help, `docs/fleet.md`, and README no longer teach the fake restore argv. `node instances` remains available. The function body is kept for B10.
+
+| ID | Living-tree status (B2) | Notes |
+| --- | --- | --- |
+| AC-3.0-05…10 / AC-3.0-12 **fleet replace** | **FAIL-CLOSED** (not a fixture PASS) | CLI never reaches fake-ssh restore. Node-side `vcl restore` ACs in `tests/test.sh` are unchanged |
+| AC-3.0-11 fleet fixture PARTIAL | **withdrawn** from living-tree replace tests | Re-enable with B10 + B14 live handshake |
+| `node instances` | still PASS | Independent of replace |
+
+P0-01 remains open until B10. This batch only stops production misuse and false operator docs.
+
+Living-tree test counts after B2: `bash tests/test.sh` **983**; standalone `bash tests/test-fleet.sh` **390**. The drop vs freeze 1006+413 is the withdrawn fake-ssh replace happy path / injection assertions, replaced by fail-closed + `node instances` coverage.
 
 ### Freeze-era recommendation (historical)
 
@@ -61,8 +76,8 @@ Freeze-era path: fixture suite all-green → `READY WITH DOCUMENTED LIMITATIONS`
 | `fleet.db` schema **2** + `instance_history` + 1→2 migrate | PASS (unit) |
 | Backup schema **1**; secretless default; age `--include-secrets` | PASS (unit + fake-age) |
 | `vcl restore` fresh-node + reissue CSV + safety rollback | PASS (unit) |
-| `vcl-fleet node replace` / `node instances`; `node set` = rebind | PASS (fake-ssh + fake-scp) |
-| Replace does not auto-reseed; cursor `last_event_id` kept | PASS (fake-ssh) |
+| `vcl-fleet node replace` / `node instances`; `node set` = rebind | **FAIL-CLOSED** replace (B2); instances + rebind still PASS |
+| Replace does not auto-reseed; cursor `last_event_id` kept | intended; replace CLI unreachable (B2) |
 | No management API port | PASS (static grep) |
 | AC-3.0-11 live handshake | **MISSING** (LIVE-only; fixture PARTIAL) |
 | Live VPS replace / live age / Win11 live controller | **MISSING** (limitation) |

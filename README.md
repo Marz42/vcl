@@ -224,7 +224,7 @@ sudo vcl restore FILE.tar.age --include-secrets --age-identity /root/age-identit
 ```
 
 缺 age：`ERROR: Secret-bearing backup requires age.`  
-物理换机走控制器 `vcl-fleet node replace`（secretless），不要用 `node set`。格式、CSV、DR 清单：[`docs/backup.md`](docs/backup.md)。
+物理换机：**`vcl-fleet node replace` 对真实 vcl 为 NOT IMPLEMENTED**（P0-01a；fail-closed，退出 2），不要当成可运行路径，也不要用 `node set` 冒充换机。节点侧在 **fresh host** 上 `vcl restore FILE --reissue-output FILE`。格式、CSV、DR 清单：[`docs/backup.md`](docs/backup.md)。
 
 ### 卸载
 
@@ -248,7 +248,7 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 ## Fleet Users & Audit（工作站控制器）
 
-0.3.0 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点、**替换物理实例**。
+0.3.0 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点。**`node replace` 对真实 vcl 为 NOT IMPLEMENTED**（fail-closed）。
 
 节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace：[`docs/fleet.md`](docs/fleet.md)。
 
@@ -272,7 +272,7 @@ python3 bin/vcl-fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-
 python3 bin/vcl-fleet stats user alice --days 30
 
 python3 bin/vcl-fleet node set lax --host 203.0.113.10   # rebind：同一实例，凭据保留
-python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
+# node replace is NOT IMPLEMENTED against real vcl (P0-01a; fail-closed exit 2)
 python3 bin/vcl-fleet node instances lax
 python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 retired；不删历史
 ```
