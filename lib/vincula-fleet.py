@@ -1962,6 +1962,12 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         die(f"backup verify failed: {verified.get('error') or 'failed'}")
     if verified.get("secret_bearing"):
         die("node replace requires a secretless backup")
+    source_id = verified.get("source_node_id")
+    if source_id != node["node_id"]:
+        die(
+            f"cannot replace {args.name}: backup source_node_id {source_id} "
+            f"does not match registry {node['node_id']}"
+        )
 
     scp_push(new_node, local_archive, REMOTE_RESTORE_TAR, extra=extra)
     restore_cmd = [

@@ -41,6 +41,13 @@ HOST_ALIAS = {
 }
 
 
+def _fail_aliases(env_name: str) -> set[str]:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def _state_root() -> Path | None:
     raw = os.environ.get("VCL_FAKE_STATE_DIR", "").strip()
     if not raw:
@@ -141,13 +148,20 @@ def main(argv: list[str] | None = None) -> int:
         src, dest = _parse_argv(argv)
         src_remote = _is_remote(src)
         dest_remote = _is_remote(dest)
+        fail = _fail_aliases("VCL_FAKE_FAIL_SCP")
         if src_remote and dest_remote:
             raise RuntimeError("refusing remote-to-remote scp")
         if src_remote:
             host, rpath = _split_remote(src)
+            if HOST_ALIAS.get(host) in fail:
+                sys.stderr.write("fake-scp: injected failure\n")
+                return 1
             _copy_file(_alias_file(host, rpath), Path(dest))
         elif dest_remote:
             host, rpath = _split_remote(dest)
+            if HOST_ALIAS.get(host) in fail:
+                sys.stderr.write("fake-scp: injected failure\n")
+                return 1
             _copy_file(Path(src), _alias_file(host, rpath))
         else:
             _copy_file(Path(src), Path(dest))

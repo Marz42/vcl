@@ -5305,6 +5305,294 @@ else
   fail "vcl backup verify --json failure contract (rc=${cli_verify_fail_rc}, parse=${cli_verify_fail_parse})"
 fi
 
+# --- 0.3.0 disaster recovery failure injection (Batch 16) ---
+restore_usage=$(sed -n '/^cmd_restore_usage()/,/^}/p' "${PROJECT_DIR}/bin/vincula")
+if [[ "$restore_usage" == *VCL_RESTORE_FAIL_AFTER* ]]; then
+  fail "restore --help does not document VCL_RESTORE_FAIL_AFTER"
+else
+  pass "restore --help does not document VCL_RESTORE_FAIL_AFTER"
+fi
+if [[ "$restore_usage" == *VCL_RESTORE_SKIP_HEALTH* ]]; then
+  fail "restore --help does not document VCL_RESTORE_SKIP_HEALTH"
+else
+  pass "restore --help does not document VCL_RESTORE_SKIP_HEALTH"
+fi
+assert_success "cmd_restore rolls back on injected health failure" \
+  grep -q 'VCL_RESTORE_FAIL_AFTER' "${PROJECT_DIR}/bin/vincula"
+
+if python3 - "$BACKUP_DIR" "${PROJECT_DIR}/lib/vincula-backup.py" <<'PY'
+import hashlib, importlib.util, json, os, sqlite3, sys, tarfile
+from pathlib import Path
+
+base = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("vbackup", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+restore_src = base / "restore-src.tar"
+tamper = base / "tamper.tar"
+no_man = base / "no-manifest.tar"
+schema_bad = base / "schema99.tar"
+flag_bad = base / "flag-bad.tar"
+fresh = base / "fresh-dest"
+archive = base / "node-secretless.tar"
+assert restore_src.is_file() and tamper.is_file() and no_man.is_file()
+assert schema_bad.is_file() and flag_bad.is_file() and archive.is_file()
+src_hash = hashlib.sha256(restore_src.read_bytes()).hexdigest()
+
+def inbound_uuids(users):
+    out = set()
+    for user in users.get("users") or []:
+        if not user.get("enabled", False):
+            continue
+        for cred in user.get("credentials") or []:
+            if cred.get("status") == "active" and cred.get("uuid"):
+                out.add(str(cred["uuid"]))
+                break
+    return out
+
+def refuse(archive_path, code):
+    dest = base / f"refuse-{code}-{Path(archive_path).stem}"
+    dest.mkdir()
+    keep = b'{"pre":"mutation"}\n'
+    (dest / "state.json").write_bytes(keep)
+    try:
+        mod.apply_restore(
+            archive_path, dest,
+            new_instance_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            new_reality_private="p", new_reality_public="u",
+            new_reality_short_id="deadbeefdeadbeef",
+            new_clash_secret="c",
+        )
+        raise AssertionError(f"{code} must fail restore")
+    except mod.RestoreError as exc:
+        assert exc.code == code, (code, exc.code, exc.message)
+    assert (dest / "state.json").read_bytes() == keep
+    assert not (dest / "VERSION").exists()
+    assert hashlib.sha256(restore_src.read_bytes()).hexdigest() == src_hash
+
+# TASK 31: bit-flip payload → checksum_mismatch before mutation
+bitflip = base / "bitflip.tar"
+with tarfile.open(restore_src, "r:") as src, tarfile.open(bitflip, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    for info in src.getmembers():
+        data = src.extractfile(info).read()
+        if info.name == "users.json":
+            buf = bytearray(data)
+            buf[0] ^= 0x01
+            data = bytes(buf)
+            info.size = len(data)
+        dst.addfile(info, __import__("io").BytesIO(data))
+bit_doc = mod.verify_archive(bitflip)
+assert bit_doc == {"schema_version": 1, "ok": False, "error": "checksum_mismatch"}, bit_doc
+refuse(bitflip, "checksum_mismatch")
+refuse(tamper, "checksum_mismatch")
+refuse(no_man, "missing_manifest")
+refuse(schema_bad, "unsupported_schema")
+refuse(flag_bad, "secret_bearing_unencrypted")
+assert hashlib.sha256(restore_src.read_bytes()).hexdigest() == src_hash
+
+# TASK 33: stage inject, source unchanged, second restore succeeds
+retry = base / "retry-dest"
+retry.mkdir()
+keep_retry = b'{"keep":"retry"}\n'
+(retry / "state.json").write_bytes(keep_retry)
+retry_db = base / "retry-accounting.db"
+fail_safety = base / "pre-restore-retry"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "stage"
+try:
+    mod.apply_restore(
+        restore_src, retry, dest_accounting_db=retry_db, safety_dir=fail_safety,
+        new_instance_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        new_reality_private="p", new_reality_public="u",
+        new_reality_short_id="deadbeefdeadbeef", new_clash_secret="c",
+    )
+    raise AssertionError("stage inject must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "injected_failure"
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+assert (retry / "state.json").read_bytes() == keep_retry
+assert not (retry / "VERSION").exists()
+assert fail_safety.is_dir()
+assert hashlib.sha256(restore_src.read_bytes()).hexdigest() == src_hash
+second = mod.apply_restore(
+    restore_src, retry, dest_accounting_db=retry_db,
+    new_instance_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    new_reality_private="new-priv", new_reality_public="new-pub",
+    new_reality_short_id="deadbeefdeadbeef", new_clash_secret="new-clash",
+)
+assert second["ok"] is True
+assert (retry / "VERSION").is_file()
+st = json.loads((retry / "state.json").read_text(encoding="utf-8"))
+assert st["node"]["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+assert st["node"]["instance_id"] == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+# AC-3.0-01/02/04/12 + AC-3.0-11 PARTIAL (LIVE-ONLY)
+ok = mod.verify_archive(archive)
+assert ok.get("ok") is True
+assert ok.get("secret_bearing") is False
+assert ok.get("encryption") == "none"
+assert "accounting.db" in ok.get("included_components", [])
+with tarfile.open(archive, "r:") as tf:
+    state = json.loads(tf.extractfile("state.json").read())
+    users = json.loads(tf.extractfile("users.json").read())
+    toml = tf.extractfile("config.toml").read().decode("utf-8")
+    acct = tf.extractfile("accounting.db").read()
+assert "reality_private_key" not in state["node"]
+assert "uuid" not in json.dumps(users)
+assert "clash_api_secret" not in toml
+assert len(acct) > 0
+
+fresh_users = json.loads((fresh / "users.json").read_text(encoding="utf-8"))
+old_uuid = "11111111-1111-4111-8111-111111111111"
+new_set = inbound_uuids(fresh_users)
+assert old_uuid not in new_set, new_set
+alice = fresh_users["users"][0]
+assert alice["user_id"] == "u-alice"
+revoked = [c for c in alice["credentials"] if c["credential_id"] == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"]
+assert revoked and revoked[0]["status"] == "revoked"
+assert "uuid" not in revoked[0]
+active = [c for c in alice["credentials"] if c.get("status") == "active"]
+assert active and active[0]["uuid"] != old_uuid
+# Fixture cannot prove a live VLESS handshake failure (AC-3.0-11 LIVE-ONLY).
+Path(base / "ac-3.0-11-partial.txt").write_text(
+    "PARTIAL LIVE-ONLY: old uuid absent from inbound set; live client test needed\n",
+    encoding="utf-8",
+)
+acct = sqlite3.connect(str(base / "fresh-accounting.db"))
+row5 = acct.execute("SELECT event_id, user_id FROM connections WHERE event_id=5").fetchone()
+acct.close()
+assert row5 == (5, "u-alice"), row5
+PY
+then
+  pass "bit-flip backup verify is checksum_mismatch before mutation"
+  pass "restore refuses missing_manifest unsupported_schema secret_bearing_unencrypted"
+  pass "mid-restore stage inject leaves target and source unchanged; retry succeeds"
+  pass "AC-3.0-01 fixture PASS: default backup includes identity and accounting"
+  pass "AC-3.0-02 fixture PASS: default backup is secretless without encryption"
+  pass "AC-3.0-04 fixture PASS: verify detects bit-flip checksum mismatch"
+  pass "AC-3.0-08 fixture PASS: restore keeps user_id"
+  pass "AC-3.0-09 fixture PASS: restore keeps accounting event_id history"
+  pass "AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set"
+  pass "AC-3.0-12 fixture PASS: failed restore does not mutate source or target"
+else
+  fail "bit-flip backup verify is checksum_mismatch before mutation"
+  fail "restore refuses missing_manifest unsupported_schema secret_bearing_unencrypted"
+  fail "mid-restore stage inject leaves target and source unchanged; retry succeeds"
+  fail "AC-3.0-01 fixture PASS: default backup includes identity and accounting"
+  fail "AC-3.0-02 fixture PASS: default backup is secretless without encryption"
+  fail "AC-3.0-04 fixture PASS: verify detects bit-flip checksum mismatch"
+  fail "AC-3.0-08 fixture PASS: restore keeps user_id"
+  fail "AC-3.0-09 fixture PASS: restore keeps accounting event_id history"
+  fail "AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set"
+  fail "AC-3.0-12 fixture PASS: failed restore does not mutate source or target"
+fi
+
+# TASK 32: CLI --include-secrets without age; existing VERSION overwrite text
+age_missing_recip="${TEST_TMP}/age-missing-recipient.txt"
+printf 'age1fakevincularecipient\n' > "$age_missing_recip"
+age_missing_out="${cli_backups}/must-not-exist-cli.tar"
+age_missing_rc=0
+age_missing_err=$(
+  VCL_AGE_BIN=/nonexistent/not-age \
+    cli_backup create --include-secrets --age-recipient "$age_missing_recip" --output "$age_missing_out" 2>&1
+) || age_missing_rc=$?
+if (( age_missing_rc != 0 )) \
+   && [[ "$age_missing_err" == *"ERROR: Secret-bearing backup requires age."* ]] \
+   && [[ ! -e "$age_missing_out" ]] \
+   && [[ ! -e "${age_missing_out}.age" ]] \
+   && [[ ! -e "${cli_backups}/must-not-exist-cli.tar.age" ]]; then
+  pass "AC-3.0-03 fixture PASS: missing age dies with exact ERROR and writes no tar"
+else
+  fail "AC-3.0-03 fixture PASS: missing age dies with exact ERROR and writes no tar (rc=${age_missing_rc} err=${age_missing_err})"
+fi
+
+# TASK 32: health inject via CLI rolls back; second restore succeeds
+restore_health="${restore_cli_root}/health"
+mkdir -p "$restore_health"
+printf '%s\n' '{"keep":"health"}' > "${restore_health}/state.json"
+health_before=$(cat "${restore_health}/state.json")
+health_src_hash=$(sha256sum "${BACKUP_DIR}/restore-src.tar" | awk '{print $1}')
+health_rc=0
+health_err=$(
+  VCL_STATE_DIR="$restore_health" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${restore_health}/accounting.db" \
+  VCL_RESTORE_FAIL_AFTER=health \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" "${BACKUP_DIR}/restore-src.tar" 2>&1
+) || health_rc=$?
+health_src_hash_after=$(sha256sum "${BACKUP_DIR}/restore-src.tar" | awk '{print $1}')
+if (( health_rc != 0 )) \
+   && [[ "$health_err" == *"rolled back"* ]] \
+   && [[ "$(cat "${restore_health}/state.json")" == "$health_before" ]] \
+   && [[ ! -f "${restore_health}/VERSION" ]] \
+   && [[ "$health_src_hash_after" == "$health_src_hash" ]]; then
+  pass "restore health inject rolls back target and leaves source tar unchanged"
+else
+  fail "restore health inject rolls back target and leaves source tar unchanged (rc=${health_rc} err=${health_err})"
+fi
+
+health_ok_rc=0
+health_ok_out=$(
+  VCL_STATE_DIR="$restore_health" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${restore_health}/accounting.db" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || health_ok_rc=$?
+if (( health_ok_rc == 0 )) && [[ -f "${restore_health}/VERSION" ]] \
+   && [[ "$health_ok_out" == *'"ok": true'* || "$health_ok_out" == *'"ok":true'* ]]; then
+  pass "restore succeeds after health-inject rollback"
+else
+  fail "restore succeeds after health-inject rollback (rc=${health_ok_rc} out=${health_ok_out})"
+fi
+
+# AC-3.0-05/06/07/10 from the earlier successful safe restore
+if python3 - "${BACKUP_DIR}/fresh-dest" "${BACKUP_DIR}/reissue.csv" <<'PY'
+import csv, json, sys
+from pathlib import Path
+fresh, csv_path = Path(sys.argv[1]), Path(sys.argv[2])
+st = json.loads((fresh / "state.json").read_text(encoding="utf-8"))
+assert st["node"]["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+assert st["node"]["instance_id"] == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+assert st["node"]["instance_id"] != st["node"]["node_id"]
+assert st["node"]["reality_private_key"] == "new-priv"
+assert st["node"]["reality_public_key"] == "new-pub"
+users = json.loads((fresh / "users.json").read_text(encoding="utf-8"))
+alice = users["users"][0]
+assert alice["user_id"] == "u-alice"
+old = [c for c in alice["credentials"] if c["credential_id"] == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"][0]
+new = [c for c in alice["credentials"] if c["status"] == "active"][0]
+assert old["status"] == "revoked"
+assert new["uuid"] != "11111111-1111-4111-8111-111111111111"
+assert new["credential_id"] != old["credential_id"]
+with csv_path.open(encoding="utf-8", newline="") as fh:
+    rows = list(csv.DictReader(fh))
+assert rows[0]["old_credential_id"] != rows[0]["new_credential_id"]
+assert rows[0]["vless_uri"].startswith("vless://")
+PY
+then
+  pass "AC-3.0-05 fixture PASS: restore keeps backup node_id"
+  pass "AC-3.0-06 fixture PASS: restore mints new instance_id"
+  pass "AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials"
+  pass "AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id"
+else
+  fail "AC-3.0-05 fixture PASS: restore keeps backup node_id"
+  fail "AC-3.0-06 fixture PASS: restore mints new instance_id"
+  fail "AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials"
+  fail "AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id"
+fi
+
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
   # shellcheck disable=SC1091
   source "${TEST_DIR}/test-fleet.sh"

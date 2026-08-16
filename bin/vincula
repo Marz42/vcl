@@ -3025,6 +3025,11 @@ cmd_restore() {
   if [[ "${VCL_RESTORE_SKIP_HEALTH:-}" == "1" ]]; then
     return 0
   fi
+  # Test-only: VCL_RESTORE_FAIL_AFTER=health is not documented in --help.
+  if [[ "${VCL_RESTORE_FAIL_AFTER:-}" == "health" ]]; then
+    rollback_restore_target "$safety" || true
+    die "restore health check failed (injected); rolled back from ${safety}."
+  fi
 
   install -d -m 0750 "$(dirname -- "$CONFIG_FILE")"
   if ! render_config_from_registry "$CONFIG_FILE" "$USERS_FILE"; then

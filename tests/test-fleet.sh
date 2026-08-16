@@ -74,6 +74,8 @@ export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
 export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
 unset VCL_FAKE_STATE_DIR
 unset VCL_FAKE_FAIL_RESTORE
+unset VCL_FAKE_FAIL_BACKUP
+unset VCL_FAKE_FAIL_SCP
 unset VCL_FAKE_REINSTALL
 readonly FAKE_SSH="${VCL_FLEET_SSH}"
 readonly FAKE_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN}"
@@ -4709,8 +4711,302 @@ else
   fail "reseed after replace keeps instance_history and labeled node_id"
 fi
 
+if python3 - "$VCL_FAKE_STATE_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+state = Path(sys.argv[1])
+old_uuid = "11111111-1111-4111-8111-111111111111"
+users = json.loads((state / "lax2" / "users.json").read_text(encoding="utf-8"))
+inbound = set()
+revoked_old = False
+for user in users.get("users") or []:
+    for cred in user.get("credentials") or []:
+        if cred.get("status") == "active" and cred.get("uuid"):
+            inbound.add(cred["uuid"])
+        if cred.get("credential_id") == "cccccccc-cccc-4ccc-8ccc-cccccccccccc":
+            assert cred.get("status") == "revoked", cred
+            revoked_old = True
+assert revoked_old
+assert old_uuid not in inbound, inbound
+# LIVE-ONLY: a real VLESS client against the new IP is not exercised here.
+PY
+then
+  pass "AC-3.0-11 fixture PARTIAL (LIVE-ONLY): replaced node revoked old credential; inbound omits old uuid"
+else
+  fail "AC-3.0-11 fixture PARTIAL (LIVE-ONLY): replaced node revoked old credential; inbound omits old uuid"
+fi
+
+# --- 0.3.0 replace failure injection (Batch 16) ---
+INJECT_FLEET_HOME="${TEST_TMP}/fleet-home-inject"
+INJECT_FAKE_STATE="${TEST_TMP}/fake-inject-state"
+export VCL_FLEET_HOME="$INJECT_FLEET_HOME"
+export VCL_FAKE_STATE_DIR="$INJECT_FAKE_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax" "${VCL_FAKE_STATE_DIR}/lax2"
+
+assert_success "inject-test fleet init" fleet init
+assert_success "inject-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+inject_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${PROJECT_DIR}/lib/vincula-backup.py" \
+  "$VCL_FAKE_STATE_DIR" "${PROJECT_DIR}/tests/fixtures/nodes/lax2/identity.json" \
+  "${TEST_TMP}/inject-archives" <<'PY' || inject_seed_rc=$?
+import importlib.util, json, shutil, sys, tarfile
+from io import BytesIO
+from pathlib import Path
+
+acct_py, backup_py, state, ident_src, arch_dir = sys.argv[1:6]
+spec_a = importlib.util.spec_from_file_location("acct", acct_py)
+acct = importlib.util.module_from_spec(spec_a)
+spec_a.loader.exec_module(acct)
+spec_b = importlib.util.spec_from_file_location("vbackup", backup_py)
+mod = importlib.util.module_from_spec(spec_b)
+spec_b.loader.exec_module(mod)
+
+state = Path(state)
+arch_dir = Path(arch_dir)
+arch_dir.mkdir(parents=True, exist_ok=True)
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+other_id = "99999999-9999-4999-8999-999999999999"
+lax = state / "lax"
+lax2 = state / "lax2"
+shutil.copyfile(ident_src, lax2 / "identity.json")
+state_doc = {
+    "schema_version": 2, "project_version": "0.3.0-dev",
+    "sing_box_version": "1.13.18", "architecture": "amd64",
+    "installed_at": "2026-08-16T00:00:00Z",
+    "node": {
+        "node_id": node_id, "instance_id": instance_id, "node_name": "lax",
+        "server": "203.0.113.10", "listen": "0.0.0.0", "port": 443,
+        "reality_handshake_server": "www.cloudflare.com",
+        "reality_server_name": "www.cloudflare.com",
+        "reality_private_key": "sekrit", "reality_public_key": "pub",
+        "reality_short_id": "abcd1234",
+    },
+    "service_account": {
+        "user": "sing-box", "uid": 1000, "group": "sing-box", "gid": 1000,
+        "home": "/var/lib/sing-box", "shell": "/usr/sbin/nologin",
+        "created_by_vincula": True, "group_created_by_vincula": True,
+    },
+}
+users = {"schema_version": 2, "users": [{
+    "user_id": "u-alice", "tag": "alice", "display_name": "Alice",
+    "department": "eng", "enabled": True, "created_at": "2026-08-01T00:00:00Z",
+    "credentials": [{
+        "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "node_id": node_id, "uuid": "11111111-1111-4111-8111-111111111111",
+        "status": "active", "created_at": "2026-08-01T00:00:00Z", "revoked_at": None,
+    }],
+}]}
+toml = """project_version = "0.3.0-dev"
+sing_box_version = "1.13.18"
+architecture = "amd64"
+node_id = "%s"
+node_name = "lax"
+server = "203.0.113.10"
+listen = "0.0.0.0"
+port = 443
+reality_handshake_server = "www.cloudflare.com"
+reality_server_name = "www.cloudflare.com"
+clash_api_port = 9090
+clash_api_secret = "clash-sekrit"
+accounting_raw_retention_days = 90
+accounting_daily_retention_days = 90
+billing_cycle_start_day = 1
+""" % node_id
+(lax / "state.json").write_text(json.dumps(state_doc, indent=2) + "\n", encoding="utf-8")
+(lax / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+(lax / "config.toml").write_text(toml, encoding="utf-8")
+(lax / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+conn = acct.open_db(str(lax / "accounting.db"))
+conn.execute(
+    """INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at, destination_host, destination_ip,
+      destination_port, network, upload_bytes, download_bytes)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    ("inject-1", 0, "u-alice", node_id, instance_id, "alice",
+     "2026-08-16T01:00:00Z", "2026-08-16T01:05:00Z", "2026-08-16T01:05:00Z",
+     "example.com", "203.0.113.10", 443, "tcp", 10, 20),
+)
+conn.commit()
+conn.close()
+
+good = arch_dir / "good.tar"
+mod.create_backup(lax, lax / "accounting.db", include_secrets=False, output=good)
+tamper = arch_dir / "tamper.tar"
+with tarfile.open(good, "r:") as src, tarfile.open(tamper, "w:", format=tarfile.USTAR_FORMAT) as dst:
+    for info in src.getmembers():
+        data = src.extractfile(info).read()
+        if info.name == "users.json":
+            buf = bytearray(data)
+            buf[0] ^= 0x01
+            data = bytes(buf)
+            info.size = len(data)
+        dst.addfile(info, BytesIO(data))
+wrong = arch_dir / "wrong-node.tar"
+other_state = arch_dir / "other-node"
+other_state.mkdir()
+other_doc = json.loads((lax / "state.json").read_text(encoding="utf-8"))
+other_doc["node"]["node_id"] = other_id
+other_users = json.loads((lax / "users.json").read_text(encoding="utf-8"))
+other_users["users"][0]["credentials"][0]["node_id"] = other_id
+(other_state / "state.json").write_text(json.dumps(other_doc, indent=2) + "\n", encoding="utf-8")
+(other_state / "users.json").write_text(json.dumps(other_users, indent=2) + "\n", encoding="utf-8")
+(other_state / "config.toml").write_text(
+    (lax / "config.toml").read_text(encoding="utf-8").replace(node_id, other_id),
+    encoding="utf-8",
+)
+(other_state / "VERSION").write_text("0.3.0-dev\n", encoding="utf-8")
+shutil.copyfile(lax / "accounting.db", other_state / "accounting.db")
+mod.create_backup(other_state, other_state / "accounting.db", include_secrets=False, output=wrong)
+verified = mod.verify_archive(wrong)
+assert verified.get("ok") is True, verified
+assert verified.get("source_node_id") == other_id, verified
+PY
+if (( inject_seed_rc == 0 )); then
+  pass "inject-test fixture seeded with good/tamper/wrong-node archives"
+else
+  fail "inject-test fixture seeded with good/tamper/wrong-node archives"
+fi
+
+inject_sync_rc=0
+fleet sync --node lax >/dev/null || inject_sync_rc=$?
+if (( inject_sync_rc == 0 )); then
+  pass "inject-test pre-sync exits 0"
+else
+  fail "inject-test pre-sync exits 0 (rc=${inject_sync_rc})"
+fi
+
+assert_replace_aborted() {
+  local description=$1
+  python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+    "$VCL_FAKE_STATE_DIR" "$LAX_REMOTE_NODE_ID" "$description" <<'PY'
+import importlib.util, json, os, sys
+from pathlib import Path
+path, home, state, node_id = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+registry = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+node = next(n for n in registry["nodes"] if n["name"] == "lax")
+assert node["node_id"] == node_id
+assert node["ssh_host"] == "203.0.113.10", node["ssh_host"]
+assert node["status"] == "active"
+assert node["enabled"] is True
+users = json.loads((state / "lax" / "users.json").read_text(encoding="utf-8"))
+assert users["users"][0]["credentials"][0]["uuid"] == "11111111-1111-4111-8111-111111111111"
+ident = json.loads((state / "lax2" / "identity.json").read_text(encoding="utf-8"))
+assert ident["node_id"] != node_id
+conn = mod.open_fleet_db()
+hist = mod.list_instances(conn, node_id)
+conn.close()
+assert all(row.get("ssh_host") != "203.0.113.18" for row in hist), hist
+active = [row for row in hist if row.get("status") == "active"]
+assert len(active) <= 1, hist
+if active:
+    assert active[0]["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+PY
+}
+
+fail_backup_rc=0
+fail_backup_err=$(VCL_FAKE_FAIL_BACKUP=lax fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || fail_backup_rc=$?
+if (( fail_backup_rc != 0 )) && [[ "$fail_backup_err" == *"backup create failed"* ]]; then
+  pass "replace aborts when old-node backup create fails"
+else
+  fail "replace aborts when old-node backup create fails (rc=${fail_backup_rc} err=${fail_backup_err})"
+fi
+if assert_replace_aborted "after backup-create fail"; then
+  pass "backup-create fail leaves registry host and old credentials unchanged"
+else
+  fail "backup-create fail leaves registry host and old credentials unchanged"
+fi
+unset VCL_FAKE_FAIL_BACKUP
+
+fail_scp_rc=0
+fail_scp_err=$(VCL_FAKE_FAIL_SCP=lax fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || fail_scp_rc=$?
+if (( fail_scp_rc != 0 )) && [[ "$fail_scp_err" == *"scp"* ]]; then
+  pass "replace aborts when scp pull of the backup fails"
+else
+  fail "replace aborts when scp pull of the backup fails (rc=${fail_scp_rc} err=${fail_scp_err})"
+fi
+if assert_replace_aborted "after scp fail"; then
+  pass "scp fail leaves old node active and registry unchanged"
+else
+  fail "scp fail leaves old node active and registry unchanged"
+fi
+unset VCL_FAKE_FAIL_SCP
+
+fail_restore_rc=0
+fail_restore_err=$(VCL_FAKE_FAIL_RESTORE=lax2 fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || fail_restore_rc=$?
+if (( fail_restore_rc != 0 )) && [[ "$fail_restore_err" == *"restore failed"* ]]; then
+  pass "replace aborts when restore on the new node fails"
+else
+  fail "replace aborts when restore on the new node fails (rc=${fail_restore_rc} err=${fail_restore_err})"
+fi
+if assert_replace_aborted "after restore fail"; then
+  pass "restore fail leaves old node active, still serving original credentials"
+else
+  fail "restore fail leaves old node active, still serving original credentials"
+fi
+unset VCL_FAKE_FAIL_RESTORE
+
+fail_verify_rc=0
+fail_verify_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" \
+  --from-backup "${TEST_TMP}/inject-archives/tamper.tar" 2>&1) || fail_verify_rc=$?
+if (( fail_verify_rc != 0 )) && [[ "$fail_verify_err" == *"backup verify failed"* ]]; then
+  pass "replace aborts when pulled backup verify fails"
+else
+  fail "replace aborts when pulled backup verify fails (rc=${fail_verify_rc} err=${fail_verify_err})"
+fi
+if assert_replace_aborted "after verify fail"; then
+  pass "verify-fail --from-backup does not change registry or old node"
+else
+  fail "verify-fail --from-backup does not change registry or old node"
+fi
+
+fail_wrong_rc=0
+fail_wrong_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" \
+  --from-backup "${TEST_TMP}/inject-archives/wrong-node.tar" 2>&1) || fail_wrong_rc=$?
+if (( fail_wrong_rc != 0 )) && [[ "$fail_wrong_err" == *"source_node_id"* ]] \
+  && [[ "$fail_wrong_err" == *"does not match registry"* ]]; then
+  pass "replace refuses backup whose source_node_id is not the registry node"
+else
+  fail "replace refuses backup whose source_node_id is not the registry node (rc=${fail_wrong_rc} err=${fail_wrong_err})"
+fi
+if assert_replace_aborted "after wrong-node backup"; then
+  pass "wrong-node backup leaves target registry node_id and old host unchanged"
+else
+  fail "wrong-node backup leaves target registry node_id and old host unchanged"
+fi
+
+disable_rc=0
+fleet node disable lax >/dev/null || disable_rc=$?
+if (( disable_rc == 0 )); then
+  pass "inject-test disable lax"
+else
+  fail "inject-test disable lax (rc=${disable_rc})"
+fi
+disabled_replace_rc=0
+disabled_replace_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || disabled_replace_rc=$?
+if (( disabled_replace_rc != 0 )) && [[ "$disabled_replace_err" == *"disabled"* ]]; then
+  pass "replace disabled node is refused"
+else
+  fail "replace disabled node is refused (rc=${disabled_replace_rc} err=${disabled_replace_err})"
+fi
+fleet node enable lax >/dev/null || true
+
 export VCL_FLEET_HOME="${SAVED_REPLACE_HOME}"
 unset VCL_FAKE_STATE_DIR
+unset VCL_FAKE_FAIL_BACKUP
+unset VCL_FAKE_FAIL_SCP
+unset VCL_FAKE_FAIL_RESTORE
 
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
