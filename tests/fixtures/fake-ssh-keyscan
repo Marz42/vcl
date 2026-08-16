@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""ssh-keyscan stand-in for vcl-fleet tests. Candidate acquisition only.
+
+Selected by VCL_FLEET_SSH_KEYSCAN. Prints OpenSSH known_hosts lines from
+fixture hostkey.pub files. Never verifies fingerprints and never writes
+known_hosts.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+NODES = HERE / "nodes"
+
+HOST_ALIAS = {
+    "203.0.113.10": "lax",
+    "lax.test": "lax",
+    "203.0.113.11": "tokyo",
+    "tokyo.test": "tokyo",
+    "203.0.113.13": "badkey",
+    "badkey.test": "badkey",
+}
+
+
+def _parse_hosts(argv: list[str]) -> list[str]:
+    hosts: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-p", "-T", "-t", "-f") and i + 1 < len(argv):
+            i += 2
+            continue
+        if arg.startswith("-") and arg != "-":
+            i += 1
+            continue
+        hosts.append(arg)
+        i += 1
+    return hosts
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    hosts = _parse_hosts(argv)
+    if not hosts:
+        sys.stderr.write("fake-ssh-keyscan: missing host\n")
+        return 1
+    wrote = False
+    for host in hosts:
+        alias = HOST_ALIAS.get(host)
+        if alias is None:
+            sys.stderr.write(f"fake-ssh-keyscan: {host}: no fixture\n")
+            continue
+        path = NODES / alias / "hostkey.pub"
+        if not path.is_file():
+            sys.stderr.write(f"fake-ssh-keyscan: {host}: missing {path}\n")
+            continue
+        line = path.read_text(encoding="utf-8").strip()
+        parts = line.split()
+        if len(parts) >= 3:
+            # Rewrite the hostname so callers match the requested target.
+            line = " ".join([host, *parts[1:]])
+        sys.stdout.write(line + "\n")
+        wrote = True
+    return 0 if wrote else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

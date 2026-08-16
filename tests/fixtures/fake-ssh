@@ -35,6 +35,8 @@ HOST_ALIAS = {
     "badjson.test": "badjson",
     "203.0.113.16": "copied",
     "copied.test": "copied",
+    "203.0.113.17": "ask",
+    "ask.test": "ask",
 }
 
 
@@ -136,6 +138,14 @@ def main(argv: list[str] | None = None) -> int:
         return 255
     if alias == "badkey":
         sys.stderr.write("Host key verification failed.\n")
+        return 255
+    if alias == "ask":
+        sys.stderr.write(
+            f"The authenticity of host '{host} ({host})' can't be established.\n"
+            "ED25519 key fingerprint is SHA256:AskFixtureNotPinned.\n"
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])?\n"
+            "Host key verification failed.\n"
+        )
         return 255
     if alias == "hang":
         time.sleep(3600)
