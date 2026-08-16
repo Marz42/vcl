@@ -2,8 +2,8 @@
 """vincula-fleet — workstation fleet controller (registry CLI).
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
-hashlib, base64, datetime, csv, uuid. OpenSSH via the system ssh/ssh.exe
-binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
+hashlib, base64, datetime, csv, uuid, sqlite3. OpenSSH via the system
+ssh/ssh.exe binary (injectable with VCL_FLEET_SSH) and ssh-keyscan
 (VCL_FLEET_SSH_KEYSCAN). No pip, no paramiko, no cryptography package.
 No root, no systemd, no /etc/vincula.
 
@@ -21,16 +21,85 @@ import io
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.2.9-dev"
 FLEET_SCHEMA_VERSION = 1
+FLEET_DB_SCHEMA_VERSION = 1
+SYNC_STATUS_OK = "ok"
+SYNC_STATUS_EXPIRED = "expired"
+SYNC_STATUS_ERROR = "error"
+
+# Controller-local cache. Not the node source of truth. Plan §0.4.
+FLEET_DB_DDL = """
+CREATE TABLE meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE audit_events (
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
+  event_id INTEGER NOT NULL,
+  connection_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  started_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
+  destination_host TEXT,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  network TEXT,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  imported_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, event_id)
+);
+
+CREATE INDEX idx_audit_user_started
+  ON audit_events(user_id, started_at);
+CREATE INDEX idx_audit_node_event
+  ON audit_events(node_id, event_id);
+
+CREATE TABLE sync_cursor (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  last_event_id INTEGER NOT NULL,
+  last_sync_at TEXT NOT NULL,
+  status TEXT NOT NULL
+);
+
+CREATE TABLE daily_usage (
+  date TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
+  user_id TEXT NOT NULL,
+  user_tag TEXT,
+  destination_host TEXT NOT NULL,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  connection_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (date, node_id, user_id, destination_host)
+);
+"""
+
+INSERT_AUDIT_EVENT_SQL = """
+INSERT OR IGNORE INTO audit_events (
+  node_id, instance_id, event_id, connection_id, generation,
+  user_id, user_tag, started_at, last_seen_at, closed_at,
+  destination_host, destination_ip, destination_port, network,
+  upload_bytes, download_bytes, imported_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 CLOCK_SKEW_WARN_SECONDS = 30
 CLOCK_SKEW_FAIL_SECONDS = 300
 CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
@@ -104,6 +173,329 @@ def fleet_registry_path() -> Path:
 
 def last_status_path() -> Path:
     return fleet_home() / "last-status.json"
+
+
+def fleet_db_path() -> Path:
+    return fleet_home() / "fleet.db"
+
+
+def _chmod_private(path: Path, mode: int = 0o600) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _ensure_fleet_home() -> Path:
+    home = fleet_home()
+    home.mkdir(parents=True, exist_ok=True)
+    _chmod_private(home, 0o700)
+    return home
+
+
+def _has_meta_table(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+    ).fetchone()
+    return row is not None
+
+
+def fleet_db_meta_get(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return None
+    return str(row[0])
+
+
+def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        (key, value),
+    )
+
+
+def open_fleet_db() -> sqlite3.Connection:
+    """Open ~/.config/vincula/fleet.db (or VCL_FLEET_HOME), creating schema 1."""
+    _ensure_fleet_home()
+    path = fleet_db_path()
+    try:
+        conn = sqlite3.connect(str(path), timeout=30)
+    except sqlite3.Error as exc:
+        die(f"cannot open fleet.db: {exc}")
+    conn.row_factory = sqlite3.Row
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        conn.execute("PRAGMA synchronous=NORMAL")
+        if not _has_meta_table(conn):
+            conn.executescript(FLEET_DB_DDL)
+            fleet_db_meta_set(
+                conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION)
+            )
+            conn.commit()
+        else:
+            ver = fleet_db_meta_get(conn, "schema_version")
+            if ver != str(FLEET_DB_SCHEMA_VERSION):
+                conn.close()
+                die(f"unsupported fleet.db schema_version: {ver}")
+        _chmod_private(path, 0o600)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(path) + suffix)
+            if sidecar.is_file():
+                _chmod_private(sidecar, 0o600)
+        return conn
+    except SystemExit:
+        raise
+    except sqlite3.Error as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        die(f"cannot initialize fleet.db: {exc}")
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _row_node_id(row: Any) -> Optional[str]:
+    if not isinstance(row, dict):
+        return None
+    return _optional_text(row.get("node_id"))
+
+
+def _audit_insert_params(
+    row: dict[str, Any], node_id: str, now_iso: str
+) -> tuple[Any, ...]:
+    event_id = row.get("event_id")
+    connection_id = _optional_text(row.get("connection_id"))
+    user_id = _optional_text(row.get("user_id"))
+    started_at = _optional_text(row.get("started_at"))
+    last_seen_at = _optional_text(row.get("last_seen_at"))
+    if event_id is None or event_id == "":
+        die("audit import row missing event_id")
+    if not connection_id:
+        die("audit import row missing connection_id")
+    if not user_id:
+        die("audit import row missing user_id")
+    if not started_at:
+        die("audit import row missing started_at")
+    if not last_seen_at:
+        die("audit import row missing last_seen_at")
+    try:
+        event_id_i = int(event_id)
+        generation = _int_or_default(row.get("generation"), 0)
+        dest_port = _int_or_none(row.get("destination_port"))
+        upload_bytes = _int_or_default(row.get("upload_bytes"), 0)
+        download_bytes = _int_or_default(row.get("download_bytes"), 0)
+    except (TypeError, ValueError) as exc:
+        die(f"audit import row has invalid numeric field: {exc}")
+    return (
+        node_id,
+        _optional_text(row.get("instance_id")),
+        event_id_i,
+        connection_id,
+        generation,
+        user_id,
+        _optional_text(row.get("user_tag")),
+        started_at,
+        last_seen_at,
+        _optional_text(row.get("closed_at")),
+        _optional_text(row.get("destination_host")),
+        _optional_text(row.get("destination_ip")),
+        dest_port,
+        _optional_text(row.get("network")),
+        upload_bytes,
+        download_bytes,
+        now_iso,
+    )
+
+
+def rebuild_daily_usage_for_node(conn: sqlite3.Connection, node_id: str) -> None:
+    """Rebuild daily_usage for one node from its audit_events (started_at UTC day)."""
+    conn.execute("DELETE FROM daily_usage WHERE node_id = ?", (node_id,))
+    conn.execute(
+        """
+        INSERT INTO daily_usage (
+          date, node_id, instance_id, user_id, user_tag, destination_host,
+          upload_bytes, download_bytes, connection_count
+        )
+        SELECT
+          substr(started_at, 1, 10) AS date,
+          node_id,
+          MAX(instance_id),
+          user_id,
+          MAX(user_tag),
+          CASE
+            WHEN destination_host IS NOT NULL AND destination_host != ''
+              THEN destination_host
+            WHEN destination_ip IS NOT NULL AND destination_ip != ''
+              THEN destination_ip
+            ELSE '(unknown)'
+          END AS destination_host,
+          SUM(upload_bytes),
+          SUM(download_bytes),
+          COUNT(*)
+        FROM audit_events
+        WHERE node_id = ?
+          AND node_id IS NOT NULL
+          AND node_id != ''
+        GROUP BY
+          substr(started_at, 1, 10),
+          node_id,
+          user_id,
+          CASE
+            WHEN destination_host IS NOT NULL AND destination_host != ''
+              THEN destination_host
+            WHEN destination_ip IS NOT NULL AND destination_ip != ''
+              THEN destination_ip
+            ELSE '(unknown)'
+          END
+        """,
+        (node_id,),
+    )
+
+
+def _cursor_last_event_id(conn: sqlite3.Connection, node_id: str) -> int:
+    row = conn.execute(
+        "SELECT last_event_id FROM sync_cursor WHERE node_id = ?",
+        (node_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    return int(row[0])
+
+
+def import_audit_batch(
+    node_id: str,
+    instance_id: Optional[str],
+    rows: Sequence[Any],
+    now_iso: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Atomically import audit rows for one node. Idempotent via INSERT OR IGNORE.
+
+    Unlabeled rows (missing/empty node_id) are skipped and counted; they are
+    never merged. A labeled row whose node_id does not match the batch
+    node_id fails the whole import and leaves the cursor unchanged.
+    """
+    validate_node_id(node_id)
+    inst = _optional_text(instance_id)
+    if inst is not None:
+        if not UUID_RE.fullmatch(inst):
+            die(f"invalid instance_id: {inst}")
+        if inst == node_id:
+            die("refusing audit import: instance_id equals node_id")
+    if now_iso is None:
+        now_iso = format_utc(datetime.now(timezone.utc))
+
+    skipped_unlabeled = 0
+    labeled: list[dict[str, Any]] = []
+    for row in rows:
+        row_nid = _row_node_id(row)
+        if row_nid is None:
+            skipped_unlabeled += 1
+            continue
+        if row_nid != node_id:
+            die(
+                "audit import node_id mismatch: "
+                f"expected {node_id}, got {row_nid}"
+            )
+        labeled.append(row)
+
+    if skipped_unlabeled:
+        sys.stderr.write(
+            f"WARNING: skipped {skipped_unlabeled} unlabeled audit row(s) "
+            "(missing node_id)\n"
+        )
+
+    own = conn is None
+    if own:
+        conn = open_fleet_db()
+    assert conn is not None
+    try:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()[0]
+        prior_cursor = _cursor_last_event_id(conn, node_id)
+        params = [
+            _audit_insert_params(row, node_id, now_iso) for row in labeled
+        ]
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if params:
+                conn.executemany(INSERT_AUDIT_EVENT_SQL, params)
+            rebuild_daily_usage_for_node(conn, node_id)
+            max_row = conn.execute(
+                "SELECT MAX(event_id) FROM audit_events WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+            if max_row is None or max_row[0] is None:
+                last_event_id = prior_cursor
+            else:
+                last_event_id = int(max_row[0])
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO sync_cursor (
+                  node_id, instance_id, last_event_id, last_sync_at, status
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (node_id, inst, last_event_id, now_iso, SYNC_STATUS_OK),
+            )
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+        after = conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()[0]
+        inserted = int(after) - int(before)
+        ignored = len(params) - inserted
+        return {
+            "ok": True,
+            "inserted": inserted,
+            "ignored": ignored,
+            "skipped_unlabeled": skipped_unlabeled,
+            "last_event_id": last_event_id,
+            "status": SYNC_STATUS_OK,
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+def import_export_jsonl(
+    node_id: str,
+    instance_id: Optional[str],
+    rows: Sequence[Any],
+    now_iso: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Import a node audit-export JSONL batch and advance the sync cursor."""
+    return import_audit_batch(
+        node_id, instance_id, rows, now_iso=now_iso, conn=conn
+    )
 
 
 def ssh_bin() -> str:

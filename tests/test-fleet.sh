@@ -112,6 +112,10 @@ assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 1" \
   grep -q 'FLEET_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema version is 1" \
+  grep -q 'FLEET_DB_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
+  grep -q 'INSERT OR IGNORE INTO audit_events' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
 assert_success "vcl-fleet Windows entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 
@@ -2120,6 +2124,221 @@ else
 fi
 
 unset VCL_FAKE_STATE_DIR
+
+DB_FLEET_HOME="${TEST_TMP}/fleet-home-db"
+SAVED_DB_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$DB_FLEET_HOME"
+mkdir -p "$VCL_FLEET_HOME"
+
+open_twice_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" <<'PY' || open_twice_rc=$?
+import importlib.util
+import os
+import stat
+import sys
+from pathlib import Path
+
+path, home = sys.argv[1], Path(sys.argv[2])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.FLEET_DB_SCHEMA_VERSION == 1
+assert mod.fleet_db_path() == home / "fleet.db"
+
+conn1 = mod.open_fleet_db()
+ver1 = mod.fleet_db_meta_get(conn1, "schema_version")
+wal1 = conn1.execute("PRAGMA journal_mode").fetchone()[0]
+tables = {
+    row[0]
+    for row in conn1.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )
+}
+pk = conn1.execute("PRAGMA table_info(audit_events)").fetchall()
+pk_cols = [r[1] for r in pk if r[5]]
+conn1.close()
+
+conn2 = mod.open_fleet_db()
+ver2 = mod.fleet_db_meta_get(conn2, "schema_version")
+wal2 = conn2.execute("PRAGMA journal_mode").fetchone()[0]
+count = conn2.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn2.close()
+
+assert ver1 == "1" and ver2 == "1", (ver1, ver2)
+assert wal1.lower() == "wal" and wal2.lower() == "wal", (wal1, wal2)
+assert tables >= {"meta", "audit_events", "sync_cursor", "daily_usage"}
+assert set(pk_cols) == {"node_id", "event_id"}, pk_cols
+assert count == 0
+db = home / "fleet.db"
+mode = stat.S_IMODE(db.stat().st_mode)
+assert mode == 0o600, oct(mode)
+home_mode = stat.S_IMODE(home.stat().st_mode)
+assert home_mode == 0o700, oct(home_mode)
+PY
+if (( open_twice_rc == 0 )); then
+  pass "open_fleet_db twice keeps schema 1 WAL fleet.db mode 0600"
+else
+  fail "open_fleet_db twice keeps schema 1 WAL fleet.db mode 0600"
+fi
+
+import_batch_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
+  "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY' || import_batch_rc=$?
+import contextlib
+import importlib.util
+import io
+import os
+import sys
+from pathlib import Path
+
+path, home, node_id, instance_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+other_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+now = "2026-08-16T03:00:00Z"
+
+def row(event_id, nid=node_id, iid=instance_id, host="example.com", up=10, down=20, tag="alice"):
+    return {
+        "event_id": event_id,
+        "connection_id": f"c-{event_id}",
+        "generation": 0,
+        "user_id": "u-alice",
+        "user_tag": tag,
+        "node_id": nid,
+        "instance_id": iid,
+        "destination_host": host,
+        "destination_ip": "203.0.113.10",
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": up,
+        "download_bytes": down,
+        "started_at": "2026-08-10T08:00:00Z",
+        "last_seen_at": "2026-08-10T09:00:00Z",
+        "closed_at": "2026-08-10T09:00:00Z",
+    }
+
+conn = mod.open_fleet_db()
+first = mod.import_audit_batch(
+    node_id, instance_id,
+    [row(1, up=100, down=200), row(2, up=50, down=60)],
+    now_iso=now, conn=conn,
+)
+assert first["ok"] is True
+assert first["inserted"] == 2
+assert first["ignored"] == 0
+assert first["skipped_unlabeled"] == 0
+assert first["last_event_id"] == 2
+assert first["status"] == "ok"
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+assert count == 2, count
+cur = conn.execute(
+    "SELECT instance_id, last_event_id, last_sync_at, status FROM sync_cursor WHERE node_id=?",
+    (node_id,),
+).fetchone()
+assert tuple(cur) == (instance_id, 2, now, "ok"), tuple(cur)
+daily = conn.execute(
+    "SELECT date, upload_bytes, download_bytes, connection_count FROM daily_usage WHERE node_id=?",
+    (node_id,),
+).fetchall()
+assert len(daily) == 1, daily
+assert tuple(daily[0]) == ("2026-08-10", 150, 260, 2), tuple(daily[0])
+
+# Idempotent re-run: INSERT OR IGNORE, daily_usage rebuilt without double-count.
+again = mod.import_export_jsonl(
+    node_id, instance_id,
+    [row(1, up=100, down=200), row(2, up=50, down=60)],
+    now, conn=conn,
+)
+assert again["inserted"] == 0
+assert again["ignored"] == 2
+assert again["last_event_id"] == 2
+count2 = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+assert count2 == 2
+daily2 = conn.execute(
+    "SELECT upload_bytes, download_bytes, connection_count FROM daily_usage WHERE node_id=?",
+    (node_id,),
+).fetchone()
+assert tuple(daily2) == (150, 260, 2), tuple(daily2)
+
+# Unlabeled rows skipped + counted; never stored.
+unlabeled = [
+    row(3, up=7, down=8),
+    {**row(4), "node_id": ""},
+    {**row(5), "node_id": None},
+    {"event_id": 6, "user_id": "u-alice", "started_at": "2026-08-10T08:00:00Z"},
+]
+skip = mod.import_audit_batch(node_id, instance_id, unlabeled, now_iso=now, conn=conn)
+assert skip["inserted"] == 1, skip
+assert skip["skipped_unlabeled"] == 3, skip
+assert skip["last_event_id"] == 3
+ids = [r[0] for r in conn.execute(
+    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+)]
+assert ids == [1, 2, 3], ids
+blank = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
+).fetchone()[0]
+assert blank == 0, blank
+
+# Mismatch: whole batch fails, cursor and rows unchanged.
+before_count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+before_cur = conn.execute(
+    "SELECT last_event_id, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf):
+        mod.import_audit_batch(
+            node_id, instance_id,
+            [row(10), row(11, nid=other_id)],
+            now_iso="2026-08-16T04:00:00Z",
+            conn=conn,
+        )
+    raise AssertionError("expected node_id mismatch to fail")
+except SystemExit as exc:
+    assert exc.code == 1, exc.code
+    assert "node_id mismatch" in buf.getvalue(), buf.getvalue()
+after_count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+after_cur = conn.execute(
+    "SELECT last_event_id, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
+assert after_count == before_count == 3
+assert tuple(after_cur) == tuple(before_cur) == (3, now)
+
+# Historical instance_id NULL on a labeled row is allowed.
+null_inst = row(7)
+null_inst["instance_id"] = None
+ok_null = mod.import_audit_batch(node_id, instance_id, [null_inst], now_iso=now, conn=conn)
+assert ok_null["inserted"] == 1
+stored_iid = conn.execute(
+    "SELECT instance_id FROM audit_events WHERE node_id=? AND event_id=7",
+    (node_id,),
+).fetchone()[0]
+assert stored_iid is None
+cur_iid = conn.execute(
+    "SELECT instance_id, last_event_id FROM sync_cursor WHERE node_id=?",
+    (node_id,),
+).fetchone()
+assert tuple(cur_iid) == (instance_id, 7)
+
+# Empty labeled set keeps prior cursor (or 0).
+empty = mod.import_audit_batch(node_id, instance_id, [], now_iso="2026-08-16T05:00:00Z", conn=conn)
+assert empty["inserted"] == 0
+assert empty["last_event_id"] == 7
+conn.close()
+PY
+if (( import_batch_rc == 0 )); then
+  pass "import_audit_batch is atomic, idempotent, and skips unlabeled rows"
+else
+  fail "import_audit_batch is atomic, idempotent, and skips unlabeled rows"
+fi
+
+export VCL_FLEET_HOME="${SAVED_DB_HOME}"
 
 assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
 assert_success "docs/fleet.md documents vcl-fleet.cmd" \
