@@ -4943,6 +4943,20 @@ assert_success "backup module uses sqlite3 Connection.backup" \
   grep -q 'src_conn.backup(dest_conn)' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_failure "backup snapshot does not shutil.copyfile the live db" \
   grep -q 'shutil.copyfile' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins MAX_MEMBER_BYTES 1 GiB" \
+  grep -q 'MAX_MEMBER_BYTES = 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins MAX_ARCHIVE_BYTES 2 GiB" \
+  grep -q 'MAX_ARCHIVE_BYTES = 2 \* 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins IO_CHUNK_BYTES 1 MiB" \
+  grep -q 'IO_CHUNK_BYTES = 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module documents MAX_TEXT_MEMBER_BYTES" \
+  grep -q 'MAX_TEXT_MEMBER_BYTES = 16 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_failure "backup verify does not extracted.read() whole members" \
+  grep -q 'extracted.read()' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "docs/backup.md documents MAX_MEMBER_BYTES" \
+  grep -q 'MAX_MEMBER_BYTES' "${PROJECT_DIR}/docs/backup.md"
+assert_success "docs/backup.md documents MAX_ARCHIVE_BYTES" \
+  grep -q 'MAX_ARCHIVE_BYTES' "${PROJECT_DIR}/docs/backup.md"
 assert_success "fake-age fixture is executable" \
   test -x "${PROJECT_DIR}/tests/fixtures/fake-age"
 assert_success "fake-age uses python3 shebang" \
@@ -5489,6 +5503,187 @@ else
   fail "verify missing_manifest and unsupported_schema"
   fail "D17 missing age dies with exact ERROR line"
   fail "include-secrets fake-age archive verifies after decrypt"
+fi
+
+# P2-02 / B12: streaming verify, size caps, atomic_replace
+if python3 - "${TEST_TMP}/p202-backup" "${PROJECT_DIR}/lib/vincula-backup.py" <<'PY'
+import hashlib, importlib.util, inspect, io, json, os, sys, tarfile, tempfile
+from pathlib import Path
+
+base = Path(sys.argv[1])
+base.mkdir(parents=True, exist_ok=True)
+spec = importlib.util.spec_from_file_location("vbackup_p202", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.MAX_MEMBER_BYTES == 1024 * 1024 * 1024, mod.MAX_MEMBER_BYTES
+assert mod.MAX_ARCHIVE_BYTES == 2 * 1024 * 1024 * 1024, mod.MAX_ARCHIVE_BYTES
+assert mod.IO_CHUNK_BYTES == 1024 * 1024, mod.IO_CHUNK_BYTES
+assert mod.MAX_TEXT_MEMBER_BYTES == 16 * 1024 * 1024, mod.MAX_TEXT_MEMBER_BYTES
+
+replace_src = inspect.getsource(mod.atomic_replace)
+assert "read_bytes" not in replace_src, replace_src
+assert "_copy_chunks" in replace_src, replace_src
+read_src = inspect.getsource(mod._read_tar_members)
+assert "extracted.read()" not in read_src, read_src
+assert "_copy_chunks" in read_src, read_src
+assert "info.size > cap" in read_src, read_src
+write_src = inspect.getsource(mod.write_tar)
+assert "_member_bytes" not in write_src
+assert "_add_member" in write_src
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+instance_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+state = json.dumps({
+    "schema_version": 2,
+    "node": {"node_id": node_id, "instance_id": instance_id},
+}, indent=2) + "\n"
+users = json.dumps({"schema_version": 2, "users": []}, indent=2) + "\n"
+toml_text = 'project_version = "0.3.1-dev"\n'
+version = "0.3.1-dev\n"
+
+def pack_archive(path, db_bytes):
+    db_path = path.with_suffix(".db")
+    db_path.write_bytes(db_bytes)
+    hashes = {
+        "state.json": hashlib.sha256(state.encode()).hexdigest(),
+        "users.json": hashlib.sha256(users.encode()).hexdigest(),
+        "config.toml": hashlib.sha256(toml_text.encode()).hexdigest(),
+        "accounting.db": hashlib.sha256(db_bytes).hexdigest(),
+        "VERSION": hashlib.sha256(version.encode()).hexdigest(),
+    }
+    included = list(hashes)
+    manifest = mod.build_manifest(
+        vincula_version="0.3.1-dev",
+        created_at="2026-08-17T00:00:00Z",
+        source_node_id=node_id,
+        source_instance_id=instance_id,
+        included_components=included,
+        secret_bearing=False,
+        encryption="none",
+        hashes=hashes,
+    )
+    members = {
+        "state.json": state.encode(),
+        "users.json": users.encode(),
+        "config.toml": toml_text.encode(),
+        "accounting.db": db_path,
+        "VERSION": version.encode(),
+    }
+    mod.write_tar(path, members, manifest)
+
+extracted_names = []
+orig_extractfile = tarfile.TarFile.extractfile
+
+def tracking_extractfile(self, member, *args, **kwargs):
+    name = getattr(member, "name", member)
+    extracted_names.append(name)
+    return orig_extractfile(self, member, *args, **kwargs)
+
+# Oversized member: reject from TarInfo.size before extractfile.
+orig_member = mod.MAX_MEMBER_BYTES
+orig_archive = mod.MAX_ARCHIVE_BYTES
+orig_text = mod.MAX_TEXT_MEMBER_BYTES
+mod.MAX_MEMBER_BYTES = 64
+mod.MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
+mod.MAX_TEXT_MEMBER_BYTES = 64
+oversized = base / "oversized-member.tar"
+try:
+    with tarfile.open(oversized, "w:") as tf:
+        payload = b"Z" * 128
+        info = tarfile.TarInfo("accounting.db")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    extracted_names.clear()
+    tarfile.TarFile.extractfile = tracking_extractfile
+    try:
+        result = mod.verify_archive(oversized)
+    finally:
+        tarfile.TarFile.extractfile = orig_extractfile
+    assert result.get("ok") is False, result
+    assert result.get("error") == "invalid_archive", result
+    assert "accounting.db" not in extracted_names, extracted_names
+finally:
+    mod.MAX_MEMBER_BYTES = orig_member
+    mod.MAX_ARCHIVE_BYTES = orig_archive
+    mod.MAX_TEXT_MEMBER_BYTES = orig_text
+
+# Oversized total: two members under per-member cap, sum over total cap.
+mod.MAX_MEMBER_BYTES = 80
+mod.MAX_ARCHIVE_BYTES = 100
+mod.MAX_TEXT_MEMBER_BYTES = 80
+total_tar = base / "oversized-total.tar"
+try:
+    with tarfile.open(total_tar, "w:") as tf:
+        for name, blob in (("a.bin", b"A" * 60), ("b.bin", b"B" * 60)):
+            info = tarfile.TarInfo(name)
+            info.size = len(blob)
+            tf.addfile(info, io.BytesIO(blob))
+    extracted_names.clear()
+    tarfile.TarFile.extractfile = tracking_extractfile
+    try:
+        result = mod.verify_archive(total_tar)
+    finally:
+        tarfile.TarFile.extractfile = orig_extractfile
+    assert result.get("ok") is False, result
+    assert result.get("error") == "invalid_archive", result
+    assert "b.bin" not in extracted_names, extracted_names
+finally:
+    mod.MAX_MEMBER_BYTES = orig_member
+    mod.MAX_ARCHIVE_BYTES = orig_archive
+    mod.MAX_TEXT_MEMBER_BYTES = orig_text
+
+# Streaming verify of a 2 MiB accounting.db: no Path.read_bytes of that member.
+large_db = b"Q" * (2 * 1024 * 1024)
+large_tar = base / "large-stream.tar"
+pack_archive(large_tar, large_db)
+read_paths = []
+orig_read_bytes = Path.read_bytes
+
+def tracking_read_bytes(self):
+    read_paths.append(str(self))
+    return orig_read_bytes(self)
+
+Path.read_bytes = tracking_read_bytes
+try:
+    ok = mod.verify_archive(large_tar)
+finally:
+    Path.read_bytes = orig_read_bytes
+assert ok.get("ok") is True, ok
+assert not any(p.endswith("accounting.db") for p in read_paths), read_paths
+
+# atomic_replace streams; Path.read_bytes is not used on src.
+src = base / "atomic-src.bin"
+dst = base / "atomic-dst.bin"
+src.write_bytes(b"n" * (256 * 1024))
+replace_reads = []
+
+def tracking_replace_read(self):
+    replace_reads.append(str(self))
+    return orig_read_bytes(self)
+
+Path.read_bytes = tracking_replace_read
+try:
+    mod.atomic_replace(src, dst)
+finally:
+    Path.read_bytes = orig_read_bytes
+assert str(src) not in replace_reads, replace_reads
+assert dst.read_bytes() == src.read_bytes()
+PY
+then
+  pass "backup size caps are 1 GiB member / 2 GiB archive / 1 MiB chunks"
+  pass "atomic_replace and _read_tar_members use chunked I/O (structural)"
+  pass "oversized tar member is invalid_archive before extractfile"
+  pass "oversized total archive is invalid_archive before second extractfile"
+  pass "streaming verify of 2MiB accounting.db does not Path.read_bytes the member"
+  pass "atomic_replace copies without Path.read_bytes"
+else
+  fail "backup size caps are 1 GiB member / 2 GiB archive / 1 MiB chunks"
+  fail "atomic_replace and _read_tar_members use chunked I/O (structural)"
+  fail "oversized tar member is invalid_archive before extractfile"
+  fail "oversized total archive is invalid_archive before second extractfile"
+  fail "streaming verify of 2MiB accounting.db does not Path.read_bytes the member"
+  fail "atomic_replace copies without Path.read_bytes"
 fi
 
 # --- 0.3.0 vcl backup create|verify CLI ---

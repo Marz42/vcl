@@ -20,6 +20,11 @@ sing-box / accountd enabled+active snapshot captured before mutation.
 Accounting snapshots use sqlite3.Connection.backup() so a live WAL writer
 (accountd) is safe. Do not copy live database files.
 
+Tar verify and copy stream in IO_CHUNK_BYTES chunks. Per-member
+(MAX_MEMBER_BYTES) and total (MAX_ARCHIVE_BYTES) caps reject oversized
+archives before a full read. accounting.db is extracted to a tempfile and
+hashed on disk; it is never held as a whole-file bytes object.
+
 Stdlib only. Targets Python 3.10+.
 """
 
@@ -74,6 +79,15 @@ COMPONENT_NAMES = (
     "VERSION",
 )
 REQUIRED_COMPONENTS = ("state.json", "users.json", "config.toml")
+# Streaming I/O (same 1 MiB chunk as sha256_file). accounting.db is the large
+# member; JSON/text stay in memory under MAX_TEXT_MEMBER_BYTES.
+IO_CHUNK_BYTES = 1024 * 1024
+MAX_TEXT_MEMBER_BYTES = 16 * 1024 * 1024
+MAX_MEMBER_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+IN_MEMORY_MEMBERS = frozenset(
+    ("manifest.json", "state.json", "users.json", "config.toml", "VERSION")
+)
 CLASH_SECRET_LINE = re.compile(r"^clash_api_secret\s*=", re.MULTILINE)
 UUID_KEY = re.compile(r'"uuid"\s*:')
 
@@ -298,7 +312,7 @@ def db_snapshot(src_db: Path, dst_path: Path) -> None:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        for chunk in iter(lambda: fh.read(IO_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -341,10 +355,48 @@ def build_manifest(
     }
 
 
-def _member_bytes(source: MemberSource) -> bytes:
+def _member_size_cap(name: str) -> int:
+    if name in IN_MEMORY_MEMBERS:
+        return min(MAX_TEXT_MEMBER_BYTES, MAX_MEMBER_BYTES)
+    return MAX_MEMBER_BYTES
+
+
+def _source_size(source: MemberSource) -> int:
+    if isinstance(source, (bytes, bytearray)):
+        return len(source)
+    return Path(source).stat().st_size
+
+
+def _digest_member(source: MemberSource) -> str:
+    if isinstance(source, (bytes, bytearray)):
+        return sha256_bytes(bytes(source))
+    return sha256_file(Path(source))
+
+
+def _as_bytes(source: MemberSource) -> bytes:
     if isinstance(source, (bytes, bytearray)):
         return bytes(source)
-    return Path(source).read_bytes()
+    path = Path(source)
+    cap = MAX_TEXT_MEMBER_BYTES
+    if path.stat().st_size > cap:
+        raise ValueError(f"in-memory member exceeds {cap} bytes")
+    return path.read_bytes()
+
+
+def _copy_chunks(
+    src_fh: Any, dst_fh: Any, *, max_bytes: Optional[int] = None
+) -> int:
+    """Copy src_fh → dst_fh in IO_CHUNK_BYTES chunks. Raise if over max_bytes."""
+    copied = 0
+    while True:
+        chunk = src_fh.read(IO_CHUNK_BYTES)
+        if not chunk:
+            break
+        copied += len(chunk)
+        if max_bytes is not None and copied > max_bytes:
+            raise tarfile.TarError("archive member exceeds size cap")
+        dst_fh.write(chunk)
+    return copied
 
 
 def _add_bytes(tf: tarfile.TarFile, name: str, data: bytes, mtime: int) -> None:
@@ -359,12 +411,41 @@ def _add_bytes(tf: tarfile.TarFile, name: str, data: bytes, mtime: int) -> None:
     tf.addfile(info, io.BytesIO(data))
 
 
+def _add_member(
+    tf: tarfile.TarFile, name: str, source: MemberSource, mtime: int
+) -> None:
+    name = _safe_member_name(name)
+    cap = _member_size_cap(name)
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+        if len(data) > cap:
+            raise ValueError(f"tar member {name} exceeds {cap} bytes")
+        _add_bytes(tf, name, data, mtime)
+        return
+    path = Path(source)
+    size = path.stat().st_size
+    if size > cap:
+        raise ValueError(f"tar member {name} exceeds {cap} bytes")
+    info = tarfile.TarInfo(name=name)
+    info.size = size
+    info.mode = 0o600
+    info.mtime = mtime
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    with path.open("rb") as fh:
+        tf.addfile(info, fh)
+
+
 def atomic_replace(src: Path, dest: Path, mode: int = 0o600) -> None:
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest_path.with_name(f".{dest_path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(Path(src).read_bytes())
+        with Path(src).open("rb") as infh, tmp.open("wb") as outfh:
+            _copy_chunks(infh, outfh)
+            outfh.flush()
         os.chmod(tmp, mode)
         os.replace(tmp, dest_path)
         os.chmod(dest_path, mode)
@@ -379,21 +460,36 @@ def write_tar(
     members: Mapping[str, MemberSource],
     manifest: Mapping[str, Any],
 ) -> None:
-    """Write POSIX ustar: manifest.json first, then included_components order."""
+    """Write POSIX ustar: manifest.json first, then included_components order.
+
+    Path members (accounting.db) are streamed via TarFile.addfile; they are
+    not read into a bytes object.
+    """
     dest_path = Path(dest)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     created_at = str(manifest.get("created_at") or "")
     mtime = _mtime_from_iso(created_at)
     manifest_bytes = _dumps(manifest)
     included = list(manifest.get("included_components") or [])
+    total = len(manifest_bytes)
+    if total > MAX_ARCHIVE_BYTES:
+        raise ValueError(f"archive exceeds {MAX_ARCHIVE_BYTES} bytes")
+    for name in included:
+        if name not in members:
+            raise KeyError(f"missing component for tar member {name}")
+        size = _source_size(members[name])
+        cap = _member_size_cap(name)
+        if size > cap:
+            raise ValueError(f"tar member {name} exceeds {cap} bytes")
+        total += size
+        if total > MAX_ARCHIVE_BYTES:
+            raise ValueError(f"archive exceeds {MAX_ARCHIVE_BYTES} bytes")
     tmp = dest_path.with_name(f".{dest_path.name}.{os.getpid()}.tar.tmp")
     try:
         with tarfile.open(tmp, "w:", format=tarfile.USTAR_FORMAT) as tf:
             _add_bytes(tf, "manifest.json", manifest_bytes, mtime)
             for name in included:
-                if name not in members:
-                    raise KeyError(f"missing component for tar member {name}")
-                _add_bytes(tf, name, _member_bytes(members[name]), mtime)
+                _add_member(tf, name, members[name], mtime)
         os.chmod(tmp, 0o600)
         os.replace(tmp, dest_path)
         os.chmod(dest_path, 0o600)
@@ -486,8 +582,29 @@ def _fail(code: str) -> Dict[str, Any]:
     return {"schema_version": 1, "ok": False, "error": code}
 
 
-def _read_tar_members(path: Path) -> Dict[str, bytes]:
-    members: Dict[str, bytes] = {}
+class _LoadedMembers(dict):
+    """Tar members: JSON/text as bytes, large files (accounting.db) as Paths.
+
+    Holds a TemporaryDirectory so extracted large members stay alive for the
+    caller (verify then restore).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._tmpdir: Optional[tempfile.TemporaryDirectory] = None
+
+
+def _read_tar_members(
+    path: Path, *, extract_dir: Optional[Path] = None
+) -> _LoadedMembers:
+    """Read tar members with per-member and total size caps.
+
+    Checks info.size before extractfile so an oversized member is rejected
+    without a full read. In-memory members are filled in IO_CHUNK_BYTES
+    chunks; accounting.db and other large members are streamed to extract_dir.
+    """
+    members = _LoadedMembers()
+    total = 0
     try:
         with tarfile.open(path, "r:") as tf:
             for info in tf.getmembers():
@@ -500,10 +617,43 @@ def _read_tar_members(path: Path) -> Dict[str, bytes]:
                     continue
                 if not info.isreg():
                     raise tarfile.TarError(f"unsupported member type {name!r}")
+                if info.size < 0:
+                    raise tarfile.TarError(f"negative member size {name!r}")
+                cap = _member_size_cap(name)
+                if info.size > cap:
+                    raise tarfile.TarError(
+                        f"member {name!r} exceeds size cap ({cap} bytes)"
+                    )
+                if total + info.size > MAX_ARCHIVE_BYTES:
+                    raise tarfile.TarError(
+                        f"archive exceeds size cap ({MAX_ARCHIVE_BYTES} bytes)"
+                    )
                 extracted = tf.extractfile(info)
                 if extracted is None:
                     raise tarfile.TarError(f"cannot read member {name!r}")
-                members[name] = extracted.read()
+                if name in IN_MEMORY_MEMBERS:
+                    buf = io.BytesIO()
+                    copied = _copy_chunks(extracted, buf, max_bytes=cap)
+                    if copied != info.size:
+                        raise tarfile.TarError(
+                            f"short read for member {name!r}"
+                        )
+                    members[name] = buf.getvalue()
+                else:
+                    if extract_dir is None:
+                        raise tarfile.TarError(
+                            f"large member {name!r} requires extract_dir"
+                        )
+                    dest = extract_dir / Path(name).name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with dest.open("wb") as outfh:
+                        copied = _copy_chunks(extracted, outfh, max_bytes=cap)
+                    if copied != info.size:
+                        raise tarfile.TarError(
+                            f"short read for member {name!r}"
+                        )
+                    members[name] = dest
+                total += info.size
     except tarfile.TarError as exc:
         raise tarfile.TarError(str(exc)) from exc
     return members
@@ -520,11 +670,12 @@ def _secret_bearing_consistent(
 
 def _load_members(
     archive: Path, age_identity: Optional[Path]
-) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, bytes]]]:
+) -> tuple[Optional[Dict[str, Any]], Optional[_LoadedMembers]]:
     """Decrypt `.age` if needed, then read tar members.
 
     Returns (fail_result, None) or (None, members). Outer path stays `archive`
-    so secret-bearing / suffix checks use the ciphertext name.
+    so secret-bearing / suffix checks use the ciphertext name. Large members
+    live in members._tmpdir until the caller drops the object.
     """
     if not archive.is_file():
         return _fail("invalid_archive"), None
@@ -533,34 +684,36 @@ def _load_members(
             return _fail("age_identity_required"), None
         if not age_available():
             return _fail("age_required"), None
-        try:
-            with tempfile.TemporaryDirectory(prefix="vincula-age-") as tmp:
-                tar_path = Path(tmp) / "archive.tar"
-                try:
-                    age_decrypt(archive, tar_path, Path(age_identity))
-                except AgeError:
-                    return _fail("failed"), None
-                try:
-                    members = _read_tar_members(tar_path)
-                except (tarfile.TarError, OSError, ValueError):
-                    return _fail("invalid_archive"), None
-        except OSError:
-            return _fail("failed"), None
-        return None, members
+    keep = tempfile.TemporaryDirectory(prefix="vincula-members-")
+    extract_dir = Path(keep.name)
     try:
-        members = _read_tar_members(archive)
+        if str(archive).endswith(".age"):
+            tar_path = extract_dir / "archive.tar"
+            try:
+                age_decrypt(archive, tar_path, Path(age_identity))
+            except AgeError:
+                keep.cleanup()
+                return _fail("failed"), None
+            members = _read_tar_members(tar_path, extract_dir=extract_dir)
+            tar_path.unlink(missing_ok=True)
+        else:
+            members = _read_tar_members(archive, extract_dir=extract_dir)
     except (tarfile.TarError, OSError, ValueError):
+        keep.cleanup()
         return _fail("invalid_archive"), None
+    members._tmpdir = keep
     return None, members
 
 
-def _verify_members(members: Dict[str, bytes], outer_path: Path) -> Dict[str, Any]:
+def _verify_members(
+    members: Mapping[str, MemberSource], outer_path: Path
+) -> Dict[str, Any]:
     """Steps 2–6: manifest, schema, flag/suffix consistency, sha256, members."""
     if "manifest.json" not in members:
         return _fail("missing_manifest")
     try:
-        manifest = json.loads(members["manifest.json"].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        manifest = json.loads(_as_bytes(members["manifest.json"]).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
         return _fail("invalid_archive")
     if not isinstance(manifest, dict):
         return _fail("invalid_archive")
@@ -598,7 +751,7 @@ def _verify_members(members: Dict[str, bytes], outer_path: Path) -> Dict[str, An
         return _fail("invalid_archive")
 
     for name in included_names:
-        digest = sha256_bytes(members[name])
+        digest = _digest_member(members[name])
         expected = hash_by_path[name]
         if digest != expected:
             return _fail("checksum_mismatch")
@@ -620,20 +773,22 @@ def verify_manifest(
     return _verify_members(members, archive)
 
 
-def _assert_secret_bearing_members(members: Mapping[str, bytes]) -> Optional[str]:
+def _assert_secret_bearing_members(
+    members: Mapping[str, MemberSource],
+) -> Optional[str]:
     """Secrets archives must still contain the three secret sites."""
     if "state.json" in members:
         try:
-            state = json.loads(members["state.json"].decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            state = json.loads(_as_bytes(members["state.json"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
             return "invalid_archive"
         node = state.get("node") if isinstance(state, dict) else None
         if not isinstance(node, dict) or not node.get("reality_private_key"):
             return "invalid_archive"
     if "users.json" in members:
         try:
-            users = json.loads(members["users.json"].decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            users = json.loads(_as_bytes(members["users.json"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
             return "invalid_archive"
         user_list = users.get("users") if isinstance(users, dict) else None
         if isinstance(user_list, list) and user_list:
@@ -651,27 +806,33 @@ def _assert_secret_bearing_members(members: Mapping[str, bytes]) -> Optional[str
             if not has_active_uuid:
                 return "invalid_archive"
     if "config.toml" in members:
-        text = members["config.toml"].decode("utf-8", errors="replace")
+        try:
+            text = _as_bytes(members["config.toml"]).decode("utf-8", errors="replace")
+        except (ValueError, OSError):
+            return "invalid_archive"
         if not CLASH_SECRET_LINE.search(text):
             return "invalid_archive"
     return None
 
 
-def _assert_secretless_members(members: Mapping[str, bytes]) -> Optional[str]:
+def _assert_secretless_members(
+    members: Mapping[str, MemberSource],
+) -> Optional[str]:
     if "state.json" in members:
         try:
-            state = json.loads(members["state.json"].decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            state = json.loads(_as_bytes(members["state.json"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
             return "invalid_archive"
         node = state.get("node") if isinstance(state, dict) else None
         if isinstance(node, dict) and "reality_private_key" in node:
             return "invalid_archive"
     if "users.json" in members:
         try:
-            users = json.loads(members["users.json"].decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            users_bytes = _as_bytes(members["users.json"])
+            users = json.loads(users_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
             return "invalid_archive"
-        if UUID_KEY.search(members["users.json"].decode("utf-8", errors="replace")):
+        if UUID_KEY.search(users_bytes.decode("utf-8", errors="replace")):
             return "invalid_archive"
         if isinstance(users, dict):
             try:
@@ -679,7 +840,10 @@ def _assert_secretless_members(members: Mapping[str, bytes]) -> Optional[str]:
             except ValueError:
                 return "invalid_archive"
     if "config.toml" in members:
-        text = members["config.toml"].decode("utf-8", errors="replace")
+        try:
+            text = _as_bytes(members["config.toml"]).decode("utf-8", errors="replace")
+        except (ValueError, OSError):
+            return "invalid_archive"
         if CLASH_SECRET_LINE.search(text):
             return "invalid_archive"
     return None
@@ -768,8 +932,16 @@ def create_backup(
             hashes=hashes,
         )
         staged = tmp_path / "archive.tar"
-        write_tar(staged, components, manifest)
-        inner = _read_tar_members(staged)
+        try:
+            write_tar(staged, components, manifest)
+        except ValueError as exc:
+            _die(str(exc))
+        extract_dir = tmp_path / "verify-extract"
+        extract_dir.mkdir()
+        try:
+            inner = _read_tar_members(staged, extract_dir=extract_dir)
+        except (tarfile.TarError, OSError, ValueError) as exc:
+            _die(str(exc) or "invalid_archive")
         checked = _verify_members(inner, output)
         if not checked.get("ok"):
             _die(str(checked.get("error") or "failed"))
@@ -943,7 +1115,7 @@ def build_restore_plan(
     state: Mapping[str, Any],
     users: Mapping[str, Any],
     config_toml: str,
-    accounting: Optional[bytes],
+    accounting: Optional[MemberSource],
     manifest: Mapping[str, Any],
     include_secrets: bool,
     new_instance_id: str,
@@ -1349,6 +1521,14 @@ def _write_private(path: Path, data: bytes, mode: int = 0o600) -> None:
         raise
 
 
+def _install_member(source: MemberSource, dest: Path, mode: int = 0o600) -> None:
+    """Install a tar member: bytes via _write_private, Path via streaming copy."""
+    if isinstance(source, (bytes, bytearray)):
+        _write_private(dest, bytes(source), mode)
+        return
+    atomic_replace(Path(source), dest, mode)
+
+
 def _safety_copy_existing(
     dest_state_dir: Path,
     dest_accounting_db: Optional[Path],
@@ -1445,8 +1625,16 @@ def rollback_restore(
 
 def _load_verified_members(
     archive: Path, age_identity: Optional[Path]
-) -> tuple[Dict[str, Any], Dict[str, bytes]]:
-    verified = verify_archive(archive, age_identity)
+) -> tuple[Dict[str, Any], Mapping[str, MemberSource]]:
+    err, members = _load_members(archive, age_identity)
+    if err is not None or members is None:
+        code = str((err or {}).get("error") or "failed")
+        if code == "age_identity_required":
+            raise RestoreError(AGE_IDENTITY_MSG, code)
+        if code == "age_required":
+            raise RestoreError(AGE_MISSING_MSG, code)
+        raise RestoreError(code, code)
+    verified = _verify_members(members, archive)
     if not verified.get("ok"):
         code = str(verified.get("error") or "failed")
         if code == "age_identity_required":
@@ -1454,10 +1642,12 @@ def _load_verified_members(
         if code == "age_required":
             raise RestoreError(AGE_MISSING_MSG, code)
         raise RestoreError(code, code)
-    err, members = _load_members(archive, age_identity)
-    if err is not None or members is None:
-        code = str((err or {}).get("error") or "failed")
-        raise RestoreError(code, code)
+    if verified.get("secret_bearing"):
+        bad = _assert_secret_bearing_members(members)
+    else:
+        bad = _assert_secretless_members(members)
+    if bad:
+        raise RestoreError(bad, bad)
     return verified, members
 
 
@@ -1507,11 +1697,12 @@ def apply_restore(
     )
 
     try:
-        state = json.loads(members["state.json"].decode("utf-8"))
-        users = json.loads(members["users.json"].decode("utf-8"))
-    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        state = json.loads(_as_bytes(members["state.json"]).decode("utf-8"))
+        users = json.loads(_as_bytes(members["users.json"]).decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError) as exc:
         raise RestoreError(f"invalid_archive: {exc}", "invalid_archive") from exc
-    config_toml = members.get("config.toml", b"").decode("utf-8")
+    toml_src = members.get("config.toml", b"")
+    config_toml = _as_bytes(toml_src).decode("utf-8") if toml_src else ""
     accounting = members.get("accounting.db")
 
     env_iid = new_instance_id or os.environ.get("VCL_RESTORE_INSTANCE_ID") or ""
@@ -1619,7 +1810,7 @@ def apply_restore(
         if plan.get("accounting") is not None and dest_accounting_db is not None:
             db_dest = Path(dest_accounting_db)
             db_dest.parent.mkdir(parents=True, exist_ok=True)
-            _write_private(db_dest, bytes(plan["accounting"]))
+            _install_member(plan["accounting"], db_dest, 0o600)
             written.append("accounting.db")
         journal["written"] = list(written)
         _write_restore_journal(safety_path, journal)
@@ -1783,9 +1974,10 @@ def _plan_from_archive(args: argparse.Namespace) -> Dict[str, Any]:
     preflight_restore(
         verified, installed=False, include_secrets=bool(args.include_secrets)
     )
-    state = json.loads(members["state.json"].decode("utf-8"))
-    users = json.loads(members["users.json"].decode("utf-8"))
-    config_toml = members.get("config.toml", b"").decode("utf-8")
+    state = json.loads(_as_bytes(members["state.json"]).decode("utf-8"))
+    users = json.loads(_as_bytes(members["users.json"]).decode("utf-8"))
+    toml_src = members.get("config.toml", b"")
+    config_toml = _as_bytes(toml_src).decode("utf-8") if toml_src else ""
     node = state.get("node") if isinstance(state.get("node"), dict) else {}
     iid = args.new_instance_id or os.environ.get("VCL_RESTORE_INSTANCE_ID") or ""
     if not iid:

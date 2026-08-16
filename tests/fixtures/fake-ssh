@@ -844,9 +844,10 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         archive = _resolve_restore_archive(alias, remote_file)
         verified, members = backup._load_verified_members(archive, None)
         source_id = str(verified.get("source_node_id") or "")
-        state = json.loads(members["state.json"].decode("utf-8"))
-        users = json.loads(members["users.json"].decode("utf-8"))
-        config_toml = members.get("config.toml", b"").decode("utf-8")
+        state = json.loads(backup._as_bytes(members["state.json"]).decode("utf-8"))
+        users = json.loads(backup._as_bytes(members["users.json"]).decode("utf-8"))
+        toml_src = members.get("config.toml", b"")
+        config_toml = backup._as_bytes(toml_src).decode("utf-8") if toml_src else ""
         accounting = members.get("accounting.db")
         env_iid = os.environ.get("VCL_RESTORE_INSTANCE_ID", "").strip()
         if not env_iid:
@@ -894,7 +895,7 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
     _write_json(node_dir / "users.json", plan["users"])
     (node_dir / "config.toml").write_text(str(plan["config_toml"]), encoding="utf-8")
     if plan.get("accounting") is not None:
-        (node_dir / "accounting.db").write_bytes(bytes(plan["accounting"]))
+        backup._install_member(plan["accounting"], node_dir / "accounting.db")
     csv_remote = flags.get("reissue_output") or "/tmp/reissue.csv"
     csv_path = node_dir / Path(csv_remote).name
     if plan["reissue_rows"]:

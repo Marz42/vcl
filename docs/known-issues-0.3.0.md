@@ -77,6 +77,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | P1-02 restore not a true transaction | B8: CSV, generated config, and VERSION share the apply_restore try/rollback with canonical files and accounting.db. Rollback also restores the pre-restore sing-box / accountd enabled+active snapshot. Health-check failure no longer restarts sing-box on a mixed tree |
 | P1-03 upgrade preflight stopped accountd before backup, with no recovery | B9: read-only preflight (files, schema, disk, REALITY, `sing-box check`) runs before any service mutation. `SERVICE_STATE` is captured and `MIGRATION_STARTED` is armed before backup. SQLite snapshot uses source-tree `snapshot_sqlite` (Backup API); accountd is stopped only for the file-swap window. Rollback restores the exact pretest enabled/active bits |
 | P2-01 uninstall left `__pycache__` | B11: install validation uses in-process `compile()` (no bytecode write). `cmd_uninstall` / `rollback_install` / `rollback_migration` delete `$LIB_DIR/__pycache__` before `rmdir`, so a complete uninstall leaves no product residue |
+| P2-02 backup verify/copy held whole files in memory | B12: tar verify streams members in 1 MiB chunks; `info.size` over `MAX_MEMBER_BYTES` (1 GiB) or total over `MAX_ARCHIVE_BYTES` (2 GiB) is `invalid_archive` before `extractfile`. `atomic_replace` is a chunked copy. `accounting.db` stays on disk (Backup API + tempfile) |
 
 ## Related docs
 

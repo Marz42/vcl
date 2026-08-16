@@ -10,6 +10,8 @@
 **Addendum:** 2026-08-16 — B8 / P1-02: restore is a single atomic transaction.  
 **Addendum:** 2026-08-16 — B9 / P1-03: upgrade preflight captures service state before any mutation.  
 **Addendum:** 2026-08-16 — B10 / P0-01b: `node replace` on the real restore contract.  
+**Addendum:** 2026-08-17 — B11 / P2-01: uninstall leaves no `__pycache__`.  
+**Addendum:** 2026-08-17 — B12 / P2-02: streaming backup verify and size caps.  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
 **Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
@@ -101,6 +103,14 @@ Living tree (`0.3.1-dev`): `validate_accounting_artifacts` syntax-checks staged 
 P2-01 is **closed** on the living tree.
 
 Living-tree test counts after B11: `bash tests/test.sh` **1154**; standalone `bash tests/test-fleet.sh` **474**.
+
+## Addendum (2026-08-17) — B12 / P2-02 streaming backup verify and size caps
+
+Living tree (`0.3.1-dev`): `verify_archive` / `_read_tar_members` reject a member whose `TarInfo.size` exceeds `MAX_MEMBER_BYTES` (1 GiB) or a total that exceeds `MAX_ARCHIVE_BYTES` (2 GiB) **before** `extractfile`. Remaining members are copied in `IO_CHUNK_BYTES` (1 MiB) chunks. JSON/text stay in memory under `MAX_TEXT_MEMBER_BYTES` (16 MiB). `accounting.db` is extracted to a tempfile and hashed with `sha256_file`; `write_tar` uses `TarFile.addfile` from a file handle; `atomic_replace` is a chunked copy + `os.replace`. SQLite snapshot was already the Backup API (not `read_bytes`).
+
+P2-02 is **closed** on the living tree.
+
+Living-tree test counts after B12: `bash tests/test.sh` **1167**; standalone `bash tests/test-fleet.sh` **474**.
 
 ### Freeze-era recommendation (historical)
 

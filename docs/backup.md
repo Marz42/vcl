@@ -81,6 +81,32 @@ compatibility checks; it does **not** overwrite the running helper version.
 Unknown `manifest.schema_version` → verify/restore refuse.
 `BACKUP_SCHEMA_VERSIONS_READ = (1,)`.
 
+### Size caps and streaming (P2-02)
+
+Verify and copy never `read()` a whole tar member into memory. Hash and
+copy use `IO_CHUNK_BYTES` (1 MiB) chunks — the same pattern as
+`sha256_file`. `accounting.db` is snapshotted with the SQLite Backup API
+(page copy), packed with `TarFile.addfile` from a file handle, verified
+by streaming into a tempfile, then installed with `atomic_replace`
+(chunked copy + `os.replace`). JSON/text members
+(`manifest.json` / `state.json` / `users.json` / `config.toml` /
+`VERSION`) stay in memory because they must be parsed.
+
+Caps are checked from `TarInfo.size` **before** `extractfile`, so an
+oversized member is `invalid_archive` without a full read:
+
+| Constant | Default | Applies to |
+| --- | --- | --- |
+| `MAX_MEMBER_BYTES` | 1 GiB | Each tar member (`accounting.db` is the large one) |
+| `MAX_ARCHIVE_BYTES` | 2 GiB | Sum of uncompressed member sizes |
+| `MAX_TEXT_MEMBER_BYTES` | 16 MiB | JSON/text members kept in memory |
+
+Oversized member or total → verify/restore `error=invalid_archive`.
+Create refuses to pack a component over the per-member cap. These are
+DoS bounds, not a documented product limit on legitimate node size; a
+node whose `accounting.db` exceeds 1 GiB needs a retention/export path
+before backup.
+
 ### `manifest.json`
 
 ```json
@@ -199,6 +225,8 @@ Order:
 exit. `error`: `checksum_mismatch` | `missing_manifest` |
 `unsupported_schema` | `secret_bearing_unencrypted` | `age_required` |
 `age_identity_required` | `invalid_archive` | `failed`.
+`invalid_archive` includes tar bombs / members over `MAX_MEMBER_BYTES` or
+a total over `MAX_ARCHIVE_BYTES`.
 
 ## Restore (fresh node)
 
