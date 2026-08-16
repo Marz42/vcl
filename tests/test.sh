@@ -577,6 +577,14 @@ assert_success "helper documents vcl accounting check" grep -q 'vcl accounting c
 assert_success "helper documents vcl audit user" grep -q 'vcl audit user TAG' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit --user-id" grep -q 'vcl audit --user-id UUID' "${TEST_TMP}/vincula"
 assert_success "helper documents vcl audit export" grep -q 'vcl audit export --after' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl backup create" \
+  grep -q 'vcl backup create' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl backup verify" \
+  grep -q 'vcl backup verify FILE' "${TEST_TMP}/vincula"
+assert_success "helper documents vcl restore --replace-node" \
+  grep -q 'vcl restore FILE --replace-node' "${TEST_TMP}/vincula"
+assert_success "helper implements backup create" \
+  grep -q 'cmd_backup_create' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper implements audit export" \
   grep -q 'cmd_audit_export' "${PROJECT_DIR}/bin/vincula"
 assert_failure "accounting status does not prefer JSONL ingest" \
@@ -593,6 +601,8 @@ assert_success "helper documents accounting cycle --set" grep -q 'vcl accounting
 assert_success "helper documents stats --date" grep -q 'vcl stats --date YYYY-MM-DD' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper routes audit command" grep -q 'audit) cmd_audit' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper defines resolve_audit_py" grep -q '^resolve_audit_py()' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper routes backup command" grep -q 'backup) cmd_backup' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper defines resolve_backup_py" grep -q '^resolve_backup_py()' "${PROJECT_DIR}/bin/vincula"
 if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit user'; then
   pass "vcl help lists audit"
 else
@@ -602,6 +612,21 @@ if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl audit export --after'; 
   pass "vcl help lists audit export"
 else
   fail "vcl help lists audit export"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl backup create'; then
+  pass "vcl help lists backup create"
+else
+  fail "vcl help lists backup create"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl backup verify FILE'; then
+  pass "vcl help lists backup verify"
+else
+  fail "vcl help lists backup verify"
+fi
+if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl restore FILE --replace-node'; then
+  pass "vcl help lists restore"
+else
+  fail "vcl help lists restore"
 fi
 if bash "${PROJECT_DIR}/bin/vincula" help | grep -q 'vcl accounting check'; then
   pass "vcl help lists accounting check"
@@ -616,15 +641,19 @@ assert_success "gen-release-lock includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "gen-release-lock includes vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "gen-release-lock includes vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "gen-release-lock includes vincula-bootstrap.sh" \
   grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "release.lock includes vincula-bootstrap.sh" \
   grep -q 'vincula-bootstrap.sh' "${PROJECT_DIR}/release.lock"
 assert_success "release.lock includes vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/release.lock"
+assert_success "release.lock includes vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/release.lock"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 8 first-party files" "8" \
+assert_equal "release.lock has 9 first-party files" "9" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -646,6 +675,8 @@ assert_success "build-release includes vincula-stats.py" \
   grep -q 'lib/vincula-stats.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "build-release includes vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/build-release.sh"
+assert_success "build-release includes vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
   python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
 assert_success "python3 can compile vincula-audit" \
@@ -811,13 +842,17 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 8 first-party files" "8" \
+assert_equal "dist node release.lock has 9 first-party files" "9" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
+assert_success "dist node release.lock includes vincula-backup.py" \
+  grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
 assert_failure "node release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
 node_listing=$(tar -tzf "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz")
 assert_failure "node tarball does not contain vincula-fleet.py" \
   grep -q 'vincula-fleet.py' <<< "$node_listing"
+assert_success "node tarball contains vincula-backup.py" \
+  grep -q 'vincula-backup.py' <<< "$node_listing"
 assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
@@ -843,11 +878,25 @@ assert not missing, missing
 for name in names:
     base = name.rstrip("/").rsplit("/", 1)[-1]
     assert base not in forbidden, name
+    assert base != "vincula-backup.py", name
 PY
 if (( controller_zip_rc == 0 )); then
   pass "AC-2.8-11 controller zip members"
 else
   fail "AC-2.8-11 controller zip members"
+fi
+controller_backup_rc=0
+python3 - "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" <<'PY' || controller_backup_rc=$?
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    if any(n.rstrip("/").endswith("vincula-backup.py") for n in zf.namelist()):
+        raise SystemExit(1)
+PY
+if (( controller_backup_rc == 0 )); then
+  pass "controller zip omits node-side vincula-backup.py"
+else
+  fail "controller zip omits node-side vincula-backup.py"
 fi
 assert_success "README mentions vincula-node artifact" \
   grep -q 'vincula-node-' "${PROJECT_DIR}/README.md"
@@ -894,6 +943,8 @@ assert_success "install.manifest lists vincula-stats.py" \
   grep -q 'vincula-stats.py' "${TEST_TMP}/install.manifest"
 assert_success "install.manifest lists vincula-audit.py" \
   grep -q 'vincula-audit.py' "${TEST_TMP}/install.manifest"
+assert_success "install.manifest lists vincula-backup.py" \
+  grep -q 'vincula-backup.py' "${TEST_TMP}/install.manifest"
 assert_success "install.manifest lists vincula-accountd.service" \
   grep -q 'vincula-accountd.service' "${TEST_TMP}/install.manifest"
 
@@ -4735,6 +4786,98 @@ else
   fail "verify missing_manifest and unsupported_schema"
   fail "D17 missing age dies with exact ERROR line"
   fail "include-secrets fake-age archive verifies after decrypt"
+fi
+
+# --- 0.3.0 vcl backup create|verify CLI ---
+assert_success "helper mentions Secret-bearing backup requires age" \
+  grep -q 'Secret-bearing backup requires age' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "helper backup create invokes backup.py" \
+  grep -q 'vincula-backup.py' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper backup create passes --state-dir" \
+  grep -q -- '--state-dir "$STATE_DIR"' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper default backup name uses node_id and UTC" \
+  grep -q 'node-${node_id}-${stamp}.tar' "${PROJECT_DIR}/bin/vincula"
+
+cli_root="${TEST_TMP}/backup-cli"
+cli_state="${cli_root}/state"
+cli_backups="${cli_root}/backups"
+mkdir -p "${cli_root}/bin" "$cli_state" "$cli_backups"
+ln -sfn "${PROJECT_DIR}/lib" "${cli_root}/lib"
+sed -e 's|^main "$@"$|cmd_backup "$@"|' \
+    "${PROJECT_DIR}/bin/vincula" > "${cli_root}/bin/vincula"
+chmod +x "${cli_root}/bin/vincula"
+cp "${TEST_TMP}/state.json" "${TEST_TMP}/users.json" "${TEST_TMP}/config.toml" "$cli_state/"
+printf '%s\n' "$VINCULA_VERSION" > "${cli_state}/VERSION"
+
+cli_backup() {
+  VCL_STATE_DIR="$cli_state" \
+  VCL_BACKUP_ROOT="$cli_backups" \
+  VCL_ACCOUNTING_DB_FILE="${TEST_TMP}/accounting.db" \
+    "${cli_root}/bin/vincula" "$@"
+}
+
+cli_create_rc=0
+cli_create_out=$(cli_backup create 2>/dev/null) || cli_create_rc=$?
+cli_archive=""
+cli_archive=$(ls -1 "$cli_backups"/node-"${TEST_NODE_ID}"-*.tar 2>/dev/null | head -n 1 || true)
+if (( cli_create_rc == 0 )) && [[ -n "$cli_archive" && -f "$cli_archive" ]]; then
+  pass "vcl backup create writes default node-id UTC tar"
+else
+  fail "vcl backup create writes default node-id UTC tar (rc=${cli_create_rc}, archive='${cli_archive}')"
+fi
+if [[ -n "$cli_archive" && -f "$cli_archive" ]]; then
+  cli_mode=$(stat -c '%a' "$cli_archive" 2>/dev/null || stat -f '%OLp' "$cli_archive")
+  assert_equal "vcl backup create archive is 0600" "600" "$cli_mode"
+fi
+if [[ "$cli_create_out" == *"Backup written to "* && "$cli_create_out" == *"source_node_id: ${TEST_NODE_ID}"* ]]; then
+  pass "vcl backup create prints manifest summary"
+else
+  fail "vcl backup create prints manifest summary (got '${cli_create_out}')"
+fi
+
+cli_verify_rc=0
+cli_verify_out=$(cli_backup verify "$cli_archive" 2>/dev/null) || cli_verify_rc=$?
+if (( cli_verify_rc == 0 )) && [[ "$cli_verify_out" == *"Backup OK: "* && "$cli_verify_out" == *"source_node_id: ${TEST_NODE_ID}"* ]]; then
+  pass "vcl backup verify round-trip summary"
+else
+  fail "vcl backup verify round-trip summary (rc=${cli_verify_rc}, out='${cli_verify_out}')"
+fi
+
+cli_json_path="${cli_backups}/explicit.tar"
+cli_json_rc=0
+cli_json_out=$(cli_backup create --json --output "$cli_json_path" 2>/dev/null) || cli_json_rc=$?
+printf '%s\n' "$cli_json_out" > "${cli_backups}/create.json"
+cli_json_parse_rc=0
+python3 - "${cli_backups}/create.json" "$cli_json_path" "$TEST_NODE_ID" <<'PY' || cli_json_parse_rc=$?
+import json, sys
+doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+path, node_id = sys.argv[2], sys.argv[3]
+assert doc["ok"] is True
+assert doc["schema_version"] == 1
+assert doc["path"] == path
+assert doc["source_node_id"] == node_id
+assert doc["secret_bearing"] is False
+assert doc["encryption"] == "none"
+PY
+if (( cli_json_rc == 0 && cli_json_parse_rc == 0 )); then
+  pass "vcl backup create --json reports path and source_node_id"
+else
+  fail "vcl backup create --json reports path and source_node_id (rc=${cli_json_rc}, parse=${cli_json_parse_rc})"
+fi
+cli_json_verify_rc=0
+cli_backup verify --json "$cli_json_path" >/dev/null 2>&1 || cli_json_verify_rc=$?
+if (( cli_json_verify_rc == 0 )); then
+  pass "vcl backup verify --json round-trip"
+else
+  fail "vcl backup verify --json round-trip (rc=${cli_json_verify_rc})"
+fi
+
+bogus_rc=0
+bogus_err=$(cli_backup nope 2>&1) || bogus_rc=$?
+if (( bogus_rc != 0 )) && [[ "$bogus_err" == *"Unknown backup subcommand"* ]]; then
+  pass "vcl backup unknown subcommand dies"
+else
+  fail "vcl backup unknown subcommand dies (rc=${bogus_rc}, err='${bogus_err}')"
 fi
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then

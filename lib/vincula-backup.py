@@ -821,6 +821,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             print(f"Backup written to {result['path']}")
+            print(f"backup_schema_version: {result['backup_schema_version']}")
+            print(f"source_node_id: {result['source_node_id']}")
+            print(f"source_instance_id: {result['source_instance_id']}")
+            print(f"secret_bearing: {str(result['secret_bearing']).lower()}")
+            print(f"encryption: {result['encryption']}")
+            print(f"sha256: {result['sha256']}")
+        if result.get("secret_bearing"):
+            print(
+                f"WARNING: {result['path']} contains authentication credentials.\n"
+                "Store and distribute it securely.",
+                file=sys.stderr,
+            )
         return 0
     if args.command == "verify":
         identity = Path(args.age_identity) if args.age_identity else None
@@ -828,7 +840,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.json_flag:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif result.get("ok"):
+            included = result.get("included_components") or []
             print(f"Backup OK: {args.file}")
+            print(f"schema_version: {result.get('schema_version')}")
+            print(f"vincula_version: {result.get('vincula_version')}")
+            print(f"created_at: {result.get('created_at')}")
+            print(f"source_node_id: {result.get('source_node_id')}")
+            print(f"source_instance_id: {result.get('source_instance_id')}")
+            print(f"secret_bearing: {str(result.get('secret_bearing')).lower()}")
+            print(f"encryption: {result.get('encryption')}")
+            print(f"included_components: {', '.join(str(x) for x in included)}")
         else:
             err = str(result.get("error") or "failed")
             if err == "age_identity_required":

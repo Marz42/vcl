@@ -5,7 +5,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly VINCULA_VERSION="0.3.0-dev"
-readonly STATE_DIR="/etc/vincula"
+readonly STATE_DIR="${VCL_STATE_DIR:-/etc/vincula}"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
 readonly USERS_FILE="${STATE_DIR}/users.json"
@@ -26,13 +26,14 @@ readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
-readonly VAR_LIB_VINCULA="/var/lib/vincula"
-readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
+readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
+readonly VAR_LIB_VINCULA="${VCL_VAR_LIB_VINCULA:-/var/lib/vincula}"
+readonly ACCOUNTING_DB_FILE="${VCL_ACCOUNTING_DB_FILE:-${VAR_LIB_VINCULA}/accounting.db}"
 readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
 readonly SERVICE_USER="sing-box"
 readonly SERVICE_GROUP="sing-box"
 readonly VAR_LIB_SING_BOX="/var/lib/sing-box"
-readonly BACKUP_ROOT="/var/backups/vincula"
+readonly BACKUP_ROOT="${VCL_BACKUP_ROOT:-/var/backups/vincula}"
 readonly BACKUP_MARKER=".vincula-backup"
 readonly COMMON_FILE="${LIB_DIR}/vincula-common.sh"
 
@@ -113,6 +114,9 @@ Usage:
   vcl audit user TAG --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
   vcl audit --user-id UUID --from RFC3339 --to RFC3339 ...
   vcl audit export --after EVENT_ID --jsonl [--limit N]
+  vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
+  vcl backup verify FILE [--age-identity FILE] [--json]
+  vcl restore FILE --replace-node NODE_ID [--include-secrets] [--age-identity FILE] [--output CSV] [--server HOST] [--json]
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -512,7 +516,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -537,6 +541,7 @@ Refusing destructive uninstall."
     "file=${ACCOUNTD_PY}" \
     "file=${STATS_PY}" \
     "file=${AUDIT_PY}" \
+    "file=${BACKUP_PY}" \
     "file=${ACCOUNTD_UNIT}"; do
     grep -qxF "$expected" "$INSTALL_MANIFEST_FILE" \
       || refuse_uninstall "install.manifest is missing ${expected}; refusing destructive uninstall."
@@ -758,6 +763,7 @@ cmd_uninstall() {
     "$ACCOUNTD_PY" \
     "$STATS_PY" \
     "$AUDIT_PY" \
+    "$BACKUP_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTING_DB_FILE" \
     "${ACCOUNTING_DB_FILE}-wal" \
@@ -2695,6 +2701,163 @@ HELP
   python3 "${args[@]}"
 }
 
+resolve_backup_py() {
+  if [[ -f "$BACKUP_PY" ]]; then
+    printf '%s\n' "$BACKUP_PY"
+    return 0
+  fi
+  local src root
+  src=${BASH_SOURCE[0]-}
+  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$root" && -f "${root}/lib/vincula-backup.py" ]]; then
+      printf '%s\n' "${root}/lib/vincula-backup.py"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+cmd_backup_usage() {
+  cat <<'HELP'
+vcl backup — node identity/audit archive (secretless default)
+
+  vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
+  vcl backup verify FILE [--age-identity FILE] [--json]
+  vcl restore FILE --replace-node NODE_ID [--include-secrets] [--age-identity FILE] [--output CSV] [--server HOST] [--json]
+
+Default create writes $BACKUP_ROOT/node-<node_id>-<UTC>.tar (0600).
+--include-secrets keeps Reality/VLESS/Clash secrets and requires age (--age-recipient FILE).
+HELP
+}
+
+cmd_backup_create() {
+  local include_secrets=0 output="" age_recipient="" json=0
+  local backup_py node_id stamp
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --include-secrets)
+        include_secrets=1
+        shift
+        ;;
+      --output)
+        [[ $# -ge 2 ]] || die "backup create --output requires FILE"
+        output=$2
+        shift 2
+        ;;
+      --age-recipient)
+        [[ $# -ge 2 ]] || die "backup create --age-recipient requires FILE"
+        age_recipient=$2
+        shift 2
+        ;;
+      --json)
+        json=1
+        shift
+        ;;
+      -h|--help)
+        cmd_backup_usage
+        return 0
+        ;;
+      *)
+        die "Unknown backup create argument: $1. Try 'vcl backup --help'."
+        ;;
+    esac
+  done
+
+  require_python3 || die "python3 is required for backup."
+  backup_py=$(resolve_backup_py) || die "Missing vincula-backup.py (expected ${BACKUP_PY})."
+
+  if [[ -z "$output" ]]; then
+    install -d -m 0700 "$BACKUP_ROOT"
+    node_id=$(node_id_from_settings)
+    stamp=$(date -u +'%Y%m%dT%H%M%SZ')
+    output="${BACKUP_ROOT}/node-${node_id}-${stamp}.tar"
+  fi
+
+  local -a args=(
+    "$backup_py"
+    create
+    --state-dir "$STATE_DIR"
+    --accounting-db "$ACCOUNTING_DB_FILE"
+    --output "$output"
+  )
+  (( include_secrets )) && args+=(--include-secrets)
+  [[ -n "$age_recipient" ]] && args+=(--age-recipient "$age_recipient")
+  (( json )) && args+=(--json)
+
+  python3 "${args[@]}"
+}
+
+cmd_backup_verify() {
+  local file="" identity="" json=0 backup_py
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --age-identity)
+        [[ $# -ge 2 ]] || die "backup verify --age-identity requires FILE"
+        identity=$2
+        shift 2
+        ;;
+      --json)
+        json=1
+        shift
+        ;;
+      -h|--help)
+        cmd_backup_usage
+        return 0
+        ;;
+      --*)
+        die "Unknown backup verify argument: $1. Try 'vcl backup --help'."
+        ;;
+      *)
+        if [[ -n "$file" ]]; then
+          die "backup verify accepts only one FILE. Try 'vcl backup --help'."
+        fi
+        file=$1
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$file" ]] || die "usage: vcl backup verify FILE [--age-identity FILE] [--json]"
+
+  require_python3 || die "python3 is required for backup."
+  backup_py=$(resolve_backup_py) || die "Missing vincula-backup.py (expected ${BACKUP_PY})."
+
+  local -a args=(
+    "$backup_py"
+    verify
+    "$file"
+  )
+  [[ -n "$identity" ]] && args+=(--age-identity "$identity")
+  (( json )) && args+=(--json)
+
+  python3 "${args[@]}"
+}
+
+cmd_backup() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    create)
+      cmd_backup_create "$@"
+      ;;
+    verify)
+      cmd_backup_verify "$@"
+      ;;
+    -h|--help)
+      cmd_backup_usage
+      ;;
+    "")
+      die "usage: vcl backup create|verify ..."
+      ;;
+    *)
+      die "Unknown backup subcommand: ${sub}. Try 'vcl backup --help'."
+      ;;
+  esac
+}
+
 cmd_link() {
   [[ -r "$URI_FILE" ]] || die "Owner URI is missing."
   cat "$URI_FILE"
@@ -2758,6 +2921,7 @@ main() {
         accounting) cmd_accounting "$@" ;;
         stats) cmd_stats "$@" ;;
         audit) cmd_audit "$@" ;;
+        backup) cmd_backup "$@" ;;
         *) die "Unknown command: ${command}. Run 'vcl help'." ;;
       esac
       ;;
