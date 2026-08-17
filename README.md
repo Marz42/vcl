@@ -20,7 +20,7 @@ sing-box 固定：1.13.18（不追 latest）
 | 用户 registry | `users.json` schema 2 |
 | Accounting | schema 3；raw 90 天 / daily 90 天 |
 
-Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 备份：[`docs/backup.md`](docs/backup.md)
+Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)
 
 ---
 
@@ -47,6 +47,7 @@ tests/test.sh              # 本地单元测试（source tests/test-fleet.sh）
 docs/identity.md           # 身份合同
 docs/fleet.md              # 控制器运维指南
 docs/backup.md             # 备份 / restore / replace
+docs/manual.md             # 全量命令手册（参数与用法）
 docs/live-replace-checklist.md  # B14 live VPS 操作清单（证据未跑）
 docs/release-readiness-0.3.1.md # living-tree gate（NOT READY）
 docs/known-issues-0.3.1.md      # living-tree 已知限制
@@ -135,6 +136,8 @@ sudo env \
 ---
 
 ## 日常管理（`vcl` ≡ `vincula`）
+
+每条命令的参数、退出码与例子：[`docs/manual.md`](docs/manual.md)。
 
 ### 节点
 

@@ -5,6 +5,7 @@ Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md)
 (0.3.0 freeze record: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)).
 Fleet replace: [`fleet.md`](fleet.md). Identity: [`identity.md`](identity.md).
+CLI flags for every command: [`manual.md`](manual.md).
 Live two-VPS runbook (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
 
 `require_root`. `vcl backup *` also `require_install`. The node helper has

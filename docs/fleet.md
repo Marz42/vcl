@@ -12,6 +12,7 @@ SPEC `vcl fleet <sub>` **≡** this binary: `vcl-fleet <sub>`. The node helper
 `vcl` / `vincula` has **no** `fleet` subcommand.
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
+Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
