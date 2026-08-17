@@ -127,8 +127,8 @@ assert_success "migrates from 0.2.6" is_supported_upgrade_from 0.2.6
 assert_success "migrates from 0.2.7" is_supported_upgrade_from 0.2.7
 assert_success "migrates from 0.2.8" is_supported_upgrade_from 0.2.8
 assert_success "migrates from 0.2.9" is_supported_upgrade_from 0.2.9
+assert_success "migrates from 0.3.0" is_supported_upgrade_from 0.3.0
 assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.1-dev
-assert_failure "does not migrate 0.3.0" is_supported_upgrade_from 0.3.0
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -139,6 +139,7 @@ assert_equal "D18 custom 30 preserved" "30" "$(migrate_legacy_daily_retention 0.
 assert_equal "D18 already 90 stays 90" "90" "$(migrate_legacy_daily_retention 0.2.6 90)"
 assert_equal "D18 730 from 0.2.8 is preserved" "730" "$(migrate_legacy_daily_retention 0.2.8 730)"
 assert_equal "D18 730 from 0.2.9 is preserved" "730" "$(migrate_legacy_daily_retention 0.2.9 730)"
+assert_equal "D18 730 from 0.3.0 is preserved" "730" "$(migrate_legacy_daily_retention 0.3.0 730)"
 d18_err=$(migrate_legacy_daily_retention 0.2.6 730 2>&1 >/dev/null)
 assert_success "D18 730 logs migration message" \
   grep -q 'Migrated legacy default daily retention 730 → 90.' <<< "$d18_err"
@@ -329,6 +330,17 @@ if [[ "$migrate_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
 else
   fail "migrate_existing_install mints instance_id when missing"
 fi
+if [[ "$migrate_mint_src" == *'Migration attempted to change the UUID'* ]] \
+   && [[ "$migrate_mint_src" == *'Migration attempted to change the REALITY private key'* ]] \
+   && [[ "$migrate_mint_src" == *'Migration attempted to change the REALITY public key'* ]] \
+   && [[ "$migrate_mint_src" == *'Migration attempted to change the REALITY short ID'* ]] \
+   && [[ "$migrate_mint_src" == *'capture_installer_service_state'* || "$migrate_mint_src" == *'begin_migration_backup'* ]]; then
+  pass "0.3.0 upgrade path keeps identity, credentials, Reality, and dual-service snapshot"
+else
+  fail "0.3.0 upgrade path keeps identity, credentials, Reality, and dual-service snapshot"
+fi
+assert_equal "0.3.0 instance_id is preserved" "$TEST_INSTANCE_ID" \
+  "$(mint_or_preserve_instance_id "$TEST_INSTANCE_ID" "$TEST_NODE_ID")"
 if [[ "$verify_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
   fail "verify_existing_install does not remint instance_id (unexpected mint)"
 else
@@ -1329,6 +1341,46 @@ assert_failure "ci.yml does not run live upgrade driver" \
   grep -q 'rc-live-upgrade-driver' "$CI_YML"
 assert_success "README documents GitHub Actions CI" \
   grep -Fq '.github/workflows/ci.yml' "${PROJECT_DIR}/README.md"
+assert_success "ci.yml pins actions/checkout to a full SHA" \
+  grep -qE 'uses: actions/checkout@[0-9a-f]{40}' "$CI_YML"
+assert_success "ci.yml pins actions/upload-artifact to a full SHA" \
+  grep -qE 'uses: actions/upload-artifact@[0-9a-f]{40}' "$CI_YML"
+assert_failure "ci.yml does not use mutable checkout tags" \
+  grep -qE 'uses: actions/checkout@v[0-9]' "$CI_YML"
+assert_failure "ci.yml does not use mutable upload-artifact tags" \
+  grep -qE 'uses: actions/upload-artifact@v[0-9]' "$CI_YML"
+ci_perm_rc=0
+python3 - "$CI_YML" <<'PY' || ci_perm_rc=$?
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+head, _, rest = text.partition("\njobs:")
+if "actions: write" in head:
+    raise SystemExit("top-level permissions must not grant actions: write")
+if "actions: write" not in rest:
+    raise SystemExit("artifact job must still grant actions: write for upload-artifact")
+PY
+if (( ci_perm_rc == 0 )); then
+  pass "ci.yml top-level permissions are contents: read only"
+else
+  fail "ci.yml top-level permissions are contents: read only"
+fi
+DEP_YML="${PROJECT_DIR}/.github/dependabot.yml"
+assert_success "Dependabot config exists" \
+  test -f "$DEP_YML"
+assert_success "Dependabot updates GitHub Actions" \
+  grep -q 'package-ecosystem: github-actions' "$DEP_YML"
+assert_success "0.3.1 living-tree readiness doc exists" \
+  test -f "${PROJECT_DIR}/docs/release-readiness-0.3.1.md"
+assert_success "0.3.1 living-tree known-issues doc exists" \
+  test -f "${PROJECT_DIR}/docs/known-issues-0.3.1.md"
+assert_success "README gate links to 0.3.1 readiness" \
+  grep -Fq 'docs/release-readiness-0.3.1.md' "${PROJECT_DIR}/README.md"
+assert_success "README gate links to 0.3.1 known-issues" \
+  grep -Fq 'docs/known-issues-0.3.1.md' "${PROJECT_DIR}/README.md"
+assert_failure "README artifact examples are not hardcoded 0.3.0 tarballs" \
+  grep -q 'vincula-node-0.3.0' "${PROJECT_DIR}/README.md"
 
 # P2-03 / B13: production bootstrap fail-closed without an external pin.
 BOOT_PKG="${TEST_TMP}/bootstrap-pkg"
@@ -6425,6 +6477,31 @@ else
   fail "runtime-only dest restore writes VERSION last and clears marker (rc=${rt_restore_rc} out=${rt_restore_out})"
 fi
 
+# Unique JSON: success is one document; health inject is unique ok:false.
+json_once_rc=0
+mkdir -p "${restore_cli_root}/json-once"
+json_once_out=$(
+  VCL_STATE_DIR="${restore_cli_root}/json-once" \
+  VCL_BACKUP_ROOT="$restore_backups" \
+  VCL_ACCOUNTING_DB_FILE="${restore_cli_root}/json-once/accounting.db" \
+  VCL_CONFIG_FILE="${restore_cli_root}/json-once/sing-box-config.json" \
+  VCL_RESTORE_SKIP_HEALTH=1 \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json --reissue-output "${restore_backups}/json-once.csv" \
+    "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || json_once_rc=$?
+json_once_count=$(printf '%s\n' "$json_once_out" | python3 -c 'import json,sys; raw=sys.stdin.read(); n=raw.count("\"ok\""); print(n)')
+if (( json_once_rc == 0 )) && [[ "$json_once_count" == "1" ]] \
+  && [[ -f "${restore_cli_root}/json-once/VERSION" ]]; then
+  pass "vcl restore --json emits a single success document after VERSION"
+else
+  fail "vcl restore --json emits a single success document after VERSION (rc=${json_once_rc} count=${json_once_count})"
+fi
+
 cli_verify_fail_rc=0
 cli_verify_fail_out=$(
   VCL_STATE_DIR="$cli_state" \
@@ -6455,6 +6532,11 @@ if [[ "$restore_usage" == *VCL_RESTORE_SKIP_HEALTH* ]]; then
   fail "restore --help does not document VCL_RESTORE_SKIP_HEALTH"
 else
   pass "restore --help does not document VCL_RESTORE_SKIP_HEALTH"
+fi
+if [[ "$restore_usage" == *VCL_RESTORE_SKIP_PORT* ]]; then
+  fail "restore --help does not document VCL_RESTORE_SKIP_PORT"
+else
+  pass "restore --help does not document VCL_RESTORE_SKIP_PORT"
 fi
 assert_success "cmd_restore rolls back on injected health failure" \
   grep -q 'VCL_RESTORE_FAIL_AFTER' "${PROJECT_DIR}/bin/vincula"
@@ -6670,7 +6752,8 @@ st = Path(__file__).resolve().parent / "state.json"
 data = json.loads(st.read_text(encoding="utf-8")) if st.is_file() else {
     "sing_enabled": 1, "sing_active": 1, "acct_enabled": 1, "acct_active": 1,
 }
-args = [a for a in sys.argv[1:] if a != "--quiet"]
+args = [a for a in sys.argv[1:] if a not in ("--quiet", "--now")]
+now = "--now" in sys.argv[1:]
 cmd = args[0] if args else ""
 unit = args[1] if len(args) > 1 else ""
 en = "sing_enabled" if "sing-box" in unit else "acct_enabled"
@@ -6681,6 +6764,8 @@ if cmd == "is-active":
     sys.exit(0 if data.get(act) else 1)
 if cmd == "enable":
     data[en] = 1
+    if now:
+        data[act] = 1
 elif cmd == "disable":
     data[en] = 0
 elif cmd == "start":
@@ -6753,6 +6838,139 @@ if (( health_ok_rc == 0 )) && [[ -f "${restore_health}/VERSION" ]] \
   pass "restore succeeds after health-inject rollback"
 else
   fail "restore succeeds after health-inject rollback (rc=${health_ok_rc} out=${health_ok_out})"
+fi
+
+health_json_dest="${restore_cli_root}/health-json"
+mkdir -p "$health_json_dest"
+printf '%s\n' '{"keep":"health-json"}' > "${health_json_dest}/state.json"
+health_json_rc=0
+health_json_out=$(
+  VCL_STATE_DIR="$health_json_dest" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${health_json_dest}/accounting.db" \
+  VCL_CONFIG_FILE="${health_json_dest}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${restore_cli_root}/health-sys/systemctl" \
+  VCL_RESTORE_FAIL_AFTER=health \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json --reissue-output "${restore_cli_root}/health-backups/health-json.csv" \
+      "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || health_json_rc=$?
+health_json_oktrue=$(printf '%s\n' "$health_json_out" | grep -c '"ok": true\|"ok":true' || true)
+health_json_okfalse=$(printf '%s\n' "$health_json_out" | grep -c '"ok": false\|"ok":false' || true)
+if (( health_json_rc != 0 )) && (( health_json_oktrue == 0 )) && (( health_json_okfalse == 1 )) \
+   && [[ ! -f "${health_json_dest}/VERSION" ]]; then
+  pass "restore --json health inject emits unique ok:false and does not write VERSION"
+else
+  fail "restore --json health inject emits unique ok:false (rc=${health_json_rc} out=${health_json_out})"
+fi
+
+acct_fail_sys="${restore_cli_root}/acct-fail-sys"
+mkdir -p "$acct_fail_sys"
+cat > "${acct_fail_sys}/systemctl" <<'FAKECTL'
+#!/usr/bin/env python3
+import sys
+args = [a for a in sys.argv[1:] if a not in ("--quiet", "--now")]
+cmd = args[0] if args else ""
+unit = args[1] if len(args) > 1 else ""
+if cmd == "daemon-reload":
+    raise SystemExit(0)
+if "accountd" in unit and cmd in ("enable", "is-enabled", "is-active"):
+    raise SystemExit(1)
+if cmd in ("is-enabled", "is-active"):
+    raise SystemExit(0)
+raise SystemExit(0)
+FAKECTL
+chmod +x "${acct_fail_sys}/systemctl"
+acct_fail_dest="${restore_cli_root}/acct-fail"
+mkdir -p "$acct_fail_dest"
+printf 'runtime-only\n' > "${acct_fail_dest}/.runtime-only"
+acct_fail_rc=0
+acct_fail_out=$(
+  VCL_STATE_DIR="$acct_fail_dest" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${acct_fail_dest}/accounting.db" \
+  VCL_CONFIG_FILE="${acct_fail_dest}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${acct_fail_sys}/systemctl" \
+  VCL_SING_BOX_BIN=/nonexistent/sing-box \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json --reissue-output "${restore_cli_root}/health-backups/acct-fail.csv" \
+      "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || acct_fail_rc=$?
+if (( acct_fail_rc != 0 )) \
+   && [[ ! -f "${acct_fail_dest}/VERSION" ]] \
+   && [[ -f "${acct_fail_dest}/.runtime-only" ]] \
+   && [[ "$acct_fail_out" == *'"ok": false'* || "$acct_fail_out" == *'"ok":false'* ]] \
+   && [[ "$acct_fail_out" != *'"ok": true'* && "$acct_fail_out" != *'"ok":true'* ]]; then
+  pass "restore fail-closes when accountd is not enabled/active and does not write VERSION"
+else
+  fail "restore fail-closes when accountd is not enabled/active (rc=${acct_fail_rc} out=${acct_fail_out})"
+fi
+
+prod_ok_dest="${restore_cli_root}/prod-ok"
+mkdir -p "$prod_ok_dest"
+printf 'runtime-only\n' > "${prod_ok_dest}/.runtime-only"
+prod_ok_rc=0
+prod_ok_out=$(
+  VCL_STATE_DIR="$prod_ok_dest" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${prod_ok_dest}/accounting.db" \
+  VCL_CONFIG_FILE="${prod_ok_dest}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${restore_cli_root}/health-sys/systemctl" \
+  VCL_SING_BOX_BIN=/nonexistent/sing-box \
+  VCL_RESTORE_SKIP_PORT=1 \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json --reissue-output "${restore_cli_root}/health-backups/prod-ok.csv" \
+      "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || prod_ok_rc=$?
+prod_ok_count=$(printf '%s\n' "$prod_ok_out" | grep -c '"ok": true\|"ok":true' || true)
+if (( prod_ok_rc == 0 )) && (( prod_ok_count == 1 )) \
+   && [[ -f "${prod_ok_dest}/VERSION" ]] \
+   && [[ ! -e "${prod_ok_dest}/.runtime-only" ]]; then
+  pass "deferred restore commits VERSION then emits a single ok:true JSON"
+else
+  fail "deferred restore commits VERSION then emits a single ok:true JSON (rc=${prod_ok_rc} count=${prod_ok_count} out=${prod_ok_out})"
+fi
+
+ver_rb_dest="${restore_cli_root}/ver-rb"
+mkdir -p "$ver_rb_dest"
+printf 'runtime-only\n' > "${ver_rb_dest}/.runtime-only"
+ver_rb_rc=0
+ver_rb_out=$(
+  VCL_STATE_DIR="$ver_rb_dest" \
+  VCL_BACKUP_ROOT="${restore_cli_root}/health-backups" \
+  VCL_ACCOUNTING_DB_FILE="${ver_rb_dest}/accounting.db" \
+  VCL_CONFIG_FILE="${ver_rb_dest}/sing-box-config.json" \
+  VCL_SYSTEMCTL="${restore_cli_root}/health-sys/systemctl" \
+  VCL_SING_BOX_BIN=/nonexistent/sing-box \
+  VCL_RESTORE_SKIP_PORT=1 \
+  VCL_RESTORE_FAIL_AFTER=version \
+  VCL_RESTORE_INSTANCE_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
+  VCL_RESTORE_REALITY_PRIVATE="cli-priv" \
+  VCL_RESTORE_REALITY_PUBLIC="cli-pub" \
+  VCL_RESTORE_REALITY_SHORT_ID="cafebabecafebabe" \
+  VCL_RESTORE_CLASH_SECRET="cli-clash" \
+    "${restore_cli_root}/bin/vincula" --json --reissue-output "${restore_cli_root}/health-backups/ver-rb.csv" \
+      "${BACKUP_DIR}/restore-src.tar" 2>/dev/null
+) || ver_rb_rc=$?
+if (( ver_rb_rc != 0 )) \
+   && [[ ! -f "${ver_rb_dest}/VERSION" ]] \
+   && [[ -f "${ver_rb_dest}/.runtime-only" ]] \
+   && [[ "$ver_rb_out" != *'"ok": true'* && "$ver_rb_out" != *'"ok":true'* ]]; then
+  pass "version-boundary rollback restores .runtime-only and removes VERSION"
+else
+  fail "version-boundary rollback restores .runtime-only (rc=${ver_rb_rc} marker=$(ls -a "$ver_rb_dest") out=${ver_rb_out})"
 fi
 
 # AC-3.0-05/06/07/10 from the earlier successful safe restore
@@ -6988,6 +7206,64 @@ if os.geteuid() != 0:
     assert_rolled_back(dest, keep, csv_path, None, None)
 retry_ok(dest, dest_db, csv_path)
 
+# P2-01: runtime-only marker is snapshotted and restored on version-boundary rollback
+rt = base / "p201-runtime"
+rt.mkdir()
+keep_rt = b'{"keep":"runtime"}\n'
+(rt / "state.json").write_bytes(keep_rt)
+(rt / ".runtime-only").write_text("runtime-only\n", encoding="utf-8")
+rt_csv = rt / "reissue.csv"
+rt_db = rt / "accounting.db"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "version"
+try:
+    mod.apply_restore(
+        restore_src, rt, dest_accounting_db=rt_db, reissue_output=rt_csv,
+        **keys,
+    )
+    raise AssertionError("version inject must fail")
+except mod.RestoreError as exc:
+    assert exc.code == "injected_failure"
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+assert not (rt / "VERSION").exists()
+assert (rt / ".runtime-only").is_file()
+assert (rt / "state.json").read_bytes() == keep_rt
+retry_rt = mod.apply_restore(
+    restore_src, rt, dest_accounting_db=rt_db, reissue_output=rt_csv, **keys,
+)
+assert retry_rt["ok"] is True
+assert (rt / "VERSION").is_file()
+assert not (rt / ".runtime-only").exists()
+
+# rollback_partial when systemctl restore fails
+partial_ctl, partial_state = install_fake_systemctl(base / "p201-partial-sys", initial)
+os.environ["VCL_SYSTEMCTL"] = str(partial_ctl)
+partial_dest = base / "p201-partial"
+partial_dest.mkdir()
+(partial_dest / "state.json").write_bytes(b'{"keep":"partial"}\n')
+partial_safety = base / "p201-partial-safety"
+os.environ["VCL_RESTORE_FAIL_AFTER"] = "canonical"
+# Break the fake systemctl so rollback enable/start fails
+partial_ctl.write_text(
+    "#!/usr/bin/env python3\nimport sys\nraise SystemExit(1)\n",
+    encoding="utf-8",
+)
+try:
+    mod.apply_restore(
+        restore_src, partial_dest, dest_accounting_db=partial_dest / "accounting.db",
+        safety_dir=partial_safety, manage_services=True, **keys,
+    )
+    raise AssertionError("canonical inject must fail")
+except mod.RestoreError:
+    pass
+finally:
+    os.environ.pop("VCL_RESTORE_FAIL_AFTER", None)
+marker_txt = (partial_safety / ".vincula-backup").read_text(encoding="utf-8")
+journal = json.loads((partial_safety / "restore-journal.json").read_text(encoding="utf-8"))
+assert "rollback_partial" in marker_txt or journal.get("rollback_status") == "rollback_partial", (
+    marker_txt, journal
+)
+
 os.environ.pop("VCL_SYSTEMCTL", None)
 PY
 then
@@ -6996,12 +7272,16 @@ then
   pass "restore VERSION EACCES inject rolls back credentials and CSV; retry succeeds"
   pass "restore chmod a-w CSV dir rolls back; retry succeeds"
   pass "restore failure restores original sing-box and accountd service state"
+  pass "version-boundary rollback restores .runtime-only marker"
+  pass "systemctl rollback failure is rollback_partial not rolled-back"
 else
   fail "restore FAIL_AFTER=canonical|csv|config|health|version fully rolls back (AC-3.0-12)"
   fail "restore csv ENOSPC inject leaves no VERSION and no reissue CSV; retry succeeds"
   fail "restore VERSION EACCES inject rolls back credentials and CSV; retry succeeds"
   fail "restore chmod a-w CSV dir rolls back; retry succeeds"
   fail "restore failure restores original sing-box and accountd service state"
+  fail "version-boundary rollback restores .runtime-only marker"
+  fail "systemctl rollback failure is rollback_partial not rolled-back"
 fi
 
 # P1-03 / B9: upgrade preflight captures service state before any mutation

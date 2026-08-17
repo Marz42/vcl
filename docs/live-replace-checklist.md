@@ -2,16 +2,17 @@
 
 **Status: NOT RUN.** This is the operator runbook for live VPS evidence.
 Filling [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) is what can raise
-the freeze-record recommendation from **NOT READY** toward **READY FOR RC**.
+the living-tree recommendation from **NOT READY** toward **READY FOR RC**.
 Fixture-green `node replace` (B10) is **not** that evidence.
 
 B14 (this pass) and B15 (localhost UI) are **deferred**. Do not mark AC-3.0-11
 PASS, and do not call the tree `READY FOR RC`, until the evidence directory
 is filled from a real two-VPS run.
 
-Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
-limitations: [`known-issues-0.3.0.md`](known-issues-0.3.0.md) ·
+Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
+limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·
 operator: [`fleet.md`](fleet.md) · [`backup.md`](backup.md).
+0.3.0 freeze record (read-only): [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 
 ## What this pass proves
 
@@ -334,6 +335,7 @@ Do **not** document or send node restore `--replace-node`.
 Do **not** install a finished bootstrap on NEW_HOST and then replace.
 
 When `docs/evidence/0.3.1-live/SUMMARY.md` is overall **PASS**, update
-[`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) and
-[`known-issues-0.3.0.md`](known-issues-0.3.0.md) in a later docs commit and
-re-evaluate the recommendation. Until then: **NOT READY**.
+[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) and
+[`known-issues-0.3.1.md`](known-issues-0.3.1.md) in a later docs commit and
+re-evaluate the recommendation. Do **not** rewrite the 0.3.0 freeze record.
+Until then: **NOT READY**.

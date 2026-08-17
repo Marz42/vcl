@@ -74,6 +74,7 @@ export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
 export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
 unset VCL_FAKE_STATE_DIR
 unset VCL_FAKE_FAIL_RESTORE
+unset VCL_FAKE_RESTORE_LIE_OK
 unset VCL_FAKE_FAIL_BACKUP
 unset VCL_FAKE_FAIL_SCP
 unset VCL_FAKE_REINSTALL
@@ -2899,25 +2900,41 @@ daily2 = conn.execute(
 ).fetchone()
 assert tuple(daily2) == (150, 260, 2), tuple(daily2)
 
-# Unlabeled rows skipped + counted; never stored.
+# Unlabeled rows fail the whole batch; cursor and prior rows unchanged.
+before_unlabeled = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+before_unlabeled_cur = conn.execute(
+    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()[0]
 unlabeled = [
     row(3, up=7, down=8),
     {**row(4), "node_id": ""},
     {**row(5), "node_id": None},
     {"event_id": 6, "user_id": "u-alice", "started_at": "2026-08-10T08:00:00Z"},
 ]
-skip = mod.import_audit_batch(node_id, instance_id, unlabeled, now_iso=now, conn=conn)
-assert skip["inserted"] == 1, skip
-assert skip["skipped_unlabeled"] == 3, skip
-assert skip["last_event_id"] == 3
-ids = [r[0] for r in conn.execute(
-    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
-)]
-assert ids == [1, 2, 3], ids
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf):
+        mod.import_audit_batch(node_id, instance_id, unlabeled, now_iso=now, conn=conn)
+    raise AssertionError("unlabeled rows must fail the batch")
+except SystemExit as exc:
+    assert exc.code == 1, exc.code
+    assert "missing node_id" in buf.getvalue(), buf.getvalue()
+after_unlabeled = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+after_unlabeled_cur = conn.execute(
+    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()[0]
+assert after_unlabeled == before_unlabeled == 2
+assert after_unlabeled_cur == before_unlabeled_cur == 2
 blank = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
 ).fetchone()[0]
 assert blank == 0, blank
+
+# Labeled continuation still works after a refused unlabeled batch.
+ok3 = mod.import_audit_batch(node_id, instance_id, [row(3, up=7, down=8)], now_iso=now, conn=conn)
+assert ok3["inserted"] == 1
+assert ok3["skipped_unlabeled"] == 0
+assert ok3["last_event_id"] == 3
 
 # Mismatch: whole batch fails, cursor and rows unchanged.
 before_count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
@@ -2967,9 +2984,9 @@ assert empty["last_event_id"] == 7
 conn.close()
 PY
 if (( import_batch_rc == 0 )); then
-  pass "import_audit_batch is atomic, idempotent, and skips unlabeled rows"
+  pass "import_audit_batch is atomic, idempotent, and rejects unlabeled rows"
 else
-  fail "import_audit_batch is atomic, idempotent, and skips unlabeled rows"
+  fail "import_audit_batch is atomic, idempotent, and rejects unlabeled rows"
 fi
 
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"
@@ -3410,52 +3427,66 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 conn = mod.open_fleet_db()
 before = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+before_cur = conn.execute(
+    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
 blank = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
 ).fetchone()[0]
 assert blank == 0
-result = mod.import_export_jsonl(
-    node_id,
-    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-    [
-        {
-            "event_id": 99,
-            "connection_id": "unlabeled",
-            "generation": 0,
-            "user_id": "u-alice",
-            "user_tag": "alice",
-            "node_id": "",
-            "started_at": "2026-08-12T08:00:00Z",
-            "last_seen_at": "2026-08-12T09:00:00Z",
-            "upload_bytes": 1,
-            "download_bytes": 1,
-        },
-        {
-            "event_id": 100,
-            "connection_id": "no-nid",
-            "generation": 0,
-            "user_id": "u-alice",
-            "started_at": "2026-08-12T08:00:00Z",
-            "last_seen_at": "2026-08-12T09:00:00Z",
-        },
-    ],
-    "2026-08-16T06:00:00Z",
-    conn=conn,
-)
-assert result["inserted"] == 0
-assert result["skipped_unlabeled"] == 2
+import io, contextlib
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf):
+        mod.import_export_jsonl(
+            node_id,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            [
+                {
+                    "event_id": 99,
+                    "connection_id": "unlabeled",
+                    "generation": 0,
+                    "user_id": "u-alice",
+                    "user_tag": "alice",
+                    "node_id": "",
+                    "started_at": "2026-08-12T08:00:00Z",
+                    "last_seen_at": "2026-08-12T09:00:00Z",
+                    "upload_bytes": 1,
+                    "download_bytes": 1,
+                },
+                {
+                    "event_id": 100,
+                    "connection_id": "no-nid",
+                    "generation": 0,
+                    "user_id": "u-alice",
+                    "started_at": "2026-08-12T08:00:00Z",
+                    "last_seen_at": "2026-08-12T09:00:00Z",
+                },
+            ],
+            "2026-08-16T06:00:00Z",
+            conn=conn,
+            next_cursor=100,
+        )
+    raise AssertionError("unlabeled jsonl must fail closed")
+except SystemExit as exc:
+    assert exc.code == 1
+    assert "missing node_id" in buf.getvalue()
 after = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+after_cur = conn.execute(
+    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()
 blank2 = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
 ).fetchone()[0]
-assert after == before == 4
+assert after == before
+assert tuple(after_cur) == tuple(before_cur)
 assert blank2 == 0
 conn.close()
 PY
 if (( unlabeled_rc == 0 )); then
-  pass "jsonl rows missing node_id are not stored"
+  pass "jsonl rows missing node_id fail closed and do not advance cursor"
 else
-  fail "jsonl rows missing node_id are not stored"
+  fail "jsonl rows missing node_id fail closed and do not advance cursor"
 fi
 
 validate_batch_rc=0
@@ -3574,6 +3605,34 @@ try:
 except ValueError as exc:
     assert "node_id" in str(exc), exc
 
+try:
+    mod.validate_export_batch(
+        meta(node_id=None), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("missing meta node_id must fail")
+except ValueError as exc:
+    assert "node_id is missing" in str(exc), exc
+
+try:
+    mod.validate_export_batch(
+        meta(instance_id=None), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("missing meta instance_id must fail")
+except ValueError as exc:
+    assert "instance_id is missing" in str(exc), exc
+
+missing_row = [row(6), {**row(7), "node_id": ""}, row(8)]
+try:
+    mod.validate_export_batch(
+        meta(), missing_row,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("missing row node_id must fail")
+except ValueError as exc:
+    assert "node_id is missing" in str(exc), exc
+
 # after=0 may start at any remaining min; rows must still be contiguous.
 from0 = meta(after=0, count=3, next_cursor=103, earliest_available_event_id=101, max_event_id=103)
 assert mod.validate_export_batch(
@@ -3582,9 +3641,151 @@ assert mod.validate_export_batch(
 ) == 103
 PY
 if (( validate_batch_rc == 0 )); then
-  pass "validate_export_batch rejects lying count/next_cursor/gaps"
+  pass "validate_export_batch rejects lying count/next_cursor/gaps and missing identity"
 else
-  fail "validate_export_batch rejects lying count/next_cursor/gaps"
+  fail "validate_export_batch rejects lying count/next_cursor/gaps and missing identity"
+fi
+
+stamp_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-audit.py" <<'PY' || stamp_rc=$?
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("vincula_audit", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+rows = [
+    {"event_id": 1, "node_id": "", "instance_id": None},
+    {"event_id": 2},
+]
+mod.stamp_export_rows(rows, node_id=nid, instance_id=iid)
+assert rows[0]["node_id"] == nid
+assert rows[0]["instance_id"] == iid
+assert rows[1]["node_id"] == nid
+assert rows[1]["instance_id"] == iid
+try:
+    mod.stamp_export_rows(
+        [{"event_id": 3, "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}],
+        node_id=nid, instance_id=iid,
+    )
+    raise AssertionError("mismatch must fail")
+except SystemExit:
+    pass
+PY
+if (( stamp_rc == 0 )); then
+  pass "stamp_export_rows fills missing identity and refuses mismatch"
+else
+  fail "stamp_export_rows fills missing identity and refuses mismatch"
+fi
+
+assert_success "reseed remote export can pass --stamp-identity" \
+  grep -q -- '--stamp-identity' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+UNLAB_HOME="${TEST_TMP}/fleet-home-unlab"
+UNLAB_STATE="${TEST_TMP}/fake-unlab-state"
+SAVED_UNLAB_HOME="${VCL_FLEET_HOME-}"
+SAVED_UNLAB_STATE="${VCL_FAKE_STATE_DIR-}"
+export VCL_FLEET_HOME="$UNLAB_HOME"
+export VCL_FAKE_STATE_DIR="$UNLAB_STATE"
+mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax"
+cp "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" "${VCL_FAKE_STATE_DIR}/lax/identity.json"
+assert_success "unlabeled-sync fleet init" fleet init
+assert_success "unlabeled-sync offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+unlab_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$VCL_FAKE_STATE_DIR" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY' || unlab_seed_rc=$?
+import importlib.util, json, sys
+from pathlib import Path
+
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "unlab-1", 0, "u-alice", "", None, "alice",
+        "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+        "example.com", "203.0.113.10", 443, "tcp", 1, 1,
+    ),
+)
+conn.commit()
+conn.close()
+PY
+if (( unlab_seed_rc == 0 )); then
+  pass "unlabeled-sync fixture seeded empty node_id row"
+else
+  fail "unlabeled-sync fixture seeded empty node_id row"
+fi
+
+unlab_sync_rc=0
+unlab_sync_out=$(fleet sync --node lax --json 2>/dev/null) || unlab_sync_rc=$?
+unlab_sync_check=0
+python3 - "$unlab_sync_out" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || unlab_sync_check=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+row = doc["nodes"][0]
+assert row["status"] == "error", row
+assert "node_id" in (row.get("error") or ""), row
+assert row.get("remediation")
+conn = sqlite3.connect(str(home / "fleet.db"))
+cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+conn.close()
+assert count == 0
+assert cur is None or int(cur[0]) == 0
+PY
+if (( unlab_sync_rc != 0 && unlab_sync_check == 0 )); then
+  pass "normal sync fails closed on unlabeled export rows and does not advance cursor"
+else
+  fail "normal sync fails closed on unlabeled export rows (rc=${unlab_sync_rc} check=${unlab_sync_check} out=${unlab_sync_out})"
+fi
+
+unlab_reseed_rc=0
+unlab_reseed_out=$(fleet sync --reseed lax --json 2>/dev/null) || unlab_reseed_rc=$?
+unlab_reseed_check=0
+python3 - "$unlab_reseed_out" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || unlab_reseed_check=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+assert doc["ok"] is True, doc
+row = doc["nodes"][0]
+assert row["status"] == "ok", row
+assert int(row["inserted"]) >= 1
+conn = sqlite3.connect(str(home / "fleet.db"))
+count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
+conn.close()
+assert count >= 1
+assert cur is not None and int(cur[0]) >= 1
+PY
+if (( unlab_reseed_rc == 0 && unlab_reseed_check == 0 )); then
+  pass "reseed --stamp-identity imports previously unlabeled rows"
+else
+  fail "reseed --stamp-identity imports previously unlabeled rows (rc=${unlab_reseed_rc} check=${unlab_reseed_check} out=${unlab_reseed_out})"
+fi
+export VCL_FLEET_HOME="$SAVED_UNLAB_HOME"
+if [[ -n "$SAVED_UNLAB_STATE" ]]; then
+  export VCL_FAKE_STATE_DIR="$SAVED_UNLAB_STATE"
+else
+  unset VCL_FAKE_STATE_DIR
 fi
 
 P104_FLEET_HOME="${TEST_TMP}/fleet-home-p104"
@@ -6056,6 +6257,21 @@ else
   fail "restore fail leaves old node active, still serving original credentials"
 fi
 unset VCL_FAKE_FAIL_RESTORE
+
+lie_restore_rc=0
+lie_restore_err=$(VCL_FAKE_RESTORE_LIE_OK=lax2 fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" 2>&1) \
+  || lie_restore_rc=$?
+if (( lie_restore_rc != 0 )) && [[ "$lie_restore_err" == *"restore failed"* || "$lie_restore_err" == *"remote exit"* ]]; then
+  pass "replace rejects restore ok:true with non-zero exit"
+else
+  fail "replace rejects restore ok:true with non-zero exit (rc=${lie_restore_rc} err=${lie_restore_err})"
+fi
+if assert_replace_aborted "after restore lie-ok"; then
+  pass "restore lie-ok leaves registry unchanged"
+else
+  fail "restore lie-ok leaves registry unchanged"
+fi
+unset VCL_FAKE_RESTORE_LIE_OK
 
 fail_verify_rc=0
 fail_verify_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" \

@@ -14,8 +14,10 @@ Restore is fresh-node only: a target with VERSION is refused. Safe mode mints a
 new instance_id and rotates Reality/Clash/VLESS credentials; secrets mode
 reuses those secrets but still mints a new instance_id. apply_restore is one
 transaction: canonical files, accounting.db, generated config, reissue CSV,
-and the VERSION commit marker. Failure rolls back those files and the original
-sing-box / accountd enabled+active snapshot captured before mutation.
+and the VERSION commit marker. Failure rolls back those files, the
+.runtime-only marker, and the original sing-box / accountd enabled+active
+snapshot captured before mutation. Incomplete systemd rollback is
+rollback_partial, never an unconditional rolled-back.
 
 Accounting snapshots use sqlite3.Connection.backup() so a live WAL writer
 (accountd) is safe. Do not copy live database files.
@@ -1404,28 +1406,39 @@ def capture_service_state() -> Dict[str, int]:
     }
 
 
-def apply_service_state(state: Mapping[str, Any]) -> None:
-    """Restore enable/active exactly. Do not start a unit that was inactive."""
+def apply_service_state(state: Mapping[str, Any]) -> List[str]:
+    """Restore enable/active exactly. Do not start a unit that was inactive.
+
+    Returns a list of failed systemctl operations. Empty means complete.
+    """
+    errors: List[str] = []
+
+    def _run(argv: Sequence[str], label: str) -> None:
+        rc = _systemctl_run(list(argv))
+        if rc != 0:
+            errors.append(f"{label} failed (exit {rc})")
+
     sing_enabled = int(state.get("sing_enabled") or 0)
     sing_active = int(state.get("sing_active") or 0)
     acct_enabled = int(state.get("acct_enabled") or 0)
     acct_active = int(state.get("acct_active") or 0)
     if sing_enabled:
-        _systemctl_run(["enable", "sing-box.service"])
+        _run(["enable", "sing-box.service"], "enable sing-box.service")
     else:
-        _systemctl_run(["disable", "sing-box.service"])
+        _run(["disable", "sing-box.service"], "disable sing-box.service")
     if sing_active:
-        _systemctl_run(["start", "sing-box.service"])
+        _run(["start", "sing-box.service"], "start sing-box.service")
     else:
-        _systemctl_run(["stop", "sing-box.service"])
+        _run(["stop", "sing-box.service"], "stop sing-box.service")
     if acct_enabled:
-        _systemctl_run(["enable", "vincula-accountd.service"])
+        _run(["enable", "vincula-accountd.service"], "enable vincula-accountd.service")
     else:
-        _systemctl_run(["disable", "vincula-accountd.service"])
+        _run(["disable", "vincula-accountd.service"], "disable vincula-accountd.service")
     if acct_active:
-        _systemctl_run(["start", "vincula-accountd.service"])
+        _run(["start", "vincula-accountd.service"], "start vincula-accountd.service")
     else:
-        _systemctl_run(["stop", "vincula-accountd.service"])
+        _run(["stop", "vincula-accountd.service"], "stop vincula-accountd.service")
+    return errors
 
 
 def _write_service_state_file(path: Path, state: Mapping[str, Any]) -> None:
@@ -1544,6 +1557,10 @@ def _safety_copy_existing(
         if src.is_file():
             shutil.copy2(src, safety_dir / name)
             copied.append(name)
+    runtime_marker = dest_state_dir / ".runtime-only"
+    if runtime_marker.is_file() or runtime_marker.is_symlink():
+        shutil.copy2(runtime_marker, safety_dir / ".runtime-only")
+        copied.append(".runtime-only")
     if dest_accounting_db is not None and Path(dest_accounting_db).is_file():
         snapshot_sqlite(Path(dest_accounting_db), safety_dir / "accounting.db")
         copied.append("accounting.db")
@@ -1565,11 +1582,15 @@ def rollback_restore(
     csv_path: Optional[Path] = None,
     service_state: Optional[Mapping[str, Any]] = None,
     manage_services: Optional[bool] = None,
-) -> None:
+) -> Dict[str, Any]:
     """Copy the safety tree back; remove dest files that were not in the backup.
 
     Also drops a newly written reissue CSV, restores generated config.json,
-    and reapplies the pre-restore systemd enabled/active snapshot.
+    restores the pre-restore .runtime-only marker, and reapplies the
+    pre-restore systemd enabled/active snapshot.
+
+    Returns {"ok", "status", "errors"}. status is rolled-back only when
+    every step succeeded; systemctl failures are rollback_partial.
     """
     safety = Path(safety_dir)
     dest_state_dir = Path(dest_state_dir)
@@ -1590,6 +1611,20 @@ def rollback_restore(
             _write_private(dest, src.read_bytes(), 0o600)
         elif name in written_names and dest.exists():
             dest.unlink()
+    if not (safety / "VERSION").is_file():
+        leftover_version = dest_state_dir / "VERSION"
+        if leftover_version.exists() or leftover_version.is_symlink():
+            leftover_version.unlink()
+    src_marker = safety / ".runtime-only"
+    dest_marker = dest_state_dir / ".runtime-only"
+    if src_marker.is_file() or src_marker.is_symlink():
+        dest_state_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_marker, dest_marker)
+        os.chmod(dest_marker, 0o600)
+    elif journal.get("had_runtime_only"):
+        dest_state_dir.mkdir(parents=True, exist_ok=True)
+        dest_marker.write_text("runtime-only\n", encoding="utf-8")
+        os.chmod(dest_marker, 0o600)
     if dest_accounting_db is not None:
         db_dest = Path(dest_accounting_db)
         db_src = safety / "accounting.db"
@@ -1617,10 +1652,20 @@ def rollback_restore(
         snapshot = _read_service_state_file(safety / "SERVICE_STATE") if safety.is_dir() else {}
         if journal.get("service_state"):
             snapshot = journal["service_state"]
+    errors: List[str] = []
     if manage_services:
-        apply_service_state(snapshot or {})
+        errors.extend(apply_service_state(snapshot or {}))
+    status = "rolled-back" if not errors else "rollback_partial"
+    if errors:
+        journal["rollback_status"] = status
+        journal["rollback_errors"] = list(errors)
+        if safety.is_dir():
+            _write_restore_journal(safety, journal)
+        for err in errors:
+            print(f"ERROR: rollback_partial: {err}", file=sys.stderr)
     if safety.is_dir():
-        write_restore_marker(safety, "restore-rollback", status="rolled-back")
+        write_restore_marker(safety, "restore-rollback", status=status)
+    return {"ok": not errors, "status": status, "errors": errors}
 
 
 def _load_verified_members(
@@ -1768,6 +1813,7 @@ def apply_restore(
 
     written: List[str] = []
     csv_path: Optional[Path] = None
+    runtime_marker = dest_state_dir / ".runtime-only"
     journal: Dict[str, Any] = {
         "written": written,
         "csv_path": None,
@@ -1775,6 +1821,7 @@ def apply_restore(
         "dest_accounting_db": str(dest_accounting_db) if dest_accounting_db else None,
         "service_state": original_services,
         "manage_services": bool(manage_services),
+        "had_runtime_only": runtime_marker.is_file() or runtime_marker.is_symlink(),
     }
     _write_restore_journal(safety_path, journal)
 
@@ -2035,13 +2082,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
     if args.command == "rollback":
-        rollback_restore(
+        result = rollback_restore(
             Path(args.safety_dir),
             Path(args.target_state_dir),
             Path(args.target_accounting_db) if args.target_accounting_db else None,
             dest_config_file=Path(args.target_config_file) if args.target_config_file else None,
             csv_path=Path(args.reissue_output) if args.reissue_output else None,
         )
+        if not result.get("ok"):
+            return 1
         return 0
     if args.command == "commit-version":
         version = args.project_version or os.environ.get("VINCULA_VERSION") or "0.3.0"

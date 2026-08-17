@@ -172,7 +172,7 @@ identity. Finish on that host with:
 
 The normal installation path is non-interactive. Existing vincula v0.3.1-dev
 credentials are preserved when the script is run again. Older 0.1.x and
-0.2.0–0.2.9 installations are migrated in place without rotating UUID or REALITY keys.
+0.2.0–0.3.0 installations are migrated in place without rotating UUID or REALITY keys.
 Use 'vcl uninstall' to remove a Vincula-managed installation.
 USAGE
 }
@@ -495,7 +495,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2006,7 +2006,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.2.9 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.3.0 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {

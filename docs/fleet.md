@@ -14,8 +14,9 @@ SPEC `vcl fleet <sub>` **≡** this binary: `vcl-fleet <sub>`. The node helper
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
-[`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
+[`known-issues-0.3.1.md`](known-issues-0.3.1.md)
+(0.3.0 freeze record: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)).
 Live two-VPS replace (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
 
 ## Prerequisites
@@ -341,12 +342,18 @@ Default scope: `status==active` nodes. Retired nodes are skipped (and
 identity --json (registry node_id must match; instance_id change → WARN, still sync)
 → read sync_cursor (missing → after=0)
 → SSH vcl audit export --after CUR --jsonl
+   (`--reseed` also passes `--stamp-identity`; normal sync does not)
 → import INSERT OR IGNORE in one transaction; rebuild that node's daily_usage
 → advance cursor only after COMMIT
 ```
 
-Rows without `node_id` are dropped (WARN) and never merged into stats/audit.
-`instance_id` NULL historical rows may import when `node_id` is present.
+Every JSONL row and export meta must carry a `node_id` that matches identity.
+Missing or mismatched identity **fails the whole batch**: no import, cursor
+unchanged, overall exit **2**, remediation `vcl-fleet sync --reseed NAME`.
+`--reseed` is the only stamp path: remote `vcl audit export --stamp-identity`
+fills **missing** row `node_id` / `instance_id` (does not write `accounting.db`).
+Already-labeled but mismatched rows still fail. Query still ignores unlabeled
+rows already in `fleet.db`.
 
 ### `CURSOR_EXPIRED` (remote exit 3)
 
@@ -355,8 +362,9 @@ after+1`, or empty DB), the node reports `CURSOR_EXPIRED`. The controller
 does **not** import a hole: cursor `status=expired`, overall exit **2**,
 remediation `vcl-fleet sync --reseed NAME`. `--reseed NAME` deletes that
 node's local `audit_events` + `daily_usage`, resets `last_event_id=0`, then
-pulls `--after 0` (the remaining window). Reseed is **not** a backup;
-`instance_history` is **not** erased.
+pulls `--after 0` (the remaining window) with `--stamp-identity`. Reseed is **not** a backup;
+`instance_history` is **not** erased. Unlabeled rows on a normal sync also
+point here; they do not skip-and-advance.
 
 ### `CURSOR_AHEAD` (remote exit 3, distinct `meta.error`)
 

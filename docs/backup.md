@@ -1,8 +1,9 @@
 # Backup, restore, and replace (0.3.0)
 
 Node **identity / audit archives** and physical-instance replacement.
-Gate: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) ·
-[`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
+[`known-issues-0.3.1.md`](known-issues-0.3.1.md)
+(0.3.0 freeze record: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)).
 Fleet replace: [`fleet.md`](fleet.md). Identity: [`identity.md`](identity.md).
 Live two-VPS runbook (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
 
@@ -276,12 +277,17 @@ secrets and the physical instance.
 6. write reissue CSV 0600 to --reissue-output (tmp + fsync); render sing-box
    config.json from staged users+state; validate (`sing-box check`)
 7. atomic install staged files (canonical, accounting.db, generated config, CSV).
-   VERSION is the commit marker and is written **last**
-8. enable sing-box + accountd → health. Failure → roll target back from
-   pre-restore-* (canonical, DB, generated config, CSV, VERSION, **and** the
-   original service enabled/active snapshot). Never edit FILE; never touch the
-   source node
-9. success → safety marker status=committed
+   VERSION is **not** committed yet
+8. `daemon-reload`; `enable --now` **both** sing-box and accountd; `is-enabled`
+   / `is-active` for both; `wait_healthy`. Any failure → roll target back from
+   pre-restore-* (canonical, DB, generated config, CSV, `.runtime-only` if it
+   was present, **and** the original service enabled/active snapshot). No
+   VERSION. `--json` emits one `{"ok":false,...}` and exits non-zero. Never
+   edit FILE; never touch the source node
+9. **then** commit VERSION. `--json` emits one `{"ok":true,...}` only after
+   that commit. Incomplete systemd rollback is `rollback_partial`, not a silent
+   `rolled-back`
+10. success → safety marker status=committed
     (default CSV path $BACKUP_ROOT/reissue-<UTC>.csv)
 ```
 

@@ -745,11 +745,11 @@ def import_audit_batch(
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. Idempotent via INSERT OR IGNORE.
 
-    Unlabeled rows (missing/empty node_id) are skipped and counted; they are
-    never merged. A labeled row whose node_id does not match the batch
-    node_id fails the whole import and leaves the cursor unchanged.
-    When next_cursor is set (sync path), the cursor is written to that
-    remote-declared value rather than local MAX(event_id).
+    Every row must carry a node_id that matches the batch node_id. Unlabeled
+    rows fail the whole import and leave the cursor unchanged. A labeled
+    row whose node_id does not match also fails closed. When next_cursor is
+    set (sync path), the cursor is written to that remote-declared value
+    rather than local MAX(event_id).
     """
     validate_node_id(node_id)
     inst = _optional_text(instance_id)
@@ -761,25 +761,17 @@ def import_audit_batch(
     if now_iso is None:
         now_iso = format_utc(datetime.now(timezone.utc))
 
-    skipped_unlabeled = 0
     labeled: list[dict[str, Any]] = []
     for row in rows:
         row_nid = _row_node_id(row)
         if row_nid is None:
-            skipped_unlabeled += 1
-            continue
+            die("refusing audit import: row missing node_id")
         if row_nid != node_id:
             die(
                 "audit import node_id mismatch: "
                 f"expected {node_id}, got {row_nid}"
             )
         labeled.append(row)
-
-    if skipped_unlabeled:
-        sys.stderr.write(
-            f"WARNING: skipped {skipped_unlabeled} unlabeled audit row(s) "
-            "(missing node_id)\n"
-        )
 
     own = conn is None
     if own:
@@ -841,7 +833,7 @@ def import_audit_batch(
             "ok": True,
             "inserted": inserted,
             "ignored": ignored,
-            "skipped_unlabeled": skipped_unlabeled,
+            "skipped_unlabeled": 0,
             "last_event_id": last_event_id,
             "status": SYNC_STATUS_OK,
         }
@@ -946,19 +938,20 @@ def validate_export_batch(
         raise ValueError("export meta count is negative")
 
     meta_nid = _optional_text(meta.get("node_id"))
-    if meta_nid is not None and meta_nid != expected_node_id:
+    if meta_nid is None:
+        raise ValueError("export meta node_id is missing")
+    if meta_nid != expected_node_id:
         raise ValueError(
             f"export meta node_id={meta_nid} != {expected_node_id}"
         )
     meta_iid = _optional_text(meta.get("instance_id"))
-    if (
-        expected_instance_id
-        and meta_iid is not None
-        and meta_iid != expected_instance_id
-    ):
-        raise ValueError(
-            f"export meta instance_id={meta_iid} != {expected_instance_id}"
-        )
+    if expected_instance_id:
+        if meta_iid is None:
+            raise ValueError("export meta instance_id is missing")
+        if meta_iid != expected_instance_id:
+            raise ValueError(
+                f"export meta instance_id={meta_iid} != {expected_instance_id}"
+            )
 
     event_ids: list[int] = []
     for i, row in enumerate(delivered):
@@ -970,7 +963,9 @@ def validate_export_batch(
         event_ids.append(eid)
 
         row_nid = _row_node_id(row)
-        if row_nid is not None and row_nid != expected_node_id:
+        if row_nid is None:
+            raise ValueError(f"JSONL row {i} node_id is missing")
+        if row_nid != expected_node_id:
             raise ValueError(
                 f"JSONL row {i} node_id={row_nid} != {expected_node_id}"
             )
@@ -2049,6 +2044,7 @@ def disable_remote_users_except_last(
             node,
             ["vcl", "user", "disable", tag, "--json"],
             timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+            require_exit_0=True,
         )
         ok = (
             ssh_state == "OK"
@@ -2363,6 +2359,7 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             old_node,
             ["vcl", "backup", "create", "--json"],
             timeout=SSH_BACKUP_TIMEOUT_SECONDS,
+            require_exit_0=True,
         )
         if (
             ssh_state != "OK"
@@ -2402,6 +2399,7 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         restore_cmd,
         extra=extra,
         timeout=SSH_BACKUP_TIMEOUT_SECONDS,
+        require_exit_0=True,
     )
     if (
         ssh_state != "OK"
@@ -2687,12 +2685,15 @@ def ssh_remote_json(
     *,
     timeout: float = SSH_TIMEOUT_SECONDS,
     extra: list[str] | None = None,
+    require_exit_0: bool = False,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
     SSH unreachable (exit 255 / timeout / connect failure) → ssh FAIL.
     Remote vcl status/verify may exit 1 with valid JSON; that is SSH OK.
-    Mutation commands (user add/rotate) pass timeout=SSH_MUTATION_TIMEOUT_SECONDS.
+    Mutation commands (restore, backup create, user add/rotate/disable)
+    pass require_exit_0=True: any non-zero remote exit is FAIL even if
+    stdout is valid JSON.
     """
     proc = ssh_run(
         node["ssh_host"],
@@ -2707,6 +2708,12 @@ def ssh_remote_json(
     if proc.returncode == 255:
         return "FAIL", None, detail
     payload = _stdout_json(proc)
+    if require_exit_0 and proc.returncode != 0:
+        return (
+            "FAIL",
+            payload if isinstance(payload, dict) else None,
+            detail or f"remote exit {proc.returncode}",
+        )
     if not isinstance(payload, dict):
         return "OK", None, detail or "remote JSON missing or invalid"
     return "OK", payload, detail if proc.returncode != 0 else ""
@@ -3471,7 +3478,7 @@ def provision_user_on_node(
     if department:
         remote.extend(["--department", department])
     ssh_state, payload, detail = ssh_remote_json(
-        node, remote, timeout=SSH_MUTATION_TIMEOUT_SECONDS
+        node, remote, timeout=SSH_MUTATION_TIMEOUT_SECONDS, require_exit_0=True
     )
     if ssh_state != "OK":
         return _node_result_row(node, False, _ssh_error(255, detail))
@@ -3770,6 +3777,7 @@ def cmd_user_enable_disable(args: argparse.Namespace, *, enabled: bool) -> int:
         node,
         ["vcl", "user", action, tag, "--json"],
         timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+        require_exit_0=True,
     )
     if ssh_state != "OK":
         die(_ssh_error(255, detail))
@@ -3804,6 +3812,7 @@ def cmd_user_rotate(args: argparse.Namespace) -> int:
         node,
         ["vcl", "user", "rotate", tag, "--json"],
         timeout=SSH_MUTATION_TIMEOUT_SECONDS,
+        require_exit_0=True,
     )
     if ssh_state != "OK":
         die(_ssh_error(255, detail))
@@ -4185,6 +4194,11 @@ def _sync_result(
     }
     if status == SYNC_STATUS_EXPIRED or error == "CURSOR_AHEAD":
         row["remediation"] = remediation_sync_reseed(node["name"])
+    elif status == SYNC_STATUS_ERROR and error and (
+        "node_id" in error or "instance_id" in error or "unlabeled" in error
+        or "missing node_id" in error
+    ):
+        row["remediation"] = remediation_sync_reseed(node["name"])
     return row
 
 
@@ -4209,13 +4223,19 @@ def sync_target_nodes(
 
 
 def ssh_audit_export(
-    node: dict[str, Any], after: int
+    node: dict[str, Any],
+    after: int,
+    *,
+    stamp_identity: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    remote = ["vcl", "audit", "export", "--after", str(after), "--jsonl"]
+    if stamp_identity:
+        remote.append("--stamp-identity")
     return ssh_run(
         node["ssh_host"],
         node["ssh_user"],
         node["ssh_port"],
-        ["vcl", "audit", "export", "--after", str(after), "--jsonl"],
+        remote,
         batch=True,
         timeout=SSH_TIMEOUT_SECONDS,
     )
@@ -4226,6 +4246,7 @@ def sync_one_node(
     node: dict[str, Any],
     *,
     now_iso: str,
+    stamp_identity: bool = False,
 ) -> dict[str, Any]:
     """Sync one node. Cursor advances only after a successful import commit.
 
@@ -4312,7 +4333,7 @@ def sync_one_node(
             now_iso=now_iso,
         )
 
-    proc = ssh_audit_export(node, after)
+    proc = ssh_audit_export(node, after, stamp_identity=stamp_identity)
     detail = _ssh_failure_detail(proc)
     meta = parse_export_meta(proc.stderr or "")
     earliest = None if meta is None else meta.get("earliest_available_event_id")
@@ -4571,7 +4592,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
                     f"reseed {reseed_name}: local audit_events and "
                     "daily_usage deleted; cursor=0\n"
                 )
-        rows = [sync_one_node(conn, node, now_iso=now_iso) for node in targets]
+        rows = [
+            sync_one_node(
+                conn,
+                node,
+                now_iso=now_iso,
+                stamp_identity=bool(reseed_name and node.get("name") == reseed_name),
+            )
+            for node in targets
+        ]
     finally:
         conn.close()
 

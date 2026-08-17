@@ -2581,7 +2581,7 @@ resolve_audit_py() {
 }
 
 cmd_audit_export() {
-  local after="" jsonl=0 limit="" audit_py node_id instance_id
+  local after="" jsonl=0 limit="" audit_py node_id instance_id stamp_identity=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2594,6 +2594,10 @@ cmd_audit_export() {
         jsonl=1
         shift
         ;;
+      --stamp-identity)
+        stamp_identity=1
+        shift
+        ;;
       --limit)
         [[ $# -ge 2 ]] || die "audit export --limit requires N"
         limit=$2
@@ -2603,12 +2607,13 @@ cmd_audit_export() {
         cat <<'HELP'
 vcl audit export — incremental connection dump (durable event_id cursor)
 
-  vcl audit export --after EVENT_ID --jsonl [--limit N]
+  vcl audit export --after EVENT_ID --jsonl [--limit N] [--stamp-identity]
 
 --after is exclusive (0 = from the beginning of the available window).
 Stdout is JSONL (one connection object per line). Stderr is one JSON meta line.
 If retention deleted rows after a non-zero cursor, exit 3 with CURSOR_EXPIRED.
 If the cursor is past MAX(event_id), exit 3 with CURSOR_AHEAD (distinct meta.error).
+--stamp-identity fills missing row node_id/instance_id from this node (reseed only).
 HELP
         return 0
         ;;
@@ -2641,6 +2646,7 @@ HELP
   )
   [[ -n "$instance_id" ]] && args+=(--instance-id "$instance_id")
   [[ -n "$limit" ]] && args+=(--limit "$limit")
+  (( stamp_identity )) && args+=(--stamp-identity)
 
   python3 "${args[@]}"
 }
@@ -2923,8 +2929,8 @@ rollback_restore_target() {
     if [[ -n "${reissue_output:-}" ]]; then
       rb_args+=(--reissue-output "$reissue_output")
     fi
-    python3 "${rb_args[@]}" >/dev/null || true
-    return 0
+    python3 "${rb_args[@]}"
+    return $?
   fi
   for name in state.json users.json config.toml VERSION owner.uri; do
     if [[ -f "${safety}/${name}" ]]; then
@@ -2960,41 +2966,53 @@ rollback_restore_target() {
   if [[ -n "${reissue_output:-}" && -e "$reissue_output" ]]; then
     rm -f "$reissue_output"
   fi
+  if [[ -f "${safety}/.runtime-only" ]]; then
+    install -m 0600 "${safety}/.runtime-only" "${STATE_DIR}/.runtime-only"
+  fi
+  if [[ ! -f "${safety}/VERSION" ]]; then
+    rm -f "$VERSION_FILE"
+  fi
+  local rb_errors=0
   if [[ -f "${safety}/SERVICE_STATE" ]]; then
     local sing_enabled=0 sing_active=0 acct_enabled=0 acct_active=0
     # shellcheck disable=SC1091
     source "${safety}/SERVICE_STATE" || true
     local ctl=${VCL_SYSTEMCTL:-systemctl}
     if (( sing_enabled == 1 )); then
-      "$ctl" enable sing-box.service >/dev/null 2>&1 || true
+      "$ctl" enable sing-box.service >/dev/null 2>&1 || rb_errors=1
     else
-      "$ctl" disable sing-box.service >/dev/null 2>&1 || true
+      "$ctl" disable sing-box.service >/dev/null 2>&1 || rb_errors=1
     fi
     if (( sing_active == 1 )); then
-      "$ctl" start sing-box.service >/dev/null 2>&1 || true
+      "$ctl" start sing-box.service >/dev/null 2>&1 || rb_errors=1
     else
-      "$ctl" stop sing-box.service >/dev/null 2>&1 || true
+      "$ctl" stop sing-box.service >/dev/null 2>&1 || rb_errors=1
     fi
     if (( acct_enabled == 1 )); then
-      "$ctl" enable vincula-accountd.service >/dev/null 2>&1 || true
+      "$ctl" enable vincula-accountd.service >/dev/null 2>&1 || rb_errors=1
     else
-      "$ctl" disable vincula-accountd.service >/dev/null 2>&1 || true
+      "$ctl" disable vincula-accountd.service >/dev/null 2>&1 || rb_errors=1
     fi
     if (( acct_active == 1 )); then
-      "$ctl" start vincula-accountd.service >/dev/null 2>&1 || true
+      "$ctl" start vincula-accountd.service >/dev/null 2>&1 || rb_errors=1
     else
-      "$ctl" stop vincula-accountd.service >/dev/null 2>&1 || true
+      "$ctl" stop vincula-accountd.service >/dev/null 2>&1 || rb_errors=1
     fi
   fi
   if [[ -f "${safety}/.vincula-backup" ]]; then
-    printf 'status=rolled-back\n' >> "${safety}/.vincula-backup"
+    if (( rb_errors == 0 )); then
+      printf 'status=rolled-back\n' >> "${safety}/.vincula-backup"
+    else
+      printf 'status=rollback_partial\n' >> "${safety}/.vincula-backup"
+    fi
   fi
+  return "$rb_errors"
 }
 
 cmd_restore() {
   local file="" identity="" reissue_output="" include_secrets=0 server="" json=0
   local backup_py stamp safety instance_id private_key public_key short_id clash_secret
-  local key_output restore_rc port
+  local key_output restore_rc port restore_out
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3108,54 +3126,121 @@ cmd_restore() {
   (( defer_version )) && args+=(--defer-version)
   (( manage_services )) && args+=(--manage-services)
 
+  restore_out=""
   restore_rc=0
-  python3 "${args[@]}" || restore_rc=$?
+  restore_out=$(python3 "${args[@]}") || restore_rc=$?
+
+  emit_restore_failure_json() {
+    local error=$1
+    if (( json )); then
+      python3 -c 'import json,sys; print(json.dumps({"schema_version":1,"ok":False,"error":sys.argv[1]},ensure_ascii=False,indent=2))' "$error"
+    fi
+  }
+
+  emit_restore_success() {
+    if (( json )); then
+      if [[ -z "$restore_out" ]]; then
+        emit_restore_failure_json "failed"
+        return 1
+      fi
+      printf '%s\n' "$restore_out" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+doc = json.loads(raw)
+if not isinstance(doc, dict):
+    raise SystemExit(1)
+doc["ok"] = True
+doc.pop("version_pending", None)
+print(json.dumps(doc, ensure_ascii=False, indent=2))
+'
+    else
+      [[ -n "$restore_out" ]] && printf '%s\n' "$restore_out"
+    fi
+  }
+
+  restore_abort() {
+    local msg=$1
+    local error=${2:-failed}
+    local rb_rc=0
+    rollback_restore_target "$safety" || rb_rc=$?
+    if (( rb_rc != 0 )); then
+      error="rollback_partial"
+      msg="${msg} rollback_partial from ${safety}."
+    fi
+    emit_restore_failure_json "$error"
+    die "$msg"
+  }
+
   if (( restore_rc != 0 )); then
+    if [[ -n "$restore_out" ]]; then
+      printf '%s\n' "$restore_out"
+    elif (( json )); then
+      emit_restore_failure_json "failed"
+    fi
     return "$restore_rc"
   fi
 
   if (( skip_health )); then
+    emit_restore_success
     return 0
   fi
 
   # Test-only: VCL_RESTORE_FAIL_AFTER=health is not documented in --help.
   if [[ "${VCL_RESTORE_FAIL_AFTER:-}" == "health" ]]; then
-    rollback_restore_target "$safety" || true
-    die "restore health check failed (injected); rolled back from ${safety}."
+    restore_abort "restore health check failed (injected); rolled back from ${safety}." "injected_failure"
   fi
 
   local ctl=${VCL_SYSTEMCTL:-systemctl}
   install -d -m 0750 "$(dirname -- "$CONFIG_FILE")"
   if ! render_config_from_registry "$CONFIG_FILE" "$USERS_FILE"; then
-    rollback_restore_target "$safety" || true
-    die "failed to render sing-box config after restore; rolled back from ${safety}."
+    restore_abort "failed to render sing-box config after restore; rolled back from ${safety}." "config_render_failed"
   fi
   if [[ -x "$BINARY_PATH" ]]; then
     if ! "$BINARY_PATH" check -c "$CONFIG_FILE" >/dev/null; then
-      rollback_restore_target "$safety" || true
-      die "sing-box check failed after restore; rolled back from ${safety}."
+      restore_abort "sing-box check failed after restore; rolled back from ${safety}." "config_check_failed"
     fi
   fi
-  "$ctl" daemon-reload >/dev/null 2>&1 || true
-  "$ctl" enable --now sing-box.service >/dev/null 2>&1 || true
-  "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1 || true
+  if ! "$ctl" daemon-reload >/dev/null 2>&1; then
+    restore_abort "failed to daemon-reload after restore; rolled back from ${safety}." "daemon_reload_failed"
+  fi
+  if ! "$ctl" enable --now sing-box.service >/dev/null 2>&1; then
+    restore_abort "failed to enable sing-box after restore; rolled back from ${safety}." "service_enable_failed"
+  fi
+  if ! "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1; then
+    restore_abort "failed to enable vincula-accountd after restore; rolled back from ${safety}." "service_enable_failed"
+  fi
+  if ! "$ctl" is-enabled --quiet sing-box.service; then
+    restore_abort "sing-box.service is not enabled after restore; rolled back from ${safety}." "service_not_enabled"
+  fi
+  if ! "$ctl" is-active --quiet sing-box.service; then
+    restore_abort "sing-box.service is not active after restore; rolled back from ${safety}." "service_not_active"
+  fi
+  if ! "$ctl" is-enabled --quiet vincula-accountd.service; then
+    restore_abort "vincula-accountd.service is not enabled after restore; rolled back from ${safety}." "service_not_enabled"
+  fi
+  if ! "$ctl" is-active --quiet vincula-accountd.service; then
+    restore_abort "vincula-accountd.service is not active after restore; rolled back from ${safety}." "service_not_active"
+  fi
   port=$(toml_get "$SETTINGS_FILE" port || true)
   [[ -n "$port" ]] || port=$(json_numeric_field "$STATE_FILE" port)
-  if ! wait_healthy "$port"; then
-    rollback_restore_target "$safety" || true
-    die "sing-box did not become healthy after restore; rolled back from ${safety}."
+  if [[ "${VCL_RESTORE_SKIP_PORT:-}" == "1" ]]; then
+    if ! "$ctl" is-active --quiet sing-box.service \
+        || ! "$ctl" is-active --quiet vincula-accountd.service; then
+      restore_abort "services did not stay active after restore; rolled back from ${safety}." "unhealthy"
+    fi
+  elif ! wait_healthy "$port"; then
+    restore_abort "sing-box did not become healthy after restore; rolled back from ${safety}." "unhealthy"
   fi
   if ! python3 "$backup_py" commit-version \
       --target-state-dir "$STATE_DIR" \
       --safety-dir "$safety" \
       --project-version "$VINCULA_VERSION"; then
-    rollback_restore_target "$safety" || true
-    die "failed to write VERSION after restore; rolled back from ${safety}."
+    restore_abort "failed to write VERSION after restore; rolled back from ${safety}." "version_commit_failed"
   fi
   if [[ "${VCL_RESTORE_FAIL_AFTER:-}" == "version" ]]; then
-    rollback_restore_target "$safety" || true
-    die "restore VERSION write failed (injected); rolled back from ${safety}."
+    restore_abort "restore VERSION write failed (injected); rolled back from ${safety}." "injected_failure"
   fi
+  emit_restore_success
 }
 
 cmd_link() {

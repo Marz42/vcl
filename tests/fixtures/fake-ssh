@@ -527,15 +527,20 @@ def _load_audit():
     return mod
 
 
-def _parse_export_flags(argv: list[str]) -> tuple[int, bool, int | None]:
+def _parse_export_flags(argv: list[str]) -> tuple[int, bool, int | None, bool]:
     after: str | None = None
     jsonl = False
     limit: str | None = None
+    stamp_identity = False
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--jsonl":
             jsonl = True
+            i += 1
+            continue
+        if arg == "--stamp-identity":
+            stamp_identity = True
             i += 1
             continue
         if arg == "--after":
@@ -569,7 +574,7 @@ def _parse_export_flags(argv: list[str]) -> tuple[int, bool, int | None]:
             raise SystemExit("audit export --limit requires an integer >= 1") from exc
         if limit_n < 1:
             raise SystemExit("audit export --limit requires an integer >= 1")
-    return after_n, jsonl, limit_n
+    return after_n, jsonl, limit_n, stamp_identity
 
 
 def _inline_export_after(
@@ -652,7 +657,7 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
         return 1
 
     try:
-        after, _jsonl, limit = _parse_export_flags(argv[1:])
+        after, _jsonl, limit, stamp_identity = _parse_export_flags(argv[1:])
     except SystemExit as exc:
         sys.stderr.write(f"fake-ssh: {exc}\n")
         return 1
@@ -678,9 +683,22 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
 
     meta["node_id"] = node_id
     meta["instance_id"] = instance_id
-    for row in rows:
-        row["node_id"] = node_id
-        row["instance_id"] = instance_id
+    if stamp_identity:
+        audit_mod = _load_audit()
+        if audit_mod is not None and hasattr(audit_mod, "stamp_export_rows"):
+            try:
+                audit_mod.stamp_export_rows(
+                    rows, node_id=node_id, instance_id=instance_id
+                )
+            except SystemExit as exc:
+                sys.stderr.write(f"fake-ssh: stamp-identity failed: {exc}\n")
+                return 1
+        else:
+            for row in rows:
+                if not row.get("node_id"):
+                    row["node_id"] = node_id
+                if instance_id and not row.get("instance_id"):
+                    row["instance_id"] = instance_id
 
     lie_count = os.environ.get("VCL_FAKE_EXPORT_LIE_COUNT", "").strip()
     if lie_count:
@@ -828,6 +846,16 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         return 1
     if alias in _fail_aliases("VCL_FAKE_FAIL_RESTORE"):
         sys.stderr.write("fake-ssh: restore failed\n")
+        return 1
+    if alias in _fail_aliases("VCL_FAKE_RESTORE_LIE_OK"):
+        result = {
+            "schema_version": 1,
+            "ok": True,
+            "mode": "safe",
+            "error": "lie",
+        }
+        if as_json:
+            _emit_json(result)
         return 1
     if _state_root() is None:
         sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for restore\n")

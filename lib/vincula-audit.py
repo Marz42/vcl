@@ -472,6 +472,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default="",
         help="instance_id overlay for export stderr meta",
     )
+    p.add_argument(
+        "--stamp-identity",
+        dest="stamp_identity",
+        action="store_true",
+        help="fill missing JSONL node_id/instance_id from overlay (reseed only)",
+    )
     return p.parse_args(argv)
 
 
@@ -482,6 +488,46 @@ def _apply_export_identity(meta: Dict[str, Any], args: argparse.Namespace) -> No
         meta["node_id"] = node_id
     if instance_id is not None:
         meta["instance_id"] = instance_id
+
+
+def stamp_export_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    node_id: Optional[str],
+    instance_id: Optional[str],
+) -> None:
+    """Fill missing row identity from overlay. Mismatch fails closed.
+
+    Does not write the accounting database. Used by --stamp-identity (reseed).
+    """
+    if not node_id:
+        print("ERROR: --stamp-identity requires --node-id", file=sys.stderr)
+        raise SystemExit(1)
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            print(f"ERROR: JSONL row {i} is not an object", file=sys.stderr)
+            raise SystemExit(1)
+        raw_nid = row.get("node_id")
+        row_nid = _optional(None if raw_nid is None else str(raw_nid))
+        if row_nid is None:
+            row["node_id"] = node_id
+        elif row_nid != node_id:
+            print(
+                f"ERROR: JSONL row {i} node_id={row_nid} != {node_id}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        if instance_id:
+            raw_iid = row.get("instance_id")
+            row_iid = _optional(None if raw_iid is None else str(raw_iid))
+            if row_iid is None:
+                row["instance_id"] = instance_id
+            elif row_iid != instance_id:
+                print(
+                    f"ERROR: JSONL row {i} instance_id={row_iid} != {instance_id}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
 
 
 def _emit_export_meta(meta: Dict[str, Any]) -> None:
@@ -527,6 +573,12 @@ def main_export(args: argparse.Namespace) -> int:
         conn.close()
 
     _apply_export_identity(meta, args)
+    if bool(getattr(args, "stamp_identity", False)):
+        stamp_export_rows(
+            rows,
+            node_id=_optional(args.meta_node_id),
+            instance_id=_optional(args.meta_instance_id),
+        )
     _emit_export_meta(meta)
     if status in ("CURSOR_EXPIRED", "CURSOR_AHEAD"):
         return 3
