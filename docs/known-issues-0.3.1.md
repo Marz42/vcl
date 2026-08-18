@@ -27,7 +27,7 @@ Inherited from 0.3.0 unless noted.
 | PARTIAL has no distributed rollback | Exit 2 + per-node status + `--user-id` remediation |
 | Controller is a local tool | No installer, no systemd. Zip has `controller.lock` + sidecar `.zip.sha256` |
 | Windows workstation | Needs **Python 3.10+** and **system OpenSSH Client**. Neither is bundled |
-| UI | **0.3.1** B15: `vcl-fleet ui` localhost-only. No identity mutations; Sync/Refresh write local cache; **reseed CLI-only**. Host + UI token + POST Origin/JSON. No URI/secrets |
+| UI | **0.3.1** B15: `vcl-fleet ui` localhost-only. No identity mutations; Sync/Refresh write local cache; **reseed CLI-only**. Host + UI token; POST JSON + Origin-if-present. Destination filter is SQL-before-LIMIT. Per-thread fleet lock. No URI/secrets |
 
 ## Evidence gaps
 
@@ -60,7 +60,7 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | Item | Notes |
 | --- | --- |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
-| B15 localhost UI | **Implemented** (+ v0.32 security hardening: Host/token/CSRF, no UI reseed, GET no SSH). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
+| B15 localhost UI | **Implemented** (+ v0.32: Host/token/CSRF, no UI reseed, GET no SSH; follow-up: per-thread lock, destination SQL pagination). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
 
 ## Ops checklist (not executed in-tree)
 
@@ -85,6 +85,11 @@ Still the remaining READY FOR RC evidence gap. On a real node, keep:
 - both `sing-box` and `vincula-accountd` enabled+active
 
 Record evidence, then update [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md). UI security fixes do **not** by themselves make the release READY FOR RC.
+
+### P2 leftovers (not this tree)
+
+- SSH/SCP still pass `IdentitiesOnly=no`. Default agent keys work; multi-key hosts may pick the wrong identity.
+- UI `ThreadingHTTPServer` has no accept semaphore or socket timeout. Host + token keep this P2.
 
 ## Related docs
 

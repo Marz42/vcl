@@ -828,13 +828,15 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
                 f"unknown user in local cache: {user} "
                 "(Sync / Refresh users, or pass user_id UUID)"
             )
-        # Fetch limit+1 to detect truncation.
+        # Fetch limit+1 to detect truncation. Destination is in SQL so
+        # LIMIT/cursor apply to matching rows, not a pre-filter page.
         raw_rows = f.query_fleet_audit(
             conn,
             user_id=user_id,
             query_from=query_from,
             query_to=query_to,
             node_id=node_id,
+            destination_contains=destination,
             limit=limit + 1,
             after_started_at=after_started,
             after_event_id=after_event_id,
@@ -854,8 +856,6 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         dest = f.destination_display(
             raw["destination_host"], raw["destination_ip"]
         )
-        if destination and destination not in dest.lower():
-            continue
         traffic = upload + download
         rows.append(
             {
@@ -1066,6 +1066,16 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[ui] error_id={error_id} {message}\n")
         self._send_json(code, {"error": message, "error_id": error_id})
 
+    def _send_fleet_exit(self, exc: SystemExit) -> None:
+        code = exc.code
+        f = fleet()
+        if code == getattr(f, "FLEET_BUSY_EXIT", 4):
+            self._send_json(
+                409, {"error": getattr(f, "FLEET_BUSY_MSG", "busy")}
+            )
+            return
+        self._send_json(400, {"error": f"fleet error (exit {code})"})
+
     def _check_request_guards(self, *, for_api: bool, is_post: bool) -> bool:
         """Return False if a response was already sent."""
         host = self.headers.get("Host") or ""
@@ -1089,6 +1099,8 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                 if origin not in allowed_origins(_LISTEN_PORT):
                     self._send_json(403, {"error": "forbidden Origin"})
                     return False
+            # Missing Origin is allowed (same-machine tools). Token +
+            # loopback Host remain required. Browsers send Origin on POST.
         return True
 
     def _read_json_body(self) -> dict[str, Any]:
@@ -1217,7 +1229,7 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
         except SystemExit as exc:
-            self._send_json(400, {"error": f"fleet error (exit {exc.code})"})
+            self._send_fleet_exit(exc)
 
     def _handle_post(self) -> None:
         if not self._check_request_guards(for_api=False, is_post=False):
@@ -1282,7 +1294,7 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
         except SystemExit as exc:
-            self._send_json(400, {"error": f"fleet error (exit {exc.code})"})
+            self._send_fleet_exit(exc)
 
     def _serve_static(self, path: str) -> None:
         if path in ("", "/"):

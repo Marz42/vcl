@@ -3,7 +3,7 @@
 
 Stdlib only: argparse, json, pathlib, os, sys, re, tempfile, subprocess,
 hashlib, base64, datetime, csv, uuid, sqlite3, importlib, shlex, ipaddress,
-time, functools, contextlib, fcntl (POSIX) / msvcrt (Windows).
+time, threading, functools, contextlib, fcntl (POSIX) / msvcrt (Windows).
 OpenSSH via the system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH),
 ssh-keyscan (VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no
 paramiko, no cryptography package. No root, no systemd, no /etc/vincula.
@@ -32,6 +32,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -194,6 +195,11 @@ STATS_JSON_SCHEMA_VERSION = 1
 REPLACE_JSON_SCHEMA_VERSION = 1
 INSTANCE_JSON_SCHEMA_VERSION = 1
 LABELED_NODE_SQL = "node_id IS NOT NULL AND node_id != ''"
+# Same display as destination_display(): host, else IP, else "-".
+AUDIT_DESTINATION_SQL = (
+    "LOWER(COALESCE(NULLIF(destination_host, ''), "
+    "NULLIF(destination_ip, ''), '-'))"
+)
 # D15 fleet mutation: PLANNED → APPLYING → SUCCESS | PARTIAL (PARTIAL includes all-failed).
 OP_PLANNED = "PLANNED"
 OP_APPLYING = "APPLYING"
@@ -299,61 +305,99 @@ def _flock_exclusive(fd: int, timeout: float) -> bool:
             time.sleep(0.05)
 
 
-_FLEET_LOCK_DEPTH = 0
+# In-process mutex first, then cross-process flock. Reentrancy depth is
+# per-thread (threading.local); a global depth would let HTTP worker
+# threads skip the flock while another thread holds it.
+_FLEET_THREAD_LOCK = threading.RLock()
+_FLEET_LOCK_STATE = threading.local()
 _FLEET_LOCK_FH: Any = None
 
 
+def _thread_lock_depth() -> int:
+    return int(getattr(_FLEET_LOCK_STATE, "depth", 0) or 0)
+
+
+def _acquire_thread_lock(wait: float) -> bool:
+    if wait > 0:
+        return bool(_FLEET_THREAD_LOCK.acquire(timeout=wait))
+    return bool(_FLEET_THREAD_LOCK.acquire(blocking=False))
+
+
 def acquire_fleet_op_lock(timeout: Optional[float] = None) -> None:
-    """Exclusive lock on $FLEET_HOME/.lock (shared by registry + fleet.db)."""
-    global _FLEET_LOCK_DEPTH, _FLEET_LOCK_FH
-    if _FLEET_LOCK_DEPTH > 0:
-        _FLEET_LOCK_DEPTH += 1
-        return
+    """Exclusive lock on $FLEET_HOME/.lock (shared by registry + fleet.db).
+
+    Same thread may nest. A different thread in this process must wait or
+    get busy; it must not treat another thread's hold as reentrant.
+    """
+    global _FLEET_LOCK_FH
     wait = _fleet_lock_timeout(timeout)
-    _ensure_fleet_home()
-    path = fleet_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    if not _acquire_thread_lock(wait):
+        die(FLEET_BUSY_MSG, FLEET_BUSY_EXIT)
+    depth = _thread_lock_depth()
+    if depth > 0:
+        _FLEET_LOCK_STATE.depth = depth + 1
+        return
+    remaining = 0.0
+    if wait > 0:
+        remaining = max(0.0, wait - (time.monotonic() - started))
     try:
-        fh = open(path, "a+b")
-    except OSError as exc:
-        die(f"cannot open lock file {path}: {exc}")
-    _chmod_private(path, 0o600)
-    if not _flock_exclusive(fh.fileno(), wait):
+        _ensure_fleet_home()
+        path = fleet_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fh = open(path, "a+b")
+        except OSError as exc:
+            die(f"cannot open lock file {path}: {exc}")
+        _chmod_private(path, 0o600)
+        if not _flock_exclusive(fh.fileno(), remaining):
+            try:
+                fh.close()
+            except OSError:
+                pass
+            die(FLEET_BUSY_MSG, FLEET_BUSY_EXIT)
+        _FLEET_LOCK_FH = fh
+        _FLEET_LOCK_STATE.depth = 1
+    except BaseException:
+        if _thread_lock_depth() == 0:
+            try:
+                _FLEET_THREAD_LOCK.release()
+            except RuntimeError:
+                pass
+        raise
+
+
+def release_fleet_op_lock() -> None:
+    global _FLEET_LOCK_FH
+    depth = _thread_lock_depth()
+    if depth <= 0:
+        return
+    if depth > 1:
+        _FLEET_LOCK_STATE.depth = depth - 1
+        _FLEET_THREAD_LOCK.release()
+        return
+    _FLEET_LOCK_STATE.depth = 0
+    fh = _FLEET_LOCK_FH
+    _FLEET_LOCK_FH = None
+    if fh is not None:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
         try:
             fh.close()
         except OSError:
             pass
-        die(FLEET_BUSY_MSG, FLEET_BUSY_EXIT)
-    _FLEET_LOCK_FH = fh
-    _FLEET_LOCK_DEPTH = 1
-
-
-def release_fleet_op_lock() -> None:
-    global _FLEET_LOCK_DEPTH, _FLEET_LOCK_FH
-    if _FLEET_LOCK_DEPTH <= 0:
-        _FLEET_LOCK_DEPTH = 0
-        return
-    _FLEET_LOCK_DEPTH -= 1
-    if _FLEET_LOCK_DEPTH > 0:
-        return
-    fh = _FLEET_LOCK_FH
-    _FLEET_LOCK_FH = None
-    if fh is None:
-        return
     try:
-        if sys.platform == "win32":
-            import msvcrt
-
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
-    try:
-        fh.close()
-    except OSError:
+        _FLEET_THREAD_LOCK.release()
+    except RuntimeError:
         pass
 
 
@@ -4741,6 +4785,14 @@ def destination_display(
     return _optional_text(host) or _optional_text(ip) or "-"
 
 
+def _sql_like_contains(needle: str) -> str:
+    """LIKE pattern for substring match; `%` `_` `\\` are literals."""
+    escaped = (
+        needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
 def resolve_fleet_user_id(registry: dict[str, Any], tag: str) -> str:
     """Resolve TAG to one fleet-global user_id via per-node `vcl user list`.
 
@@ -4788,6 +4840,7 @@ def query_fleet_audit(
     query_from: str,
     query_to: str,
     node_id: Optional[str] = None,
+    destination_contains: Optional[str] = None,
     limit: Optional[int] = None,
     after_started_at: Optional[str] = None,
     after_event_id: Optional[int] = None,
@@ -4798,6 +4851,10 @@ def query_fleet_audit(
     Optional ``limit`` (+1 fetch for truncation detection) and keyset cursor
     ``(after_started_at, after_event_id, after_node_id)`` matching
     ORDER BY started_at, event_id, node_id.
+
+    ``destination_contains`` is applied in SQL (same display as
+    ``destination_display``) *before* ORDER BY / LIMIT so pagination is not
+    a post-filter over a truncated page.
     """
     audit = load_audit_module()
     where = [
@@ -4809,6 +4866,10 @@ def query_fleet_audit(
     if node_id:
         where.append("node_id = ?")
         params.append(node_id)
+    dest = (destination_contains or "").strip().lower()
+    if dest:
+        where.append(f"{AUDIT_DESTINATION_SQL} LIKE ? ESCAPE '\\'")
+        params.append(_sql_like_contains(dest))
     if after_started_at is not None:
         if after_event_id is None or not after_node_id:
             die("audit cursor requires after_started_at, after_event_id, after_node_id")

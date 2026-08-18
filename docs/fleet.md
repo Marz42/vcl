@@ -144,7 +144,8 @@ drill-downs**, not admin editors. There are **no** UI identity mutations
 (add/rotate/retire/replace/restore/import) and **no UI reseed** (CLI
 `vcl-fleet sync --reseed NAME` only). Recipes panel copies commands.
 `/api/*` requires loopback `Host` + process UI token; POST requires JSON
-`Content-Type` and a matching Origin. Default views never show Reality keys,
+`Content-Type` and, **when Origin is present**, a matching loopback Origin
+(missing Origin is allowed for same-machine tools). Default views never show Reality keys,
 Clash secret, or VLESS URI.
 
 **Data:** `$FLEET_HOME` cache (`fleet.json`, `fleet.db`, `last-status.json`,
@@ -625,10 +626,10 @@ Local Audit UI (B15). Fixture + urllib against loopback stdlib server.
 | AC-3.1-02 | No VPS public management port | UI is workstation-local; nodes unchanged |
 | AC-3.1-03 | Health / Overview visible | `/api/health`, `/api/overview` |
 | AC-3.1-04 | Users/nodes read-only drill-down; no mutation | `/api/users`, `/api/nodes/:name`; POST mutate routes 405 |
-| AC-3.1-05 | Audit by user/time/destination | `/api/audit?...` |
+| AC-3.1-05 | Audit by user/time/destination | `/api/audit?...`; destination substring in SQL before LIMIT |
 | AC-3.1-06 | Accounting freshness / approximate badge | Overview warnings + `accounting_mode` |
 | AC-3.1-07 | Default pages omit keys / Clash secret / URI dump | Static + JSON asserts |
 | AC-3.1-08 | Same query layer as CLI | `query_fleet_audit` / `query_daily_grouped` |
 | AC-3.1-09 | Closing UI does not affect nodes | Process-local HTTP only |
 | AC-3.1-10 | Local cache + SSH refresh | `last-status.json` + POST `/api/refresh/*` / `/api/sync` |
-| AC-3.1-11 | Three pages only; no identity-mutation APIs; reseed CLI-only; Host/token/Origin | `/api/meta`; POST reseed 400; Host 403; missing token 401 |
+| AC-3.1-11 | Three pages only; no identity-mutation APIs; reseed CLI-only; Host/token; Origin if present | `/api/meta`; POST reseed 400; Host 403; missing token 401 |

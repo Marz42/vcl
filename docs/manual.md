@@ -1057,7 +1057,8 @@ Users / Nodes 只作 drill-down，不是独立管理台。默认监听
 **reseed**。突变与 reseed 一律 CLI；顶栏 **CLI recipes** 只复制命令、不代执行。
 GET API 只读本地缓存（解析 tag 不 SSH）。所有 `/api/*` 要求
 `X-Vincula-UI-Token`（注入首页 meta）+ loopback `Host`；POST 另要求
-`Content-Type: application/json` 与匹配的 `Origin`。默认页与 API
+`Content-Type: application/json`；**若请求带 `Origin`，必须匹配** loopback
+（浏览器 POST 会带 Origin；curl 等可省略）。默认页与 API
 **不**展示 Reality 私钥、Clash secret、VLESS URI、reissue CSV、age identity。
 
 | 参数 | 默认 | 说明 |

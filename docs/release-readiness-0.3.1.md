@@ -58,7 +58,7 @@ Normal `vcl-fleet sync` refuses unlabeled or mismatched identity; cursor does no
 ## Verification this round
 
 - `bash tests/test.sh` — run after B15 (controller zip + UI members)
-- `bash tests/test-fleet.sh` — **496** passed (includes AC-3.1 UI subset)
+- `bash tests/test-fleet.sh` — **499** passed (includes AC-3.1 UI subset)
 - `bash -n` + `python3 -m py_compile` on first-party node/controller files
 - `bash scripts/gen-release-lock.sh` after first-party edits (node package)
 - `bash scripts/build-controller.sh` — packs `lib/vincula-ui/*` into controller zip

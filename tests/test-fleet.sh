@@ -6473,6 +6473,96 @@ else
   fail "fleet lock released on failure (finally) (rc=${fleet_fail_rc})"
 fi
 
+assert_success "fleet lock uses threading.RLock" \
+  grep -q 'threading.RLock' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_failure "fleet lock depth is not a process-global counter" \
+  grep -q '_FLEET_LOCK_DEPTH' "${PROJECT_DIR}/lib/vincula-fleet.py"
+
+thread_lock_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$OPLOCK_FLEET_HOME" <<'PY' || thread_lock_rc=$?
+import importlib.util, os, sys, threading, time
+path, home = sys.argv[1], sys.argv[2]
+os.environ["VCL_FLEET_HOME"] = home
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+# Same-thread nested reentrancy
+with mod.fleet_op_lock():
+    with mod.fleet_op_lock():
+        pass
+
+# Other thread timeout=0 must busy while this thread holds the lock
+other = []
+
+def try_busy():
+    try:
+        mod.acquire_fleet_op_lock(timeout=0)
+        other.append("acquired")
+        mod.release_fleet_op_lock()
+    except SystemExit as exc:
+        other.append(exc.code)
+
+mod.acquire_fleet_op_lock()
+try:
+    mod.acquire_fleet_op_lock()  # nested
+    t = threading.Thread(target=try_busy)
+    t.start()
+    t.join(timeout=5)
+    assert t.is_alive() is False
+    mod.release_fleet_op_lock()
+finally:
+    mod.release_fleet_op_lock()
+assert other == [mod.FLEET_BUSY_EXIT], other
+
+# After exception, another thread can acquire
+def boom():
+    with mod.fleet_op_lock():
+        raise RuntimeError("lock-test")
+
+try:
+    boom()
+except RuntimeError:
+    pass
+mod.acquire_fleet_op_lock(timeout=0)
+mod.release_fleet_op_lock()
+
+# Two threads must not both enter the payload critical section
+inside = 0
+max_inside = 0
+guard = threading.Lock()
+errors = []
+
+def critical():
+    global inside, max_inside
+    try:
+        with mod.fleet_op_lock():
+            with guard:
+                inside += 1
+                max_inside = max(max_inside, inside)
+            try:
+                time.sleep(0.25)
+            finally:
+                with guard:
+                    inside -= 1
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+
+t1 = threading.Thread(target=critical)
+t2 = threading.Thread(target=critical)
+t1.start()
+t2.start()
+t1.join()
+t2.join()
+assert not errors, errors
+assert max_inside == 1, max_inside
+PY
+if (( thread_lock_rc == 0 )); then
+  pass "fleet lock is per-thread reentrant and exclusive across threads"
+else
+  fail "fleet lock is per-thread reentrant and exclusive across threads (rc=${thread_lock_rc})"
+fi
+
 export VCL_FLEET_HOME="${SAVED_OPLOCK_HOME}"
 
 # --- B15 Local Audit UI (localhost-only, read-only) ---
@@ -6707,6 +6797,90 @@ assert audit["rows"][0]["destination"] == "example.com"
 assert audit["limit"] == 500
 assert audit["truncated"] is False
 
+# Destination filter in SQL before LIMIT (P1-02): noise first, target later
+conn = fleet.open_fleet_db()
+seed_row = conn.execute(
+    "SELECT node_id, instance_id, user_id, user_tag FROM audit_events LIMIT 1"
+).fetchone()
+node_id, inst_id, uid, tag = (
+    seed_row["node_id"],
+    seed_row["instance_id"],
+    seed_row["user_id"],
+    seed_row["user_tag"],
+)
+extra = []
+# event 2 noise, 3 target, 4 noise, 5 target, 6 noise, 7 target
+hosts = [
+    (2, "noise.example"),
+    (3, "target.example"),
+    (4, "noise.example"),
+    (5, "target.example"),
+    (6, "noise.example"),
+    (7, "target.example"),
+]
+for eid, host in hosts:
+    extra.append(
+        {
+            "event_id": eid,
+            "connection_id": f"ui-alice-{eid}",
+            "generation": 0,
+            "user_id": uid,
+            "user_tag": tag,
+            "node_id": node_id,
+            "instance_id": inst_id,
+            "started_at": f"2026-08-10T08:0{eid}:00Z",
+            "last_seen_at": f"2026-08-10T08:0{eid}:30Z",
+            "closed_at": f"2026-08-10T08:0{eid}:30Z",
+            "destination_host": host,
+            "destination_ip": "203.0.113.80",
+            "destination_port": 443,
+            "network": "tcp",
+            "upload_bytes": 1,
+            "download_bytes": 1,
+        }
+    )
+fleet.import_audit_batch(node_id, inst_id, extra, now_iso="2026-08-16T07:00:00Z", conn=conn)
+conn.close()
+
+q = (
+    "/api/audit?user=alice"
+    "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
+)
+st, dest_page, _ = get(q + "&destination=target&limit=1")
+assert st == 200
+assert [r["destination"] for r in dest_page["rows"]] == ["target.example"], dest_page
+assert dest_page["truncated"] is True
+assert dest_page["next_cursor"]
+assert dest_page["next_cursor"]["after_event_id"] == 3
+
+st, dest_empty, _ = get(q + "&destination=no-such-host&limit=1")
+assert st == 200
+assert dest_empty["rows"] == []
+assert dest_empty["truncated"] is False
+assert dest_empty["next_cursor"] is None
+
+seen = []
+cursor = dest_page["next_cursor"]
+while cursor:
+    qs = (
+        f"{q}&destination=target&limit=1"
+        f"&after_started_at={cursor['after_started_at']}"
+        f"&after_event_id={cursor['after_event_id']}"
+        f"&after_node_id={cursor['after_node_id']}"
+    )
+    st, nxt, _ = get(qs)
+    assert st == 200
+    seen.extend(nxt["rows"])
+    cursor = nxt["next_cursor"]
+assert [r["destination"] for r in dest_page["rows"] + seen] == [
+    "target.example",
+    "target.example",
+    "target.example",
+]
+ids = [dest_page["rows"][0]["event_id"]] + [r["event_id"] for r in seen]
+assert ids == [3, 5, 7], ids
+assert len(ids) == len(set(ids))
+
 st, audit2, _ = get(
     f"/api/audit?user={alice_uid}"
     "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
@@ -6744,6 +6918,7 @@ for path in (
 
 # Concurrent payload helpers do not share stdout (P1-01)
 import threading
+import time
 results = []
 
 def worker():
@@ -6754,6 +6929,47 @@ t2 = threading.Thread(target=worker)
 t1.start(); t2.start(); t1.join(); t2.join()
 assert len(results) == 2
 assert all(r.get("schema_version") == 1 and "node_count" in r for r in results)
+
+# Concurrent /api/sync must not both enter run_sync_payload
+orig_sync = fleet.run_sync_payload
+inside = 0
+max_inside = 0
+guard = threading.Lock()
+
+def wrapped_sync(ns):
+    global inside, max_inside
+    with guard:
+        inside += 1
+        max_inside = max(max_inside, inside)
+    try:
+        time.sleep(0.3)
+        return 0, {
+            "ok": True,
+            "state": "SUCCESS",
+            "nodes": [],
+            "remediation": [],
+        }
+    finally:
+        with guard:
+            inside -= 1
+
+fleet.run_sync_payload = wrapped_sync
+sync_err = []
+sync_ok = []
+
+def sync_worker():
+    try:
+        sync_ok.append(post("/api/sync", {}))
+    except Exception as exc:  # noqa: BLE001
+        sync_err.append(exc)
+
+st1 = threading.Thread(target=sync_worker)
+st2 = threading.Thread(target=sync_worker)
+st1.start(); st2.start(); st1.join(); st2.join()
+fleet.run_sync_payload = orig_sync
+assert not sync_err, sync_err
+assert len(sync_ok) == 2
+assert max_inside == 1, max_inside
 
 # Static index: token meta, no vless
 st, html, idx_hdrs = req("/", headers={})
