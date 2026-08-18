@@ -317,7 +317,7 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 
 远端升级链实测（Debian 13，止于 0.2.6）：[`docs/rc-live-upgrade-0.2.4-0.2.6.md`](docs/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
 
-Live secretless replace / AC-3.0-11 / 真机 `age` / Win11 `vcl-fleet.cmd`：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)（B14 **尚未跑**；证据 [`docs/evidence/0.3.1-live/`](docs/evidence/0.3.1-live/) 现为 NOT RUN）。夹具全绿不是 live PASS。
+Live secretless replace / AC-3.0-11 / 真机 `age` / Win11 `vcl-fleet.cmd`：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)（B14 **PASS** 2026-08-18；证据 [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)）。夹具全绿仍不等于 live PASS。
 
 ```bash
 # 编排机示例

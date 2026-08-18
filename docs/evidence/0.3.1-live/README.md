@@ -1,12 +1,16 @@
 # Live replace evidence (0.3.1-dev)
 
-**Result: NOT RUN.** B14 live VPS evidence is deferred.
+**Result: PASS** on two public VPS, 2026-08-18.
 
-Operator runbook: [`../../live-replace-checklist.md`](../../live-replace-checklist.md).
-Fill [`SUMMARY.md`](SUMMARY.md) from a real two-VPS pass (secretless replace,
-AC-3.0-11 handshake, real `age`, Win11 `vcl-fleet.cmd`).
+| Role | Host | OS |
+| --- | --- | --- |
+| OLD → retired | `104.194.90.172` | Debian 13 amd64 |
+| NEW (active) | `179.255.104.167` | Ubuntu 26.04 amd64 |
+| Unix controller | WSL2 on Win11 | `vcl-fleet 0.3.1-dev` |
+| Win11 controller | same workstation | `bin\vcl-fleet.cmd` + system OpenSSH |
 
-Do not mark AC-3.0-11 PASS from fixtures. Do not treat fake-ssh / fake-age as
-this directory. Full host logs may live under `/root/vcl-rc-evidence/0.3.1-live/`
-on the VPS (not mirrored in-repo). Redact VLESS URIs, reissue CSV, and age
-identity files before committing.
+Tree: `0.3.1-dev` @ `1137423` · Artifacts: `dist/vincula-node-0.3.1-dev.tar.gz` + `dist/vincula-controller-0.3.1-dev.zip`.
+
+Operator runbook: [`../../live-replace-checklist.md`](../../live-replace-checklist.md).  
+See [`SUMMARY.md`](SUMMARY.md). Full host logs may live under `/root/vcl-rc-evidence/0.3.1-live/` (not mirrored).  
+Do **not** commit VLESS URIs, reissue CSV, age identity files, or SSH private keys.

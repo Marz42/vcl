@@ -2,9 +2,9 @@
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. B17 closed restore/sync fail-close, the `0.3.0` upgrade allowlist, runtime-only rollback, and CI SHA pins. **B14 live evidence is still NOT RUN.** Do not mark READY FOR RC until B14 completes. This page is **not** an addendum to the 0.3.0 freeze record. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS** ([`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)). Remaining blockers: **B15** UI and live **`0.3.0 → 0.3.1-dev` upgrade**. This page is **not** an addendum to the 0.3.0 freeze record. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
-Known P0: **0**. Remaining blockers are evidence gaps (B14 / B15 / live `0.3.0 → 0.3.1-dev` upgrade), not the B17 restore/sync contracts.
+Known P0: **0**. Remaining blockers are evidence gaps (B15 / live upgrade), not B14 or B17 contracts.
 
 ## Product limitations
 
@@ -14,9 +14,9 @@ Inherited from 0.3.0 unless noted.
 | --- | --- |
 | Approximate accounting | Clash API polling; not byte-perfect |
 | Fleet stats vs node `vcl stats` | Fleet `daily_usage` is rebuilt from synced `audit_events` using UTC day of `started_at` |
-| No Win11 live controller | Zip layout and stdlib/OpenSSH contract are unit-tested. Live OpenSSH Client + `py -3` on Win11 is B14 |
-| No live VPS replace | Fixture replace (runtime-only NEW_HOST, real `--reissue-output`) is a contract pass, not live PASS |
-| AC-3.0-11 is LIVE-only | Old credential handshake against the new sing-box. Fixtures only prove the old uuid is absent |
+| Win11 live controller | **PASS (B14 2026-08-18):** `vcl-fleet.cmd version/status/verify` on Win11 + system OpenSSH |
+| Live VPS replace | **PASS (B14):** two public VPS secretless replace; see evidence SUMMARY |
+| AC-3.0-11 | **PASS (B14):** old URI→new IP failed; new URI succeeded |
 | `age` is a system package | Secretless backups never call age. `--include-secrets` requires `age` on PATH |
 | `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Next sync with a kept cursor past restored `MAX(event_id)` is `CURSOR_AHEAD`. Remedy is `--reseed` |
 | Unlabeled audit rows | Normal sync **fails the batch** (cursor unchanged). Stamp missing identity only via `vcl-fleet sync --reseed NAME` / node `--stamp-identity`. Query still ignores historical unlabeled rows already in `fleet.db` |
@@ -33,11 +33,11 @@ Inherited from 0.3.0 unless noted.
 
 | Gap | Notes |
 | --- | --- |
-| Windows 11 live `vcl-fleet.cmd` | **Not run.** Same B14 pass: [`live-replace-checklist.md`](live-replace-checklist.md) |
-| Live SSH against real VPS | **Not run.** CI uses `tests/fixtures/fake-ssh` / `fake-scp` |
-| Live secretless `node replace` | **Not run on two public VPS** (B14). Evidence [`evidence/0.3.1-live/`](evidence/0.3.1-live/) is **NOT RUN** |
-| Live `age` on a real node | **Not run.** CI uses `tests/fixtures/fake-age` |
-| AC-3.0-11 live handshake | **Not run.** Old URI to the new IP:443 must fail; new URI must succeed |
+| Windows 11 live `vcl-fleet.cmd` | **PASS (B14)** |
+| Live SSH against real VPS | **PASS (B14)** (replace/status/verify) |
+| Live secretless `node replace` | **PASS (B14).** Evidence [`evidence/0.3.1-live/`](evidence/0.3.1-live/) |
+| Live `age` on a real node | **PASS (B14):** distro `age` 1.2.1 `--include-secrets` create+verify |
+| AC-3.0-11 live handshake | **PASS (B14)** |
 | Live `0.3.0 → 0.3.1-dev` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
 | Live 24h soak | **Not a 0.3.1 gate** |
 
@@ -59,8 +59,8 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 
 | Item | Notes |
 | --- | --- |
-| B14 live two-VPS replace + AC-3.0-11 | [`live-replace-checklist.md`](live-replace-checklist.md); [`evidence/0.3.1-live/`](evidence/0.3.1-live/) **NOT RUN** |
-| B15 localhost UI | Phase B. Not started. Blocked on B14 policy |
+| B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
+| B15 localhost UI | Phase B. Not started |
 
 ## Related docs
 

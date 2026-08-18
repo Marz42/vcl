@@ -1,13 +1,12 @@
 # B14 live replace operator checklist (0.3.1-dev)
 
-**Status: NOT RUN.** This is the operator runbook for live VPS evidence.
-Filling [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) is what can raise
-the living-tree recommendation from **NOT READY** toward **READY FOR RC**.
-Fixture-green `node replace` (B10) is **not** that evidence.
+**Status: PASS (2026-08-18).** Operator runbook for live VPS evidence.
+Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
+Fixture-green `node replace` (B10) alone is **not** that evidence.
 
-B14 (this pass) and B15 (localhost UI) are **deferred**. Do not mark AC-3.0-11
-PASS, and do not call the tree `READY FOR RC`, until the evidence directory
-is filled from a real two-VPS run.
+B14 live replace is **executed**. B15 (localhost UI) remains deferred.
+Do **not** call the tree `READY FOR RC` until remaining living-tree gaps
+(B15 / live `0.3.0 → 0.3.1-dev` upgrade) are closed or explicitly waived.
 
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·

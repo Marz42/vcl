@@ -1,19 +1,19 @@
 # Vincula 0.3.1-dev Release Readiness
 
 **Tree version:** `0.3.1-dev` (living tree).  
-**Date:** 2026-08-17  
-**Focus:** Restore / sync fail-close (B17): unique restore commit point, audit identity fail-close, `0.3.0` upgrade allowlist, runtime-only rollback, CI supply-chain pins.  
+**Date:** 2026-08-18  
+**Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS**.  
 **Companion:** [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Live replace runbook: [`live-replace-checklist.md`](live-replace-checklist.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §9.4 / §10.
 
 This is the **living-tree gate** for `0.3.1-dev`. It is **not** a continuation or rewrite of the 0.3.0 freeze record. Frozen-tag evidence stays in [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) / [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (read-only).
 
 ## Release recommendation
 
-**NOT READY**
+**NOT READY** (B14 live evidence **PASS**; other gaps remain)
 
-Do **not** mark **READY FOR RC** until **B14** live two-VPS secretless replace (plus Win11 `vcl-fleet.cmd` and real `age` on the same pass) is complete. Fixture-green restore / replace / sync is not live PASS. B15 localhost UI stays deferred.
+**B14** (two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd`) is **PASS** — see [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Fixture-green replace alone is still not sufficient; this live log is.
 
-Known P0 on this tree: **0**. Remaining NOT READY is evidence (B14 / B15) plus a live `0.3.0 → 0.3.1-dev` upgrade gap, not an open restore/sync contract mismatch from B17.
+Known P0 on this tree: **0**. Remaining NOT READY: **B15** UI (deferred) and live **`0.3.0 → 0.3.1-dev` upgrade** evidence — not an open restore/sync contract mismatch from B17.
 
 ## What B17 closed
 
@@ -32,8 +32,8 @@ Earlier living-tree batches (B0–B13, B16) remain in force: replace uses real `
 
 | ID | Why it blocks READY FOR RC |
 | --- | --- |
-| **B14** | Live secretless replace on two VPS + AC-3.0-11 handshake + Win11 controller + real `age`. Evidence dir [`evidence/0.3.1-live/`](evidence/0.3.1-live/) is **NOT RUN**. Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
-| **B15** | Localhost Audit UI. Not started. Blocked on B14 policy. |
+| **B14** | **PASS (2026-08-18).** Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age`. Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
+| **B15** | Localhost Audit UI. Not started. |
 | **Live 0.3.0 → 0.3.1-dev upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. |
 
 ## Restore contract (B17)
@@ -62,4 +62,4 @@ Normal `vcl-fleet sync` refuses unlabeled or mismatched identity; cursor does no
 - `bash -n` + `python3 -m py_compile` on first-party node/controller files
 - `bash scripts/gen-release-lock.sh` after first-party edits
 
-B14 was **not** executed. Recommendation stays **NOT READY**.
+B14 **PASS** (2026-08-18). Recommendation stays **NOT READY** until B15 / live `0.3.0 → 0.3.1-dev` upgrade are closed or waived.
