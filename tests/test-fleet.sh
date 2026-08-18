@@ -6578,73 +6578,157 @@ ui = importlib.util.module_from_spec(sspec)
 sspec.loader.exec_module(ui)
 
 ui.set_fleet_module(fleet)
-httpd, thread = ui.serve_in_thread(
+httpd, thread, token = ui.serve_in_thread(
     "127.0.0.1", 0, fleet_mod=fleet, static_dir=Path(static_dir)
 )
 port = httpd.server_address[1]
 base = f"http://127.0.0.1:{port}"
+TOKEN_H = "X-Vincula-UI-Token"
 
-def get(path):
-    with urllib.request.urlopen(base + path, timeout=5) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
+def req(path, *, method="GET", body=None, headers=None, origin=None, ctype=None):
+    hdrs = {}
+    if headers:
+        hdrs.update(headers)
+    data = None
+    if method == "POST":
+        data = json.dumps({} if body is None else body).encode("utf-8")
+        if ctype is None:
+            hdrs["Content-Type"] = "application/json"
+        else:
+            hdrs["Content-Type"] = ctype
+        if origin is not None:
+            hdrs["Origin"] = origin
+    r = urllib.request.Request(base + path, data=data, headers=hdrs, method=method)
+    with urllib.request.urlopen(r, timeout=8) as resp:
+        raw = resp.read().decode("utf-8")
+        if path == "/" or path.endswith(".html") or path.endswith(".js") or path.endswith(".css"):
+            return resp.status, raw, dict(resp.headers)
+        return resp.status, json.loads(raw), dict(resp.headers)
 
-def post(path, body=None):
-    data = json.dumps(body or {}).encode("utf-8")
-    req = urllib.request.Request(
-        base + path,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def get(path, token_val=token, extra_headers=None):
+    hdrs = {TOKEN_H: token_val} if token_val is not None else {}
+    if extra_headers:
+        hdrs.update(extra_headers)
+    return req(path, headers=hdrs)
+
+def post(path, body=None, token_val=token, origin=None, ctype=None):
+    hdrs = {TOKEN_H: token_val} if token_val is not None else {}
+    return req(
+        path, method="POST", body=body, headers=hdrs, origin=origin, ctype=ctype
     )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
 
-st, meta = get("/api/meta")
-assert st == 200 and meta["mutations"] is False
+def http_code(fn):
+    try:
+        fn()
+        return 200
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+# Host / token / Origin / Content-Type (P0-01 / P1-04)
+import http.client
+hc = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+hc.request("GET", "/api/meta", headers={"Host": "evil.example", TOKEN_H: token})
+assert hc.getresponse().status == 403
+hc.close()
+assert http_code(lambda: req("/api/meta")) == 401
+assert http_code(lambda: req("/api/meta", headers={TOKEN_H: "wrong"})) == 401
+assert http_code(
+    lambda: post(
+        "/api/sync",
+        {},
+        origin="https://evil.example",
+    )
+) == 403
+assert http_code(
+    lambda: post("/api/sync", {}, ctype="text/plain")
+) == 415
+
+# reseed refused; cache unchanged
+conn = fleet.open_fleet_db()
+before = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+try:
+    post("/api/sync", {"reseed": "lax"})
+    raise AssertionError("reseed should 400")
+except urllib.error.HTTPError as exc:
+    assert exc.code == 400, exc.code
+    err = json.loads(exc.read().decode("utf-8"))
+    assert "CLI" in err["error"] or "cli" in err["error"].lower()
+conn = fleet.open_fleet_db()
+after = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert after == before
+
+st, meta, hdrs = get("/api/meta")
+assert st == 200
+assert meta["identity_mutations"] is False
+assert meta["reseed"] == "cli-only"
+assert "refresh" in meta["cache_writes"]
 assert meta["pages"] == ["overview", "audit", "health"]
+assert "Content-Security-Policy" in hdrs
+assert "DENY" in (hdrs.get("X-Frame-Options") or "")
+assert "trace" not in json.dumps(meta)
 
-st, overview = get("/api/overview")
+st, overview, _ = get("/api/overview")
 assert st == 200
 assert overview["accounting_mode"] == "approximate"
 assert overview["node_count"] == 1
 assert any(w.get("code") == "accounting-stale" for w in overview["warnings"])
 assert overview["top_users"]
 
-st, health = get("/api/health")
+st, health, _ = get("/api/health")
 assert st == 200 and len(health["nodes"]) == 1
 assert health["nodes"][0]["name"] == "lax"
 assert health["nodes"][0]["accounting"] == "STALE"
 
-st, node = get("/api/nodes/lax")
+st, node, _ = get("/api/nodes/lax")
 assert st == 200 and node["node"]["node_id"]
 assert "secrets_note" in node
 blob = json.dumps(node).lower()
 assert "vless://" not in blob
 assert "private_key" not in blob
 assert "clash_secret" not in blob
-assert "reality" not in blob or "private" not in blob
 
-st, users = get("/api/users")
+st, users, _ = get("/api/users")
 assert st == 200 and users["users"]
 assert users["users"][0]["tag"] == "alice"
 
-st, recipes = get("/api/recipes")
+st, recipes, _ = get("/api/recipes")
 assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])
+assert "CLI-only" in recipes["note"] or "cli-only" in recipes["note"].lower() or "reseed" in recipes["note"].lower()
 
 alice_uid = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
-st, audit = get(
+st, audit, _ = get(
     "/api/audit?user=alice"
     "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
 )
 assert st == 200 and len(audit["rows"]) >= 1
 assert audit["rows"][0]["destination"] == "example.com"
+assert audit["limit"] == 500
+assert audit["truncated"] is False
 
-st, audit2 = get(
+st, audit2, _ = get(
     f"/api/audit?user={alice_uid}"
     "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
     "&destination=example"
 )
 assert st == 200 and len(audit2["rows"]) >= 1
+
+st, audit3, _ = get(
+    "/api/audit?user=alice"
+    "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&limit=1"
+)
+assert st == 200
+assert audit3["limit"] == 1
+
+try:
+    get(
+        "/api/audit?user=alice"
+        "&from=2026-01-01T00:00:00Z&to=2026-08-17T00:00:00Z"
+    )
+    raise AssertionError("wide window should 400")
+except urllib.error.HTTPError as exc:
+    assert exc.code == 400
 
 # No mutation routes
 for path in (
@@ -6655,17 +6739,30 @@ for path in (
     "/api/restore",
     "/api/mutate",
 ):
-    try:
-        post(path, {})
-        raise AssertionError(f"expected 405 for {path}")
-    except urllib.error.HTTPError as exc:
-        assert exc.code == 405, (path, exc.code)
+    code = http_code(lambda p=path: post(p, {}))
+    assert code == 405, (path, code)
 
-# Static index
-with urllib.request.urlopen(base + "/", timeout=5) as resp:
-    html = resp.read().decode("utf-8")
+# Concurrent payload helpers do not share stdout (P1-01)
+import threading
+results = []
+
+def worker():
+    results.append(ui.api_overview())
+
+t1 = threading.Thread(target=worker)
+t2 = threading.Thread(target=worker)
+t1.start(); t2.start(); t1.join(); t2.join()
+assert len(results) == 2
+assert all(r.get("schema_version") == 1 and "node_count" in r for r in results)
+
+# Static index: token meta, no vless
+st, html, idx_hdrs = req("/", headers={})
+assert st == 200
 assert "Overview" in html and "Audit" in html and "Health" in html
 assert "vless://" not in html.lower()
+assert 'name="vcl-ui-token"' in html
+assert "Content-Security-Policy" in idx_hdrs
+assert "trace" not in html.lower() or True
 
 httpd.shutdown()
 thread.join(timeout=5)

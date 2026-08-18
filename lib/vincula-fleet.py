@@ -3055,7 +3055,8 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
     return [node for node in nodes if node_is_active(node)]
 
 
-def cmd_status(*, as_json: bool, include_all: bool) -> int:
+def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
+    """Probe status and write last-status.json; return payload (no stdout)."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
@@ -3069,14 +3070,12 @@ def cmd_status(*, as_json: bool, include_all: bool) -> int:
         "nodes": [_status_json_node(row) for row in rows],
     }
     write_last_status(payload)
-    if as_json:
-        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    else:
-        sys.stdout.write(format_status_table(rows))
-    return 0 if payload["ok"] else 1
+    payload["_rows"] = rows  # CLI table only; strip before JSON emit
+    return payload
 
 
-def cmd_verify(*, as_json: bool, include_all: bool) -> int:
+def run_verify_payload(*, include_all: bool = False) -> dict[str, Any]:
+    """Probe verify and write last-status.json; return payload (no stdout)."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     previous = load_previous_instance_ids()
@@ -3096,6 +3095,23 @@ def cmd_verify(*, as_json: bool, include_all: bool) -> int:
         "nodes": [_verify_json_node(row) for row in rows],
     }
     write_last_status(payload)
+    payload["_rows"] = rows
+    return payload
+
+
+def cmd_status(*, as_json: bool, include_all: bool) -> int:
+    payload = run_status_payload(include_all=include_all)
+    rows = payload.pop("_rows")
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_status_table(rows))
+    return 0 if payload["ok"] else 1
+
+
+def cmd_verify(*, as_json: bool, include_all: bool) -> int:
+    payload = run_verify_payload(include_all=include_all)
+    rows = payload.pop("_rows")
     if as_json:
         sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     else:
@@ -3577,10 +3593,10 @@ def _list_users_on_node(
     return [u for u in users if isinstance(u, dict)], None
 
 
-def cmd_user_list(args: argparse.Namespace) -> int:
+def run_user_list_payload() -> tuple[int, dict[str, Any]]:
+    """Aggregate user list over SSH; return (exit_code, payload) without stdout."""
     registry = load_registry()
     nodes = _selected_nodes(registry, include_all=False)
-    as_json = bool(getattr(args, "as_json", False))
     unreachable: list[dict[str, Any]] = []
     grouped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -3631,20 +3647,25 @@ def cmd_user_list(args: argparse.Namespace) -> int:
         ],
         "unreachable": unreachable,
     }
+    return (0 if ok else MUTATION_EXIT_PARTIAL), payload
+
+
+def cmd_user_list(args: argparse.Namespace) -> int:
+    as_json = bool(getattr(args, "as_json", False))
+    code, payload = run_user_list_payload()
     if as_json:
         sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-        return 0 if ok else MUTATION_EXIT_PARTIAL
+        return code
 
     sys.stdout.write("TAG USER_ID NODES\n")
-    for key in order:
-        rec = grouped[key]
-        node_names = ",".join(n["name"] for n in rec["nodes"])
-        sys.stdout.write(f"{rec['tag']} {rec['user_id'] or '-'} {node_names}\n")
-    for row in unreachable:
+    for user in payload["users"]:
+        node_names = ",".join(n["name"] for n in user["nodes"])
+        sys.stdout.write(f"{user['tag']} {user['user_id'] or '-'} {node_names}\n")
+    for row in payload["unreachable"]:
         sys.stdout.write(f"UNREACHABLE {row['name']}\n")
-    if not ok:
+    if not payload["ok"]:
         sys.stdout.write(f"STATE {OP_PARTIAL}\n")
-    return 0 if ok else MUTATION_EXIT_PARTIAL
+    return code
 
 
 def cmd_user_show(args: argparse.Namespace) -> int:
@@ -4560,8 +4581,12 @@ def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-@with_fleet_op_lock
-def cmd_sync(args: argparse.Namespace) -> int:
+def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Run sync (optional reseed); return (exit_code, report) without stdout.
+
+    Callers that mutate the fleet must hold ``fleet_op_lock`` (``cmd_sync``
+    and UI ``api_sync`` do).
+    """
     registry = load_registry()
     node_name = (getattr(args, "node", None) or "").strip() or None
     reseed_name = (getattr(args, "reseed", None) or "").strip() or None
@@ -4606,13 +4631,19 @@ def cmd_sync(args: argparse.Namespace) -> int:
         conn.close()
 
     doc = sync_report(rows)
+    code = 0 if doc["state"] == OP_SUCCESS else MUTATION_EXIT_PARTIAL
+    return code, doc
+
+
+@with_fleet_op_lock
+def cmd_sync(args: argparse.Namespace) -> int:
+    as_json = bool(getattr(args, "as_json", False))
+    code, doc = run_sync_payload(args)
     if as_json:
         sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     else:
-        sys.stdout.write(format_sync_table(rows))
-    if doc["state"] != OP_SUCCESS:
-        return MUTATION_EXIT_PARTIAL
-    return 0
+        sys.stdout.write(format_sync_table(doc["nodes"]))
+    return code
 
 
 _AUDIT_MOD: Optional[Any] = None
@@ -4757,7 +4788,17 @@ def query_fleet_audit(
     query_from: str,
     query_to: str,
     node_id: Optional[str] = None,
+    limit: Optional[int] = None,
+    after_started_at: Optional[str] = None,
+    after_event_id: Optional[int] = None,
+    after_node_id: Optional[str] = None,
 ) -> list[sqlite3.Row]:
+    """Query audit_events with interval-overlap.
+
+    Optional ``limit`` (+1 fetch for truncation detection) and keyset cursor
+    ``(after_started_at, after_event_id, after_node_id)`` matching
+    ORDER BY started_at, event_id, node_id.
+    """
     audit = load_audit_module()
     where = [
         audit.interval_overlap_sql(),
@@ -4768,6 +4809,26 @@ def query_fleet_audit(
     if node_id:
         where.append("node_id = ?")
         params.append(node_id)
+    if after_started_at is not None:
+        if after_event_id is None or not after_node_id:
+            die("audit cursor requires after_started_at, after_event_id, after_node_id")
+        where.append(
+            "("
+            "started_at > ? OR "
+            "(started_at = ? AND event_id > ?) OR "
+            "(started_at = ? AND event_id = ? AND node_id > ?)"
+            ")"
+        )
+        params.extend(
+            [
+                after_started_at,
+                after_started_at,
+                int(after_event_id),
+                after_started_at,
+                int(after_event_id),
+                after_node_id,
+            ]
+        )
     sql = (
         "SELECT event_id, node_id, instance_id, user_id, user_tag, "
         "destination_host, destination_ip, destination_port, network, "
@@ -4776,6 +4837,11 @@ def query_fleet_audit(
         + " AND ".join(where)
         + " ORDER BY started_at ASC, event_id ASC, node_id ASC"
     )
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            die("audit limit must be an integer >= 1")
+        sql += " LIMIT ?"
+        params.append(int(limit))
     try:
         return list(conn.execute(sql, params).fetchall())
     except sqlite3.Error as exc:

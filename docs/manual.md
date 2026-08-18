@@ -1053,8 +1053,11 @@ Users / Nodes 只作 drill-down，不是独立管理台。默认监听
 `vcl-fleet stats top …` 同一 `daily_usage` 聚合。记账徽标为
 **approximate**（Clash polling，不能当发票）。
 
-**禁止（第一版）：** UI 内 add / rotate / retire / replace / restore / import。
-突变一律 CLI；顶栏 **CLI recipes** 只复制命令、不代执行。默认页与 API
+**禁止（第一版）：** UI 内 add / rotate / retire / replace / restore / import /
+**reseed**。突变与 reseed 一律 CLI；顶栏 **CLI recipes** 只复制命令、不代执行。
+GET API 只读本地缓存（解析 tag 不 SSH）。所有 `/api/*` 要求
+`X-Vincula-UI-Token`（注入首页 meta）+ loopback `Host`；POST 另要求
+`Content-Type: application/json` 与匹配的 `Origin`。默认页与 API
 **不**展示 Reality 私钥、Clash secret、VLESS URI、reissue CSV、age identity。
 
 | 参数 | 默认 | 说明 |
@@ -1076,7 +1079,7 @@ bin\vcl-fleet.cmd ui
 
 ```text
 Listening on http://127.0.0.1:8765
-Local Audit UI (read-only). Ctrl+C to stop. Stopping does not affect VPS nodes.
+Local Audit UI (no identity mutations; Sync/Refresh write local cache; reseed is CLI-only). Ctrl+C to stop. Stopping does not affect VPS nodes.
 ```
 
 #### 页面与动作
@@ -1085,7 +1088,7 @@ Local Audit UI (read-only). Ctrl+C to stop. Stopping does not affect VPS nodes.
 | --- | --- |
 | 顶栏警告条 | 不健康 / ACCOUNTING STALE·FAIL / 时钟 / 无 status 缓存等 |
 | **Overview** | KPI（节点数、健康占比）、7 日 Top users / Top destinations（approximate）、Warnings、用户摘要表 |
-| **Audit** | 必填 user + `--from`/`--to`（RFC3339）；可选 node、destination 子串；默认空结果 |
+| **Audit** | 必填 user + `--from`/`--to`（RFC3339，窗口 ≤31 天）；默认最多 500 行；可选 node、destination 子串 |
 | **Health** | `NAME \| SSH \| PROXY \| ACCOUNTING \| VERSION \| CLOCK \| LAST_SYNC`；点行开 Node 抽屉 |
 | Node 抽屉 | `node_id` / instance 时间线 / endpoint / cursor；无 URI |
 | User 抽屉 | tag / `user_id` / 节点分配 / credential **id**（非 uuid/uri）/ 近 7 日用量 |
@@ -1096,7 +1099,7 @@ Local Audit UI (read-only). Ctrl+C to stop. Stopping does not affect VPS nodes.
 | CLI | UI |
 | --- | --- |
 | `status` / `verify` | Health + Overview warnings；按钮 Refresh / Verify |
-| `sync` / `sync --reseed` | 顶栏 Sync…（确认；reseed 再问节点名） |
+| `sync` / `sync --reseed` | 顶栏 **Sync**（仅普通 sync）；`--reseed` **仅 CLI** |
 | `node list/show/instances` | Health + Node 抽屉 |
 | `user list/show` | Overview 用户表 + User 抽屉；Refresh users 写 `users-cache.json` |
 | `audit user` | Audit 页 |
@@ -1345,7 +1348,7 @@ bin\vcl-fleet.cmd ui
 | --- | --- |
 | **Refresh status** | 走 SSH status；更新 `last-status.json`；Health/Overview 重绘 |
 | **Verify** | 走 verify（含时钟等）；写回 last-status |
-| **Sync…** | 确认对话框；正常 sync 拉审计；可选第二步 reseed（需输入节点名） |
+| **Sync…** | 确认后普通 sync（写 `fleet.db`）；**不会**问 reseed。reseed 用 CLI |
 | **Refresh users** | SSH `user list`；写 `users-cache.json`；Overview 用户表更新；仍无 URI |
 
 无节点或 SSH 失败时：UI 应报错/toast，**不得**假装 mutation 成功。
@@ -1370,17 +1373,22 @@ bin\vcl-fleet.cmd audit user alice --from 2026-08-01T00:00:00Z --to 2026-08-19T0
 | Overview 点用户行 | 抽屉：tag、`user_id`、节点分配、credential **id**（可有）、近 7 日用量 |
 | 抽屉「Open Audit」 | 跳转 Audit 并预填 user/node |
 
-### F. CLI recipes（突变面覆盖）
+### F. CLI recipes 与 API 鉴权
 
-1. 打开 **CLI recipes**。
-2. 确认含 `node replace` / `user add --nodes` / `user rotate --node` / backup 指向文档等。
-3. **Copy** 后粘贴到终端可执行；UI **本身不执行**这些命令。
-4. 用开发者工具或 curl 确认突变 API 被拒：
+1. 打开 **CLI recipes**；确认 `--reseed` 标为 CLI-only。
+2. **Copy** 后粘贴到终端可执行；UI **本身不执行**这些命令。
+3. 从页面源码取 `meta[name=vcl-ui-token]`，再测：
 
 ```bash
+# 无 token → 401
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8765/api/meta
+# 带 token 的 reseed body → 400
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8765/api/sync \
+  -H "Content-Type: application/json" -H "X-Vincula-UI-Token: TOKEN" \
+  -d '{"reseed":"lax"}'
+# 带 token 的 mutation → 405
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8765/api/user/add \
-  -H "Content-Type: application/json" -d "{}"
-# 期望: 405
+  -H "Content-Type: application/json" -H "X-Vincula-UI-Token: TOKEN" -d "{}"
 ```
 
 ### G. 控制器 zip 黑盒（可选）
@@ -1399,7 +1407,8 @@ Windows：解压 zip → `bin\vcl-fleet.cmd ui`（需本机 Python + OpenSSH）�
 ### H. 快速否决项（任一失败即手测不通过）
 
 - 能绑在 `0.0.0.0` 或局域网 IP
-- UI 能 add/rotate/retire/replace/restore
+- UI 能 add/rotate/retire/replace/restore/**reseed**
+- 无 token / 错 Host 仍能打 `/api/*`
 - 默认 Overview/Health 出现 VLESS URI 或私钥
 - 只有两页或出现独立「管理台」编辑页
 - 关掉 UI 后远端 sing-box/accountd 被停掉

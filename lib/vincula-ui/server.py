@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """Localhost-only Fleet Audit UI (stdlib HTTP + static files).
 
-Bound to loopback only. Read-only GET APIs plus explicit POST refresh/sync.
-No identity mutations (add/rotate/retire/replace/restore/import).
+Bound to loopback only. GET APIs are local-cache only. Explicit POST
+refresh/sync write the workstation cache (not identity mutations).
+No add/rotate/retire/replace/restore/import/reseed via UI.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import ipaddress
 import json
 import mimetypes
 import re
+import secrets
 import sys
 import threading
 import traceback
 import urllib.parse
+import uuid
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -25,6 +27,10 @@ from typing import Any, Callable, Optional
 UI_SCHEMA_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+UI_TOKEN_HEADER = "X-Vincula-UI-Token"
+AUDIT_DEFAULT_LIMIT = 500
+AUDIT_MAX_LIMIT = 1000
+AUDIT_MAX_WINDOW_DAYS = 31
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -32,6 +38,8 @@ UUID_RE = re.compile(
 
 _FLEET: Any = None
 _STATIC_DIR: Path = Path(__file__).resolve().parent / "static"
+_UI_TOKEN: str = ""
+_LISTEN_PORT: int = DEFAULT_PORT
 
 
 def set_fleet_module(mod: Any) -> None:
@@ -43,6 +51,16 @@ def fleet() -> Any:
     if _FLEET is None:
         raise RuntimeError("fleet module not bound")
     return _FLEET
+
+
+def ui_token() -> str:
+    return _UI_TOKEN
+
+
+def set_ui_runtime(*, token: str, listen_port: int) -> None:
+    global _UI_TOKEN, _LISTEN_PORT
+    _UI_TOKEN = token
+    _LISTEN_PORT = int(listen_port)
 
 
 def assert_loopback_host(host: str) -> str:
@@ -108,29 +126,63 @@ def _human_bytes(n: int) -> str:
     return f"{int(n)} B"
 
 
-def _capture_json_cmd(fn: Callable[[], int]) -> tuple[int, Any]:
-    buf = io.StringIO()
-    old = sys.stdout
-    sys.stdout = buf
+def _parse_host_header(host_header: str) -> tuple[str, Optional[int]]:
+    raw = (host_header or "").strip()
+    if not raw:
+        raise ValueError("missing Host")
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end < 0:
+            raise ValueError("invalid Host")
+        name = raw[1:end]
+        rest = raw[end + 1 :]
+        if rest.startswith(":"):
+            return name, int(rest[1:])
+        if rest:
+            raise ValueError("invalid Host")
+        return name, None
+    if raw.count(":") == 1:
+        name, port_s = raw.rsplit(":", 1)
+        return name, int(port_s)
+    return raw, None
+
+
+def host_header_allowed(host_header: str, listen_port: int) -> bool:
     try:
-        code = int(fn())
-    finally:
-        sys.stdout = old
-    text = buf.getvalue().strip()
-    if not text:
-        return code, None
-    try:
-        return code, json.loads(text)
-    except json.JSONDecodeError:
-        return code, {"raw": text}
+        name, port = _parse_host_header(host_header)
+    except (ValueError, TypeError):
+        return False
+    name_l = name.lower()
+    if name_l not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    if port is None:
+        return True
+    return int(port) == int(listen_port)
+
+
+def allowed_origins(listen_port: int) -> set[str]:
+    p = int(listen_port)
+    return {
+        f"http://127.0.0.1:{p}",
+        f"http://localhost:{p}",
+        f"http://[::1]:{p}",
+    }
+
+
+def content_type_is_json(header: Optional[str]) -> bool:
+    if not header:
+        return False
+    main = header.split(";", 1)[0].strip().lower()
+    return main == "application/json"
 
 
 def recipes_payload() -> dict[str, Any]:
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "note": (
-            "Copy-paste CLI only. The Local Audit UI never executes "
-            "identity mutations (add/rotate/retire/replace/restore/import)."
+            "Copy-paste CLI only. No identity/node mutations via UI. "
+            "Sync/Refresh write local cache only. "
+            "vcl-fleet sync --reseed is CLI-only (UI refuses reseed)."
         ),
         "recipes": [
             {
@@ -222,8 +274,11 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "sync",
-                "title": "Sync / reseed (also available as UI buttons)",
-                "command": "vcl-fleet sync [--node NAME] [--reseed NAME]",
+                "title": "Sync (UI Sync button) / reseed (CLI only)",
+                "command": (
+                    "vcl-fleet sync [--node NAME]\n"
+                    "vcl-fleet sync --reseed NAME   # CLI only; wipes local audit"
+                ),
             },
             {
                 "id": "status-verify",
@@ -728,8 +783,36 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     query_to = audit.parse_rfc3339(query_to_raw)
     if query_from > query_to:
         raise ValueError("--from must not be after --to")
+    # RFC3339 strings → aware datetimes for window cap.
+    from_dt = datetime.fromisoformat(query_from.replace("Z", "+00:00"))
+    to_dt = datetime.fromisoformat(query_to.replace("Z", "+00:00"))
+    if to_dt - from_dt > timedelta(days=AUDIT_MAX_WINDOW_DAYS):
+        raise ValueError(
+            f"audit window must be <= {AUDIT_MAX_WINDOW_DAYS} days "
+            "(narrow --from/--to)"
+        )
     node_name = (params.get("node") or "").strip() or None
     destination = (params.get("destination") or "").strip().lower() or None
+    limit_raw = (params.get("limit") or "").strip()
+    if limit_raw:
+        try:
+            limit = int(limit_raw)
+        except ValueError as exc:
+            raise ValueError("limit must be an integer") from exc
+    else:
+        limit = AUDIT_DEFAULT_LIMIT
+    if limit < 1 or limit > AUDIT_MAX_LIMIT:
+        raise ValueError(f"limit must be 1..{AUDIT_MAX_LIMIT}")
+    after_started = (params.get("after_started_at") or "").strip() or None
+    after_event = (params.get("after_event_id") or "").strip() or None
+    after_node = (params.get("after_node_id") or "").strip() or None
+    after_event_id = None
+    if after_started or after_event or after_node:
+        if not (after_started and after_event and after_node):
+            raise ValueError(
+                "cursor requires after_started_at, after_event_id, after_node_id"
+            )
+        after_event_id = int(after_event)
     registry = f.load_registry()
     node_id = None
     if node_name:
@@ -738,19 +821,31 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     conn = f.open_fleet_db()
     try:
         user_id = resolve_user_id_for_ui(
-            conn, registry, user, allow_ssh=True
+            conn, registry, user, allow_ssh=False
         )
         if not user_id:
-            raise KeyError(f"unknown user: {user}")
+            raise KeyError(
+                f"unknown user in local cache: {user} "
+                "(Sync / Refresh users, or pass user_id UUID)"
+            )
+        # Fetch limit+1 to detect truncation.
         raw_rows = f.query_fleet_audit(
             conn,
             user_id=user_id,
             query_from=query_from,
             query_to=query_to,
             node_id=node_id,
+            limit=limit + 1,
+            after_started_at=after_started,
+            after_event_id=after_event_id,
+            after_node_id=after_node,
         )
     finally:
         conn.close()
+
+    truncated = len(raw_rows) > limit
+    if truncated:
+        raw_rows = raw_rows[:limit]
 
     rows: list[dict[str, Any]] = []
     for raw in raw_rows:
@@ -785,6 +880,14 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
                 "closed_at": raw["closed_at"],
             }
         )
+    next_cursor = None
+    if truncated and rows:
+        last = rows[-1]
+        next_cursor = {
+            "after_started_at": last["started_at"],
+            "after_event_id": last["event_id"],
+            "after_node_id": last["node_id"],
+        }
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "user": user,
@@ -793,6 +896,9 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         "to": query_to,
         "node": node_name,
         "destination": destination,
+        "limit": limit,
+        "truncated": truncated,
+        "next_cursor": next_cursor,
         "rows": rows,
         "empty_hint": (
             "No rows. Sync audit first (Sync), then widen the time window."
@@ -837,15 +943,14 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
 def api_refresh_status(*, verify: bool) -> dict[str, Any]:
     f = fleet()
     if verify:
-        code, payload = _capture_json_cmd(
-            lambda: f.cmd_verify(as_json=True, include_all=False)
-        )
+        payload = f.run_verify_payload(include_all=False)
         op = "verify"
     else:
-        code, payload = _capture_json_cmd(
-            lambda: f.cmd_status(as_json=True, include_all=False)
-        )
+        payload = f.run_status_payload(include_all=False)
         op = "status"
+    payload = dict(payload)
+    payload.pop("_rows", None)
+    code = 0 if payload.get("ok") else 1
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": op,
@@ -855,15 +960,16 @@ def api_refresh_status(*, verify: bool) -> dict[str, Any]:
     }
 
 
-def api_sync(*, node: Optional[str], reseed: Optional[str]) -> dict[str, Any]:
+def api_sync(*, node: Optional[str] = None) -> dict[str, Any]:
     f = fleet()
     ns = argparse.Namespace(
         node=node,
         all=False,
-        reseed=reseed,
+        reseed=None,
         as_json=True,
     )
-    code, payload = _capture_json_cmd(lambda: f.cmd_sync(ns))
+    with f.fleet_op_lock():
+        code, payload = f.run_sync_payload(ns)
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": "sync",
@@ -875,11 +981,9 @@ def api_sync(*, node: Optional[str], reseed: Optional[str]) -> dict[str, Any]:
 
 def api_refresh_users() -> dict[str, Any]:
     f = fleet()
-    ns = argparse.Namespace(as_json=True)
-    code, payload = _capture_json_cmd(lambda: f.cmd_user_list(ns))
+    code, payload = f.run_user_list_payload()
     if not isinstance(payload, dict):
         raise RuntimeError("user list did not return JSON")
-    # Strip anything that looks like a URI/secret; keep credential_id only.
     users_out: list[dict[str, Any]] = []
     for user in payload.get("users") or []:
         if not isinstance(user, dict):
@@ -911,11 +1015,7 @@ def api_refresh_users() -> dict[str, Any]:
         "schema_version": UI_SCHEMA_VERSION,
         "ok": bool(payload.get("ok")),
         "state": payload.get("state"),
-        "refreshed_at": f.format_utc(
-            __import__("datetime").datetime.now(
-                __import__("datetime").timezone.utc
-            )
-        ),
+        "refreshed_at": f.format_utc(datetime.now(timezone.utc)),
         "users": users_out,
         "unreachable": payload.get("unreachable") or [],
     }
@@ -943,6 +1043,15 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; "
+            "form-action 'self'",
+        )
         self.end_headers()
         self.wfile.write(body)
 
@@ -951,6 +1060,36 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         ).encode("utf-8")
         self._send(code, body, "application/json; charset=utf-8")
+
+    def _send_error_id(self, code: int, message: str) -> None:
+        error_id = uuid.uuid4().hex[:12]
+        sys.stderr.write(f"[ui] error_id={error_id} {message}\n")
+        self._send_json(code, {"error": message, "error_id": error_id})
+
+    def _check_request_guards(self, *, for_api: bool, is_post: bool) -> bool:
+        """Return False if a response was already sent."""
+        host = self.headers.get("Host") or ""
+        if not host_header_allowed(host, _LISTEN_PORT):
+            self._send_json(403, {"error": "forbidden Host"})
+            return False
+        if for_api:
+            token = self.headers.get(UI_TOKEN_HEADER) or ""
+            if not _UI_TOKEN or not secrets.compare_digest(token, _UI_TOKEN):
+                self._send_json(401, {"error": "missing or invalid UI token"})
+                return False
+        if is_post:
+            if not content_type_is_json(self.headers.get("Content-Type")):
+                self._send_json(
+                    415,
+                    {"error": "Content-Type must be application/json"},
+                )
+                return False
+            origin = self.headers.get("Origin")
+            if origin is not None and origin != "":
+                if origin not in allowed_origins(_LISTEN_PORT):
+                    self._send_json(403, {"error": "forbidden Origin"})
+                    return False
+        return True
 
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -969,26 +1108,16 @@ class FleetUIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         try:
             self._handle_get()
-        except Exception as exc:  # noqa: BLE001
-            self._send_json(
-                500,
-                {
-                    "error": str(exc),
-                    "trace": traceback.format_exc().splitlines()[-3:],
-                },
-            )
+        except Exception:  # noqa: BLE001
+            sys.stderr.write(traceback.format_exc() + "\n")
+            self._send_error_id(500, "internal error")
 
     def do_POST(self) -> None:  # noqa: N802
         try:
             self._handle_post()
-        except Exception as exc:  # noqa: BLE001
-            self._send_json(
-                500,
-                {
-                    "error": str(exc),
-                    "trace": traceback.format_exc().splitlines()[-3:],
-                },
-            )
+        except Exception:  # noqa: BLE001
+            sys.stderr.write(traceback.format_exc() + "\n")
+            self._send_error_id(500, "internal error")
 
     def do_PUT(self) -> None:  # noqa: N802
         self._send_json(405, {"error": "method not allowed"})
@@ -997,11 +1126,15 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         self._send_json(405, {"error": "method not allowed"})
 
     def _handle_get(self) -> None:
+        if not self._check_request_guards(for_api=False, is_post=False):
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
         if path.startswith("/api/"):
+            if not self._check_request_guards(for_api=True, is_post=False):
+                return
             self._handle_api_get(path, qs)
             return
 
@@ -1043,6 +1176,10 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                             "to": one("to"),
                             "node": one("node"),
                             "destination": one("destination"),
+                            "limit": one("limit"),
+                            "after_started_at": one("after_started_at"),
+                            "after_event_id": one("after_event_id"),
+                            "after_node_id": one("after_node_id"),
                         }
                     ),
                 )
@@ -1063,8 +1200,14 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                         "schema_version": UI_SCHEMA_VERSION,
                         "version": fleet().VCL_FLEET_VERSION,
                         "pages": ["overview", "audit", "health"],
-                        "mutations": False,
+                        "identity_mutations": False,
+                        "cache_writes": ["refresh", "sync"],
+                        "reseed": "cli-only",
                         "bind": "loopback-only",
+                        "auth": {
+                            "token_header": UI_TOKEN_HEADER,
+                            "host_loopback_only": True,
+                        },
                     },
                 )
                 return
@@ -1077,12 +1220,15 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"fleet error (exit {exc.code})"})
 
     def _handle_post(self) -> None:
+        if not self._check_request_guards(for_api=False, is_post=False):
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if not path.startswith("/api/"):
             self._send_json(404, {"error": "not found"})
             return
-        # Forbidden mutation surface (AC-3.1-11 / D19).
+        if not self._check_request_guards(for_api=True, is_post=True):
+            return
         forbidden = (
             "/api/user/add",
             "/api/user/rotate",
@@ -1114,23 +1260,23 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                 self._send_json(200, api_refresh_users())
                 return
             if path == "/api/sync":
+                if "reseed" in body and body.get("reseed") not in (None, ""):
+                    self._send_json(
+                        400,
+                        {
+                            "error": (
+                                "reseed is CLI-only; use "
+                                "`vcl-fleet sync --reseed NAME`"
+                            ),
+                        },
+                    )
+                    return
                 node = body.get("node")
-                reseed = body.get("reseed")
                 if node is not None and not isinstance(node, str):
                     raise ValueError("node must be a string")
-                if reseed is not None and not isinstance(reseed, str):
-                    raise ValueError("reseed must be a string")
-                if reseed:
-                    fleet().validate_name(reseed)
                 if node:
                     fleet().validate_name(node)
-                self._send_json(
-                    200,
-                    api_sync(
-                        node=(node or None),
-                        reseed=(reseed or None),
-                    ),
-                )
+                self._send_json(200, api_sync(node=(node or None)))
                 return
             self._send_json(404, {"error": f"unknown api: {path}"})
         except ValueError as exc:
@@ -1162,6 +1308,15 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         ):
             ctype = f"{ctype}; charset=utf-8"
         data = target.read_bytes()
+        if rel == "index.html":
+            meta = (
+                f'<meta name="vcl-ui-token" content="{_UI_TOKEN}" />\n'
+            ).encode("utf-8")
+            head = b"</head>"
+            if head in data:
+                data = data.replace(head, meta + head, 1)
+            else:
+                data = meta + data
         self._send(200, data, ctype)
 
 
@@ -1191,10 +1346,12 @@ def serve(
         return 2
     bind_host = httpd.server_address[0]
     bind_port = httpd.server_address[1]
+    set_ui_runtime(token=secrets.token_urlsafe(32), listen_port=bind_port)
     display = bind_host if ":" not in bind_host else f"[{bind_host}]"
     sys.stdout.write(f"Listening on http://{display}:{bind_port}\n")
     sys.stdout.write(
-        "Local Audit UI (read-only). Ctrl+C to stop. "
+        "Local Audit UI (no identity mutations; Sync/Refresh write local "
+        "cache; reseed is CLI-only). Ctrl+C to stop. "
         "Stopping does not affect VPS nodes.\n"
     )
     sys.stdout.flush()
@@ -1215,13 +1372,20 @@ def serve_in_thread(
     *,
     fleet_mod: Any,
     static_dir: Optional[Path] = None,
-) -> tuple[ThreadingHTTPServer, threading.Thread]:
-    """Test helper: start UI briefly without blocking forever."""
+    token: Optional[str] = None,
+) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
+    """Test helper: start UI briefly without blocking forever.
+
+    Returns ``(httpd, thread, ui_token)``.
+    """
     set_fleet_module(fleet_mod)
     global _STATIC_DIR
     if static_dir is not None:
         _STATIC_DIR = Path(static_dir)
     httpd = make_server(host, port)
+    bind_port = httpd.server_address[1]
+    tok = token or secrets.token_urlsafe(32)
+    set_ui_runtime(token=tok, listen_port=bind_port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    return httpd, thread
+    return httpd, thread, tok

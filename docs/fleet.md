@@ -140,16 +140,19 @@ loopback binds (`127.0.0.1`, `::1`); `0.0.0.0` / public listens are refused
 (AC-3.1-09).
 
 **Pages:** Overview / Audit / Health. Users and Nodes are **read-only
-drill-downs**, not admin editors. There are **no** UI mutations for
-add/rotate/retire/replace/restore/import (use CLI; recipes panel copies
-commands only). Default views never show Reality keys, Clash secret, or
-VLESS URI.
+drill-downs**, not admin editors. There are **no** UI identity mutations
+(add/rotate/retire/replace/restore/import) and **no UI reseed** (CLI
+`vcl-fleet sync --reseed NAME` only). Recipes panel copies commands.
+`/api/*` requires loopback `Host` + process UI token; POST requires JSON
+`Content-Type` and a matching Origin. Default views never show Reality keys,
+Clash secret, or VLESS URI.
 
 **Data:** `$FLEET_HOME` cache (`fleet.json`, `fleet.db`, `last-status.json`,
 optional `users-cache.json`). Buttons **Refresh status** / **Verify** /
-**Sync** call the same controller paths as the CLI (SSH-backed). Audit
-uses the same interval-overlap query layer as `vcl-fleet audit user`.
-Accounting is labeled **approximate**.
+**Sync** call the same controller paths as the CLI (SSH-backed cache
+writes). GET audit is local cache only (no implicit SSH). Audit uses the
+same interval-overlap query layer as `vcl-fleet audit user`, with a 31-day
+window cap and a 500-row default page. Accounting is labeled **approximate**.
 
 Packaging: controller zip includes `lib/vincula-ui/server.py` and
 `lib/vincula-ui/static/*` (listed in `controller.lock`).
@@ -628,4 +631,4 @@ Local Audit UI (B15). Fixture + urllib against loopback stdlib server.
 | AC-3.1-08 | Same query layer as CLI | `query_fleet_audit` / `query_daily_grouped` |
 | AC-3.1-09 | Closing UI does not affect nodes | Process-local HTTP only |
 | AC-3.1-10 | Local cache + SSH refresh | `last-status.json` + POST `/api/refresh/*` / `/api/sync` |
-| AC-3.1-11 | Three pages only; no CSRF mutation model | `/api/meta` pages list; no mutate APIs |
+| AC-3.1-11 | Three pages only; no identity-mutation APIs; reseed CLI-only; Host/token/Origin | `/api/meta`; POST reseed 400; Host 403; missing token 401 |
