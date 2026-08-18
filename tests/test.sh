@@ -1333,6 +1333,12 @@ assert_success "ci.yml has artifact job" \
   grep -qE '^  artifact:' "$CI_YML"
 assert_success "ci.yml runs debian:12 container tests" \
   grep -q 'debian:12' "$CI_YML"
+assert_success "ci.yml debian apt step is dash-safe (set -eu, no pipefail)" \
+  awk '/name: Install test dependencies/,/uses: actions\/checkout/' "$CI_YML" \
+    | grep -q 'set -eu'
+assert_failure "ci.yml debian apt step does not enable pipefail" \
+  awk '/name: Install test dependencies/,/uses: actions\/checkout/' "$CI_YML" \
+    | grep -q 'pipefail'
 assert_success "ci.yml runs debian:13 container tests" \
   grep -q 'debian:13' "$CI_YML"
 assert_success "ci.yml runs tests/test.sh" \

@@ -42,13 +42,15 @@ jobs:
       image: ${{ matrix.image }}
     steps:
       - name: Install test dependencies
+        # Container default shell is dash (/bin/sh); do not enable bash-only options here.
         run: |
-          set -euo pipefail
+          set -eu
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
             bash python3 ca-certificates git \
             coreutils util-linux tar curl
+        shell: sh
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Node tests
         run: bash tests/test.sh
