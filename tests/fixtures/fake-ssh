@@ -96,6 +96,9 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
         if arg == "-l" and i + 1 < len(argv):
             i += 2
             continue
+        if arg == "-i" and i + 1 < len(argv):
+            i += 2
+            continue
         if arg.startswith("-") and arg != "-":
             i += 1
             continue

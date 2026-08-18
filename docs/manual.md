@@ -754,6 +754,7 @@ SSH `vcl identity --json`（除非 `--offline`）并写入 registry。
 | `--host-key SHA256:…` | 建议 | 钉指纹，写入用户 `known_hosts` |
 | `--node-id UUID` | `--offline` 时必填 | 逻辑节点 ID；在线时通常以远端 identity 为准 |
 | `--offline` | 否 | 不 SSH，必须 `--node-id` |
+| `--identity-file PATH` | 否 | 本机私钥路径；SSH/SCP 传 `-i` + `IdentitiesOnly=yes` |
 | `--instance-id UUID` | 否 | **接受并忽略**（不写入 `fleet.json`） |
 
 ```bash
@@ -784,16 +785,18 @@ python3 bin/vcl-fleet node show lax
 
 ---
 
-### `vcl-fleet node set NAME --host NEW_HOST [选项]`
+### `vcl-fleet node set NAME [--host NEW_HOST] [选项]`
 
-**Endpoint rebind**：同一物理实例，只改 SSH 坐标。凭据 / Reality / `instance_id` **全部保留**。不是换机。
+**Endpoint rebind**：同一物理实例，只改 SSH 坐标。凭据 / Reality / `instance_id` **全部保留**。不是换机。也可只改 `--identity-file`。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `NAME` | 是 | |
-| `--host HOST` | 是 | 新 SSH 地址 |
+| `--host HOST` | 与 identity 至少填一项 | 新 SSH 地址 |
 | `--user USER` | 否 | 新 SSH 用户 |
 | `--port N` | 否 | 新 SSH 端口 |
+| `--identity-file PATH` | 与 `--host` 至少填一项 | 本机私钥；`-i` + `IdentitiesOnly=yes` |
+| `--clear-identity-file` | 否 | 去掉节点上的 identity_file，恢复 agent/默认密钥 |
 
 ```bash
 python3 bin/vcl-fleet node set lax --host 203.0.113.10
@@ -837,6 +840,7 @@ python3 bin/vcl-fleet node retire lax
 | `--host-key SHA256:…` | 是 | 新机指纹 |
 | `--output FILE` | 否 | 本地 reissue CSV，默认 `$FLEET_HOME/reissue-NAME-<UTC>.csv`，**0600** |
 | `--from-backup FILE` | 否 | 旧机已死：跳过 final sync 与远端 `backup create`，用现成 secretless 包。可能丢 sync 尾巴 |
+| `--identity-file PATH` | 否 | 新机本机私钥（默认沿用旧节点的 identity_file） |
 | `--json` | 否 | |
 
 成功后：更新 `sync_cursor.instance_id`，**保留** `last_event_id`，**不**自动 `--reseed`。下一步 sync 若 cursor 超前恢复库 → `CURSOR_AHEAD` → `--reseed`。

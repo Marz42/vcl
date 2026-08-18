@@ -1337,8 +1337,10 @@ assert_success "ci.yml runs debian:13 container tests" \
   grep -q 'debian:13' "$CI_YML"
 assert_success "ci.yml runs tests/test.sh" \
   grep -q 'bash tests/test.sh' "$CI_YML"
-assert_success "ci.yml runs standalone tests/test-fleet.sh" \
-  grep -q 'bash tests/test-fleet.sh' "$CI_YML"
+assert_success "ci.yml greps fleet lock tests in test-fleet.sh" \
+  grep -q 'held fleet lock makes concurrent node add busy' "$CI_YML"
+assert_failure "ci.yml does not double-run standalone test-fleet.sh" \
+  grep -q 'run: bash tests/test-fleet.sh' "$CI_YML"
 assert_success "ci.yml builds release and controller artifacts" \
   grep -q 'scripts/build-release.sh' "$CI_YML"
 assert_success "ci.yml builds controller zip" \
@@ -3676,12 +3678,15 @@ PY
     grep -q 'vcl user add <tag> \[--user-id UUID\]' "${PROJECT_DIR}/bin/vincula"
   assert_success "helper notes --user-id is advanced/controller" \
     grep -q 'advanced/controller' "${PROJECT_DIR}/bin/vincula"
-  if awk '/^cmd_user\(\)/,/^cmd_connections\(\)/' "${PROJECT_DIR}/bin/vincula" | grep -q -- '--user-id UUID'; then
+  # Capture first: under pipefail, awk|grep -q can SIGPIPE when the match is early.
+  user_to_conn=$(awk '/^cmd_user\(\)/,/^cmd_connections\(\)/' "${PROJECT_DIR}/bin/vincula")
+  if printf '%s\n' "$user_to_conn" | grep -q -- '--user-id UUID'; then
     pass "user add dispatch documents --user-id"
   else
     fail "user add dispatch documents --user-id"
   fi
-  if awk '/^cmd_user_add\(\)/,/^cmd_user_set\(\)/' "${PROJECT_DIR}/bin/vincula" | grep -q -- '--user-id'; then
+  user_add_body=$(awk '/^cmd_user_add\(\)/,/^cmd_user_set\(\)/' "${PROJECT_DIR}/bin/vincula")
+  if printf '%s\n' "$user_add_body" | grep -q -- '--user-id'; then
     pass "cmd_user_add parses --user-id"
   else
     fail "cmd_user_add parses --user-id"

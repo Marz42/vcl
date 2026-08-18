@@ -31,6 +31,9 @@ UI_TOKEN_HEADER = "X-Vincula-UI-Token"
 AUDIT_DEFAULT_LIMIT = 500
 AUDIT_MAX_LIMIT = 1000
 AUDIT_MAX_WINDOW_DAYS = 31
+UI_MAX_WORKERS = 8
+UI_REQUEST_TIMEOUT = 30.0
+UI_BUSY_WAIT_SECONDS = 0.2
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -1032,6 +1035,15 @@ def api_refresh_users() -> dict[str, Any]:
 class FleetUIHandler(BaseHTTPRequestHandler):
     server_version = "VinculaFleetUI/0.3.1"
 
+    def setup(self) -> None:
+        super().setup()
+        timeout = getattr(self.server, "request_timeout", None)
+        if timeout:
+            try:
+                self.connection.settimeout(float(timeout))
+            except OSError:
+                pass
+
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(
             f"[ui] {self.address_string()} - {fmt % args}\n"
@@ -1076,10 +1088,17 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(400, {"error": f"fleet error (exit {code})"})
 
+    def _listen_port(self) -> int:
+        try:
+            return int(self.server.server_address[1])
+        except (AttributeError, TypeError, IndexError, ValueError):
+            return _LISTEN_PORT
+
     def _check_request_guards(self, *, for_api: bool, is_post: bool) -> bool:
         """Return False if a response was already sent."""
+        listen_port = self._listen_port()
         host = self.headers.get("Host") or ""
-        if not host_header_allowed(host, _LISTEN_PORT):
+        if not host_header_allowed(host, listen_port):
             self._send_json(403, {"error": "forbidden Host"})
             return False
         if for_api:
@@ -1096,7 +1115,7 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                 return False
             origin = self.headers.get("Origin")
             if origin is not None and origin != "":
-                if origin not in allowed_origins(_LISTEN_PORT):
+                if origin not in allowed_origins(listen_port):
                     self._send_json(403, {"error": "forbidden Origin"})
                     return False
             # Missing Origin is allowed (same-machine tools). Token +
@@ -1332,9 +1351,82 @@ class FleetUIHandler(BaseHTTPRequestHandler):
         self._send(200, data, ctype)
 
 
-def make_server(host: str, port: int) -> ThreadingHTTPServer:
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server with a worker cap and per-request socket timeout."""
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler: type[BaseHTTPRequestHandler],
+        *,
+        max_workers: int = UI_MAX_WORKERS,
+        request_timeout: float = UI_REQUEST_TIMEOUT,
+    ) -> None:
+        super().__init__(server_address, handler)
+        self.max_workers = max(1, int(max_workers))
+        self.request_timeout = float(request_timeout)
+        self._sema = threading.BoundedSemaphore(self.max_workers)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        try:
+            request.settimeout(self.request_timeout)
+        except OSError:
+            pass
+        if not self._sema.acquire(timeout=UI_BUSY_WAIT_SECONDS):
+            self._reject_busy(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            try:
+                self._sema.release()
+            except ValueError:
+                pass
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                self._sema.release()
+            except ValueError:
+                pass
+
+    def _reject_busy(self, request: Any) -> None:
+        body = b'{"error":"too many workers"}\n'
+        header = (
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Type: application/json; charset=utf-8\r\n"
+            b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+            b"Connection: close\r\n"
+            b"Retry-After: 1\r\n"
+            b"\r\n"
+        )
+        try:
+            request.sendall(header + body)
+        except OSError:
+            pass
+        try:
+            request.close()
+        except OSError:
+            pass
+
+
+def make_server(
+    host: str,
+    port: int,
+    *,
+    max_workers: int = UI_MAX_WORKERS,
+    request_timeout: float = UI_REQUEST_TIMEOUT,
+) -> BoundedThreadingHTTPServer:
     bind = assert_loopback_host(host)
-    return ThreadingHTTPServer((bind, port), FleetUIHandler)
+    return BoundedThreadingHTTPServer(
+        (bind, port),
+        FleetUIHandler,
+        max_workers=max_workers,
+        request_timeout=request_timeout,
+    )
 
 
 def serve(
@@ -1385,6 +1477,8 @@ def serve_in_thread(
     fleet_mod: Any,
     static_dir: Optional[Path] = None,
     token: Optional[str] = None,
+    max_workers: int = UI_MAX_WORKERS,
+    request_timeout: float = UI_REQUEST_TIMEOUT,
 ) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
     """Test helper: start UI briefly without blocking forever.
 
@@ -1394,7 +1488,9 @@ def serve_in_thread(
     global _STATIC_DIR
     if static_dir is not None:
         _STATIC_DIR = Path(static_dir)
-    httpd = make_server(host, port)
+    httpd = make_server(
+        host, port, max_workers=max_workers, request_timeout=request_timeout
+    )
     bind_port = httpd.server_address[1]
     tok = token or secrets.token_urlsafe(32)
     set_ui_runtime(token=tok, listen_port=bind_port)

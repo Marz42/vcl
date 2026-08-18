@@ -157,10 +157,16 @@ assert_success "node -h lists replace" grep -q 'replace' <<< "$node_help"
 assert_success "node -h lists instances" grep -q 'instances' <<< "$node_help"
 set_help=$(fleet node set -h)
 assert_success "node set -h names rebind" grep -q 'rebind' <<< "$set_help"
+assert_success "node set -h documents --identity-file" \
+  grep -q -- '--identity-file' <<< "$set_help"
+assert_success "node set -h documents --clear-identity-file" \
+  grep -q -- '--clear-identity-file' <<< "$set_help"
 replace_help=$(fleet node replace -h)
 assert_success "node replace -h names replace" grep -q 'replace' <<< "$replace_help"
 assert_success "node replace -h names rebind" grep -q 'rebind' <<< "$replace_help"
 assert_success "node replace -h requires --host-key" grep -q -- '--host-key' <<< "$replace_help"
+assert_success "node replace -h documents --identity-file" \
+  grep -q -- '--identity-file' <<< "$replace_help"
 assert_success "node replace -h names runtime-only" \
   grep -q 'runtime-only' <<< "$replace_help"
 assert_success "node replace -h names --reissue-output" \
@@ -451,7 +457,9 @@ argv = mod.ssh_argv(
 assert argv[0] == fake, argv[0]
 assert "-p" in argv and "22" in argv
 assert "BatchMode=yes" in argv
-assert "IdentitiesOnly=no" in argv
+assert "IdentitiesOnly=no" not in argv
+assert "-i" not in argv
+assert "IdentitiesOnly=yes" not in argv
 assert "root@203.0.113.10" in argv
 assert "--" in argv
 after = argv[argv.index("--") + 1 :]
@@ -509,12 +517,115 @@ except SystemExit:
 finally:
     sys.stderr = old_err
 assert raised, bad.stdout
+import tempfile
+from pathlib import Path
+keydir = Path(tempfile.mkdtemp())
+key = keydir / "id_ed25519"
+key.write_text("test-only-not-a-real-key\n", encoding="utf-8")
+with_id = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=str(key),
+)
+assert "-i" in with_id
+assert str(key.resolve()) in with_id
+assert "IdentitiesOnly=yes" in with_id
+assert "IdentitiesOnly=no" not in with_id
+proc_i = mod.ssh_run(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=str(key),
+)
+assert proc_i.returncode == 0, proc_i.stderr
+missing_died = False
+try:
+    mod.ssh_argv(
+        "203.0.113.10",
+        "root",
+        22,
+        ["vcl", "identity", "--json"],
+        batch=True,
+        identity_file=str(key) + ".missing",
+    )
+except SystemExit:
+    missing_died = True
+assert missing_died
+scp = mod.scp_argv(
+    port=22, src="local", dest="remote", identity_file=str(key)
+)
+assert "-i" in scp and "IdentitiesOnly=yes" in scp
+assert "IdentitiesOnly=no" not in scp
 PY
 if (( argv_rc == 0 )); then
   pass "ssh_argv/ssh_run use injectable ssh without host-key weakening"
 else
   fail "ssh_argv/ssh_run use injectable ssh without host-key weakening"
 fi
+assert_failure "fleet.py does not hardcode IdentitiesOnly=no" \
+  grep -q 'IdentitiesOnly=no' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.py can pass IdentitiesOnly=yes" \
+  grep -q 'IdentitiesOnly=yes' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "node add -h documents --identity-file" \
+  grep -q -- '--identity-file' <<< "$(fleet node add -h 2>&1 || true)"
+
+SAVED_IDENT_HOME="${VCL_FLEET_HOME}"
+IDENT_FLEET_HOME="${TEST_TMP}/fleet-home-identity"
+IDENT_KEY="${TEST_TMP}/ident-ed25519"
+mkdir -p "$IDENT_FLEET_HOME"
+printf 'test-only-not-a-real-key\n' > "$IDENT_KEY"
+export VCL_FLEET_HOME="$IDENT_FLEET_HOME"
+assert_success "identity-file fleet init" fleet init
+assert_success "offline add with --identity-file" \
+  fleet node add keyn --host 203.0.113.10 --offline \
+    --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0099" \
+    --identity-file "$IDENT_KEY"
+ident_abs_rc=0
+python3 - "$IDENT_FLEET_HOME" <<'PY' || ident_abs_rc=$?
+import json, sys
+from pathlib import Path
+reg = json.loads(Path(sys.argv[1], "fleet.json").read_text(encoding="utf-8"))
+stored = reg["nodes"][0]["identity_file"]
+assert Path(stored).is_absolute(), stored
+assert Path(stored).name == "ident-ed25519", stored
+PY
+if (( ident_abs_rc == 0 )); then
+  pass "offline add persists absolute identity_file"
+else
+  fail "offline add persists absolute identity_file"
+fi
+ident_show=$(fleet node show keyn)
+if [[ "$ident_show" == *"identity_file="* ]] && [[ "$ident_show" == *"ident-ed25519"* ]]; then
+  pass "node show prints identity_file path"
+else
+  fail "node show prints identity_file path (${ident_show})"
+fi
+assert_success "node set --clear-identity-file" \
+  fleet node set keyn --clear-identity-file
+ident_show2=$(fleet node show keyn)
+if [[ "$ident_show2" != *"identity_file="* ]]; then
+  pass "clear-identity-file drops identity_file"
+else
+  fail "clear-identity-file drops identity_file (${ident_show2})"
+fi
+assert_success "node set --identity-file without --host" \
+  fleet node set keyn --identity-file "$IDENT_KEY"
+missing_ident_rc=0
+fleet node add badkeyn --host 203.0.113.10 --offline \
+  --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0098" \
+  --identity-file "${IDENT_KEY}.missing" >/dev/null 2>"${TEST_TMP}/ident-missing.err" \
+  || missing_ident_rc=$?
+if (( missing_ident_rc != 0 )) && grep -q 'identity file not found' "${TEST_TMP}/ident-missing.err"; then
+  pass "missing --identity-file is refused"
+else
+  fail "missing --identity-file is refused (rc=${missing_ident_rc})"
+fi
+export VCL_FLEET_HOME="${SAVED_IDENT_HOME}"
 
 # P1-01: remote command is one shlex-quoted string; metadata/SSH target validation.
 p101_rc=0
@@ -747,6 +858,12 @@ assert_success "B15 ui refuses 0.0.0.0 by policy text" \
   grep -q 'refuses non-loopback' "${PROJECT_DIR}/lib/vincula-ui/server.py"
 assert_failure "B15 ui does not default-bind 0.0.0.0" \
   grep -q '0\.0\.0\.0' "${PROJECT_DIR}/lib/vincula-ui/server.py"
+assert_success "B15 ui caps concurrent workers" \
+  grep -q 'UI_MAX_WORKERS' "${PROJECT_DIR}/lib/vincula-ui/server.py"
+assert_success "B15 ui sets request socket timeout" \
+  grep -q 'UI_REQUEST_TIMEOUT' "${PROJECT_DIR}/lib/vincula-ui/server.py"
+assert_success "B15 ui uses a bounded semaphore" \
+  grep -q 'BoundedSemaphore' "${PROJECT_DIR}/lib/vincula-ui/server.py"
 assert_failure "AC-2.8-10 shipped controller has no StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' \
     "${PROJECT_DIR}/lib/vincula-fleet.py" \
@@ -6574,6 +6691,10 @@ mkdir -p "$VCL_FLEET_HOME"
 assert_success "ui-test fleet init" fleet init
 assert_success "ui-test offline add lax" \
   fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+UI_IDENT="${UI_FLEET_HOME}/ui-ident-ed25519"
+printf 'test-only-not-a-real-key\n' > "$UI_IDENT"
+assert_success "ui-test set identity-file" \
+  fleet node set lax --identity-file "$UI_IDENT"
 
 ui_seed_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || ui_seed_rc=$?
@@ -6778,6 +6899,7 @@ blob = json.dumps(node).lower()
 assert "vless://" not in blob
 assert "private_key" not in blob
 assert "clash_secret" not in blob
+assert "identity_file" not in blob
 
 st, users, _ = get("/api/users")
 assert st == 200 and users["users"]
@@ -6970,6 +7092,53 @@ fleet.run_sync_payload = orig_sync
 assert not sync_err, sync_err
 assert len(sync_ok) == 2
 assert max_inside == 1, max_inside
+
+# Worker cap: one in-flight request, the next is 503
+busy_httpd, busy_thread, busy_tok = ui.serve_in_thread(
+    "127.0.0.1",
+    0,
+    fleet_mod=fleet,
+    static_dir=Path(static_dir),
+    max_workers=1,
+)
+busy_port = busy_httpd.server_address[1]
+busy_base = f"http://127.0.0.1:{busy_port}"
+entered = threading.Event()
+release = threading.Event()
+orig_ov = ui.api_overview
+
+def slow_overview():
+    entered.set()
+    release.wait(timeout=8)
+    return orig_ov()
+
+ui.api_overview = slow_overview
+
+def hold_overview():
+    hdrs = {TOKEN_H: busy_tok}
+    r = urllib.request.Request(busy_base + "/api/overview", headers=hdrs)
+    with urllib.request.urlopen(r, timeout=8) as resp:
+        resp.read()
+
+holder = threading.Thread(target=hold_overview)
+holder.start()
+assert entered.wait(timeout=3), "overview worker did not start"
+busy_code = 200
+try:
+    r = urllib.request.Request(
+        busy_base + "/api/meta", headers={TOKEN_H: busy_tok}
+    )
+    urllib.request.urlopen(r, timeout=8)
+except urllib.error.HTTPError as exc:
+    busy_code = exc.code
+assert busy_code == 503, busy_code
+release.set()
+holder.join(timeout=8)
+ui.api_overview = orig_ov
+busy_httpd.shutdown()
+busy_thread.join(timeout=5)
+# Restore primary server runtime (token + port) after the busy-server helper.
+ui.set_ui_runtime(token=token, listen_port=port)
 
 # Static index: token meta, no vless
 st, html, idx_hdrs = req("/", headers={})

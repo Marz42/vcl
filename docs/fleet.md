@@ -115,11 +115,14 @@ python3 bin/vcl-fleet init
 | `vcl-fleet version` | `vcl-fleet 0.3.1-dev` |
 | `vcl-fleet help` | Help |
 
-`node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.
+`node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`.
 `--instance-id` is accepted and **ignored** (not stored).
+`--identity-file` is a **local** private-key path (not the key bytes). SSH/SCP then pass `-i PATH -o IdentitiesOnly=yes`. Unset keeps the OpenSSH default (agent / default keys). There is no password-SSH fallback; use the cloud console / serial, or a non-root account with sudo.
+
+`node set` flags: `--host` (rebind), `--user`, `--port`, `--identity-file PATH`, `--clear-identity-file`. At least one of `--host` / `--identity-file` / `--clear-identity-file` is required.
 
 `node replace` flags: `--host` (required), `--host-key SHA256:…` (required),
-`--output` (local reissue CSV dest), `--from-backup FILE`, `--json`. Remote
+`--output` (local reissue CSV dest), `--from-backup FILE`, `--identity-file PATH`, `--json`. Remote
 restore argv is `vcl restore FILE --reissue-output FILE --server HOST --json`.
 NEW_HOST must already have runtime (`sudo bash vincula.sh --runtime-only`)
 and **must not** have `$STATE_DIR/VERSION`. A fully bootstrapped host is
@@ -153,7 +156,9 @@ optional `users-cache.json`). Buttons **Refresh status** / **Verify** /
 **Sync** call the same controller paths as the CLI (SSH-backed cache
 writes). GET audit is local cache only (no implicit SSH). Audit uses the
 same interval-overlap query layer as `vcl-fleet audit user`, with a 31-day
-window cap and a 500-row default page. Accounting is labeled **approximate**.
+window cap and a 500-row default page. The HTTP server caps concurrent
+workers (503 when busy) and applies a per-request socket timeout.
+Accounting is labeled **approximate**.
 
 Packaging: controller zip includes `lib/vincula-ui/server.py` and
 `lib/vincula-ui/static/*` (listed in `controller.lock`).
@@ -203,7 +208,7 @@ resolve SSH target
 → ssh with StrictHostKeyChecking=yes (strengthened, never disabled)
 → remote: vcl identity --json
 → refuse duplicate node_id / duplicate name
-→ write fleet.json (name, node_id, ssh_host, ssh_user, ssh_port, enabled, status)
+→ write fleet.json (name, node_id, ssh_host, ssh_user, ssh_port, optional identity_file, enabled, status)
 ```
 
 `ssh-keyscan` is **candidate acquisition**, not verification. A mismatch fails

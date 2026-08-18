@@ -27,8 +27,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Node tests (sources fleet)
         run: bash tests/test.sh
-      - name: Standalone fleet tests
-        run: bash tests/test-fleet.sh
 
   unit-debian:
     name: unit (${{ matrix.image }})
@@ -69,8 +67,6 @@ jobs:
           grep -q 'held fleet lock makes concurrent node add busy' tests/test-fleet.sh
       - name: Node + sourced fleet tests
         run: bash tests/test.sh
-      - name: Standalone fleet lock tests
-        run: bash tests/test-fleet.sh
 
   failure-injection:
     name: failure-injection

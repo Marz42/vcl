@@ -352,8 +352,8 @@ Merge gate is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.
 
 | Job | What it runs |
 | --- | --- |
-| **unit** | Host `ubuntu-latest`: `bash tests/test.sh` (sources fleet) and standalone `bash tests/test-fleet.sh`. Debian 12 / Debian 13 containers run `tests/test.sh` with `python3` installed (sourced fleet tests run there too). No Ubuntu 26.04 runner is added until GitHub provides one; `ubuntu-latest` is the Ubuntu matrix entry. |
-| **concurrency** | Fail-closed if B6 flock tests are missing, then the same suites (parallel `user add` / lock busy). |
+| **unit** | Host `ubuntu-latest`: `bash tests/test.sh` (sources fleet). Debian 12 / Debian 13 containers run `tests/test.sh` with `python3` installed. Fleet tests are not run a second time as a standalone step (that doubled wall-clock under the 30-minute cap). No Ubuntu 26.04 runner is added until GitHub provides one; `ubuntu-latest` is the Ubuntu matrix entry. |
+| **concurrency** | Fail-closed if B6 flock tests are missing, then `bash tests/test.sh` (parallel `user add` / lock busy). |
 | **failure-injection** | `bash tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER` (stage / install / health and later boundaries), P1-03 upgrade preflight injects, and P1-05 bad Clash envelopes. |
 | **artifact** | `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`; black-box unzip of `dist/vincula-controller-*.zip` with no repo `lib/`; `sha256sum --check` on the zip sidecar and `controller.lock`; node tarball listing + `release.lock`. |
 

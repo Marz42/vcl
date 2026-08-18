@@ -163,6 +163,7 @@ NODE_KEYS = (
     "ssh_host",
     "ssh_user",
     "ssh_port",
+    "identity_file",
     "enabled",
     "status",
 )
@@ -1200,6 +1201,39 @@ def _reject_forbidden_ssh_options(argv: list[str]) -> None:
             die("refusing forbidden SSH option UserKnownHostsFile=", 2)
 
 
+def validate_identity_file(path: str, *, must_exist: bool = True) -> str:
+    """Return a local private-key path. Never stores key bytes."""
+    raw = (path or "").strip()
+    if not raw or "\x00" in raw or "\n" in raw or "\r" in raw:
+        die("invalid --identity-file")
+    candidate = Path(raw).expanduser()
+    if must_exist:
+        try:
+            resolved = candidate.resolve()
+        except OSError as exc:
+            die(f"invalid --identity-file: {exc}")
+        if not resolved.is_file():
+            die(f"identity file not found: {resolved}")
+        return str(resolved)
+    if candidate.is_file():
+        try:
+            return str(candidate.resolve())
+        except OSError:
+            return str(candidate)
+    return str(candidate)
+
+
+def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
+    path = _optional_text(identity_file)
+    if not path:
+        return []
+    return ["-i", validate_identity_file(path, must_exist=True), "-o", "IdentitiesOnly=yes"]
+
+
+def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
+    return _optional_text(node.get("identity_file"))
+
+
 def ssh_argv(
     host: str,
     user: str,
@@ -1208,6 +1242,7 @@ def ssh_argv(
     *,
     batch: bool,
     extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
 ) -> list[str]:
     """Build an OpenSSH argv. Never weakens host-key checking.
 
@@ -1235,7 +1270,8 @@ def ssh_argv(
         argv.extend(extra)
     if batch:
         argv.extend(["-o", "BatchMode=yes"])
-    argv.extend(["-o", "IdentitiesOnly=no", f"{user}@{host}", "--", remote])
+    argv.extend(ssh_identity_args(identity_file))
+    argv.extend([f"{user}@{host}", "--", remote])
     _reject_forbidden_ssh_options(argv)
     return argv
 
@@ -1248,10 +1284,19 @@ def ssh_run(
     *,
     batch: bool = True,
     extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
     timeout: float = SSH_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run remote_cmd over SSH. Stderr is captured; exit code is preserved."""
-    argv = ssh_argv(host, user, port, remote_cmd, batch=batch, extra=extra)
+    argv = ssh_argv(
+        host,
+        user,
+        port,
+        remote_cmd,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+    )
     try:
         return subprocess.run(
             argv,
@@ -1282,6 +1327,7 @@ def scp_argv(
     dest: str,
     batch: bool = True,
     extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
 ) -> list[str]:
     """Build an OpenSSH scp argv. Never weakens host-key checking."""
     argv = [scp_bin(), "-P", str(port)]
@@ -1289,7 +1335,8 @@ def scp_argv(
         argv.extend(extra)
     if batch:
         argv.extend(["-o", "BatchMode=yes"])
-    argv.extend(["-o", "IdentitiesOnly=no", src, dest])
+    argv.extend(ssh_identity_args(identity_file))
+    argv.extend([src, dest])
     _reject_forbidden_ssh_options(argv)
     return argv
 
@@ -1301,10 +1348,18 @@ def scp_run(
     dest: str,
     batch: bool = True,
     extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
     timeout: float = SCP_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Copy src to dest via scp. List argv only; never shell=True."""
-    argv = scp_argv(port=port, src=src, dest=dest, batch=batch, extra=extra)
+    argv = scp_argv(
+        port=port,
+        src=src,
+        dest=dest,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+    )
     try:
         return subprocess.run(
             argv,
@@ -1347,6 +1402,7 @@ def scp_pull(
         src=_scp_remote_spec(node, remote_path),
         dest=str(dest),
         extra=extra,
+        identity_file=_node_identity_file(node),
         timeout=timeout,
     )
     if proc.returncode != 0:
@@ -1372,6 +1428,7 @@ def scp_push(
         src=str(src),
         dest=_scp_remote_spec(node, remote_path),
         extra=extra,
+        identity_file=_node_identity_file(node),
         timeout=timeout,
     )
     if proc.returncode != 0:
@@ -1698,7 +1755,13 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
     if not isinstance(status, str) or status not in NODE_STATUSES:
         die(f"invalid status: {status}")
     enabled = status == NODE_STATUS_ACTIVE
-    return {
+    identity_file = None
+    identity_raw = raw.get("identity_file")
+    if identity_raw is not None and identity_raw != "":
+        if not isinstance(identity_raw, str):
+            die(f"invalid identity_file: {identity_raw}")
+        identity_file = validate_identity_file(identity_raw, must_exist=False)
+    record = {
         "node_id": node_id,
         "name": name,
         "ssh_host": ssh_host,
@@ -1707,6 +1770,9 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         "enabled": enabled,
         "status": status,
     }
+    if identity_file:
+        record["identity_file"] = identity_file
+    return record
 
 
 def validate_registry(data: Any) -> dict[str, Any]:
@@ -1805,6 +1871,7 @@ def add_node(
     ssh_host: str,
     ssh_user: str = "root",
     ssh_port: int = 22,
+    identity_file: Optional[str] = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
     validate_node_id(node_id)
@@ -1813,15 +1880,18 @@ def add_node(
         die(f"duplicate node_id: {node_id}")
     if find_by_name(registry, name) is not None:
         die(f"duplicate name: {name}")
+    payload: dict[str, Any] = {
+        "node_id": node_id,
+        "name": name,
+        "ssh_host": ssh_host,
+        "ssh_user": ssh_user,
+        "ssh_port": ssh_port,
+        "enabled": enabled,
+    }
+    if identity_file:
+        payload["identity_file"] = identity_file
     record = normalize_node(
-        {
-            "node_id": node_id,
-            "name": name,
-            "ssh_host": ssh_host,
-            "ssh_user": ssh_user,
-            "ssh_port": ssh_port,
-            "enabled": enabled,
-        },
+        payload,
         index=len(registry.get("nodes") or []),
     )
     registry.setdefault("nodes", []).append(record)
@@ -1879,6 +1949,10 @@ def cmd_init() -> int:
 @with_fleet_op_lock
 def cmd_node_add(args: argparse.Namespace) -> int:
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
+    identity_file = None
+    raw_ident = _optional_text(getattr(args, "identity_file", None))
+    if raw_ident:
+        identity_file = validate_identity_file(raw_ident, must_exist=True)
     if args.offline:
         if not args.node_id:
             die("--offline requires --node-id UUID", 2)
@@ -1894,6 +1968,7 @@ def cmd_node_add(args: argparse.Namespace) -> int:
             ["vcl", "identity", "--json"],
             batch=batch,
             extra=extra,
+            identity_file=identity_file,
         )
         if proc.returncode != 0:
             detail = _ssh_failure_detail(proc)
@@ -1915,6 +1990,7 @@ def cmd_node_add(args: argparse.Namespace) -> int:
         ssh_host=ssh_host,
         ssh_user=ssh_user,
         ssh_port=ssh_port,
+        identity_file=identity_file,
     )
     save_registry(None, registry)
     sys.stdout.write(f"Registered {args.name}\n")
@@ -1937,7 +2013,11 @@ def cmd_node_list() -> int:
 def cmd_node_show(name: str) -> int:
     node = require_node(load_registry(), name)
     for key in NODE_KEYS:
-        value = node[key]
+        value = node.get(key)
+        if value is None or value == "":
+            if key == "identity_file":
+                continue
+            value = "-"
         if isinstance(value, bool):
             value = "true" if value else "false"
         sys.stdout.write(f"{key}={value}\n")
@@ -1946,9 +2026,22 @@ def cmd_node_show(name: str) -> int:
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind: change ssh_host only. Credentials and instance_id stay."""
+    """Endpoint rebind and/or local SSH identity_file."""
+    identity_raw = _optional_text(getattr(args, "identity_file", None))
+    clear_identity = bool(getattr(args, "clear_identity_file", False))
+    host = _optional_text(getattr(args, "host", None))
+    if identity_raw and clear_identity:
+        die("use either --identity-file or --clear-identity-file")
+    if not host and not identity_raw and not clear_identity:
+        die("node set requires --host and/or --identity-file/--clear-identity-file")
     registry = load_registry()
-    set_host(registry, args.name, args.host, user=args.user, port=args.port)
+    if host:
+        set_host(registry, args.name, host, user=args.user, port=args.port)
+    node = require_node(registry, args.name)
+    if clear_identity:
+        node.pop("identity_file", None)
+    elif identity_raw:
+        node["identity_file"] = validate_identity_file(identity_raw, must_exist=True)
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
     return 0
@@ -2313,6 +2406,7 @@ def preflight_replace_target(
         ["test", "-x", REMOTE_VCL_BIN],
         batch=True,
         extra=extra,
+        identity_file=_node_identity_file(node),
     )
     if runtime.returncode != 0:
         die(
@@ -2326,6 +2420,7 @@ def preflight_replace_target(
         ["test", "!", "-f", REMOTE_VERSION_FILE],
         batch=True,
         extra=extra,
+        identity_file=_node_identity_file(node),
     )
     if version.returncode != 0:
         die(
@@ -2362,6 +2457,9 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     new_node = _node_view(
         node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
     )
+    ident_path = _optional_text(getattr(args, "identity_file", None))
+    if ident_path:
+        new_node["identity_file"] = validate_identity_file(ident_path, must_exist=True)
     old_instance_id = _cursor_instance_id(node["node_id"])
     from_backup = _optional_text(getattr(args, "from_backup", None))
 
@@ -2518,6 +2616,7 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         src=_scp_remote_spec(new_node, REMOTE_REISSUE_CSV),
         dest=str(csv_dest),
         extra=extra,
+        identity_file=_node_identity_file(new_node),
     )
     reissue_csv: Optional[str]
     if csv_proc.returncode == 0 and csv_dest.is_file():
@@ -2568,6 +2667,8 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_host"] = new_host
     stored["ssh_user"] = new_user
     stored["ssh_port"] = new_port
+    if new_node.get("identity_file"):
+        stored["identity_file"] = new_node["identity_file"]
     stored["status"] = NODE_STATUS_ACTIVE
     stored["enabled"] = True
     save_registry(None, registry)
@@ -2747,6 +2848,7 @@ def ssh_remote_json(
         remote_cmd,
         batch=True,
         extra=extra,
+        identity_file=_node_identity_file(node),
         timeout=timeout,
     )
     detail = _ssh_failure_detail(proc)
@@ -2781,6 +2883,7 @@ def ssh_remote_text(
         node["ssh_port"],
         remote_cmd,
         batch=True,
+        identity_file=_node_identity_file(node),
         timeout=timeout,
     )
     detail = _ssh_failure_detail(proc)
@@ -4303,6 +4406,7 @@ def ssh_audit_export(
         node["ssh_port"],
         remote,
         batch=True,
+        identity_file=_node_identity_file(node),
         timeout=SSH_TIMEOUT_SECONDS,
     )
 
@@ -5399,6 +5503,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="host_key",
         help="pin remote host-key fingerprint SHA256:... (writes user known_hosts)",
     )
+    p_add.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+    )
 
     node_sub.add_parser("list", help="list registered nodes")
 
@@ -5415,9 +5524,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_set.add_argument("name")
-    p_set.add_argument("--host", required=True, help="new SSH hostname or IP")
+    p_set.add_argument("--host", help="new SSH hostname or IP")
     p_set.add_argument("--user", help="optional new SSH user")
     p_set.add_argument("--port", type=int, help="optional new SSH port")
+    p_set.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+    )
+    p_set.add_argument(
+        "--clear-identity-file",
+        dest="clear_identity_file",
+        action="store_true",
+        help="stop passing -i (use agent / default keys again)",
+    )
 
     p_disable = node_sub.add_parser("disable", help="disable a registered node")
     p_disable.add_argument("name")
@@ -5466,6 +5586,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-backup",
         dest="from_backup",
         help="use an existing secretless backup FILE (skip final sync + remote backup)",
+    )
+    p_replace.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key for the new host (default: keep the old node's)",
     )
     p_replace.add_argument(
         "--json",
