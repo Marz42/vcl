@@ -32,9 +32,10 @@ vincula-bootstrap.sh       # 从 URL 拉 tarball 安装
 bin/vincula                # 节点运行时 CLI（安装为 vcl / vincula；无 fleet 子命令）
 bin/vcl-fleet              # 工作站控制器（Unix）
 bin/vcl-fleet.cmd          # 工作站控制器（Windows 11）
-lib/                       # common / accountd / stats / audit / backup / fleet / unit
+lib/                       # common / accountd / stats / audit / backup / fleet / unit / ui
 lib/vincula-backup.py      # 备份格式 / verify / restore plan（stdlib）
 lib/vincula-fleet.py       # 控制器实现（stdlib + 系统 OpenSSH）
+lib/vincula-ui/            # Local Audit UI（stdlib HTTP + static；vcl-fleet ui）
 scripts/
   build-release.sh         # 节点产物 dist/vincula-node-<ver>.tar.gz
   build-controller.sh      # 控制器产物 dist/vincula-controller-<ver>.zip
@@ -106,7 +107,7 @@ sudo env RELEASE_URL='https://example.com/vincula-node-<version>.tar.gz' \
 
 **不支持** `curl | bash` 单文件安装（必须同目录有 `bin/` + `lib/`）。
 
-工作站控制器是另一个产物（zip，无 installer / 无节点 `release.lock`）。zip 内有 `controller.lock`（各成员 sha256），旁边有 `vincula-controller-<ver>.zip.sha256`。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。运维步骤、host-key、user/sync/retire/replace 与 AC-3.0 见 [`docs/fleet.md`](docs/fleet.md)。
+工作站控制器是另一个产物（zip，无 installer / 无节点 `release.lock`）。zip 内有 `controller.lock`（各成员 sha256），旁边有 `vincula-controller-<ver>.zip.sha256`。解压后在 Windows 11 上跑 `bin\vcl-fleet.cmd`，在 Linux 上跑 `python3 bin/vcl-fleet`。需要本机 **Python 3.10+** 与 **系统 OpenSSH**。zip 含 `lib/vincula-ui/`（`vcl-fleet ui`）。运维步骤、host-key、user/sync/retire/replace、UI 与 AC-3.0/3.1 见 [`docs/fleet.md`](docs/fleet.md)；手测清单见 [`docs/manual.md#ui-manual-test`](docs/manual.md#ui-manual-test)。
 
 ### 环境变量
 
@@ -267,13 +268,13 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 ## Fleet Users & Audit（工作站控制器）
 
-0.3.0 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点。**`node replace`** 走 runtime-only 新机上的真实 `vcl restore --reissue-output`。
+0.3.0+ 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点。**`node replace`** 走 runtime-only 新机上的真实 `vcl restore --reissue-output`。**0.3.1** 另有 localhost-only 只读 Local Audit UI：`vcl-fleet ui`（Overview / Audit / Health；突变仍走 CLI）。
 
-节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace：[`docs/fleet.md`](docs/fleet.md)。
+节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace / UI：[`docs/fleet.md`](docs/fleet.md)。命令手册与 **UI 手测清单**：[`docs/manual.md`](docs/manual.md#ui-manual-test)。
 
 AC 证据是 **fake-ssh 多节点夹具**（lax + tokyo；replace 用 lax2），不是 live VPS。
 `node replace` 的夹具合同已落地；**不要**把夹具绿当成真机换机已验证。Live 操作清单：
-[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。发行建议仍是 **NOT READY**：
+[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。发行建议仍是 **NOT READY**（live `0.3.0 → 0.3.1-dev` upgrade 仍缺）：
 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
 
 ```bash
@@ -291,7 +292,8 @@ python3 bin/vcl-fleet user disable alice --node lax   # --node 必填
 python3 bin/vcl-fleet sync
 python3 bin/vcl-fleet sync --reseed lax              # CURSOR_EXPIRED / unlabeled；不是 backup
 python3 bin/vcl-fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-16T00:00:00Z
-python3 bin/vcl-fleet stats user alice --days 30
+python3 bin/vcl-fleet stats user alice --days 7
+python3 bin/vcl-fleet ui                             # http://127.0.0.1:8765 ；仅 loopback
 
 python3 bin/vcl-fleet node set lax --host 203.0.113.10   # rebind：同一实例，凭据保留
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...

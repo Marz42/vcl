@@ -7,6 +7,7 @@ time, functools, contextlib, fcntl (POSIX) / msvcrt (Windows).
 OpenSSH via the system ssh/ssh.exe binary (injectable with VCL_FLEET_SSH),
 ssh-keyscan (VCL_FLEET_SSH_KEYSCAN), and scp (VCL_FLEET_SCP). No pip, no
 paramiko, no cryptography package. No root, no systemd, no /etc/vincula.
+Local Audit UI lives in lib/vincula-ui/ (loopback-only stdlib HTTP).
 
 User-local fleet.json is the node registry. SSH passwords are never
 stored. Targets Python 3.10+.
@@ -5167,6 +5168,48 @@ def cmd_stats(args: argparse.Namespace) -> int:
     raise SystemExit(2)
 
 
+def load_ui_server_module() -> Any:
+    """Load lib/vincula-ui/server.py (Local Audit UI)."""
+    path = _controller_lib_dir() / "vincula-ui" / "server.py"
+    if not path.is_file():
+        die(f"ui server not found: {path}")
+    loader = importlib.machinery.SourceFileLoader("vincula_ui_server", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        die(f"cannot load ui server: {path}")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    """Start localhost-only read-only Local Audit UI (AC-3.1 / D19)."""
+    ui = load_ui_server_module()
+    static_dir = _controller_lib_dir() / "vincula-ui" / "static"
+    host = getattr(args, "host", None) or ui.DEFAULT_HOST
+    port = int(getattr(args, "port", ui.DEFAULT_PORT))
+    if isinstance(port, bool) or port < 1 or port > 65535:
+        die("ui --port must be 1..65535", 2)
+    # Prefer the live module object; fall back to a globals proxy so UI works
+    # when this file was exec'd via importlib without sticking in sys.modules.
+    fleet_mod = sys.modules.get(__name__)
+    if fleet_mod is None or not hasattr(fleet_mod, "open_fleet_db"):
+        fleet_mod = sys.modules.get("vincula_fleet")
+    if fleet_mod is None or not hasattr(fleet_mod, "open_fleet_db"):
+        import types
+
+        fleet_mod = types.ModuleType("vincula_fleet_ui_host")
+        fleet_mod.__dict__.update(globals())
+    return int(
+        ui.serve(
+            host=str(host),
+            port=port,
+            fleet_mod=fleet_mod,
+            static_dir=static_dir,
+        )
+    )
+
+
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -5672,6 +5715,29 @@ def build_parser() -> argparse.ArgumentParser:
     _add_days_flag(p_snode)
     _add_json_flag(p_snode)
 
+    p_ui = sub.add_parser(
+        "ui",
+        help="localhost-only read-only Local Audit UI (Overview/Audit/Health)",
+        description=(
+            "Serve a loopback-only read-only Local Audit UI over stdlib "
+            "HTTP. Default bind 127.0.0.1 (optional ::1). Non-loopback "
+            "binds are refused. Data comes from $FLEET_HOME cache; "
+            "Refresh/Verify/Sync trigger existing SSH-backed controller "
+            "commands. No add/rotate/retire/replace/restore/import in UI."
+        ),
+    )
+    p_ui.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback bind address (default: 127.0.0.1; ::1 allowed)",
+    )
+    p_ui.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="TCP port (default: 8765)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -5758,6 +5824,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sub == "export":
             return cmd_user_export(args)
         die(f"unknown user command: {sub}", 2)
+    if command == "ui":
+        return cmd_ui(args)
     die(f"unknown command: {command}", 2)
     return 2
 

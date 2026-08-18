@@ -2,18 +2,18 @@
 
 **Tree version:** `0.3.1-dev` (living tree).  
 **Date:** 2026-08-18  
-**Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS**.  
+**Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS** + **B15 Local Audit UI**.  
 **Companion:** [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Live replace runbook: [`live-replace-checklist.md`](live-replace-checklist.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §9.4 / §10.
 
 This is the **living-tree gate** for `0.3.1-dev`. It is **not** a continuation or rewrite of the 0.3.0 freeze record. Frozen-tag evidence stays in [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) / [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (read-only).
 
 ## Release recommendation
 
-**NOT READY** (B14 live evidence **PASS**; other gaps remain)
+**NOT READY** (B14 live evidence **PASS**; B15 UI **implemented**; live upgrade gap remains)
 
 **B14** (two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd`) is **PASS** — see [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Fixture-green replace alone is still not sufficient; this live log is.
 
-Known P0 on this tree: **0**. Remaining NOT READY: **B15** UI (deferred) and live **`0.3.0 → 0.3.1-dev` upgrade** evidence — not an open restore/sync contract mismatch from B17.
+Known P0 on this tree: **0**. Remaining NOT READY: live **`0.3.0 → 0.3.1-dev` upgrade** evidence. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
 
 ## What B17 closed
 
@@ -33,7 +33,7 @@ Earlier living-tree batches (B0–B13, B16) remain in force: replace uses real `
 | ID | Why it blocks READY FOR RC |
 | --- | --- |
 | **B14** | **PASS (2026-08-18).** Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age`. Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
-| **B15** | Localhost Audit UI. Not started. |
+| **B15** | **Implemented.** Localhost Audit UI (`vcl-fleet ui`): Overview / Audit / Health; loopback-only; read-only + SSH refresh/sync; CLI recipes for mutations. Fixture AC-3.1 in `tests/test-fleet.sh`. |
 | **Live 0.3.0 → 0.3.1-dev upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. |
 
 ## Restore contract (B17)
@@ -57,9 +57,10 @@ Normal `vcl-fleet sync` refuses unlabeled or mismatched identity; cursor does no
 
 ## Verification this round
 
-- `bash tests/test.sh` — **1231** passed
-- `bash tests/test-fleet.sh` — **485** passed
+- `bash tests/test.sh` — run after B15 (controller zip + UI members)
+- `bash tests/test-fleet.sh` — **496** passed (includes AC-3.1 UI subset)
 - `bash -n` + `python3 -m py_compile` on first-party node/controller files
-- `bash scripts/gen-release-lock.sh` after first-party edits
+- `bash scripts/gen-release-lock.sh` after first-party edits (node package)
+- `bash scripts/build-controller.sh` — packs `lib/vincula-ui/*` into controller zip
 
-B14 **PASS** (2026-08-18). Recommendation stays **NOT READY** until B15 / live `0.3.0 → 0.3.1-dev` upgrade are closed or waived.
+B14 **PASS** (2026-08-18). B15 Local Audit UI is on the tree. Recommendation stays **NOT READY** until live `0.3.0 → 0.3.1-dev` upgrade is closed or waived.

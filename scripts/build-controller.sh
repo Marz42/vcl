@@ -25,6 +25,10 @@ FILES=(
   lib/vincula-fleet.py
   lib/vincula-audit.py
   lib/vincula-backup.py
+  lib/vincula-ui/server.py
+  lib/vincula-ui/static/index.html
+  lib/vincula-ui/static/app.css
+  lib/vincula-ui/static/app.js
 )
 
 command -v python3 >/dev/null 2>&1 || {
@@ -38,7 +42,7 @@ command -v sha256sum >/dev/null 2>&1 || {
 
 printf 'Building %s\n' "$OUT"
 rm -rf --one-file-system -- "$OUT"
-mkdir -p "$OUT/bin" "$OUT/lib"
+mkdir -p "$OUT/bin" "$OUT/lib" "$OUT/lib/vincula-ui/static"
 
 for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || { printf 'missing canonical file: %s\n' "$f" >&2; exit 1; }
@@ -81,6 +85,10 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/vincula-ui/server.py",
+    f"{prefix}/lib/vincula-ui/static/index.html",
+    f"{prefix}/lib/vincula-ui/static/app.css",
+    f"{prefix}/lib/vincula-ui/static/app.js",
     f"{prefix}/controller.lock",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")

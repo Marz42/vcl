@@ -2,9 +2,9 @@
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS** ([`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)). Remaining blockers: **B15** UI and live **`0.3.0 → 0.3.1-dev` upgrade**. This page is **not** an addendum to the 0.3.0 freeze record. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS** ([`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)); **B15 Local Audit UI is implemented** (`vcl-fleet ui`, fixture AC-3.1). Remaining blocker: live **`0.3.0 → 0.3.1-dev` upgrade**. This page is **not** an addendum to the 0.3.0 freeze record. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
-Known P0: **0**. Remaining blockers are evidence gaps (B15 / live upgrade), not B14 or B17 contracts.
+Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17 contracts).
 
 ## Product limitations
 
@@ -27,7 +27,7 @@ Inherited from 0.3.0 unless noted.
 | PARTIAL has no distributed rollback | Exit 2 + per-node status + `--user-id` remediation |
 | Controller is a local tool | No installer, no systemd. Zip has `controller.lock` + sidecar `.zip.sha256` |
 | Windows workstation | Needs **Python 3.10+** and **system OpenSSH Client**. Neither is bundled |
-| UI | **0.3.1** Phase B (B15). Not started |
+| UI | **0.3.1** B15: `vcl-fleet ui` localhost-only read-only Overview/Audit/Health. No URI/secrets. Mutations stay CLI |
 
 ## Evidence gaps
 
@@ -60,7 +60,7 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | Item | Notes |
 | --- | --- |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
-| B15 localhost UI | Phase B. Not started |
+| B15 localhost UI | **Implemented** — `vcl-fleet ui`; AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not a READY FOR RC alone (live upgrade still open) |
 
 ## Related docs
 

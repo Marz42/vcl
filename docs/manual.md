@@ -21,6 +21,7 @@
 9. [开发机脚本](#dev-scripts)
 10. [环境变量总表](#env)
 11. [常见流程](#playbooks)
+12. [Local Audit UI 手动测试指南](#ui-manual-test)
 
 ---
 
@@ -42,7 +43,7 @@
 | VPS 安装 | 源树或解开的 node tarball | `sudo bash vincula.sh` |
 | VPS 从 URL 安装 | 同上 + pin | `vincula-bootstrap.sh` |
 | 节点日常 | 安装后的 `/usr/local/bin/vcl`（≡ `vincula`） | `sudo vcl …` |
-| 工作站 | zip 内 `bin/vcl-fleet` / `vcl-fleet.cmd` | 无 root、无 systemd、无公网管理口 |
+| 工作站 | zip 内 `bin/vcl-fleet` / `vcl-fleet.cmd` + `lib/vincula-ui/` | 无 root、无 systemd、无公网管理口；`ui` 仅 localhost |
 
 节点锁：`/run/lock/vincula.lock`（回退 `/var/lock/vincula.lock`），超时 30s → 退出 **4**，文案 `busy: another vincula operation in progress`。覆盖用户变更、restore、其它写 `users.json` 的路径。
 
@@ -699,13 +700,16 @@ sudo vcl uninstall --yes
 | Linux / macOS | `${XDG_CONFIG_HOME:-~/.config}/vincula/` |
 | 测试 / 覆盖 | `VCL_FLEET_HOME` |
 
-内含 `fleet.json`（schema 2，**不存** `instance_id`）、`fleet.db`（schema 2，审计缓存 + `instance_history`）。
+内含 `fleet.json`（schema 2，**不存** `instance_id`）、`fleet.db`（schema 2，审计缓存 + `instance_history`）、`last-status.json`（最近一次 status/verify 探针缓存）、可选 `users-cache.json`（UI「Refresh users」写入）。
+
+控制器 zip / 源树还带 `lib/vincula-ui/`（stdlib HTTP + 静态页），由 `vcl-fleet ui` 加载。运维专题见 [`fleet.md`](fleet.md)；验收矩阵 AC-3.1 见同文。
 
 Windows：
 
 ```bat
 py -3 bin\vcl-fleet.cmd help
 bin\vcl-fleet.cmd version
+bin\vcl-fleet.cmd ui
 ```
 
 Unix：
@@ -713,6 +717,7 @@ Unix：
 ```bash
 python3 bin/vcl-fleet help
 python3 bin/vcl-fleet version
+python3 bin/vcl-fleet ui
 ```
 
 全局：
@@ -1033,6 +1038,77 @@ python3 bin/vcl-fleet sync --json
 
 ---
 
+### `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` {#fleet-ui}
+
+工作站 **localhost-only** 只读 Local Audit UI（**Overview / Audit / Health** 三页）。
+Users / Nodes 只作 drill-down，不是独立管理台。默认监听
+`http://127.0.0.1:8765`。仅允许 loopback（`127.0.0.1` / `::1`）；`0.0.0.0` /
+公网绑定会 **立即失败退出**（exit **2**）。关闭 UI 进程 **不影响** VPS 节点。
+
+**数据源：** `$FLEET_HOME` 本地缓存（`fleet.json` / `fleet.db` /
+`last-status.json` / 可选 `users-cache.json`）。页面按钮
+**Refresh status** / **Verify** / **Sync**（及 Overview 上的 **Refresh users**）
+走与 CLI 相同的控制器路径（含 SSH）。审计检索与
+`vcl-fleet audit user` 同一 interval-overlap 谓词；Top-N 与
+`vcl-fleet stats top …` 同一 `daily_usage` 聚合。记账徽标为
+**approximate**（Clash polling，不能当发票）。
+
+**禁止（第一版）：** UI 内 add / rotate / retire / replace / restore / import。
+突变一律 CLI；顶栏 **CLI recipes** 只复制命令、不代执行。默认页与 API
+**不**展示 Reality 私钥、Clash secret、VLESS URI、reissue CSV、age identity。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | 仅 loopback；`localhost` 归一为 `127.0.0.1`；`::1` 可用 |
+| `--port` | `8765` | TCP 端口 `1..65535` |
+
+```bash
+python3 bin/vcl-fleet ui
+python3 bin/vcl-fleet ui --host 127.0.0.1 --port 8765
+python3 bin/vcl-fleet ui --host ::1 --port 8765
+# 应失败：
+python3 bin/vcl-fleet ui --host 0.0.0.0 --port 8765
+# Windows:
+bin\vcl-fleet.cmd ui
+```
+
+启动成功时 stdout 类似：
+
+```text
+Listening on http://127.0.0.1:8765
+Local Audit UI (read-only). Ctrl+C to stop. Stopping does not affect VPS nodes.
+```
+
+#### 页面与动作
+
+| 页 / 面板 | 内容 |
+| --- | --- |
+| 顶栏警告条 | 不健康 / ACCOUNTING STALE·FAIL / 时钟 / 无 status 缓存等 |
+| **Overview** | KPI（节点数、健康占比）、7 日 Top users / Top destinations（approximate）、Warnings、用户摘要表 |
+| **Audit** | 必填 user + `--from`/`--to`（RFC3339）；可选 node、destination 子串；默认空结果 |
+| **Health** | `NAME \| SSH \| PROXY \| ACCOUNTING \| VERSION \| CLOCK \| LAST_SYNC`；点行开 Node 抽屉 |
+| Node 抽屉 | `node_id` / instance 时间线 / endpoint / cursor；无 URI |
+| User 抽屉 | tag / `user_id` / 节点分配 / credential **id**（非 uuid/uri）/ 近 7 日用量 |
+| CLI recipes | 复制 init/node/user/backup 等命令模板 |
+
+#### CLI → UI 归宿（全覆盖、不越权）
+
+| CLI | UI |
+| --- | --- |
+| `status` / `verify` | Health + Overview warnings；按钮 Refresh / Verify |
+| `sync` / `sync --reseed` | 顶栏 Sync…（确认；reseed 再问节点名） |
+| `node list/show/instances` | Health + Node 抽屉 |
+| `user list/show` | Overview 用户表 + User 抽屉；Refresh users 写 `users-cache.json` |
+| `audit user` | Audit 页 |
+| `stats *` | Overview Top-N + 抽屉摘要 |
+| `init` / `node add\|set\|replace\|retire\|enable\|disable` | CLI recipes only |
+| `user add\|import\|export\|rotate\|enable\|disable` | CLI recipes only |
+| `version` / `help` | 页脚版本 |
+
+手测步骤见下文 [Local Audit UI 手动测试指南](#ui-manual-test)。
+
+---
+
 ### `vcl-fleet audit user TAG --from RFC3339 --to RFC3339 [选项]`
 
 查 **已 sync** 的 `fleet.db`，按稳定 `user_id` 跨节点合并。谓词与节点 `vcl audit` 相同。输出带 **node**。库里历史 unlabeled 行仍被 query 忽略。
@@ -1083,7 +1159,17 @@ python3 bin/vcl-fleet stats node lax --days 30
 
 ### `bash scripts/build-controller.sh`
 
-无参数。生成 `dist/vincula-controller-<version>.zip` + sidecar `.sha256`；zip 内 `controller.lock`。成员含 `bin/vcl-fleet`、`vcl-fleet.cmd`、`lib/vincula-fleet.py`、`lib/vincula-audit.py`、`lib/vincula-backup.py`。
+无参数。生成 `dist/vincula-controller-<version>.zip` + sidecar `.sha256`；zip 内
+`controller.lock`。成员含：
+
+- `README-controller.md`
+- `bin/vcl-fleet`、`bin/vcl-fleet.cmd`
+- `lib/vincula-fleet.py`、`lib/vincula-audit.py`、`lib/vincula-backup.py`
+- `lib/vincula-ui/server.py`
+- `lib/vincula-ui/static/index.html`、`app.css`、`app.js`
+
+解压后 `sha256sum -c controller.lock` 应通过。zip **不含** `vincula.sh` /
+节点 `release.lock` / `vincula-accountd.service`。
 
 ### `bash scripts/rc-live-upgrade-driver.sh`
 
@@ -1148,8 +1234,12 @@ python3 bin/vcl-fleet node add lax --host 203.0.113.10 --host-key SHA256:…
 python3 bin/vcl-fleet node add tokyo --host 203.0.113.20 --host-key SHA256:…
 python3 bin/vcl-fleet user add alice --nodes lax,tokyo --output alice.csv
 python3 bin/vcl-fleet sync
+python3 bin/vcl-fleet status
 python3 bin/vcl-fleet stats user alice --days 7
+python3 bin/vcl-fleet ui   # 浏览器打开 http://127.0.0.1:8765
 ```
+
+Windows 11：把上面的 `python3 bin/vcl-fleet` 换成 `bin\vcl-fleet.cmd`。
 
 ### 备份
 
@@ -1167,3 +1257,161 @@ sudo vcl backup verify /var/backups/vincula/node-….tar
 5. 若 sync 报 `CURSOR_AHEAD`：`vcl-fleet sync --reseed NAME`
 
 不要用 `node set` 冒充换机。不要在已有 VERSION 的新机上 restore。
+
+---
+
+## Local Audit UI 手动测试指南 {#ui-manual-test}
+
+面向管理员工作站（优先 **Windows 11**；Linux/macOS 同样适用）。自动化夹具在
+`tests/test-fleet.sh`（AC-3.1）；本节是 **真人浏览器 + 真/假节点** 手测清单。
+合同仍见 [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) —— B15 合上
+**不**单独等于 READY FOR RC。
+
+### 前置
+
+| 项 | 说明 |
+| --- | --- |
+| Python | 3.10+（Win：`py -3` / `python`） |
+| OpenSSH | 系统客户端（Win：可选功能「OpenSSH 客户端」） |
+| 控制器 | 仓库 `bin/vcl-fleet` / `bin\vcl-fleet.cmd`，或解压后的 `vincula-controller-*.zip` |
+| 数据目录 | 默认 `%APPDATA%\vincula` 或 `~/.config/vincula`；可用 `VCL_FLEET_HOME` 隔离测试 |
+| 浏览器 | 本机任意现代浏览器；只访问 `127.0.0.1` / `[::1]` |
+
+建议隔离目录（避免污染日常 registry）：
+
+```bat
+REM Windows
+set VCL_FLEET_HOME=%TEMP%\vincula-ui-manual
+mkdir "%VCL_FLEET_HOME%"
+```
+
+```bash
+# Unix
+export VCL_FLEET_HOME=/tmp/vincula-ui-manual
+mkdir -p "$VCL_FLEET_HOME"
+```
+
+### A. 启动与绑定（AC-3.1-01 / 02 / 09）
+
+1. **应成功：**
+
+```bat
+bin\vcl-fleet.cmd ui
+```
+
+```bash
+python3 bin/vcl-fleet ui
+```
+
+   终端出现 `Listening on http://127.0.0.1:8765`。浏览器打开该 URL，见三页导航
+   Overview / Audit / Health。
+
+2. **应失败（立即 exit，勿监听）：**
+
+```bat
+bin\vcl-fleet.cmd ui --host 0.0.0.0 --port 8765
+```
+
+   stderr 含 `refuses non-loopback`；本机 `netstat` / 资源管理器无对应监听。
+
+3. **可选 IPv6 localhost：** `ui --host ::1`，浏览器打开 `http://[::1]:8765`。
+
+4. **关 UI：** 终端 Ctrl+C。节点上 `systemctl is-active sing-box vincula-accountd`
+   仍为 active（若你有真节点）；关 UI **不**停远端服务（AC-3.1-09）。
+
+### B. 有缓存时的只读面（AC-3.1-03 / 06 / 07 / 11）
+
+若已有节点，先 CLI 铺缓存：
+
+```bat
+bin\vcl-fleet.cmd status --json
+bin\vcl-fleet.cmd sync
+bin\vcl-fleet.cmd ui
+```
+
+| 检查 | 期望 |
+| --- | --- |
+| Overview KPI | 节点数、healthy/unhealthy、上次 probe 时间 |
+| approximate 徽标 | 可见；文案强调非计费 |
+| Top users / destinations | 有 sync 数据时非空；声明 7d / approximate |
+| 顶栏警告 | ACCOUNTING `STALE`/`FAIL`、时钟、无 status 等优先于图表 |
+| Health 表 | 列含 SSH / PROXY / ACCOUNTING / VERSION / CLOCK / LAST_SYNC |
+| 默认页源码/界面 | **无** `vless://`、Reality 私钥、Clash secret、成批凭据倾倒 |
+| 主导航 | **仅**三页；无独立「Users 管理 / Nodes 编辑」页 |
+
+### C. Refresh / Sync（AC-3.1-10）
+
+| 动作 | 期望 |
+| --- | --- |
+| **Refresh status** | 走 SSH status；更新 `last-status.json`；Health/Overview 重绘 |
+| **Verify** | 走 verify（含时钟等）；写回 last-status |
+| **Sync…** | 确认对话框；正常 sync 拉审计；可选第二步 reseed（需输入节点名） |
+| **Refresh users** | SSH `user list`；写 `users-cache.json`；Overview 用户表更新；仍无 URI |
+
+无节点或 SSH 失败时：UI 应报错/toast，**不得**假装 mutation 成功。
+
+### D. Audit（AC-3.1-05 / 08）
+
+1. 打开 Audit：未搜时为空状态（提示先 Sync / 选时间窗）。
+2. 填 **user**（tag 或 `user_id`）、**From** / **To**（RFC3339，带 `Z` 或偏移）。
+3. 可选 node、destination 子串 → Search。
+4. 结果列：time / node / dest / up·down（整数人可读）/ total。
+5. 与 CLI 对照（同一窗口应同序同类行）：
+
+```bat
+bin\vcl-fleet.cmd audit user alice --from 2026-08-01T00:00:00Z --to 2026-08-19T00:00:00Z --json
+```
+
+### E. Drill-down（AC-3.1-04）
+
+| 操作 | 期望 |
+| --- | --- |
+| Health 点节点行 | 抽屉：`node_id`、instance 时间线、endpoint、cursor；无 URI |
+| Overview 点用户行 | 抽屉：tag、`user_id`、节点分配、credential **id**（可有）、近 7 日用量 |
+| 抽屉「Open Audit」 | 跳转 Audit 并预填 user/node |
+
+### F. CLI recipes（突变面覆盖）
+
+1. 打开 **CLI recipes**。
+2. 确认含 `node replace` / `user add --nodes` / `user rotate --node` / backup 指向文档等。
+3. **Copy** 后粘贴到终端可执行；UI **本身不执行**这些命令。
+4. 用开发者工具或 curl 确认突变 API 被拒：
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8765/api/user/add \
+  -H "Content-Type: application/json" -d "{}"
+# 期望: 405
+```
+
+### G. 控制器 zip 黑盒（可选）
+
+```bash
+bash scripts/build-controller.sh
+# 解压到临时目录后：
+cd /path/to/vincula-controller-0.3.1-dev
+sha256sum -c controller.lock
+# 确认存在 lib/vincula-ui/static/index.html
+env VCL_FLEET_HOME=/tmp/ui-zip-home python3 bin/vcl-fleet ui
+```
+
+Windows：解压 zip → `bin\vcl-fleet.cmd ui`（需本机 Python + OpenSSH）。
+
+### H. 快速否决项（任一失败即手测不通过）
+
+- 能绑在 `0.0.0.0` 或局域网 IP
+- UI 能 add/rotate/retire/replace/restore
+- 默认 Overview/Health 出现 VLESS URI 或私钥
+- 只有两页或出现独立「管理台」编辑页
+- 关掉 UI 后远端 sing-box/accountd 被停掉
+
+### I. 手测通过后记一笔（建议）
+
+在工作笔记或 PR 描述中记录：
+
+- 日期、工作站 OS、控制器来源（源树 / zip 版本）
+- `VCL_FLEET_HOME` 是否隔离
+- 是否对真实 VPS 点过 Refresh/Sync（是/否）
+- AC-3.1-01…11 勾选结果
+
+自动化已覆盖的绑定拒绝与 API 子集：**不**替代本节浏览器手测，尤其是 Win11
+`vcl-fleet.cmd ui` 与真实 SSH Refresh。

@@ -111,7 +111,8 @@ python3 bin/vcl-fleet init
 | `vcl-fleet stats user\|top users\|top hosts\|node NAME --days N` | `daily_usage` with **node** attribution |
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet version` | `vcl-fleet 0.3.0` |
+| `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only read-only Local Audit UI (Overview / Audit / Health) |
+| `vcl-fleet version` | `vcl-fleet 0.3.1-dev` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--offline --node-id UUID`.
@@ -124,7 +125,37 @@ NEW_HOST must already have runtime (`sudo bash vincula.sh --runtime-only`)
 and **must not** have `$STATE_DIR/VERSION`. A fully bootstrapped host is
 refused.
 
-Not in 0.3.0: localhost UI, age passphrase, `vcl snapshot export`.
+Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1** (`vcl-fleet ui`).
+
+## Local Audit UI (0.3.1 / B15)
+
+```bash
+python3 bin/vcl-fleet ui
+# Windows: bin\vcl-fleet.cmd ui
+```
+
+Listens on **`http://127.0.0.1:8765`** by default (`--host` / `--port`). Only
+loopback binds (`127.0.0.1`, `::1`); `0.0.0.0` / public listens are refused
+(AC-3.1-01). Stopping the UI process does **not** affect VPS nodes
+(AC-3.1-09).
+
+**Pages:** Overview / Audit / Health. Users and Nodes are **read-only
+drill-downs**, not admin editors. There are **no** UI mutations for
+add/rotate/retire/replace/restore/import (use CLI; recipes panel copies
+commands only). Default views never show Reality keys, Clash secret, or
+VLESS URI.
+
+**Data:** `$FLEET_HOME` cache (`fleet.json`, `fleet.db`, `last-status.json`,
+optional `users-cache.json`). Buttons **Refresh status** / **Verify** /
+**Sync** call the same controller paths as the CLI (SSH-backed). Audit
+uses the same interval-overlap query layer as `vcl-fleet audit user`.
+Accounting is labeled **approximate**.
+
+Packaging: controller zip includes `lib/vincula-ui/server.py` and
+`lib/vincula-ui/static/*` (listed in `controller.lock`).
+
+操作员手测清单（Win11 / 浏览器 / AC-3.1 勾选）：见手册
+[`docs/manual.md` § Local Audit UI 手动测试指南](manual.md#ui-manual-test)。
 
 ## Rebind vs replace
 
@@ -527,15 +558,17 @@ lax2 (`203.0.113.18`, intended replace target). AC-2.9-01 “two nodes” =
 **lax + tokyo fixtures**. Living-tree `node replace` is callable on the real
 restore contract (runtime-only NEW_HOST, `--reissue-output`). lax → lax2 is
 **PASS (fixture)** only. Live two-VPS evidence is B14
-([`live-replace-checklist.md`](live-replace-checklist.md); not yet run).
+([`live-replace-checklist.md`](live-replace-checklist.md); **PASS 2026-08-18**).
+Local Audit UI is B15 (`vcl-fleet ui`).
 
 ## Explicitly not in 0.3.0
 
-localhost-only UI (0.3.1), age passphrase, `vcl snapshot export`, routine
-`scp accounting.db`, billing-grade accounting, node `vcl fleet` subcommand,
-distributed rollback **guarantee**, blocking 90-day retention for cursors,
-retire/replace auto-uninstall / erase `fleet.db`, replace `--include-secrets`,
-automatic `--reseed` after replace.
+age passphrase, `vcl snapshot export`, routine `scp accounting.db`,
+billing-grade accounting, node `vcl fleet` subcommand, distributed rollback
+**guarantee**, blocking 90-day retention for cursors, retire/replace
+auto-uninstall / erase `fleet.db`, replace `--include-secrets`, automatic
+`--reseed` after replace. Localhost UI shipped in **0.3.1** (`vcl-fleet ui`);
+UI still does not mutate identity (CLI recipes only).
 
 ## AC-2.9 matrix (01–12)
 
@@ -554,7 +587,7 @@ is not live VPS. Full Status / Code / Test / Remaining risk table:
 | AC-2.9-07 | Credential CSV is node-specific URI, mode 0600 | `AC-2.9-07 credential CSV is node-specific`; import/export `mode 0600` |
 | AC-2.9-08 | Retire final-syncs **before** marking `retired` | `AC-2.9-08 final sync committed cursor=8 before status=retired` |
 | AC-2.9-09 | After retire, history still queryable; cursor survives new process | `AC-2.9-09 historical audit still queryable after retire`; sync restart COUNT unchanged |
-| AC-2.9-10 | No management API port | Static grep: no `socket.bind` / `HTTPServer` in `lib/vincula-fleet.py`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd` |
+| AC-2.9-10 | No VPS management API port; UI (0.3.1) is workstation loopback-only in `lib/vincula-ui` | Static grep: no `socket.bind` / `HTTPServer` in `lib/vincula-fleet.py`, `bin/vcl-fleet`, `bin/vcl-fleet.cmd`; UI refuses non-loopback |
 | AC-2.9-11 | Node `--user-id`; plain add still generates; controller injects | `tests/test.sh` explicit / generated / duplicate `user_id`; fleet add shares one UUID |
 | AC-2.9-12 | `audit export --after` + idempotent sync; gap → `CURSOR_EXPIRED` + `--reseed`; `after>max` → `CURSOR_AHEAD` | `tests/test.sh` export/CURSOR_EXPIRED/CURSOR_AHEAD; `tests/test-fleet.sh` reseed / hole not imported / lying meta |
 
@@ -578,3 +611,21 @@ Full table: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 | AC-3.0-10 | Reissue CSV correct | `AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id` |
 | AC-3.0-11 | Old credential links fail after revoke | **PARTIAL / LIVE-only.** Fixture: inbound omits old uuid. Not PASS |
 | AC-3.0-12 | Failed restore does not destroy target or source | `AC-3.0-12 fixture PASS`; fleet replace fail inject leaves old `ssh_host` |
+
+## AC-3.1 matrix (01–11)
+
+Local Audit UI (B15). Fixture + urllib against loopback stdlib server.
+
+| ID | Criterion | Evidence pointer |
+| --- | --- | --- |
+| AC-3.1-01 | UI default / only loopback bind | `tests/test-fleet.sh` refuses `--host 0.0.0.0` |
+| AC-3.1-02 | No VPS public management port | UI is workstation-local; nodes unchanged |
+| AC-3.1-03 | Health / Overview visible | `/api/health`, `/api/overview` |
+| AC-3.1-04 | Users/nodes read-only drill-down; no mutation | `/api/users`, `/api/nodes/:name`; POST mutate routes 405 |
+| AC-3.1-05 | Audit by user/time/destination | `/api/audit?...` |
+| AC-3.1-06 | Accounting freshness / approximate badge | Overview warnings + `accounting_mode` |
+| AC-3.1-07 | Default pages omit keys / Clash secret / URI dump | Static + JSON asserts |
+| AC-3.1-08 | Same query layer as CLI | `query_fleet_audit` / `query_daily_grouped` |
+| AC-3.1-09 | Closing UI does not affect nodes | Process-local HTTP only |
+| AC-3.1-10 | Local cache + SSH refresh | `last-status.json` + POST `/api/refresh/*` / `/api/sync` |
+| AC-3.1-11 | Three pages only; no CSRF mutation model | `/api/meta` pages list; no mutate APIs |

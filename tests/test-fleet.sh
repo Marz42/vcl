@@ -136,6 +136,10 @@ assert_success "build-controller.sh packs vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "build-controller.sh packs vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "build-controller.sh packs vincula-ui server" \
+  grep -q 'lib/vincula-ui/server.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "build-controller.sh packs vincula-ui static" \
+  grep -q 'lib/vincula-ui/static/index.html' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "build-controller.sh writes controller.lock" \
   grep -q 'controller.lock' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "build-controller.sh writes zip sha256 sidecar" \
@@ -736,6 +740,13 @@ assert_failure "AC-2.8-02 / AC-2.9-10 controller has no listen/http.server" \
     "${PROJECT_DIR}/lib/vincula-fleet.py" \
     "${PROJECT_DIR}/bin/vcl-fleet" \
     "${PROJECT_DIR}/bin/vcl-fleet.cmd"
+# B15 Local Audit UI is loopback-only in lib/vincula-ui (not a VPS management port).
+assert_success "B15 ui server is loopback-gated" \
+  grep -q 'assert_loopback_host' "${PROJECT_DIR}/lib/vincula-ui/server.py"
+assert_success "B15 ui refuses 0.0.0.0 by policy text" \
+  grep -q 'refuses non-loopback' "${PROJECT_DIR}/lib/vincula-ui/server.py"
+assert_failure "B15 ui does not default-bind 0.0.0.0" \
+  grep -q '0\.0\.0\.0' "${PROJECT_DIR}/lib/vincula-ui/server.py"
 assert_failure "AC-2.8-10 shipped controller has no StrictHostKeyChecking=no" \
   grep -q 'StrictHostKeyChecking=no' \
     "${PROJECT_DIR}/lib/vincula-fleet.py" \
@@ -6463,6 +6474,218 @@ else
 fi
 
 export VCL_FLEET_HOME="${SAVED_OPLOCK_HOME}"
+
+# --- B15 Local Audit UI (localhost-only, read-only) ---
+UI_FLEET_HOME="${TEST_TMP}/fleet-home-ui"
+export VCL_FLEET_HOME="$UI_FLEET_HOME"
+export VCL_FLEET_STATS_NOW="2026-08-16"
+mkdir -p "$VCL_FLEET_HOME"
+
+assert_success "ui-test fleet init" fleet init
+assert_success "ui-test offline add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+
+ui_seed_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || ui_seed_rc=$?
+import importlib.util, json, os, sys
+from pathlib import Path
+
+path, home, lax_id = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+os.environ["VCL_FLEET_HOME"] = str(home)
+os.environ["VCL_FLEET_STATS_NOW"] = "2026-08-16"
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+alice = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+inst = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+now = "2026-08-16T07:00:00Z"
+row = {
+    "event_id": 1,
+    "connection_id": "ui-alice-1",
+    "generation": 0,
+    "user_id": alice,
+    "user_tag": "alice",
+    "node_id": lax_id,
+    "instance_id": inst,
+    "started_at": "2026-08-10T08:00:00Z",
+    "last_seen_at": "2026-08-10T09:00:00Z",
+    "closed_at": "2026-08-10T09:00:00Z",
+    "destination_host": "example.com",
+    "destination_ip": "203.0.113.80",
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 100,
+    "download_bytes": 200,
+}
+conn = mod.open_fleet_db()
+mod.import_audit_batch(lax_id, inst, [row], now_iso=now, conn=conn)
+conn.close()
+status = {
+    "schema_version": 1,
+    "ok": True,
+    "controller_utc": now,
+    "nodes": [{
+        "name": "lax",
+        "node_id": lax_id,
+        "instance_id": inst,
+        "enabled": True,
+        "ssh": "OK",
+        "proxy": "OK",
+        "accounting": "STALE",
+    }],
+}
+mod.write_last_status(status)
+(home / "alice_uid.txt").write_text(alice, encoding="utf-8")
+PY
+if (( ui_seed_rc == 0 )); then
+  pass "ui-test seeded fleet.db + last-status"
+else
+  fail "ui-test seeded fleet.db + last-status (rc=${ui_seed_rc})"
+fi
+
+ui_bind_rc=0
+ui_bind_err=$(fleet ui --host 0.0.0.0 --port 18765 2>&1) || ui_bind_rc=$?
+if (( ui_bind_rc == 2 )) && [[ "$ui_bind_err" == *"refuses non-loopback"* ]]; then
+  pass "AC-3.1-01 ui refuses non-loopback bind"
+else
+  fail "AC-3.1-01 ui refuses non-loopback bind (rc=${ui_bind_rc} err=${ui_bind_err})"
+fi
+
+ui_api_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  "${PROJECT_DIR}/lib/vincula-ui/server.py" \
+  "${PROJECT_DIR}/lib/vincula-ui/static" \
+  "$VCL_FLEET_HOME" <<'PY' || ui_api_rc=$?
+import importlib.util
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+fleet_path, server_path, static_dir, home = sys.argv[1:5]
+os.environ["VCL_FLEET_HOME"] = home
+os.environ["VCL_FLEET_STATS_NOW"] = "2026-08-16"
+
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+sys.modules["vincula_fleet"] = fleet
+spec.loader.exec_module(fleet)
+
+sspec = importlib.util.spec_from_file_location("vincula_ui_server", server_path)
+ui = importlib.util.module_from_spec(sspec)
+sspec.loader.exec_module(ui)
+
+ui.set_fleet_module(fleet)
+httpd, thread = ui.serve_in_thread(
+    "127.0.0.1", 0, fleet_mod=fleet, static_dir=Path(static_dir)
+)
+port = httpd.server_address[1]
+base = f"http://127.0.0.1:{port}"
+
+def get(path):
+    with urllib.request.urlopen(base + path, timeout=5) as resp:
+        return resp.status, json.loads(resp.read().decode("utf-8"))
+
+def post(path, body=None):
+    data = json.dumps(body or {}).encode("utf-8")
+    req = urllib.request.Request(
+        base + path,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return resp.status, json.loads(resp.read().decode("utf-8"))
+
+st, meta = get("/api/meta")
+assert st == 200 and meta["mutations"] is False
+assert meta["pages"] == ["overview", "audit", "health"]
+
+st, overview = get("/api/overview")
+assert st == 200
+assert overview["accounting_mode"] == "approximate"
+assert overview["node_count"] == 1
+assert any(w.get("code") == "accounting-stale" for w in overview["warnings"])
+assert overview["top_users"]
+
+st, health = get("/api/health")
+assert st == 200 and len(health["nodes"]) == 1
+assert health["nodes"][0]["name"] == "lax"
+assert health["nodes"][0]["accounting"] == "STALE"
+
+st, node = get("/api/nodes/lax")
+assert st == 200 and node["node"]["node_id"]
+assert "secrets_note" in node
+blob = json.dumps(node).lower()
+assert "vless://" not in blob
+assert "private_key" not in blob
+assert "clash_secret" not in blob
+assert "reality" not in blob or "private" not in blob
+
+st, users = get("/api/users")
+assert st == 200 and users["users"]
+assert users["users"][0]["tag"] == "alice"
+
+st, recipes = get("/api/recipes")
+assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])
+
+alice_uid = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
+st, audit = get(
+    "/api/audit?user=alice"
+    "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
+)
+assert st == 200 and len(audit["rows"]) >= 1
+assert audit["rows"][0]["destination"] == "example.com"
+
+st, audit2 = get(
+    f"/api/audit?user={alice_uid}"
+    "&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z"
+    "&destination=example"
+)
+assert st == 200 and len(audit2["rows"]) >= 1
+
+# No mutation routes
+for path in (
+    "/api/user/add",
+    "/api/user/rotate",
+    "/api/node/retire",
+    "/api/node/replace",
+    "/api/restore",
+    "/api/mutate",
+):
+    try:
+        post(path, {})
+        raise AssertionError(f"expected 405 for {path}")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 405, (path, exc.code)
+
+# Static index
+with urllib.request.urlopen(base + "/", timeout=5) as resp:
+    html = resp.read().decode("utf-8")
+assert "Overview" in html and "Audit" in html and "Health" in html
+assert "vless://" not in html.lower()
+
+httpd.shutdown()
+thread.join(timeout=5)
+print("ui api ok")
+PY
+if (( ui_api_rc == 0 )); then
+  pass "AC-3.1 UI overview/health/audit/recipes + no mutation routes"
+else
+  fail "AC-3.1 UI overview/health/audit/recipes + no mutation routes (rc=${ui_api_rc})"
+fi
+
+ui_help=$(fleet ui -h 2>&1) || true
+if [[ "$ui_help" == *"localhost"* ]] || [[ "$ui_help" == *"loopback"* ]] \
+  || [[ "$ui_help" == *"127.0.0.1"* ]]; then
+  pass "ui -h documents localhost bind"
+else
+  fail "ui -h documents localhost bind"
+fi
+
+unset VCL_FLEET_STATS_NOW
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vincula Fleet — Local Audit UI</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <strong>Vincula Fleet</strong>
+      <span class="muted">Local Audit UI · read-only · localhost</span>
+      <span id="approx-badge" class="badge approx" title="Clash polling; not byte-identical with node stats">approximate accounting</span>
+    </div>
+    <nav class="tabs" aria-label="Main">
+      <button type="button" class="tab active" data-page="overview">Overview</button>
+      <button type="button" class="tab" data-page="audit">Audit</button>
+      <button type="button" class="tab" data-page="health">Health</button>
+    </nav>
+    <div class="actions">
+      <button type="button" id="btn-refresh-status" class="btn">Refresh status</button>
+      <button type="button" id="btn-verify" class="btn">Verify</button>
+      <button type="button" id="btn-sync" class="btn primary">Sync…</button>
+      <button type="button" id="btn-recipes" class="btn">CLI recipes ▾</button>
+    </div>
+  </header>
+
+  <div id="warn-bar" class="warn-bar" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <main>
+    <section id="page-overview" class="page active">
+      <div class="kpi-row" id="kpi-row"></div>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Top users <span class="muted">(7d, approximate)</span></h2>
+          <div id="top-users" class="table-wrap"></div>
+        </div>
+        <div class="card">
+          <h2>Top destinations <span class="muted">(7d, approximate)</span></h2>
+          <div id="top-hosts" class="table-wrap"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Warnings</h2>
+        <div id="overview-warnings"></div>
+        <p class="hint">
+          Drill-down:
+          <button type="button" class="linkish" id="goto-health">Health</button>
+          ·
+          <button type="button" class="linkish" id="goto-audit">Audit</button>
+          ·
+          <button type="button" class="linkish" id="btn-refresh-users">Refresh users (SSH)</button>
+        </p>
+        <div id="users-summary" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-audit" class="page">
+      <div class="card">
+        <h2>Audit search</h2>
+        <p class="hint">
+          Interval-overlap window required (same as CLI). Default empty until you search.
+          Sync first if you see no data.
+        </p>
+        <form id="audit-form" class="form-grid">
+          <label>User (tag or user_id)
+            <input name="user" id="audit-user" required placeholder="alice" autocomplete="off" />
+          </label>
+          <label>From (RFC3339)
+            <input name="from" id="audit-from" required placeholder="2026-08-01T00:00:00Z" />
+          </label>
+          <label>To (RFC3339)
+            <input name="to" id="audit-to" required placeholder="2026-08-18T00:00:00Z" />
+          </label>
+          <label>Node (optional)
+            <input name="node" id="audit-node" placeholder="lax" />
+          </label>
+          <label>Destination contains (optional)
+            <input name="destination" id="audit-dest" placeholder="example.com" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Search</button>
+          </div>
+        </form>
+        <div id="audit-results" class="table-wrap">
+          <p class="empty">No query yet. Choose a time window and search.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-health" class="page">
+      <div class="card">
+        <h2>Node health</h2>
+        <p class="hint">
+          Cache from <code>last-status.json</code>. Use Refresh / Verify / Sync for SSH-backed updates.
+          Click a row for node drill-down.
+        </p>
+        <div id="health-table" class="table-wrap"></div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer" hidden>
+    <div class="drawer-head">
+      <h2 id="drawer-title">Detail</h2>
+      <button type="button" id="drawer-close" class="btn">Close</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
+  <div id="drawer-backdrop" class="backdrop" hidden></div>
+
+  <aside id="recipes" class="drawer recipes" hidden>
+    <div class="drawer-head">
+      <h2>CLI recipes</h2>
+      <button type="button" id="recipes-close" class="btn">Close</button>
+    </div>
+    <p class="hint">Copy only — UI does not run mutations.</p>
+    <div id="recipes-body"></div>
+  </aside>
+
+  <footer class="foot">
+    <span id="foot-version">vcl-fleet</span>
+    · Overview / Audit / Health only · no mutation APIs · closing UI does not affect nodes
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -5,8 +5,9 @@ This zip is a user-local tool: it has no installer and no node `release.lock`.
 Integrity: `controller.lock` (per-member SHA-256) inside the zip, plus an
 independent sidecar `vincula-controller-<version>.zip.sha256`. Verify with
 `sha256sum -c` on the sidecar, then `sha256sum -c controller.lock` after unzip.
-Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py` and
-`vincula-backup.py` (required for `audit` and local backup verify).
+Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py`,
+`vincula-backup.py`, and `vincula-ui/` (Local Audit UI static + stdlib HTTP).
+Required for `audit`, local backup verify, and `vcl-fleet ui`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
@@ -34,10 +35,14 @@ SSH uses your user `known_hosts` (`%USERPROFILE%\.ssh\known_hosts`).
 ```bat
 bin\vcl-fleet.cmd user add alice --nodes lax,tokyo --display-name Alice
 bin\vcl-fleet.cmd sync
+bin\vcl-fleet.cmd ui
 bin\vcl-fleet.cmd node replace lax --host 203.0.113.18 --host-key SHA256:...
 bin\vcl-fleet.cmd node instances lax
 ```
 
+`ui` opens a **localhost-only** read-only Local Audit UI (default
+`http://127.0.0.1:8765`). Non-loopback binds are refused. Mutations stay on
+the CLI (recipes panel copies commands only).
 ## Linux / macOS
 
 Python 3.10+ and OpenSSH (`ssh` on PATH):
@@ -52,6 +57,7 @@ Override with `VCL_FLEET_HOME`.
 ```bash
 python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice
 python3 bin/vcl-fleet sync
+python3 bin/vcl-fleet ui
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
 python3 bin/vcl-fleet node instances lax
 ```

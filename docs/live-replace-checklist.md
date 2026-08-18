@@ -4,9 +4,10 @@
 Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
 Fixture-green `node replace` (B10) alone is **not** that evidence.
 
-B14 live replace is **executed**. B15 (localhost UI) remains deferred.
-Do **not** call the tree `READY FOR RC` until remaining living-tree gaps
-(B15 / live `0.3.0 → 0.3.1-dev` upgrade) are closed or explicitly waived.
+B14 live replace is **executed**. B15 (localhost UI) is **implemented**
+(`vcl-fleet ui`). Do **not** call the tree `READY FOR RC` until the remaining
+living-tree gap (live `0.3.0 → 0.3.1-dev` upgrade) is closed or explicitly
+waived.
 
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·

@@ -1028,6 +1028,10 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/vincula-ui/server.py",
+    f"{prefix}/lib/vincula-ui/static/index.html",
+    f"{prefix}/lib/vincula-ui/static/app.css",
+    f"{prefix}/lib/vincula-ui/static/app.js",
     f"{prefix}/controller.lock",
 )
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
@@ -1101,6 +1105,10 @@ assert_success "controller.lock lists vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists vincula-ui server" \
+  grep -q 'lib/vincula-ui/server.py' "${UNPACK}/controller.lock"
+assert_success "controller zip contains vincula-ui static index" \
+  test -f "${UNPACK}/lib/vincula-ui/static/index.html"
 
 bb_fleet() {
   env -u PYTHONPATH -u PYTHONHOME \
