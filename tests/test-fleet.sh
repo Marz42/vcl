@@ -124,12 +124,12 @@ assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 2" \
   grep -q 'FLEET_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet.db schema version is 2" \
-  grep -q 'FLEET_DB_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema version is 3" \
+  grep -q 'FLEET_DB_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet.db uses INSERT OR IGNORE for audit_events" \
-  grep -q 'INSERT OR IGNORE INTO audit_events' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db uses UPSERT for audit_events" \
+  grep -q 'ON CONFLICT(node_id, event_id) DO UPDATE SET' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "vcl-fleet Unix entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet"
 assert_success "vcl-fleet Windows entry exists" test -f "${PROJECT_DIR}/bin/vcl-fleet.cmd"
 assert_success "build-controller.sh packs vincula-audit.py" \
@@ -2536,15 +2536,17 @@ for i in range(1, 4):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"lax-{i}", 0, "u-alice", node_id, instance_id, "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 100 * i, 200 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 100 * i, 200 * i, i,
         ),
     )
+acct.meta_set(conn, "audit_export_seq", "3")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
@@ -2571,13 +2573,14 @@ stdout = Path(sys.argv[1]).read_text(encoding="utf-8")
 stderr = Path(sys.argv[2]).read_text(encoding="utf-8")
 lines = [json.loads(ln) for ln in stdout.splitlines() if ln.strip()]
 assert len(lines) >= 1, lines
+assert [r["export_seq"] for r in lines] == [1, 2, 3], [r["export_seq"] for r in lines]
 assert [r["event_id"] for r in lines] == [1, 2, 3], [r["event_id"] for r in lines]
 nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 assert all(r["node_id"] == nid for r in lines)
 assert all(r["instance_id"] == iid for r in lines)
 for key in (
-    "event_id", "connection_id", "generation", "user_id", "user_tag",
+    "event_id", "export_seq", "connection_id", "generation", "user_id", "user_tag",
     "node_id", "instance_id", "started_at", "last_seen_at", "closed_at",
     "destination_host", "destination_ip", "destination_port", "network",
     "upload_bytes", "download_bytes",
@@ -2585,17 +2588,20 @@ for key in (
     assert key in lines[0], key
 meta = json.loads(stderr.strip().splitlines()[-1])
 assert meta["ok"] is True
+assert meta["protocol_version"] == 2
+assert meta["cursor_kind"] == "export_seq"
 assert meta["after"] == 0
 assert meta["count"] == 3
 assert meta["next_cursor"] == 3
-assert meta["earliest_available_event_id"] == 1
+assert meta["max_export_seq"] == 3
+assert meta["pruned_max_export_seq"] == 0
 assert meta["node_id"] == nid
 assert meta["instance_id"] == iid
 PY
 if (( export_jsonl_rc == 0 )); then
-  pass "fake-ssh audit export --after 0 emits JSONL plus stderr meta"
+  pass "fake-ssh audit export --after 0 emits Protocol v2 JSONL plus stderr meta"
 else
-  fail "fake-ssh audit export --after 0 emits JSONL plus stderr meta"
+  fail "fake-ssh audit export --after 0 emits Protocol v2 JSONL plus stderr meta"
 fi
 
 export_ahead_rc=0
@@ -2614,15 +2620,17 @@ assert stdout.strip() == "", stdout
 meta = json.loads(stderr.strip().splitlines()[-1])
 assert meta["ok"] is False
 assert meta["error"] == "CURSOR_AHEAD"
+assert meta["protocol_version"] == 2
+assert meta["cursor_kind"] == "export_seq"
 assert meta["after"] == 10
-assert meta["max_event_id"] == 3
+assert meta["max_export_seq"] == 3
 assert meta["count"] == 0
 assert meta["next_cursor"] == 10
 PY
 if (( export_ahead_check_rc == 0 )); then
-  pass "fake-ssh audit export after=10 max=3 is CURSOR_AHEAD exit 3"
+  pass "fake-ssh audit export after=10 max_export_seq=3 is CURSOR_AHEAD exit 3"
 else
-  fail "fake-ssh audit export after=10 max=3 is CURSOR_AHEAD exit 3"
+  fail "fake-ssh audit export after=10 max_export_seq=3 is CURSOR_AHEAD exit 3"
 fi
 
 fail_export_rc=0
@@ -2664,7 +2672,7 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.FLEET_DB_SCHEMA_VERSION == 2
+assert mod.FLEET_DB_SCHEMA_VERSION == 3
 assert mod.fleet_db_path() == home / "fleet.db"
 
 conn1 = mod.open_fleet_db()
@@ -2678,6 +2686,8 @@ tables = {
 }
 pk = conn1.execute("PRAGMA table_info(audit_events)").fetchall()
 pk_cols = [r[1] for r in pk if r[5]]
+audit_cols = [r[1] for r in pk]
+cursor_cols = [r[1] for r in conn1.execute("PRAGMA table_info(sync_cursor)")]
 hist_pk = conn1.execute("PRAGMA table_info(instance_history)").fetchall()
 hist_pk_cols = [r[1] for r in hist_pk if r[5]]
 conn1.close()
@@ -2689,12 +2699,14 @@ count = conn2.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 hist_count = conn2.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
 conn2.close()
 
-assert ver1 == "2" and ver2 == "2", (ver1, ver2)
+assert ver1 == "3" and ver2 == "3", (ver1, ver2)
 assert wal1.lower() == "wal" and wal2.lower() == "wal", (wal1, wal2)
 assert tables >= {
     "meta", "audit_events", "sync_cursor", "daily_usage", "instance_history"
 }
 assert set(pk_cols) == {"node_id", "event_id"}, pk_cols
+assert "export_seq" in audit_cols, audit_cols
+assert "last_export_seq" in cursor_cols and "cursor_kind" in cursor_cols, cursor_cols
 assert set(hist_pk_cols) == {"node_id", "instance_id"}, hist_pk_cols
 assert count == 0
 assert hist_count == 0
@@ -2705,9 +2717,9 @@ home_mode = stat.S_IMODE(home.stat().st_mode)
 assert home_mode == 0o700, oct(home_mode)
 PY
 if (( open_twice_rc == 0 )); then
-  pass "open_fleet_db twice keeps schema 2 WAL fleet.db mode 0600"
+  pass "open_fleet_db twice keeps schema 3 WAL fleet.db mode 0600"
 else
-  fail "open_fleet_db twice keeps schema 2 WAL fleet.db mode 0600"
+  fail "open_fleet_db twice keeps schema 3 WAL fleet.db mode 0600"
 fi
 
 migrate_rc=0
@@ -2854,10 +2866,20 @@ raw.close()
 
 conn = mod.open_fleet_db()
 ver = mod.fleet_db_meta_get(conn, "schema_version")
-assert ver == "2", ver
+assert ver == "3", ver
+audit_cols = [r[1] for r in conn.execute("PRAGMA table_info(audit_events)")]
+cursor_cols = [r[1] for r in conn.execute("PRAGMA table_info(sync_cursor)")]
+assert "export_seq" in audit_cols, audit_cols
+assert "last_export_seq" in cursor_cols and "cursor_kind" in cursor_cols, cursor_cols
 audit_n = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 daily_n = conn.execute("SELECT COUNT(*) FROM daily_usage").fetchone()[0]
 assert audit_n == 1 and daily_n == 1, (audit_n, daily_n)
+# Migrated cursors keep event_id kind; last_export_seq stays 0 (not reinterpreted).
+cur_kind = conn.execute(
+    "SELECT last_event_id, last_export_seq, cursor_kind FROM sync_cursor WHERE node_id=?",
+    (node_id,),
+).fetchone()
+assert tuple(cur_kind) == (1, 0, "event_id"), tuple(cur_kind)
 hist = mod.list_instances(conn, node_id)
 assert len(hist) == 1, hist
 assert hist[0]["instance_id"] == instance_id
@@ -2870,7 +2892,7 @@ assert mod.list_instances(conn, other_id) == []
 conn.close()
 
 conn2 = mod.open_fleet_db()
-assert mod.fleet_db_meta_get(conn2, "schema_version") == "2"
+assert mod.fleet_db_meta_get(conn2, "schema_version") == "3"
 assert len(mod.list_instances(conn2, node_id)) == 1
 conn2.close()
 
@@ -2879,7 +2901,7 @@ home2 = Path(tmp) / "fleet-home-db-history"
 home2.mkdir(parents=True)
 os.environ["VCL_FLEET_HOME"] = str(home2)
 conn = mod.open_fleet_db()
-assert mod.fleet_db_meta_get(conn, "schema_version") == "2"
+assert mod.fleet_db_meta_get(conn, "schema_version") == "3"
 old_iid = instance_id
 new_iid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 mod.record_instance(
@@ -2941,9 +2963,9 @@ except SystemExit as exc:
     assert exc.code == 1
 PY
 if (( migrate_rc == 0 )); then
-  pass "fleet.db schema 1→2 preserves data and records instance history"
+  pass "fleet.db schema 1→2→3 preserves data and records instance history"
 else
-  fail "fleet.db schema 1→2 preserves data and records instance history"
+  fail "fleet.db schema 1→2→3 preserves data and records instance history"
 fi
 
 import_batch_rc=0
@@ -2965,9 +2987,11 @@ spec.loader.exec_module(mod)
 other_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 now = "2026-08-16T03:00:00Z"
 
-def row(event_id, nid=node_id, iid=instance_id, host="example.com", up=10, down=20, tag="alice"):
+def row(event_id, nid=node_id, iid=instance_id, host="example.com", up=10, down=20, tag="alice", export_seq=None):
+    eseq = event_id if export_seq is None else export_seq
     return {
         "event_id": event_id,
+        "export_seq": eseq,
         "connection_id": f"c-{event_id}",
         "generation": 0,
         "user_id": "u-alice",
@@ -2993,17 +3017,20 @@ first = mod.import_audit_batch(
 )
 assert first["ok"] is True
 assert first["inserted"] == 2
+assert first["updated"] == 0
 assert first["ignored"] == 0
 assert first["skipped_unlabeled"] == 0
 assert first["last_event_id"] == 2
+assert first["last_export_seq"] == 2
 assert first["status"] == "ok"
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 assert count == 2, count
 cur = conn.execute(
-    "SELECT instance_id, last_event_id, last_sync_at, status FROM sync_cursor WHERE node_id=?",
+    "SELECT instance_id, last_event_id, last_export_seq, cursor_kind, last_sync_at, status "
+    "FROM sync_cursor WHERE node_id=?",
     (node_id,),
 ).fetchone()
-assert tuple(cur) == (instance_id, 2, now, "ok"), tuple(cur)
+assert tuple(cur) == (instance_id, 2, 2, "export_seq", now, "ok"), tuple(cur)
 daily = conn.execute(
     "SELECT date, upload_bytes, download_bytes, connection_count FROM daily_usage WHERE node_id=?",
     (node_id,),
@@ -3011,15 +3038,17 @@ daily = conn.execute(
 assert len(daily) == 1, daily
 assert tuple(daily[0]) == ("2026-08-10", 150, 260, 2), tuple(daily[0])
 
-# Idempotent re-run: INSERT OR IGNORE, daily_usage rebuilt without double-count.
+# Idempotent re-run: UPSERT updates existing rows; daily_usage rebuilt without double-count.
 again = mod.import_export_jsonl(
     node_id, instance_id,
     [row(1, up=100, down=200), row(2, up=50, down=60)],
     now, conn=conn,
 )
 assert again["inserted"] == 0
-assert again["ignored"] == 2
+assert again["updated"] == 2
+assert again["ignored"] == 0
 assert again["last_event_id"] == 2
+assert again["last_export_seq"] == 2
 count2 = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 assert count2 == 2
 daily2 = conn.execute(
@@ -3031,13 +3060,13 @@ assert tuple(daily2) == (150, 260, 2), tuple(daily2)
 # Unlabeled rows fail the whole batch; cursor and prior rows unchanged.
 before_unlabeled = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 before_unlabeled_cur = conn.execute(
-    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()[0]
 unlabeled = [
     row(3, up=7, down=8),
     {**row(4), "node_id": ""},
     {**row(5), "node_id": None},
-    {"event_id": 6, "user_id": "u-alice", "started_at": "2026-08-10T08:00:00Z"},
+    {"event_id": 6, "export_seq": 6, "user_id": "u-alice", "started_at": "2026-08-10T08:00:00Z"},
 ]
 buf = io.StringIO()
 try:
@@ -3049,7 +3078,7 @@ except SystemExit as exc:
     assert "missing node_id" in buf.getvalue(), buf.getvalue()
 after_unlabeled = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 after_unlabeled_cur = conn.execute(
-    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()[0]
 assert after_unlabeled == before_unlabeled == 2
 assert after_unlabeled_cur == before_unlabeled_cur == 2
@@ -3063,11 +3092,12 @@ ok3 = mod.import_audit_batch(node_id, instance_id, [row(3, up=7, down=8)], now_i
 assert ok3["inserted"] == 1
 assert ok3["skipped_unlabeled"] == 0
 assert ok3["last_event_id"] == 3
+assert ok3["last_export_seq"] == 3
 
 # Mismatch: whole batch fails, cursor and rows unchanged.
 before_count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 before_cur = conn.execute(
-    "SELECT last_event_id, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 buf = io.StringIO()
 try:
@@ -3084,7 +3114,7 @@ except SystemExit as exc:
     assert "node_id mismatch" in buf.getvalue(), buf.getvalue()
 after_count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 after_cur = conn.execute(
-    "SELECT last_event_id, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, last_sync_at FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 assert after_count == before_count == 3
 assert tuple(after_cur) == tuple(before_cur) == (3, now)
@@ -3100,21 +3130,22 @@ stored_iid = conn.execute(
 ).fetchone()[0]
 assert stored_iid is None
 cur_iid = conn.execute(
-    "SELECT instance_id, last_event_id FROM sync_cursor WHERE node_id=?",
+    "SELECT instance_id, last_event_id, last_export_seq FROM sync_cursor WHERE node_id=?",
     (node_id,),
 ).fetchone()
-assert tuple(cur_iid) == (instance_id, 7)
+assert tuple(cur_iid) == (instance_id, 7, 7)
 
 # Empty labeled set keeps prior cursor (or 0).
 empty = mod.import_audit_batch(node_id, instance_id, [], now_iso="2026-08-16T05:00:00Z", conn=conn)
 assert empty["inserted"] == 0
 assert empty["last_event_id"] == 7
+assert empty["last_export_seq"] == 7
 conn.close()
 PY
 if (( import_batch_rc == 0 )); then
-  pass "import_audit_batch is atomic, idempotent, and rejects unlabeled rows"
+  pass "import_audit_batch is atomic, UPSERT-idempotent, and rejects unlabeled rows"
 else
-  fail "import_audit_batch is atomic, idempotent, and rejects unlabeled rows"
+  fail "import_audit_batch is atomic, UPSERT-idempotent, and rejects unlabeled rows"
 fi
 
 export VCL_FLEET_HOME="${SAVED_DB_HOME}"
@@ -3177,22 +3208,24 @@ for i in range(1, 6):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"lax-sync-{i}", 0, "u-alice", node_id, instance_id, "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, i,
         ),
     )
+acct.meta_set(conn, "audit_export_seq", "5")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
 if (( seed_sync_rc == 0 )); then
-  pass "sync fixture seeded lax accounting.db events 1-5"
+  pass "sync fixture seeded lax accounting.db export_seq 1-5"
 else
-  fail "sync fixture seeded lax accounting.db events 1-5"
+  fail "sync fixture seeded lax accounting.db export_seq 1-5"
 fi
 
 sync1_rc=0
@@ -3219,12 +3252,13 @@ row = doc["nodes"][0]
 assert row["name"] == "lax"
 assert row["status"] == "ok"
 assert row["after"] == 0
+assert row["last_export_seq"] == 5
 assert row["last_event_id"] == 5
 assert row["inserted"] == 5
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, cursor_kind, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 hist = conn.execute(
     """
@@ -3235,7 +3269,7 @@ hist = conn.execute(
 ).fetchall()
 conn.close()
 assert count == 5, count
-assert cur == (5, "ok"), cur
+assert cur == (5, "export_seq", "ok"), cur
 assert len(hist) == 1, hist
 assert hist[0][0] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 assert hist[0][1] == "active"
@@ -3243,9 +3277,9 @@ assert hist[0][2] is None
 assert hist[0][3] == "203.0.113.10"
 PY
 if (( sync1_check_rc == 0 )); then
-  pass "initial sync after 0 imports 5 events and cursor=5"
+  pass "initial sync after 0 imports 5 events and last_export_seq=5"
 else
-  fail "initial sync after 0 imports 5 events and cursor=5"
+  fail "initial sync after 0 imports 5 events and last_export_seq=5"
 fi
 
 # New process, same fleet.db: cursor is durable (AC-2.9 / former AC-2.8-09).
@@ -3268,19 +3302,20 @@ assert doc["ok"] is True
 row = doc["nodes"][0]
 assert row["status"] == "ok"
 assert row["after"] == 5
+assert row["last_export_seq"] == 5
 assert row["last_event_id"] == 5
 assert row["inserted"] == 0
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
-cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()[0]
+cur = conn.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()[0]
 conn.close()
 assert count == 5, count
 assert cur == 5, cur
 PY
 if (( sync2_check_rc == 0 )); then
-  pass "controller restart continues from cursor; COUNT stays 5"
+  pass "controller restart continues from last_export_seq; COUNT stays 5"
 else
-  fail "controller restart continues from cursor; COUNT stays 5"
+  fail "controller restart continues from last_export_seq; COUNT stays 5"
 fi
 
 incr_seed_rc=0
@@ -3305,22 +3340,28 @@ for i in (6, 7):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"lax-sync-{i}", 0, "u-alice", node_id, instance_id, "alice",
             "2026-08-11T08:00:00Z", "2026-08-11T09:00:00Z", "2026-08-11T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, i,
         ),
     )
+conn.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_export_seq','7')"
+)
+conn.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_pruned_max_export_seq','0')"
+)
 conn.commit()
 conn.close()
 PY
 if (( incr_seed_rc == 0 )); then
-  pass "incremental fixture appended events 6-7"
+  pass "incremental fixture appended export_seq 6-7"
 else
-  fail "incremental fixture appended events 6-7"
+  fail "incremental fixture appended export_seq 6-7"
 fi
 
 sync3_rc=0
@@ -3335,6 +3376,7 @@ assert int(sys.argv[2]) == 0, sys.argv[2]
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 row = doc["nodes"][0]
 assert row["after"] == 5
+assert row["last_export_seq"] == 7
 assert row["last_event_id"] == 7
 assert row["inserted"] == 2
 conn = sqlite3.connect(str(home / "fleet.db"))
@@ -3342,14 +3384,18 @@ count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_
 ids = [r[0] for r in conn.execute(
     "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
 )]
+cur = conn.execute(
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()[0]
 conn.close()
 assert count == 7, count
 assert ids == [1, 2, 3, 4, 5, 6, 7], ids
+assert cur == 7, cur
 PY
 if (( sync3_check_rc == 0 )); then
-  pass "incremental sync imports new rows after cursor"
+  pass "incremental sync imports new rows after last_export_seq"
 else
-  fail "incremental sync imports new rows after cursor"
+  fail "incremental sync imports new rows after last_export_seq"
 fi
 
 sync4_rc=0
@@ -3364,6 +3410,7 @@ assert int(sys.argv[2]) == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 row = doc["nodes"][0]
 assert row["inserted"] == 0
+assert row["last_export_seq"] == 7
 assert row["last_event_id"] == 7
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
@@ -3390,12 +3437,13 @@ assert doc["ok"] is False
 assert doc["state"] == "PARTIAL"
 row = doc["nodes"][0]
 assert row["status"] == "error"
+assert row["last_export_seq"] == 7
 assert row["last_event_id"] == 7
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 7, count
@@ -3403,9 +3451,9 @@ assert cur[0] == 7, cur
 assert cur[1] == "error", cur
 PY
 if (( fail_check_rc == 0 )); then
-  pass "VCL_FAKE_FAIL_EXPORT does not advance cursor"
+  pass "VCL_FAKE_FAIL_EXPORT does not advance last_export_seq"
 else
-  fail "VCL_FAKE_FAIL_EXPORT does not advance cursor"
+  fail "VCL_FAKE_FAIL_EXPORT does not advance last_export_seq"
 fi
 
 retry_sync_rc=0
@@ -3420,22 +3468,23 @@ assert int(sys.argv[2]) == 0, sys.argv[2]
 assert doc["ok"] is True
 row = doc["nodes"][0]
 assert row["status"] == "ok"
+assert row["last_export_seq"] == 7
 assert row["last_event_id"] == 7
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 7
 assert cur == (7, "ok"), cur
 PY
 if (( retry_check_rc == 0 )); then
-  pass "retry after VCL_FAKE_FAIL_EXPORT succeeds from same cursor"
+  pass "retry after VCL_FAKE_FAIL_EXPORT succeeds from same last_export_seq"
 else
-  fail "retry after VCL_FAKE_FAIL_EXPORT succeeds from same cursor"
+  fail "retry after VCL_FAKE_FAIL_EXPORT succeeds from same last_export_seq"
 fi
 
 expire_prep_rc=0
@@ -3445,24 +3494,34 @@ from pathlib import Path
 
 state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
-acct.execute("DELETE FROM connections WHERE event_id <= 3")
-row = acct.execute("SELECT MIN(event_id), COUNT(*) FROM connections").fetchone()
+# Retention deleted export_seq 1..3; remaining closed rows keep 4..7.
+acct.execute("DELETE FROM connections WHERE export_seq IS NOT NULL AND export_seq <= 3")
+acct.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_pruned_max_export_seq','3')"
+)
+acct.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_export_seq','7')"
+)
+row = acct.execute(
+    "SELECT MIN(export_seq), COUNT(*) FROM connections WHERE export_seq IS NOT NULL"
+).fetchone()
 acct.commit()
 acct.close()
 assert row[0] == 4, row
 assert row[1] == 4, row  # 4,5,6,7 remain
 fleet = sqlite3.connect(str(home / "fleet.db"))
 fleet.execute(
-    "UPDATE sync_cursor SET last_event_id=1, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=1, last_event_id=1, status='ok' "
+    "WHERE node_id=?",
     (node_id,),
 )
 fleet.commit()
 fleet.close()
 PY
 if (( expire_prep_rc == 0 )); then
-  pass "CURSOR_EXPIRED fixture: MIN=4 and cursor forced to 1"
+  pass "CURSOR_EXPIRED fixture: pruned_max_export_seq=3 and last_export_seq forced to 1"
 else
-  fail "CURSOR_EXPIRED fixture: MIN=4 and cursor forced to 1"
+  fail "CURSOR_EXPIRED fixture: pruned_max_export_seq=3 and last_export_seq forced to 1"
 fi
 
 expire_rc=0
@@ -3482,7 +3541,7 @@ row = doc["nodes"][0]
 assert row["status"] == "expired"
 assert row["error"] == "CURSOR_EXPIRED"
 assert row["after"] == 1
-assert row["last_event_id"] == 1
+assert row["last_export_seq"] == 1
 assert row["inserted"] == 0
 assert row["remediation"] == "vcl-fleet sync --reseed lax"
 assert "vcl-fleet sync --reseed lax" in doc["remediation"]
@@ -3493,7 +3552,7 @@ home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 7, count  # expired must not hollow-overwrite
@@ -3518,21 +3577,26 @@ assert doc["ok"] is True
 row = doc["nodes"][0]
 assert row["status"] == "ok"
 assert row["after"] == 0
+assert row["last_export_seq"] == 7
 assert row["last_event_id"] == 7
-assert row["inserted"] == 4  # remaining window 4-7
+assert row["inserted"] == 4  # remaining window export_seq 4-7
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 ids = [r[0] for r in conn.execute(
     "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
 )]
+seqs = [r[0] for r in conn.execute(
+    "SELECT export_seq FROM audit_events WHERE node_id=? ORDER BY export_seq", (node_id,)
+)]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 daily = conn.execute("SELECT SUM(connection_count) FROM daily_usage WHERE node_id=?", (node_id,)).fetchone()[0]
 conn.close()
 assert count == 4, count
 assert ids == [4, 5, 6, 7], ids
+assert seqs == [4, 5, 6, 7], seqs
 assert cur == (7, "ok"), cur
 assert daily == 4, daily
 PY
@@ -3540,6 +3604,112 @@ if (( reseed_check_rc == 0 )); then
   pass "--reseed lax replaces local rows with remaining export window"
 else
   fail "--reseed lax replaces local rows with remaining export window"
+fi
+
+# Old event_id cursor → CURSOR_PROTOCOL_MISMATCH until reseed.
+protocol_mismatch_prep_rc=0
+python3 - "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || protocol_mismatch_prep_rc=$?
+import sqlite3, sys
+from pathlib import Path
+home, node_id = Path(sys.argv[1]), sys.argv[2]
+conn = sqlite3.connect(str(home / "fleet.db"))
+conn.execute(
+    "UPDATE sync_cursor SET cursor_kind='event_id', last_export_seq=0, "
+    "last_event_id=7, status='ok' WHERE node_id=?",
+    (node_id,),
+)
+conn.commit()
+conn.close()
+PY
+if (( protocol_mismatch_prep_rc == 0 )); then
+  pass "PROTOCOL_MISMATCH fixture: cursor_kind=event_id"
+else
+  fail "PROTOCOL_MISMATCH fixture: cursor_kind=event_id"
+fi
+
+protocol_mismatch_rc=0
+protocol_mismatch_out=$(fleet sync --node lax --json) || protocol_mismatch_rc=$?
+protocol_mismatch_human=$(fleet sync --node lax 2>&1) || true
+protocol_mismatch_check_rc=0
+python3 - "$protocol_mismatch_out" "$protocol_mismatch_rc" "$VCL_FLEET_HOME" \
+  "$LAX_REMOTE_NODE_ID" "$protocol_mismatch_human" <<'PY' || protocol_mismatch_check_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+assert int(sys.argv[2]) == 2, sys.argv[2]
+row = doc["nodes"][0]
+assert row["status"] == "error"
+assert row["error"] == "CURSOR_PROTOCOL_MISMATCH"
+assert row["remediation"] == "vcl-fleet sync --reseed lax"
+human = sys.argv[5]
+assert "CURSOR_PROTOCOL_MISMATCH" in human
+assert "export_seq" in human
+assert "--reseed lax" in human
+home, node_id = Path(sys.argv[3]), sys.argv[4]
+conn = sqlite3.connect(str(home / "fleet.db"))
+kind = conn.execute(
+    "SELECT cursor_kind FROM sync_cursor WHERE node_id=?", (node_id,)
+).fetchone()[0]
+count = conn.execute(
+    "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
+).fetchone()[0]
+conn.close()
+assert kind == "event_id"
+assert count == 4  # no import attempted
+PY
+if (( protocol_mismatch_check_rc == 0 )); then
+  pass "CURSOR_PROTOCOL_MISMATCH: no import; reseed remediation"
+else
+  fail "CURSOR_PROTOCOL_MISMATCH: no import; reseed remediation"
+fi
+
+protocol_reseed_rc=0
+fleet sync --reseed lax --json >/dev/null || protocol_reseed_rc=$?
+protocol_reseed_check_rc=0
+python3 - "$protocol_reseed_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || protocol_reseed_check_rc=$?
+import sqlite3, sys
+from pathlib import Path
+assert int(sys.argv[1]) == 0, sys.argv[1]
+home, node_id = Path(sys.argv[2]), sys.argv[3]
+conn = sqlite3.connect(str(home / "fleet.db"))
+cur = conn.execute(
+    "SELECT last_export_seq, cursor_kind, status FROM sync_cursor WHERE node_id=?",
+    (node_id,),
+).fetchone()
+conn.close()
+assert cur == (7, "export_seq", "ok"), cur
+PY
+if (( protocol_reseed_check_rc == 0 )); then
+  pass "reseed after PROTOCOL_MISMATCH restores export_seq cursor"
+else
+  fail "reseed after PROTOCOL_MISMATCH restores export_seq cursor"
+fi
+
+sum_parity_rc=0
+python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || sum_parity_rc=$?
+import sqlite3, sys
+from pathlib import Path
+state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
+node_sum = acct.execute(
+    "SELECT COALESCE(SUM(upload_bytes),0), COALESCE(SUM(download_bytes),0) "
+    "FROM connections WHERE closed_at IS NOT NULL AND user_id='u-alice'"
+).fetchone()
+acct.close()
+fleet = sqlite3.connect(str(home / "fleet.db"))
+fleet_sum = fleet.execute(
+    "SELECT COALESCE(SUM(upload_bytes),0), COALESCE(SUM(download_bytes),0) "
+    "FROM audit_events WHERE node_id=? AND user_id='u-alice'",
+    (node_id,),
+).fetchone()
+fleet.close()
+assert tuple(node_sum) == tuple(fleet_sum), (node_sum, fleet_sum)
+assert node_sum[0] > 0 and node_sum[1] > 0, node_sum
+PY
+if (( sum_parity_rc == 0 )); then
+  pass "fleet audit SUM(upload/download) matches node closed connections"
+else
+  fail "fleet audit SUM(upload/download) matches node closed connections"
 fi
 
 unlabeled_rc=0
@@ -3556,7 +3726,7 @@ spec.loader.exec_module(mod)
 conn = mod.open_fleet_db()
 before = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 before_cur = conn.execute(
-    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 blank = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
@@ -3601,7 +3771,7 @@ except SystemExit as exc:
     assert "missing node_id" in buf.getvalue()
 after = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 after_cur = conn.execute(
-    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 blank2 = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id IS NULL OR node_id=''"
@@ -3628,9 +3798,12 @@ spec.loader.exec_module(mod)
 nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-def row(eid, node_id=nid, instance_id=iid):
+def row(eid, eseq=None, node_id=nid, instance_id=iid):
+    if eseq is None:
+        eseq = eid
     return {
         "event_id": eid,
+        "export_seq": eseq,
         "connection_id": f"c-{eid}",
         "generation": 0,
         "user_id": "u-alice",
@@ -3646,23 +3819,40 @@ def row(eid, node_id=nid, instance_id=iid):
 def meta(**over):
     base = {
         "ok": True,
+        "protocol_version": 2,
+        "cursor_kind": "export_seq",
         "after": 5,
         "count": 3,
         "next_cursor": 8,
-        "earliest_available_event_id": 1,
-        "max_event_id": 8,
+        "max_export_seq": 8,
+        "pruned_max_export_seq": 0,
         "node_id": nid,
         "instance_id": iid,
     }
     base.update(over)
     return base
 
+# Contiguous export_seq OK.
 rows = [row(6), row(7), row(8)]
 assert mod.validate_export_batch(
     meta(), rows, expected_after=5, expected_node_id=nid, expected_instance_id=iid
 ) == 8
 
-empty_ok = meta(count=0, next_cursor=5, max_event_id=5)
+# Gaps in export_seq are allowed when strictly increasing.
+gapped_ok = [row(6, 6), row(8, 8), row(9, 9)]
+assert mod.validate_export_batch(
+    meta(count=3, next_cursor=9, max_export_seq=9), gapped_ok,
+    expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+) == 9
+
+# Sparse event_ids OK if export_seq strictly increasing.
+sparse_eid = [row(10, 6), row(20, 8), row(30, 9)]
+assert mod.validate_export_batch(
+    meta(count=3, next_cursor=9, max_export_seq=9), sparse_eid,
+    expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+) == 9
+
+empty_ok = meta(count=0, next_cursor=5, max_export_seq=5)
 assert mod.validate_export_batch(
     empty_ok, [], expected_after=5, expected_node_id=nid, expected_instance_id=iid
 ) == 5
@@ -3685,25 +3875,37 @@ try:
 except ValueError as exc:
     assert "next_cursor=99" in str(exc), exc
 
-gapped = [row(6), row(8), row(9)]
+# Descending export_seq fail-closed.
+descending = [row(6, 8), row(7, 7), row(8, 9)]
 try:
     mod.validate_export_batch(
-        meta(count=3, next_cursor=9, max_event_id=9), gapped,
+        meta(count=3, next_cursor=9, max_export_seq=9), descending,
         expected_after=5, expected_node_id=nid, expected_instance_id=iid,
     )
-    raise AssertionError("missing event 7 must fail")
+    raise AssertionError("descending export_seq must fail")
 except ValueError as exc:
-    assert "missing event_id 7" in str(exc), exc
+    assert "strictly increasing" in str(exc), exc
 
-skipped_first = [row(8), row(9), row(10)]
+# Duplicate export_seq fail-closed.
+dup = [row(6, 6), row(7, 6), row(8, 8)]
 try:
     mod.validate_export_batch(
-        meta(after=6, count=3, next_cursor=10, max_event_id=10), skipped_first,
-        expected_after=6, expected_node_id=nid, expected_instance_id=iid,
+        meta(count=3, next_cursor=8, max_export_seq=8), dup,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
     )
-    raise AssertionError("first != after+1 must fail")
+    raise AssertionError("duplicate export_seq must fail")
 except ValueError as exc:
-    assert "after+1" in str(exc), exc
+    assert "duplicate export_seq" in str(exc), exc
+
+# Bad protocol_version fail-closed.
+try:
+    mod.validate_export_batch(
+        meta(protocol_version=1), rows,
+        expected_after=5, expected_node_id=nid, expected_instance_id=iid,
+    )
+    raise AssertionError("protocol_version 1 must fail")
+except ValueError as exc:
+    assert "protocol_version" in str(exc), exc
 
 try:
     mod.validate_export_batch(
@@ -3761,17 +3963,19 @@ try:
 except ValueError as exc:
     assert "node_id is missing" in str(exc), exc
 
-# after=0 may start at any remaining min; rows must still be contiguous.
-from0 = meta(after=0, count=3, next_cursor=103, earliest_available_event_id=101, max_event_id=103)
+# after=0 may start at any remaining min; export_seq must still increase.
+from0 = meta(
+    after=0, count=3, next_cursor=103, max_export_seq=103, pruned_max_export_seq=100,
+)
 assert mod.validate_export_batch(
-    from0, [row(101), row(102), row(103)],
+    from0, [row(101, 101), row(102, 102), row(103, 103)],
     expected_after=0, expected_node_id=nid, expected_instance_id=iid,
 ) == 103
 PY
 if (( validate_batch_rc == 0 )); then
-  pass "validate_export_batch rejects lying count/next_cursor/gaps and missing identity"
+  pass "validate_export_batch Protocol v2: export_seq monotonic, gaps OK, rejects dup/desc/protocol"
 else
-  fail "validate_export_batch rejects lying count/next_cursor/gaps and missing identity"
+  fail "validate_export_batch Protocol v2: export_seq monotonic, gaps OK, rejects dup/desc/protocol"
 fi
 
 stamp_rc=0
@@ -3842,15 +4046,17 @@ conn.execute(
       connection_id, generation, user_id, node_id, instance_id, user_tag,
       started_at, last_seen_at, closed_at,
       destination_host, destination_ip, destination_port, network,
-      upload_bytes, download_bytes
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      upload_bytes, download_bytes, export_seq
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """,
     (
         "unlab-1", 0, "u-alice", "", None, "alice",
         "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-        "example.com", "203.0.113.10", 443, "tcp", 1, 1,
+        "example.com", "203.0.113.10", 443, "tcp", 1, 1, 1,
     ),
 )
+acct.meta_set(conn, "audit_export_seq", "1")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
@@ -3873,7 +4079,7 @@ assert row["status"] == "error", row
 assert "node_id" in (row.get("error") or ""), row
 assert row.get("remediation")
 conn = sqlite3.connect(str(home / "fleet.db"))
-cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
+cur = conn.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 conn.close()
 assert count == 0
@@ -3899,7 +4105,7 @@ assert row["status"] == "ok", row
 assert int(row["inserted"]) >= 1
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
-cur = conn.execute("SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
+cur = conn.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)).fetchone()
 conn.close()
 assert count >= 1
 assert cur is not None and int(cur[0]) >= 1
@@ -3949,22 +4155,24 @@ for i in range(1, 6):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"p104-{i}", 0, "u-alice", node_id, instance_id, "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, i,
         ),
     )
+acct.meta_set(conn, "audit_export_seq", "5")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
 if (( p104_seed_rc == 0 )); then
-  pass "P1-04 fixture seeded events 1-5"
+  pass "P1-04 fixture seeded export_seq 1-5"
 else
-  fail "P1-04 fixture seeded events 1-5"
+  fail "P1-04 fixture seeded export_seq 1-5"
 fi
 
 p104_happy_rc=0
@@ -3979,22 +4187,23 @@ assert doc["ok"] is True
 row = doc["nodes"][0]
 assert row["status"] == "ok"
 assert row["after"] == 0
+assert row["last_export_seq"] == 5
 assert row["last_event_id"] == 5
 assert row["inserted"] == 5
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 5, count
 assert cur == (5, "ok"), cur
 PY
 if (( p104_happy_check_rc == 0 )); then
-  pass "P1-04 happy path sync imports 1-5 cursor=5"
+  pass "P1-04 happy path sync imports 1-5 last_export_seq=5"
 else
-  fail "P1-04 happy path sync imports 1-5 cursor=5"
+  fail "P1-04 happy path sync imports 1-5 last_export_seq=5"
 fi
 
 p104_ahead_prep_rc=0
@@ -4004,16 +4213,17 @@ from pathlib import Path
 home, node_id = Path(sys.argv[1]), sys.argv[2]
 conn = sqlite3.connect(str(home / "fleet.db"))
 conn.execute(
-    "UPDATE sync_cursor SET last_event_id=10, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=10, last_event_id=10, status='ok' "
+    "WHERE node_id=?",
     (node_id,),
 )
 conn.commit()
 conn.close()
 PY
 if (( p104_ahead_prep_rc == 0 )); then
-  pass "P1-04 forced cursor=10 against max=5"
+  pass "P1-04 forced last_export_seq=10 against max=5"
 else
-  fail "P1-04 forced cursor=10 against max=5"
+  fail "P1-04 forced last_export_seq=10 against max=5"
 fi
 
 p104_ahead_rc=0
@@ -4031,7 +4241,7 @@ row = doc["nodes"][0]
 assert row["status"] == "error"
 assert row["error"] == "CURSOR_AHEAD"
 assert row["after"] == 10
-assert row["last_event_id"] == 10
+assert row["last_export_seq"] == 10
 assert row["inserted"] == 0
 assert row["remediation"] == "vcl-fleet sync --reseed lax"
 assert "vcl-fleet sync --reseed lax" in doc["remediation"]
@@ -4042,16 +4252,16 @@ home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 5, count
 assert cur == (10, "error"), cur
 PY
 if (( p104_ahead_check_rc == 0 )); then
-  pass "CURSOR_AHEAD after=10 max=5: no import, cursor unchanged, reseed"
+  pass "CURSOR_AHEAD after=10 max_export_seq=5: no import, cursor unchanged, reseed"
 else
-  fail "CURSOR_AHEAD after=10 max=5: no import, cursor unchanged, reseed"
+  fail "CURSOR_AHEAD after=10 max_export_seq=5: no import, cursor unchanged, reseed"
 fi
 
 p104_gap_prep_rc=0
@@ -4063,37 +4273,41 @@ state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 ident = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
 instance_id = ident["instance_id"]
 acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
-# events 1-5 already present; append 6 then 8-10 (missing 7)
-for i in (6, 8, 9, 10):
+# Sparse event_ids OK; export_seq 6,8,9,10 strictly increasing (gaps allowed).
+for eid, eseq in ((16, 6), (18, 8), (19, 9), (20, 10)):
     acct.execute(
         """
         INSERT INTO connections (
           event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            i, f"p104-{i}", 0, "u-alice", node_id, instance_id, "alice",
+            eid, f"p104-{eseq}", 0, "u-alice", node_id, instance_id, "alice",
             "2026-08-11T08:00:00Z", "2026-08-11T09:00:00Z", "2026-08-11T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * eseq, 20 * eseq, eseq,
         ),
     )
+acct.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_export_seq','10')"
+)
 acct.commit()
 acct.close()
 fleet = sqlite3.connect(str(home / "fleet.db"))
 fleet.execute(
-    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=5, last_event_id=5, status='ok' "
+    "WHERE node_id=?",
     (node_id,),
 )
 fleet.commit()
 fleet.close()
 PY
 if (( p104_gap_prep_rc == 0 )); then
-  pass "P1-04 gap fixture: missing event 7, cursor=5"
+  pass "P1-04 sparse event_id / gapped export_seq fixture: cursor last_export_seq=5"
 else
-  fail "P1-04 gap fixture: missing event 7, cursor=5"
+  fail "P1-04 sparse event_id / gapped export_seq fixture: cursor last_export_seq=5"
 fi
 
 p104_gap_rc=0
@@ -4103,31 +4317,33 @@ python3 - "$p104_gap_out" "$p104_gap_rc" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID"
 import json, sqlite3, sys
 from pathlib import Path
 doc = json.loads(sys.argv[1])
-assert int(sys.argv[2]) == 2, sys.argv[2]
+assert int(sys.argv[2]) == 0, sys.argv[2]
 row = doc["nodes"][0]
-assert row["status"] == "error"
-assert "missing event_id 7" in (row.get("error") or "")
-assert row["last_event_id"] == 5
-assert row["inserted"] == 0
+assert row["status"] == "ok", row
+assert row["last_export_seq"] == 10
+assert row["inserted"] == 4
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
-ids = [r[0] for r in conn.execute(
-    "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
+seqs = [r[0] for r in conn.execute(
+    "SELECT export_seq FROM audit_events WHERE node_id=? ORDER BY export_seq", (node_id,)
 )]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
-assert count == 5, count
-assert ids == [1, 2, 3, 4, 5], ids
-assert cur == (5, "error"), cur
+assert count == 9, count
+assert seqs == [1, 2, 3, 4, 5, 6, 8, 9, 10], seqs
+assert cur == (10, "ok"), cur
 PY
 if (( p104_gap_check_rc == 0 )); then
-  pass "continuity gap missing event 7: ERROR, no import, cursor unchanged"
+  pass "sparse event_ids with increasing export_seq: import OK"
 else
-  fail "continuity gap missing event 7: ERROR, no import, cursor unchanged"
+  fail "sparse event_ids with increasing export_seq: import OK"
 fi
+
+# Fail-closed: descending export_seq in remote batch (via lying next + bad rows not needed —
+# unit-tested above; integration uses VCL_FAKE_EXPORT_LIE for count/next_cursor).
 
 p104_lie_prep_rc=0
 python3 - "$VCL_FAKE_STATE_DIR" "$VCL_FLEET_HOME" "$LAX_REMOTE_NODE_ID" <<'PY' || p104_lie_prep_rc=$?
@@ -4135,7 +4351,7 @@ import sqlite3, sys
 from pathlib import Path
 state, home, node_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 acct = sqlite3.connect(str(state / "lax" / "accounting.db"))
-acct.execute("DELETE FROM connections WHERE event_id > 5")
+acct.execute("DELETE FROM connections WHERE export_seq IS NOT NULL AND export_seq > 5")
 ident_iid = acct.execute("SELECT instance_id FROM connections LIMIT 1").fetchone()[0]
 for i in (6, 7, 8):
     acct.execute(
@@ -4144,29 +4360,58 @@ for i in (6, 7, 8):
           event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             i, f"p104-lie-{i}", 0, "u-alice", node_id, ident_iid, "alice",
             "2026-08-12T08:00:00Z", "2026-08-12T09:00:00Z", "2026-08-12T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, i,
         ),
     )
+acct.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_export_seq','8')"
+)
 acct.commit()
 acct.close()
 fleet = sqlite3.connect(str(home / "fleet.db"))
+# Reset fleet to only the original 1-5 so lying-meta import is observable.
+fleet.execute("DELETE FROM audit_events WHERE node_id=?", (node_id,))
 fleet.execute(
-    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    """
+    UPDATE sync_cursor SET last_export_seq=5, last_event_id=5, status='ok'
+    WHERE node_id=?
+    """,
     (node_id,),
 )
+# Re-import baseline 1-5 from remaining remote would be heavy; keep cursor at 5
+# and leave local audit empty of >5 — COUNT after failed lie stays prior.
+# Restore local 1-5 from accounting snapshot via sync would change state; instead
+# re-seed fleet audit 1-5 quickly:
+for i in range(1, 6):
+    fleet.execute(
+        """
+        INSERT INTO audit_events (
+          node_id, instance_id, event_id, export_seq, connection_id, generation,
+          user_id, user_tag, started_at, last_seen_at, closed_at,
+          destination_host, destination_ip, destination_port, network,
+          upload_bytes, download_bytes, imported_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            node_id, ident_iid, i, i, f"p104-{i}", 0, "u-alice", "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "2026-08-16T03:00:00Z",
+        ),
+    )
 fleet.commit()
 fleet.close()
 PY
 if (( p104_lie_prep_rc == 0 )); then
-  pass "P1-04 lying-meta fixture: remote 1-8, cursor=5"
+  pass "P1-04 lying-meta fixture: remote 1-8, last_export_seq=5"
 else
-  fail "P1-04 lying-meta fixture: remote 1-8, cursor=5"
+  fail "P1-04 lying-meta fixture: remote 1-8, last_export_seq=5"
 fi
 
 p104_count_rc=0
@@ -4180,13 +4425,13 @@ assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
 assert "count=5" in (row.get("error") or ""), row.get("error")
-assert row["last_event_id"] == 5
+assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 5, count
@@ -4205,16 +4450,17 @@ from pathlib import Path
 home, node_id = Path(sys.argv[1]), sys.argv[2]
 conn = sqlite3.connect(str(home / "fleet.db"))
 conn.execute(
-    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=5, last_event_id=5, status='ok' "
+    "WHERE node_id=?",
     (node_id,),
 )
 conn.commit()
 conn.close()
 PY
 if (( p104_next_prep_rc == 0 )); then
-  pass "P1-04 reset cursor=5 before next_cursor lie"
+  pass "P1-04 reset last_export_seq=5 before next_cursor lie"
 else
-  fail "P1-04 reset cursor=5 before next_cursor lie"
+  fail "P1-04 reset last_export_seq=5 before next_cursor lie"
 fi
 
 p104_next_rc=0
@@ -4229,13 +4475,13 @@ assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
 assert "next_cursor=99" in (row.get("error") or ""), row.get("error")
-assert row["last_event_id"] == 5
+assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
 conn = sqlite3.connect(str(home / "fleet.db"))
 count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert count == 5, count
@@ -4254,7 +4500,8 @@ from pathlib import Path
 home, node_id = Path(sys.argv[1]), sys.argv[2]
 conn = sqlite3.connect(str(home / "fleet.db"))
 conn.execute(
-    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=5, last_event_id=5, status='ok' "
+    "WHERE node_id=?",
     (node_id,),
 )
 conn.commit()
@@ -4273,6 +4520,7 @@ assert doc["ok"] is True
 row = doc["nodes"][0]
 assert row["status"] == "ok"
 assert row["after"] == 5
+assert row["last_export_seq"] == 8
 assert row["last_event_id"] == 8
 assert row["inserted"] == 3
 home, node_id = Path(sys.argv[3]), sys.argv[4]
@@ -4281,16 +4529,16 @@ ids = [r[0] for r in conn.execute(
     "SELECT event_id FROM audit_events WHERE node_id=? ORDER BY event_id", (node_id,)
 )]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 conn.close()
 assert ids == [1, 2, 3, 4, 5, 6, 7, 8], ids
 assert cur == (8, "ok"), cur
 PY
 if (( p104_retry_check_rc == 0 )); then
-  pass "honest retry after lying meta imports 6-8 and advances cursor"
+  pass "honest retry after lying meta imports 6-8 and advances last_export_seq"
 else
-  fail "honest retry after lying meta imports 6-8 and advances cursor"
+  fail "honest retry after lying meta imports 6-8 and advances last_export_seq"
 fi
 
 export VCL_FLEET_HOME="$SAVED_P104_HOME"
@@ -4328,15 +4576,17 @@ conn.execute(
       connection_id, generation, user_id, node_id, instance_id, user_tag,
       started_at, last_seen_at, closed_at,
       destination_host, destination_ip, destination_port, network,
-      upload_bytes, download_bytes
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      upload_bytes, download_bytes, export_seq
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """,
     (
         "lax-hist-1", 0, "u-alice", ident["node_id"], ident["instance_id"],
         "alice", "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z",
-        "2026-08-10T09:00:00Z", "example.com", "203.0.113.10", 443, "tcp", 10, 20,
+        "2026-08-10T09:00:00Z", "example.com", "203.0.113.10", 443, "tcp", 10, 20, 1,
     ),
 )
+acct.meta_set(conn, "audit_export_seq", "1")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
@@ -4986,22 +5236,26 @@ def seed(alias, ident, rows):
     conn = acct.open_db(str(db))
     node_id = ident["node_id"]
     instance_id = ident["instance_id"]
+    max_seq = 0
     for event_id, connection_id, user_id, tag, host, up, down in rows:
+        max_seq = max(max_seq, event_id)
         conn.execute(
             """
             INSERT INTO connections (
               connection_id, generation, user_id, node_id, instance_id, user_tag,
               started_at, last_seen_at, closed_at,
               destination_host, destination_ip, destination_port, network,
-              upload_bytes, download_bytes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              upload_bytes, download_bytes, export_seq
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 connection_id, 0, user_id, node_id, instance_id, tag,
                 "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-                host, "203.0.113.80", 443, "tcp", up, down,
+                host, "203.0.113.80", 443, "tcp", up, down, event_id,
             ),
         )
+    acct.meta_set(conn, "audit_export_seq", str(max_seq))
+    acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
     conn.commit()
     conn.close()
 
@@ -5054,7 +5308,7 @@ assert node["enabled"] is True, node
 assert not (home / "retired" / "lax").is_dir()
 conn = sqlite3.connect(str(home / "fleet.db"))
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 count = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
@@ -5150,7 +5404,7 @@ count = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
 ).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id, status FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq, status FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()
 alice_rows = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id=? AND user_id=?",
@@ -5266,7 +5520,7 @@ count = conn.execute(
     "SELECT COUNT(*) FROM audit_events WHERE node_id=?", (node_id,)
 ).fetchone()[0]
 cur = conn.execute(
-    "SELECT last_event_id FROM sync_cursor WHERE node_id=?", (node_id,)
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?", (node_id,)
 ).fetchone()[0]
 conn.close()
 assert count == 8, count
@@ -5964,7 +6218,7 @@ assert row[0] == 100, row
 assert row[1] == 3, row
 fleet = sqlite3.connect(str(home / "fleet.db"))
 fleet.execute(
-    "UPDATE sync_cursor SET last_event_id=5, status='ok' WHERE node_id=?",
+    "UPDATE sync_cursor SET last_export_seq=5, last_event_id=5, status='ok' WHERE node_id=?",
     (node_id,),
 )
 fleet.commit()

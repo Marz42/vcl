@@ -113,7 +113,7 @@ Usage:
   vcl stats top users|departments|hosts [--limit N]
   vcl audit user TAG --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
   vcl audit --user-id UUID --from RFC3339 --to RFC3339 ...
-  vcl audit export --after EVENT_ID --jsonl [--limit N]
+  vcl audit export --after EXPORT_SEQ --jsonl [--limit N]
   vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
   vcl backup verify FILE [--age-identity FILE] [--json]
   vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
@@ -2586,7 +2586,7 @@ cmd_audit_export() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --after)
-        [[ $# -ge 2 ]] || die "audit export --after requires EVENT_ID"
+        [[ $# -ge 2 ]] || die "audit export --after requires EXPORT_SEQ"
         after=$2
         shift 2
         ;;
@@ -2605,14 +2605,14 @@ cmd_audit_export() {
         ;;
       -h|--help)
         cat <<'HELP'
-vcl audit export — incremental connection dump (durable event_id cursor)
+vcl audit export — incremental connection dump (durable export_seq cursor)
 
-  vcl audit export --after EVENT_ID --jsonl [--limit N] [--stamp-identity]
+  vcl audit export --after EXPORT_SEQ --jsonl [--limit N] [--stamp-identity]
 
 --after is exclusive (0 = from the beginning of the available window).
-Stdout is JSONL (one connection object per line). Stderr is one JSON meta line.
-If retention deleted rows after a non-zero cursor, exit 3 with CURSOR_EXPIRED.
-If the cursor is past MAX(event_id), exit 3 with CURSOR_AHEAD (distinct meta.error).
+Stdout is JSONL (closed connections only; one object per line). Stderr is one JSON meta line (protocol_version 2).
+If retention deleted unconsumed export_seq rows after a non-zero cursor, exit 3 with CURSOR_EXPIRED.
+If the cursor is past audit_export_seq, exit 3 with CURSOR_AHEAD (distinct meta.error).
 --stamp-identity fills missing row node_id/instance_id from this node (reseed only).
 HELP
         return 0
@@ -2623,8 +2623,8 @@ HELP
     esac
   done
 
-  [[ -n "$after" && "$jsonl" -eq 1 ]] || die "usage: vcl audit export --after EVENT_ID --jsonl"
-  [[ "$after" =~ ^[0-9]+$ ]] || die "audit export --after requires a non-negative integer EVENT_ID"
+  [[ -n "$after" && "$jsonl" -eq 1 ]] || die "usage: vcl audit export --after EXPORT_SEQ --jsonl"
+  [[ "$after" =~ ^[0-9]+$ ]] || die "audit export --after requires a non-negative integer EXPORT_SEQ"
   if [[ -n "$limit" ]]; then
     [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "audit export --limit requires an integer >= 1"
   fi
@@ -2705,7 +2705,7 @@ vcl audit — connection-level interval query (RFC3339)
 
   vcl audit user TAG --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
   vcl audit --user-id UUID --from RFC3339 --to RFC3339 [--host HOST] [--ip IP] [--node NODE_ID] [--json]
-  vcl audit export --after EVENT_ID --jsonl [--limit N]
+  vcl audit export --after EXPORT_SEQ --jsonl [--limit N]
 
 Window is interval-overlap, not UTC day granularity (that is stats).
 --from and --to are required and must include a timezone (Z or offset).

@@ -18,20 +18,26 @@ Clash API poll is the **only** production collector in 0.2.7 through 0.3.0. Ther
 
 Do not treat poll-derived numbers as byte-perfect metering. Product retention defaults are **raw 90 days** / **daily 90 days** (UTC day boundaries for rollups).
 
-## Schema 3
+## Schema 4
 
-SQLite `accounting.db` uses `meta.schema_version = 3`.
+SQLite `accounting.db` uses `meta.schema_version = 4` (migrates 2→3→4 on open).
 
 | Object | Role |
 | --- | --- |
-| `connections.event_id` | `INTEGER PRIMARY KEY AUTOINCREMENT` (deleted ids are not reused) |
+| `connections.event_id` | Stable generation identity (`INTEGER PRIMARY KEY AUTOINCREMENT`; sparsity OK; deleted ids are not reused) |
+| `connections.export_seq` | Durable Fleet sync cursor; **NULL while open**; assigned **once** on first close |
+| `UNIQUE (export_seq) WHERE export_seq IS NOT NULL` | Contiguous assignment via meta counter; gaps only after retention |
+| `meta.audit_export_seq` | Highest assigned `export_seq` |
+| `meta.audit_pruned_max_export_seq` | Highest `export_seq` deleted by retention (drives `CURSOR_EXPIRED`) |
 | `connections.generation` | Session generation for a Clash `connection_id`. Migrated rows start at **0** |
 | `UNIQUE (connection_id, generation)` | One open row per generation; a counter reset inserts a new generation |
-| `connections.instance_id` | 0.2.8: new INSERT writes `state.json` SoT (`node.instance_id`). Historical 0.2.7 NULL rows stay NULL. Never copied from `node_id`. The DB is not the SoT |
+| `connections.instance_id` | New INSERT writes `state.json` SoT (`node.instance_id`). Never copied from `node_id` |
 | `poll_baseline` | Durable Clash counters + accounted totals for the open generation |
 | `daily_usage` | Unchanged UTC-day rollup keyed by `(date, user_id, destination_host)` |
 
-Schema 2→3 rewrite keeps existing accounted bytes, assigns `event_id`, sets `generation=0`, leaves `instance_id` NULL, and does **not** invent `poll_baseline` counters. The migrate is **irreversible**; rollback is restore of the pre-upgrade backup.
+Schema 3→4 never rewrites `event_id`. Closed rows get contiguous `export_seq` ordered by `event_id ASC`; open rows stay `NULL`. Schema 2→3 rewrite keeps accounted bytes, assigns `event_id`, sets `generation=0`, leaves `instance_id` NULL, and does **not** invent `poll_baseline` counters. Migrates are **irreversible**; rollback is restore of the pre-upgrade backup.
+
+Open-row polls use **UPDATE-first** writes so AUTOINCREMENT is not burned on every Clash tick.
 
 ## Clash API polling
 
@@ -58,7 +64,7 @@ Schema 2→3 rewrite keeps existing accounted bytes, assigns `event_id`, sets `g
 
 - Defaults: `accounting_raw_retention_days = 90`, `accounting_daily_retention_days = 90`.
 - D18: upgrading from a supported source (`≤ 0.2.6`) rewrites daily **730 → 90** only. Custom daily values are kept. Raw is preserved.
-- Expired closed `connections` and old `daily_usage` rows are deleted in batches of **2000** per table per maintenance tick. Open rows are never deleted. Retention does not consult a fleet cursor.
+- Expired closed `connections` and old `daily_usage` rows are deleted in batches of **2000** per table per maintenance tick. Open rows are never deleted. Before deleting closed rows, retention raises `audit_pruned_max_export_seq` to cover any deleted `export_seq` (Fleet then gets `CURSOR_EXPIRED` if its cursor still sits below that watermark). Retention does not consult a fleet cursor.
 
 ## Operator notes
 
@@ -68,5 +74,5 @@ Schema 2→3 rewrite keeps existing accounted bytes, assigns `event_id`, sets `g
 - Retention knobs live in `/etc/vincula/config.toml`
 - Daily rollup uses the UTC date of `closed_at` (else `started_at`)
 - `vcl accounting status` reports Clash poll only; it does not claim a preferred JSONL ingest
-- `vcl accounting check` runs the same Accounting Plane checker as `vcl verify` (schema 3, heartbeat, baseline/counter sanity, retention backlog)
-- `vcl audit` is connection-level RFC3339 interval-overlap over schema 3; `vcl stats` remains UTC day granularity
+- `vcl accounting check` runs the same Accounting Plane checker as `vcl verify` (schema 4, heartbeat, baseline/counter sanity, retention backlog)
+- `vcl audit` is connection-level RFC3339 interval-overlap over schema 4; durable `audit export` is closed-only by `export_seq` (Protocol v2). `vcl stats` remains UTC day granularity

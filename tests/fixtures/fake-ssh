@@ -9,8 +9,8 @@ User commands require VCL_FAKE_STATE_DIR (each alias gets users.json).
 Identity/status/verify still serve canned fixtures when the state dir is
 unset, matching 0.2.8 tests. Optional identity.json under the state dir
 overrides the canned file. Audit export reads
-{VCL_FAKE_STATE_DIR}/{alias}/accounting.db (tests create the schema 3
-fixture; do not commit a binary db).
+{VCL_FAKE_STATE_DIR}/{alias}/accounting.db (tests create the schema 4
+fixture with export_seq; do not commit a binary db).
 """
 
 from __future__ import annotations
@@ -583,9 +583,10 @@ def _parse_export_flags(argv: list[str]) -> tuple[int, bool, int | None, bool]:
 def _inline_export_after(
     db_path: Path, after: int, limit: int | None
 ) -> tuple[str, list[dict], dict]:
-    """Minimal JSONL export when vincula-audit.py cannot be imported."""
+    """Minimal Protocol v2 JSONL export when vincula-audit.py cannot be imported."""
     keys = (
         "event_id",
+        "export_seq",
         "connection_id",
         "generation",
         "user_id",
@@ -602,35 +603,48 @@ def _inline_export_after(
         "last_seen_at",
         "closed_at",
     )
+
+    def _meta_int(conn: sqlite3.Connection, key: str, default: int = 0) -> int:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return default
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return default
+
     conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        row = conn.execute("SELECT MIN(event_id), MAX(event_id) FROM connections").fetchone()
-        earliest = row[0] if row is not None else None
-        max_event_id = row[1] if row is not None else None
-        expired = after > 0 and (earliest is None or earliest > after + 1)
+        max_export_seq = _meta_int(conn, "audit_export_seq", 0)
+        pruned_max = _meta_int(conn, "audit_pruned_max_export_seq", 0)
         meta = {
-            "ok": not expired,
+            "ok": True,
+            "protocol_version": 2,
+            "cursor_kind": "export_seq",
             "after": after,
-            "earliest_available_event_id": earliest,
-            "max_event_id": max_event_id,
+            "max_export_seq": max_export_seq,
+            "pruned_max_export_seq": pruned_max,
             "count": 0,
             "node_id": None,
             "instance_id": None,
             "next_cursor": after,
         }
-        if expired:
+        if after > 0 and after < pruned_max:
             meta["ok"] = False
             meta["error"] = "CURSOR_EXPIRED"
             return "CURSOR_EXPIRED", [], meta
-        ahead = after > 0 and max_event_id is not None and after > max_event_id
-        if ahead:
+        if after > 0 and after > max_export_seq:
             meta["ok"] = False
             meta["error"] = "CURSOR_AHEAD"
             return "CURSOR_AHEAD", [], meta
         sql = (
-            f"SELECT {', '.join(keys)} FROM connections WHERE event_id > ? "
-            "ORDER BY event_id ASC"
+            f"SELECT {', '.join(keys)} FROM connections "
+            "WHERE export_seq > ? AND closed_at IS NOT NULL "
+            "AND export_seq IS NOT NULL "
+            "ORDER BY export_seq ASC"
         )
         params: list[object] = [after]
         if limit is not None:
@@ -638,7 +652,7 @@ def _inline_export_after(
             params.append(limit)
         rows = [{k: r[k] for k in keys} for r in conn.execute(sql, params)]
         meta["count"] = len(rows)
-        meta["next_cursor"] = rows[-1]["event_id"] if rows else after
+        meta["next_cursor"] = rows[-1]["export_seq"] if rows else after
         return "ok", rows, meta
     finally:
         conn.close()

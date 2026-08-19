@@ -2,7 +2,7 @@
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS** ([`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)); **B15 Local Audit UI is implemented** (`vcl-fleet ui`, fixture AC-3.1). Remaining blocker: live **`0.3.0 → 0.3.1-dev` upgrade**. This page is **not** an addendum to the 0.3.0 freeze record. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-dev` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17 contracts).
 
@@ -18,11 +18,11 @@ Inherited from 0.3.0 unless noted.
 | Live VPS replace | **PASS (B14):** two public VPS secretless replace; see evidence SUMMARY |
 | AC-3.0-11 | **PASS (B14):** old URI→new IP failed; new URI succeeded |
 | `age` is a system package | Secretless backups never call age. `--include-secrets` requires `age` on PATH |
-| `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Next sync with a kept cursor past restored `MAX(event_id)` is `CURSOR_AHEAD`. Remedy is `--reseed` |
+| `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Next sync with a kept cursor past restored `audit_export_seq` is `CURSOR_AHEAD`. Remedy is `--reseed` |
 | Unlabeled audit rows | Normal sync **fails the batch** (cursor unchanged). Stamp missing identity only via `vcl-fleet sync --reseed NAME` / node `--stamp-identity`. Query still ignores historical unlabeled rows already in `fleet.db` |
 | Node restore is fresh-node / runtime-only | Existing `$STATE_DIR/VERSION` → refuse. `--replace-node` is not a node flag |
-| `fleet.db` schema 2 irreversible | No automatic 2→1 |
-| `--reseed` still wipes the local audit cache | Deletes that node’s `audit_events` + `daily_usage`, cursor=0. Does not erase `instance_history` |
+| `fleet.db` schema 3 irreversible | No automatic 3→2. Migrated schema-2 cursors keep `cursor_kind=event_id` until `sync --reseed` |
+| `--reseed` still wipes the local audit cache | Deletes that node’s `audit_events` + `daily_usage`, `last_export_seq=0` / `cursor_kind=export_seq`. Does not erase `instance_history` |
 | D20 soak is not a 0.3.1 gate | 24h soak binds **0.2.7 only** |
 | PARTIAL has no distributed rollback | Exit 2 + per-node status + `--user-id` remediation |
 | Controller is a local tool | No installer, no systemd. Zip has `controller.lock` + sidecar `.zip.sha256` |
@@ -45,6 +45,8 @@ Inherited from 0.3.0 unless noted.
 
 | Issue | Notes |
 | --- | --- |
+| P0 sync AUTOINCREMENT burn + contiguous `event_id` reject | Schema 4 `export_seq` + UPDATE-first upsert; Fleet validates monotonic `export_seq` (gaps OK). Live re-verify still needed after upgrade/`--reseed` |
+| P0 open-row export frozen by `INSERT OR IGNORE` | Durable export is closed-only; Fleet UPSERT on `(node_id, event_id)` |
 | Restore JSON / systemd ignore-errors before VERSION | Shell is the only public JSON emitter. Both units must enable/active + health before `commit-version`. Unique `ok:false` on failure |
 | Fleet mutate treated non-zero remote exit as SSH OK | Mutate path requires `returncode == 0` and JSON `ok is True` |
 | Rollback swallowed systemctl failures | `rollback_partial` when files/services cannot be fully restored |
@@ -61,14 +63,16 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | --- | --- |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
 | B15 localhost UI | **Implemented** (+ v0.32: Host/token/CSRF, no UI reseed, GET no SSH; follow-up: per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
+| P1-05 GitHub branch protection | **Deferred 2026-08-19** (operator paused). Still required for READY FOR RC |
+| P1-06 Live `0.3.0 → 0.3.1-dev` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
 
 ## Ops checklist (not executed in-tree)
 
-These stay **operator/GitHub-settings** work. This tree does not enable branch protection or run a live upgrade.
+These stay **operator/GitHub-settings** work. P1-05 / P1-06 are **paused this round** (see below); resume before READY FOR RC.
 
 ### P1-05 GitHub branch protection (`main`)
 
-Do this in the GitHub UI (Settings → Branches). The workflow file already exists at [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+**Deferred (operator choice, 2026-08-19):** not doing this round. Still required before calling the tree READY FOR RC. When resumed, do this in the GitHub UI (Settings → Branches). The workflow file already exists at [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
 - Require a pull request before merging
 - Require status checks to pass (all CI jobs from `ci.yml`; names must match required checks)
@@ -77,14 +81,14 @@ Do this in the GitHub UI (Settings → Branches). The workflow file already exis
 
 ### P1-06 Live `0.3.0 → 0.3.1-dev` upgrade
 
-Still the remaining READY FOR RC evidence gap. On a real node, keep:
+**Deferred (operator choice, 2026-08-19):** not running the live upgrade this round. Still the remaining READY FOR RC evidence gap. When resumed, on a real node keep:
 
 - `node_id` / `instance_id` (no remint)
 - credential UUIDs / Reality keys
 - accounting `event_id` continuity
 - both `sing-box` and `vincula-accountd` enabled+active
 
-Record evidence, then update [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md). UI security fixes do **not** by themselves make the release READY FOR RC.
+Record evidence, then update [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md). UI / Fleet setup work does **not** by itself make the release READY FOR RC.
 
 ## Related docs
 

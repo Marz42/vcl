@@ -576,23 +576,23 @@ sudo vcl audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-16T00:00:00Z 
 
 ---
 
-### `vcl audit export --after EVENT_ID --jsonl [选项]`
+### `vcl audit export --after EXPORT_SEQ --jsonl [选项]`
 
-增量导出。**stdout = JSONL 连接行**；**stderr = 一行 meta**。控制器 `sync` 用这条。
+增量导出（Export Protocol v2）。**stdout = JSONL 已关闭连接行**（含 `export_seq`）；**stderr = 一行 meta**（`protocol_version: 2`, `cursor_kind: export_seq`）。打开中的连接不会出现。控制器 `sync` 用这条。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `--after EVENT_ID` | 是 | 开区间。`0` = 从当前窗口开头（即使 retention 已截断也算成功） |
+| `--after EXPORT_SEQ` | 是 | 开区间。`0` = 从当前窗口开头 |
 | `--jsonl` | 是 | 必须 |
 | `--limit N` | 否 | `N ≥ 1`，最多导出行数 |
 | `--stamp-identity` | 否 | **只给 reseed 用。** 仅填充 **缺失** 的行 `node_id`/`instance_id`（来自本节点身份）。已有但不匹配 → 失败。**不写** `accounting.db` |
 
 特殊退出 **3**：
 
-- `CURSOR_EXPIRED`：`after > 0` 且窗口有洞（`MIN(event_id) > after+1` 或空库）
-- `CURSOR_AHEAD`：`after > 0` 且 `after > MAX(event_id)`（控制器 cursor 新于恢复后的旧库）
+- `CURSOR_EXPIRED`：`after > 0` 且 `after < pruned_max_export_seq`（retention 删了 Fleet 尚未消费的 durable 行）
+- `CURSOR_AHEAD`：`after > 0` 且 `after > audit_export_seq`（控制器 cursor 新于恢复后的旧库）
 
-两者 stdout 空；用 meta.`error` 区分，不要只看 exit 3。
+稀疏 `event_id` 本身不是过期条件。两者 stdout 空；用 meta.`error` 区分，不要只看 exit 3。
 
 ```bash
 sudo vcl audit export --after 0 --jsonl

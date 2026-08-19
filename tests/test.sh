@@ -1586,8 +1586,8 @@ else
 fi
 assert_success "ingested connection row has user_id" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute("select count(*) from connections where user_id=\"u-alice\"").fetchone()[0]; raise SystemExit(0 if n>=1 else 1)' "$SAMPLE_DB"
-assert_success "meta.schema_version is 3" \
-  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="3" else 1)' "$SAMPLE_DB"
+assert_success "meta.schema_version is 4" \
+  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="4" else 1)' "$SAMPLE_DB"
 assert_success "destination host normalized lowercase strip dot" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); h=c.execute("select destination_host from connections where connection_id=\"c-test-1\"").fetchone()[0]; raise SystemExit(0 if h=="example.com" else 1)' "$SAMPLE_DB"
 
@@ -1641,7 +1641,7 @@ assert mod.normalize_destination_host("foo.") == "foo"
 assert mod.normalize_destination_host(None) is None
 
 conn = mod.open_db(db)
-assert mod.meta_get(conn, "schema_version") == "3"
+assert mod.meta_get(conn, "schema_version") == "4"
 mod.upsert_connection(conn, {
     "event": "connection_close",
     "connection_id": "r1",
@@ -1808,8 +1808,101 @@ else
   fail "event parse + rollup + stale close + poll baseline + restart bytes preserved"
 fi
 
-# Schema 2 → 3 migration: preserve accounted bytes, assign event_id / generation=0,
-# leave instance_id NULL, do not seed poll_baseline from unknown Clash counters.
+# UPDATE-first upsert: polling the same open connection must not burn event_ids.
+upsert_seq_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/upsert-seq.db" <<'PY' || upsert_seq_rc=$?
+import importlib.util, sys
+
+mod_path, db = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("accountd", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+conn = mod.open_db(db)
+assert mod.meta_get(conn, "schema_version") == "4"
+mod.upsert_connection(conn, {
+    "connection_id": "poll-same",
+    "generation": 0,
+    "node_id": "n1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "poll.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 1,
+    "download_bytes": 2,
+    "started_at": "2026-08-14T10:00:00Z",
+    "ts": "2026-08-14T10:00:00Z",
+}, close=False)
+conn.commit()
+first_eid = conn.execute(
+    "SELECT event_id FROM connections WHERE connection_id='poll-same'"
+).fetchone()[0]
+seq0 = conn.execute(
+    "SELECT seq FROM sqlite_sequence WHERE name='connections'"
+).fetchone()
+assert seq0 is not None and seq0[0] == first_eid, seq0
+
+for i in range(100):
+    mod.upsert_connection(conn, {
+        "connection_id": "poll-same",
+        "generation": 0,
+        "node_id": "n1",
+        "user_id": "u-alice",
+        "user_tag": "alice",
+        "destination_host": "poll.example",
+        "destination_ip": None,
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": 1 + i,
+        "download_bytes": 2 + i,
+        "started_at": "2026-08-14T10:00:00Z",
+        "ts": f"2026-08-14T10:00:{i % 60:02d}Z",
+    }, close=False)
+conn.commit()
+seq1 = conn.execute(
+    "SELECT seq FROM sqlite_sequence WHERE name='connections'"
+).fetchone()[0]
+assert seq1 == first_eid, (seq1, first_eid)
+same = conn.execute(
+    "SELECT event_id, upload_bytes FROM connections WHERE connection_id='poll-same'"
+).fetchone()
+n_same = conn.execute(
+    "SELECT COUNT(*) FROM connections WHERE connection_id='poll-same'"
+).fetchone()[0]
+assert same[0] == first_eid and same[1] == 100 and n_same == 1, (same, n_same)
+
+mod.upsert_connection(conn, {
+    "connection_id": "poll-next",
+    "generation": 0,
+    "node_id": "n1",
+    "user_id": "u-bob",
+    "user_tag": "bob",
+    "destination_host": "next.example",
+    "destination_ip": None,
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 0,
+    "download_bytes": 0,
+    "started_at": "2026-08-14T11:00:00Z",
+    "ts": "2026-08-14T11:00:00Z",
+}, close=False)
+conn.commit()
+next_eid = conn.execute(
+    "SELECT event_id FROM connections WHERE connection_id='poll-next'"
+).fetchone()[0]
+assert next_eid == first_eid + 1, (next_eid, first_eid)
+conn.close()
+PY
+if (( upsert_seq_rc == 0 )); then
+  pass "upsert_connection UPDATE-first keeps sqlite_sequence stable across 100 polls"
+else
+  fail "upsert_connection UPDATE-first keeps sqlite_sequence stable across 100 polls"
+fi
+
+# Schema 2 → 3 → 4 migration: preserve accounted bytes, assign event_id / generation=0,
+# leave instance_id NULL, assign export_seq to closed rows only, set audit_export_seq.
 schema3_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "${TEST_TMP}/schema2to3.db" "${TEST_TMP}/schema3-empty.db" <<'PY' || schema3_rc=$?
 import importlib.util, pathlib, re, sqlite3, sys
@@ -1818,7 +1911,7 @@ mod_path, old_db, empty_db = sys.argv[1], sys.argv[2], sys.argv[3]
 spec = importlib.util.spec_from_file_location("accountd", mod_path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-assert mod.SCHEMA_VERSION == 3
+assert mod.SCHEMA_VERSION == 4
 src = pathlib.Path(mod_path).read_text(encoding="utf-8")
 for i, line in enumerate(src.splitlines(), 1):
     code = line.split("#", 1)[0]
@@ -1890,9 +1983,11 @@ raw.commit()
 raw.close()
 
 conn = mod.open_db(old_db)
-assert mod.meta_get(conn, "schema_version") == "3"
+assert mod.meta_get(conn, "schema_version") == "4"
 cols = [r[1] for r in conn.execute("PRAGMA table_info(connections)").fetchall()]
-for required in ("event_id", "generation", "instance_id", "connection_id", "user_id"):
+for required in (
+    "event_id", "generation", "instance_id", "connection_id", "user_id", "export_seq",
+):
     assert required in cols, cols
 tables = {
     r[0]
@@ -1906,10 +2001,11 @@ idx = {
     ).fetchall()
 }
 assert "idx_connections_user_started" in idx, idx
+assert "idx_connections_export_seq" in idx, idx
 
 rows = conn.execute(
     "SELECT connection_id, generation, instance_id, event_id, "
-    "upload_bytes, download_bytes, closed_at, node_id "
+    "upload_bytes, download_bytes, closed_at, node_id, export_seq "
     "FROM connections ORDER BY event_id"
 ).fetchall()
 assert len(rows) == 2, rows
@@ -1917,13 +2013,20 @@ assert rows[0][3] >= 1 and rows[1][3] > rows[0][3], rows
 by_cid = {r[0]: r for r in rows}
 open_row = by_cid["c-open"]
 closed_row = by_cid["c-closed"]
+preserved_eids = {open_row[3], closed_row[3]}
 assert open_row[1] == 0 and open_row[2] is None, open_row
 assert open_row[4] == 12345 and open_row[5] == 67890, open_row
 assert open_row[6] is None, open_row
 assert open_row[7] == "n1" and open_row[2] is not open_row[7]
+assert open_row[8] is None, open_row  # open rows stay NULL export_seq
 assert closed_row[1] == 0 and closed_row[2] is None, closed_row
 assert closed_row[4] == 10 and closed_row[5] == 20, closed_row
 assert closed_row[6] == "2026-08-14T09:01:00Z", closed_row
+assert closed_row[8] == 1, closed_row  # sole closed row gets export_seq=1
+assert mod.meta_get(conn, "audit_export_seq") == "1"
+assert mod.meta_get(conn, "audit_pruned_max_export_seq") == "0"
+# event_id values assigned by 2→3 must survive 3→4.
+assert preserved_eids == {open_row[3], closed_row[3]}
 daily = conn.execute(
     "SELECT upload_bytes, download_bytes, connection_count FROM daily_usage"
 ).fetchone()
@@ -2026,19 +2129,22 @@ mod.upsert_connection(conn, {
     "ts": "2026-08-14T12:00:00Z",
 }, close=False)
 new_id = conn.execute(
-    "SELECT event_id, generation, instance_id FROM connections "
+    "SELECT event_id, generation, instance_id, export_seq FROM connections "
     "WHERE connection_id='c-closed'"
 ).fetchone()
 assert new_id[0] > max_id and new_id[0] != deleted_id, (new_id, max_id, deleted_id)
 assert new_id[1] == 1, new_id
+assert new_id[3] is None, new_id
 conn.close()
 
-# Empty DB via open_db is schema 3 with poll_baseline.
+# Empty DB via open_db is schema 4 with poll_baseline and export_seq counters.
 fresh = mod.open_db(empty_db)
-assert mod.meta_get(fresh, "schema_version") == "3"
+assert mod.meta_get(fresh, "schema_version") == "4"
+assert mod.meta_get(fresh, "audit_export_seq") == "0"
+assert mod.meta_get(fresh, "audit_pruned_max_export_seq") == "0"
 fresh_cols = [r[1] for r in fresh.execute("PRAGMA table_info(connections)").fetchall()]
 assert "event_id" in fresh_cols and "generation" in fresh_cols
-assert "instance_id" in fresh_cols, fresh_cols
+assert "instance_id" in fresh_cols and "export_seq" in fresh_cols, fresh_cols
 fresh_tables = {
     r[0]
     for r in fresh.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -2047,14 +2153,14 @@ assert "poll_baseline" in fresh_tables, fresh_tables
 fresh.close()
 PY
 if (( schema3_rc == 0 )); then
-  pass "schema 2 to 3 preserves accounted bytes"
-  pass "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
-  pass "open_db empty database is schema 3"
+  pass "schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only"
+  pass "schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT"
+  pass "open_db empty database is schema 4"
   pass "D5 historical instance_id stays NULL after migrate"
 else
-  fail "schema 2 to 3 preserves accounted bytes"
-  fail "schema 3 UNIQUE(connection_id, generation) and AUTOINCREMENT"
-  fail "open_db empty database is schema 3"
+  fail "schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only"
+  fail "schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT"
+  fail "open_db empty database is schema 4"
   fail "D5 historical instance_id stays NULL after migrate"
 fi
 
@@ -2665,6 +2771,19 @@ conn.execute(
 )
 conn.commit()
 
+# Assign export_seq to closed rows (open stays NULL) so retention updates prune meta.
+closed = conn.execute(
+    "SELECT event_id FROM connections WHERE closed_at IS NOT NULL ORDER BY event_id"
+).fetchall()
+for i, row in enumerate(closed, start=1):
+    conn.execute(
+        "UPDATE connections SET export_seq = ? WHERE event_id = ?",
+        (i, row[0]),
+    )
+mod.meta_set(conn, "audit_export_seq", str(len(closed)))
+mod.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+
 max_expired_id = conn.execute(
     "SELECT MAX(event_id) FROM connections "
     "WHERE last_seen_at < ? AND closed_at IS NOT NULL",
@@ -2696,6 +2815,9 @@ assert expired_daily_n() == n_daily_expired, expired_daily_n()
 mod.apply_retention(conn, 90, 90)
 assert expired_conn_n() == n_expired - 2000, expired_conn_n()
 assert expired_daily_n() == n_daily_expired - 2000, expired_daily_n()
+# Closed rows receive export_seq on open_db migrate; retention must raise pruned watermark.
+pruned = int(mod.meta_get(conn, "audit_pruned_max_export_seq", "0") or "0")
+assert pruned >= 2000, pruned
 open_n = conn.execute(
     "SELECT COUNT(*) FROM connections WHERE connection_id='open-old' AND closed_at IS NULL"
 ).fetchone()[0]
@@ -4074,7 +4196,7 @@ spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
 acct = importlib.util.module_from_spec(spec_a)
 spec_a.loader.exec_module(acct)
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "3"
+assert acct.meta_get(conn, "schema_version") == "4"
 
 def insert(**kw):
     conn.execute(
@@ -4350,30 +4472,35 @@ spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
 acct = importlib.util.module_from_spec(spec_a)
 spec_a.loader.exec_module(acct)
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "3"
+assert acct.meta_get(conn, "schema_version") == "4"
 
-def insert(i):
+def insert_closed(i, export_seq):
     conn.execute(
         """
         INSERT INTO connections (
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"cid-{i}", 0, "u-alice", "node-1", None, "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, export_seq,
         ),
     )
 
-for i in range(1, 104):
-    insert(i)
-conn.execute("DELETE FROM connections WHERE event_id <= 100")
+# Closed durable rows export_seq 101-103; pruned meta says 1..100 were deleted.
+for i, seq in enumerate((101, 102, 103), start=1):
+    insert_closed(i, seq)
+acct.meta_set(conn, "audit_export_seq", "103")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "100")
 conn.commit()
-bounds = conn.execute("SELECT MIN(event_id), MAX(event_id), COUNT(*) FROM connections").fetchone()
+bounds = conn.execute(
+    "SELECT MIN(export_seq), MAX(export_seq), COUNT(*) FROM connections "
+    "WHERE export_seq IS NOT NULL"
+).fetchone()
 assert tuple(bounds) == (101, 103, 3), tuple(bounds)
 conn.close()
 
@@ -4395,34 +4522,40 @@ except sqlite3.OperationalError:
 
 status, rows, meta = audit.export_after(ro, 0)
 assert status == "ok", status
-assert [r["event_id"] for r in rows] == [101, 102, 103], [r["event_id"] for r in rows]
+assert [r["export_seq"] for r in rows] == [101, 102, 103], [r["export_seq"] for r in rows]
 assert list(rows[0].keys()) == list(audit.ROW_KEYS)
+assert "export_seq" in rows[0]
 assert meta["ok"] is True
+assert meta["protocol_version"] == 2
+assert meta["cursor_kind"] == "export_seq"
 assert meta["after"] == 0
-assert meta["earliest_available_event_id"] == 101
-assert meta["max_event_id"] == 103
+assert meta["max_export_seq"] == 103
+assert meta["pruned_max_export_seq"] == 100
 assert meta["count"] == 3
 assert meta["next_cursor"] == 103
 assert "error" not in meta
 
 status, rows, meta = audit.export_after(ro, 100)
 assert status == "ok", status
-assert [r["event_id"] for r in rows] == [101, 102, 103]
+assert [r["export_seq"] for r in rows] == [101, 102, 103]
 assert meta["count"] == 3
 
+# after < pruned_max_export_seq → CURSOR_EXPIRED (not MIN(event_id) hole).
 status, rows, meta = audit.export_after(ro, 99)
 assert status == "CURSOR_EXPIRED", status
 assert rows == []
 assert meta["ok"] is False
 assert meta["error"] == "CURSOR_EXPIRED"
-assert meta["earliest_available_event_id"] == 101
-assert meta["max_event_id"] == 103
+assert meta["protocol_version"] == 2
+assert meta["cursor_kind"] == "export_seq"
+assert meta["max_export_seq"] == 103
+assert meta["pruned_max_export_seq"] == 100
 assert meta["count"] == 0
 assert meta["after"] == 99
 
 status, rows, meta = audit.export_after(ro, 101)
 assert status == "ok"
-assert [r["event_id"] for r in rows] == [102, 103]
+assert [r["export_seq"] for r in rows] == [102, 103]
 assert meta["next_cursor"] == 103
 
 status, rows, meta = audit.export_after(ro, 103)
@@ -4436,20 +4569,19 @@ assert rows == []
 assert meta["ok"] is False
 assert meta["error"] == "CURSOR_AHEAD"
 assert meta["after"] == 104
-assert meta["max_event_id"] == 103
-assert meta["earliest_available_event_id"] == 101
+assert meta["max_export_seq"] == 103
+assert meta["pruned_max_export_seq"] == 100
 assert meta["count"] == 0
 assert meta["next_cursor"] == 104
 
 status, rows, meta = audit.export_after(ro, 0, limit=2)
 assert status == "ok"
-assert [r["event_id"] for r in rows] == [101, 102]
+assert [r["export_seq"] for r in rows] == [101, 102]
 assert meta["count"] == 2
 assert meta["next_cursor"] == 102
-assert meta["max_event_id"] == 103
-assert meta["earliest_available_event_id"] == 101
+assert meta["max_export_seq"] == 103
 status, rows, meta = audit.export_after(ro, meta["next_cursor"], limit=2)
-assert [r["event_id"] for r in rows] == [103]
+assert [r["export_seq"] for r in rows] == [103]
 assert meta["next_cursor"] == 103
 
 try:
@@ -4470,13 +4602,15 @@ econn.close()
 ero = audit.open_db_readonly(str(empty))
 status, rows, meta = audit.export_after(ero, 0)
 assert status == "ok" and rows == []
-assert meta["earliest_available_event_id"] is None
-assert meta["max_event_id"] is None
+assert meta["max_export_seq"] == 0
+assert meta["pruned_max_export_seq"] == 0
 assert meta["count"] == 0
+assert meta["protocol_version"] == 2
+# Empty DB after=5 → CURSOR_AHEAD (audit_export_seq=0), not EXPIRED.
 status, rows, meta = audit.export_after(ero, 5)
-assert status == "CURSOR_EXPIRED" and rows == []
-assert meta["error"] == "CURSOR_EXPIRED"
-assert meta["earliest_available_event_id"] is None
+assert status == "CURSOR_AHEAD" and rows == []
+assert meta["error"] == "CURSOR_AHEAD"
+assert meta["max_export_seq"] == 0
 ero.close()
 
 ahead_db = base / "ahead.db"
@@ -4488,18 +4622,20 @@ for i in range(1, 6):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"ahead-{i}", 0, "u-alice", "node-1", None, "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i,
+            "example.com", "203.0.113.10", 443, "tcp", 10 * i, 20 * i, i,
         ),
     )
+acct.meta_set(ahead_conn, "audit_export_seq", "5")
+acct.meta_set(ahead_conn, "audit_pruned_max_export_seq", "0")
 ahead_conn.commit()
 ahead_bounds = ahead_conn.execute(
-    "SELECT MIN(event_id), MAX(event_id) FROM connections"
+    "SELECT MIN(export_seq), MAX(export_seq) FROM connections WHERE export_seq IS NOT NULL"
 ).fetchone()
 assert tuple(ahead_bounds) == (1, 5), tuple(ahead_bounds)
 ahead_conn.close()
@@ -4510,7 +4646,7 @@ assert rows == []
 assert meta["ok"] is False
 assert meta["error"] == "CURSOR_AHEAD"
 assert meta["after"] == 10
-assert meta["max_event_id"] == 5
+assert meta["max_export_seq"] == 5
 assert meta["count"] == 0
 assert meta["next_cursor"] == 10
 status, rows, meta = audit.export_after(aro, 5)
@@ -4518,8 +4654,67 @@ assert status == "ok" and rows == []
 assert meta["next_cursor"] == 5
 status, rows, meta = audit.export_after(aro, 0)
 assert status == "ok"
-assert [r["event_id"] for r in rows] == [1, 2, 3, 4, 5]
+assert [r["export_seq"] for r in rows] == [1, 2, 3, 4, 5]
 aro.close()
+
+# Open rows are absent from export; close assigns export_seq once.
+open_db = base / "open-close.db"
+oconn = acct.open_db(str(open_db))
+mod_event = {
+    "connection_id": "open-1",
+    "generation": 0,
+    "node_id": "node-1",
+    "user_id": "u-alice",
+    "user_tag": "alice",
+    "destination_host": "open.example",
+    "destination_ip": "203.0.113.99",
+    "destination_port": 443,
+    "network": "tcp",
+    "upload_bytes": 5,
+    "download_bytes": 6,
+    "started_at": "2026-08-10T08:00:00Z",
+    "ts": "2026-08-10T08:30:00Z",
+}
+acct.upsert_connection(oconn, mod_event, close=False)
+oconn.commit()
+oro = audit.open_db_readonly(str(open_db))
+status, rows, meta = audit.export_after(oro, 0)
+assert status == "ok" and rows == [], rows
+assert meta["max_export_seq"] == 0
+oro.close()
+acct.upsert_connection(
+    oconn,
+    {**mod_event, "closed_at": "2026-08-10T09:00:00Z", "ts": "2026-08-10T09:00:00Z"},
+    close=True,
+)
+oconn.commit()
+seq1 = oconn.execute(
+    "SELECT export_seq FROM connections WHERE connection_id='open-1'"
+).fetchone()[0]
+assert seq1 == 1, seq1
+assert acct.meta_get(oconn, "audit_export_seq") == "1"
+# Closing again must not reassign or mutate the closed generation (D6).
+ok_again = acct.upsert_connection(
+    oconn,
+    {**mod_event, "closed_at": "2026-08-10T09:05:00Z", "ts": "2026-08-10T09:05:00Z",
+     "upload_bytes": 7, "download_bytes": 8},
+    close=True,
+)
+oconn.commit()
+assert ok_again is False
+seq2 = oconn.execute(
+    "SELECT export_seq, upload_bytes FROM connections WHERE connection_id='open-1'"
+).fetchone()
+assert seq2[0] == 1 and seq2[1] == 5, seq2
+assert acct.meta_get(oconn, "audit_export_seq") == "1"
+oconn.close()
+oro = audit.open_db_readonly(str(open_db))
+status, rows, meta = audit.export_after(oro, 0)
+assert status == "ok"
+assert [r["export_seq"] for r in rows] == [1]
+assert rows[0]["connection_id"] == "open-1"
+assert meta["max_export_seq"] == 1
+oro.close()
 
 def run(*extra, dbpath=None, check=True):
     cmd = [
@@ -4532,18 +4727,20 @@ def run(*extra, dbpath=None, check=True):
 out = run("--after", "0", "--jsonl")
 assert out.returncode == 0, out.stderr
 lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
-assert [json.loads(ln)["event_id"] for ln in lines] == [101, 102, 103]
+assert [json.loads(ln)["export_seq"] for ln in lines] == [101, 102, 103]
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["ok"] is True
+assert meta["protocol_version"] == 2
+assert meta["cursor_kind"] == "export_seq"
 assert meta["count"] == 3
-assert meta["earliest_available_event_id"] == 101
-assert meta["max_event_id"] == 103
+assert meta["max_export_seq"] == 103
+assert meta["pruned_max_export_seq"] == 100
 assert meta["next_cursor"] == 103
 assert list(json.loads(lines[0]).keys()) == list(audit.ROW_KEYS)
 
 out = run("--after", "100", "--jsonl")
 assert out.returncode == 0
-assert [json.loads(ln)["event_id"] for ln in out.stdout.splitlines() if ln.strip()] == [
+assert [json.loads(ln)["export_seq"] for ln in out.stdout.splitlines() if ln.strip()] == [
     101, 102, 103,
 ]
 
@@ -4553,7 +4750,7 @@ assert out.stdout.strip() == ""
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["error"] == "CURSOR_EXPIRED"
 assert meta["ok"] is False
-assert meta["earliest_available_event_id"] == 101
+assert meta["pruned_max_export_seq"] == 100
 assert meta["count"] == 0
 
 out = run("--after", "104", "--jsonl", check=False)
@@ -4562,7 +4759,7 @@ assert out.stdout.strip() == ""
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["error"] == "CURSOR_AHEAD"
 assert meta["ok"] is False
-assert meta["max_event_id"] == 103
+assert meta["max_export_seq"] == 103
 assert meta["after"] == 104
 assert meta["next_cursor"] == 104
 assert meta["count"] == 0
@@ -4572,19 +4769,19 @@ assert out.returncode == 3, out.returncode
 assert out.stdout.strip() == ""
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["error"] == "CURSOR_AHEAD"
-assert meta["max_event_id"] == 5
+assert meta["max_export_seq"] == 5
 assert meta["after"] == 10
 assert meta["next_cursor"] == 10
 
 out = run("--after", "0", "--jsonl", "--limit", "1")
 assert out.returncode == 0
 lines = [json.loads(ln) for ln in out.stdout.splitlines() if ln.strip()]
-assert [r["event_id"] for r in lines] == [101]
+assert [r["export_seq"] for r in lines] == [101]
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["count"] == 1 and meta["next_cursor"] == 101
 out = run("--after", str(meta["next_cursor"]), "--jsonl", "--limit", "1")
 lines = [json.loads(ln) for ln in out.stdout.splitlines() if ln.strip()]
-assert [r["event_id"] for r in lines] == [102]
+assert [r["export_seq"] for r in lines] == [102]
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["next_cursor"] == 102
 
@@ -4609,6 +4806,12 @@ assert out.returncode == 0
 assert out.stdout.strip() == ""
 meta = json.loads(out.stderr.strip().splitlines()[-1])
 assert meta["ok"] is True and meta["count"] == 0
+assert meta["protocol_version"] == 2
+
+out = run("--after", "5", "--jsonl", dbpath=empty, check=False)
+assert out.returncode == 3
+meta = json.loads(out.stderr.strip().splitlines()[-1])
+assert meta["error"] == "CURSOR_AHEAD"
 
 chk = sqlite3.connect(db)
 assert chk.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0] == 0
@@ -4616,9 +4819,9 @@ chk.close()
 print("export-ok")
 PY
   then
-    pass "vincula-audit export --after jsonl CURSOR_EXPIRED CURSOR_AHEAD and --limit"
+    pass "vincula-audit export --after jsonl Protocol v2 CURSOR_EXPIRED CURSOR_AHEAD and --limit"
   else
-    fail "vincula-audit export --after jsonl CURSOR_EXPIRED CURSOR_AHEAD and --limit"
+    fail "vincula-audit export --after jsonl Protocol v2 CURSOR_EXPIRED CURSOR_AHEAD and --limit"
   fi
 fi
 
@@ -4844,22 +5047,22 @@ rh = by_name(mod.accounting_plane_checks(
     healthy, service_active=True, raw_days=90, daily_days=90
 ))
 record(
-    "accounting_plane_checks schema 3 healthy passes schema",
+    "accounting_plane_checks schema 4 healthy passes schema",
     rh["schema expected"][0] is True,
     rh["schema expected"][1],
 )
 record(
-    "accounting_plane_checks schema 3 healthy passes database readable",
+    "accounting_plane_checks schema 4 healthy passes database readable",
     rh["database readable"][0] is True,
     rh["database readable"][1],
 )
 record(
-    "accounting_plane_checks schema 3 healthy passes counter sanity",
+    "accounting_plane_checks schema 4 healthy passes counter sanity",
     rh["counter sanity"][0] is True,
     rh["counter sanity"][1],
 )
 record(
-    "accounting_plane_checks schema 3 healthy passes heartbeat",
+    "accounting_plane_checks schema 4 healthy passes heartbeat",
     rh["heartbeat"][0] is True,
     rh["heartbeat"][1],
 )
@@ -5127,10 +5330,10 @@ schema2_fixture(bogus, "bogus")
 assert_fail_closed(bogus, "bogus")
 
 future = os.path.join(work, "schema-future.db")
-schema2_fixture(future, "4")
-assert_fail_closed(future, "4")
+schema2_fixture(future, "5")
+assert_fail_closed(future, "5")
 
-# Antique schema 1 without user_id: still fail-closed, no schema 3 rewrite.
+# Antique schema 1 without user_id: still fail-closed, no schema rewrite.
 antique = os.path.join(work, "schema-antique.db")
 raw = sqlite3.connect(antique)
 raw.executescript("""
@@ -5330,7 +5533,7 @@ orig_toml = (state_dir / "config.toml").read_bytes()
 
 db = state_dir / "accounting.db"
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "3"
+assert acct.meta_get(conn, "schema_version") == "4"
 
 def insert_row(cid, closed):
     conn.execute(
@@ -5427,7 +5630,7 @@ acct_wal.execute(
 )
 acct_wal.commit()
 snap_conn = sqlite3.connect(str(wal_snap))
-assert snap_conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+assert snap_conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
 cids = [r[0] for r in snap_conn.execute("SELECT connection_id FROM connections ORDER BY event_id")]
 assert cids == ["wal-open"], cids
 open_closed = snap_conn.execute(
@@ -5489,7 +5692,7 @@ assert members["VERSION"] == b"0.3.0\n"
 db_copy = base / "from-tar.db"
 db_copy.write_bytes(members["accounting.db"])
 acct_tar = sqlite3.connect(str(db_copy))
-assert acct_tar.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+assert acct_tar.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
 rows = acct_tar.execute(
     "SELECT connection_id, closed_at FROM connections ORDER BY event_id"
 ).fetchall()

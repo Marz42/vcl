@@ -41,7 +41,7 @@ reissue CSV is allowed. Do **not** routinely `scp` live `accounting.db`.
 | Windows | `%APPDATA%\vincula\` (usually `C:\Users\<user>\AppData\Roaming\vincula`) |
 | Linux / macOS | `${XDG_CONFIG_HOME:-~/.config}/vincula/` |
 | Registry | `$FLEET_HOME/fleet.json` (schema **2**; **does not store** `instance_id` or passwords) |
-| Audit cache + instance history | `$FLEET_HOME/fleet.db` (schema **2**; controller-local, not node SoT) |
+| Audit cache + instance history | `$FLEET_HOME/fleet.db` (schema **3**; controller-local, not node SoT) |
 | Last probe | `$FLEET_HOME/last-status.json` (health summary, not source of truth) |
 | Retired snapshot | `$FLEET_HOME/retired/<name>/` (identity / cursor / last-status; not a 0.3.0 backup) |
 | Replace backups | `$FLEET_HOME/backups/` (**0700**; pulled secretless `.tar`, files **0600**) |
@@ -52,8 +52,10 @@ reissue CSV is allowed. Do **not** routinely `scp` live `accounting.db`.
 `active` \| `disabled` \| `retired`). There is **no** automatic schema 2→1.
 
 `fleet.db` schema **1 → 2** adds `instance_history` (explicit migrate +
-backfill from `sync_cursor`). There is **no** automatic schema 2→1. A
-schema-2 `fleet.db` is not understood by a 0.2.9 controller.
+backfill from `sync_cursor`). Schema **2 → 3** adds `audit_events.export_seq`,
+`sync_cursor.last_export_seq`, and `sync_cursor.cursor_kind` (legacy cursors
+stay `event_id` until `--reseed`). There is no automatic downgrade. A
+schema-2 `fleet.db` is not understood by a 0.2.9 controller without migrate.
 
 ## Windows 11
 
@@ -178,7 +180,7 @@ Packaging: controller zip includes `lib/vincula-ui/server.py` and
 | Registry | `ssh_host` (etc.) | `ssh_host` new; `status` stays `active`; **not** `retired` |
 | `fleet.json` `instance_id` | Still not stored | Still not stored |
 | `instance_history` | No extra row | Old instance `retired`; new row `active` |
-| Sync cursor | Unchanged | `instance_id` updated; **`last_event_id` kept**; no auto `--reseed` |
+| Sync cursor | Unchanged | `instance_id` updated; **`last_export_seq` kept**; no auto `--reseed` |
 
 `retired` still means you **abandoned the logical `node_id`**. Replacing a
 VPS is not retire. `node enable` on a retired name still dies:
@@ -268,7 +270,7 @@ final sync on OLD (unless --from-backup)
 → identity + vcl verify --json
 → pull reissue CSV
 → registry ssh_host = NEW; instance_history: old retired, new active
-→ keep sync cursor last_event_id (CURSOR_AHEAD on next sync if the restored
+→ keep sync cursor last_export_seq (CURSOR_AHEAD on next sync if the restored
   DB is behind; then --reseed)
 ```
 
@@ -398,39 +400,54 @@ rows already in `fleet.db`.
 
 ### `CURSOR_EXPIRED` (remote exit 3)
 
-When `after > 0` and the node's remaining window has a gap (`MIN(event_id) >
-after+1`, or empty DB), the node reports `CURSOR_EXPIRED`. The controller
-does **not** import a hole: cursor `status=expired`, overall exit **2**,
-remediation `vcl-fleet sync --reseed NAME`. `--reseed NAME` deletes that
-node's local `audit_events` + `daily_usage`, resets `last_event_id=0`, then
-pulls `--after 0` (the remaining window) with `--stamp-identity`. Reseed is **not** a backup;
-`instance_history` is **not** erased. Unlabeled rows on a normal sync also
-point here; they do not skip-and-advance.
+When `after > 0` and `after < pruned_max_export_seq` (Fleet missed durable
+rows that retention already deleted), the node reports `CURSOR_EXPIRED`.
+Sparse `event_id` holes alone are **not** expiry. The controller does **not**
+import a hole: cursor `status=expired`, overall exit **2**, remediation
+`vcl-fleet sync --reseed NAME`. `--reseed NAME` deletes that node's local
+`audit_events` + `daily_usage`, resets `last_export_seq=0` with
+`cursor_kind=export_seq`, then pulls `--after 0` (the remaining closed window)
+with `--stamp-identity`. Reseed is **not** a backup; `instance_history` is
+**not** erased. Unlabeled rows on a normal sync also point here; they do not
+skip-and-advance.
 
 ### `CURSOR_AHEAD` (remote exit 3, distinct `meta.error`)
 
-When `after > 0` and `after > MAX(event_id)` (stale controller cursor vs a
+When `after > 0` and `after > audit_export_seq` (stale controller cursor vs a
 restored older `accounting.db`, including `--from-backup`), the node reports
 `CURSOR_AHEAD`. This is **not** `CURSOR_EXPIRED`. The controller does **not**
 treat it as a successful empty sync: status=`error`, cursor unchanged, no
 import, overall exit **2**, same `--reseed NAME` remediation.
 
-Sync also fail-closes if remote meta lies: `count` ≠ JSONL rows, `next_cursor`
-≠ last `event_id`, `event_id` not contiguous (`first != after+1` when
-`after>0`, or an internal hole), or `node_id` / meta `instance_id` mismatch
-with identity. Cursor advances to the remote `next_cursor` only after the
-full batch is validated and imported in one transaction.
+### `CURSOR_PROTOCOL_MISMATCH` (controller-local)
+
+`fleet.db` schema 3 keeps legacy `cursor_kind=event_id` cursors until the
+operator reseeds. Sync refuses those nodes with
+`CURSOR_PROTOCOL_MISMATCH: event_id → export_seq` and the same `--reseed`
+remediation. Do not reinterpret `last_event_id` as `export_seq`.
+
+Sync also fail-closes if remote meta lies: `protocol_version` ≠ 2,
+`cursor_kind` ≠ `export_seq`, `count` ≠ JSONL rows, `next_cursor` ≠ last
+`export_seq`, `export_seq` not strictly increasing / duplicates, or
+`node_id` / meta `instance_id` mismatch with identity. Contiguous
+`event_id` is **not** required. Cursor advances to the remote `next_cursor`
+only after the full batch is validated and UPSERT-imported in one
+transaction.
 
 **Replace does not auto-reseed.** After a successful replace,
-`last_event_id` is kept. Immediate `sync --node NAME` continues `--after`
-that id on the new instance. If the restored DB's max is below that cursor,
-you get `CURSOR_AHEAD` and `--reseed`. If the old host’s retention already
-opened a hole before the final sync, you still `--reseed` — you do not
-restore again.
+`last_export_seq` (and diagnostic `last_event_id`) are kept. Immediate
+`sync --node NAME` continues `--after` that export_seq on the new instance.
+If the restored DB's max is below that cursor, you get `CURSOR_AHEAD` and
+`--reseed`. If retention already raised `pruned_max_export_seq` above the
+cursor, you still `--reseed` — you do not restore again.
 
 Cursor lives on disk in `fleet.db`. A new controller process reading the
-same file continues from the last committed `event_id`. Re-running sync is
-idempotent (`COUNT(*)` and cursor stay put).
+same file continues from the last committed `export_seq`. Re-running sync is
+idempotent (UPSERT; `COUNT(*)` and cursor stay put when the window is empty).
+
+Durable export is **closed generations only**. Open connections stay on the
+node (`vcl connections` / status); they are not Fleet audit rows until close
+assigns `export_seq`.
 
 ## Fleet audit / stats
 

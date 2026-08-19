@@ -7,13 +7,14 @@ Window is interval-overlap (D11), not UTC day granularity (that is stats).
   started_at < query_to
   AND COALESCE(closed_at, last_seen_at) >= query_from
 
-JSONL export (`--after EVENT_ID --jsonl`) streams connections ordered by
-`event_id` for fleet incremental sync. Retention gaps return CURSOR_EXPIRED
-(exit 3). A cursor past MAX(event_id) returns CURSOR_AHEAD (also exit 3;
-distinct meta.error). `--after 0` always succeeds for the remaining window.
+JSONL export (`--after SEQ --jsonl`) streams *closed* connections ordered by
+`export_seq` (Export Protocol v2). Open rows are never durable-exported.
+Retention that deleted unconsumed export_seq returns CURSOR_EXPIRED (exit 3).
+A cursor past meta audit_export_seq returns CURSOR_AHEAD (exit 3).
+`--after 0` always succeeds for the remaining window.
 
-Reads schema 3 connections only. Opens accounting.db read-only and never
-writes poll_baseline. Stdlib only. Targets Python 3.10+.
+Reads accounting schema 4 (export_seq). Opens accounting.db read-only.
+Stdlib only. Targets Python 3.10+.
 """
 
 from __future__ import annotations
@@ -27,8 +28,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import quote
 
+EXPORT_PROTOCOL_VERSION = 2
+CURSOR_KIND_EXPORT_SEQ = "export_seq"
+
 ROW_KEYS = (
     "event_id",
+    "export_seq",
     "connection_id",
     "generation",
     "user_id",
@@ -45,7 +50,6 @@ ROW_KEYS = (
     "last_seen_at",
     "closed_at",
 )
-
 
 def parse_rfc3339(s: str) -> str:
     """Parse an RFC3339 timestamp with timezone; return UTC `...Z`.
@@ -135,24 +139,41 @@ def _optional(value: Optional[str]) -> Optional[str]:
     return text or None
 
 
-def _require_schema_3(conn: sqlite3.Connection) -> None:
-    """Fail closed unless connections are schema 3 (event_id / generation)."""
+def _meta_int(conn: sqlite3.Connection, key: str, default: int = 0) -> int:
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+    except sqlite3.Error:
+        return default
+    if row is None:
+        return default
+    raw = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _require_schema_4(conn: sqlite3.Connection) -> None:
+    """Fail closed unless connections are schema 4 (export_seq)."""
     try:
         row = conn.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
     except sqlite3.Error as exc:
         print(
-            f"ERROR: accounting database is not readable as schema 3: {exc}",
+            f"ERROR: accounting database is not readable as schema 4: {exc}",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
     ver = None
     if row is not None:
         ver = row["value"] if isinstance(row, sqlite3.Row) else row[0]
-    if ver != "3":
+    if ver != "4":
         print(
-            f"ERROR: accounting database schema_version={ver!r} is not 3",
+            f"ERROR: accounting database schema_version={ver!r} is not 4 "
+            "(Export Protocol v2 requires schema 4)",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -181,7 +202,7 @@ def query_audit(
         print("ERROR: --from must not be after --to", file=sys.stderr)
         raise SystemExit(1)
 
-    _require_schema_3(conn)
+    _require_schema_4(conn)
 
     uid = _optional(user_id)
     tag = _optional(user_tag)
@@ -237,32 +258,25 @@ def _row_dict(row: sqlite3.Row) -> Dict[str, Any]:
     return {key: row[key] for key in ROW_KEYS}
 
 
-def _event_bounds(conn: sqlite3.Connection) -> tuple[Optional[int], Optional[int]]:
-    try:
-        row = conn.execute("SELECT MIN(event_id), MAX(event_id) FROM connections").fetchone()
-    except sqlite3.Error as exc:
-        print(f"ERROR: audit export failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-    if row is None:
-        return None, None
-    return row[0], row[1]
-
-
 def _export_meta(
     *,
     ok: bool,
     after: int,
-    earliest: Optional[int],
-    max_event_id: Optional[int],
+    max_export_seq: int,
+    pruned_max_export_seq: int,
     count: int,
     error: Optional[str] = None,
 ) -> Dict[str, Any]:
-    meta: Dict[str, Any] = {"ok": ok}
+    meta: Dict[str, Any] = {
+        "ok": ok,
+        "protocol_version": EXPORT_PROTOCOL_VERSION,
+        "cursor_kind": CURSOR_KIND_EXPORT_SEQ,
+    }
     if error:
         meta["error"] = error
     meta["after"] = after
-    meta["earliest_available_event_id"] = earliest
-    meta["max_event_id"] = max_event_id
+    meta["max_export_seq"] = max_export_seq
+    meta["pruned_max_export_seq"] = pruned_max_export_seq
     meta["count"] = count
     meta["node_id"] = None
     meta["instance_id"] = None
@@ -274,17 +288,15 @@ def export_after(
     after: int,
     limit: Optional[int] = None,
 ) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
-    """Export connections with event_id > after, oldest event_id first.
+    """Export closed connections with export_seq > after (Protocol v2).
 
     Returns (status, rows, meta). status is "ok", "CURSOR_EXPIRED",
     or "CURSOR_AHEAD".
-    CURSOR_EXPIRED when after > 0 and the DB is empty or
-    MIN(event_id) > after + 1 (retention deleted the next expected row).
-    CURSOR_AHEAD when after > 0 and MAX(event_id) is set and after is
-    greater than that max (stale cursor vs a restored older DB). Distinct
-    from CURSOR_EXPIRED. next_cursor does not advance.
-    after=0 always succeeds (truncated window is a first sync, not expiry).
-    Optional limit caps returned rows (SQL LIMIT); expiry/ahead first.
+    CURSOR_EXPIRED when after > 0 and after < pruned_max_export_seq
+    (Fleet missed deleted durable rows).
+    CURSOR_AHEAD when after > 0 and after > audit_export_seq
+    (cursor from a newer/other DB). next_cursor does not advance.
+    after=0 always succeeds. Open rows never appear.
     Does not write the database.
     """
     if isinstance(after, bool) or not isinstance(after, int) or after < 0:
@@ -296,28 +308,30 @@ def export_after(
         print("ERROR: --limit must be an integer >= 1", file=sys.stderr)
         raise SystemExit(1)
 
-    _require_schema_3(conn)
-    earliest, max_event_id = _event_bounds(conn)
-    expired = after > 0 and (earliest is None or earliest > after + 1)
+    _require_schema_4(conn)
+    max_export_seq = _meta_int(conn, "audit_export_seq", 0)
+    pruned_max = _meta_int(conn, "audit_pruned_max_export_seq", 0)
+
+    expired = after > 0 and after < pruned_max
     if expired:
         meta = _export_meta(
             ok=False,
             after=after,
-            earliest=earliest,
-            max_event_id=max_event_id,
+            max_export_seq=max_export_seq,
+            pruned_max_export_seq=pruned_max,
             count=0,
             error="CURSOR_EXPIRED",
         )
         meta["next_cursor"] = after
         return ("CURSOR_EXPIRED", [], meta)
 
-    ahead = after > 0 and max_event_id is not None and after > max_event_id
+    ahead = after > 0 and after > max_export_seq
     if ahead:
         meta = _export_meta(
             ok=False,
             after=after,
-            earliest=earliest,
-            max_event_id=max_event_id,
+            max_export_seq=max_export_seq,
+            pruned_max_export_seq=pruned_max,
             count=0,
             error="CURSOR_AHEAD",
         )
@@ -326,8 +340,10 @@ def export_after(
 
     cols = ", ".join(ROW_KEYS)
     sql = (
-        f"SELECT {cols} FROM connections WHERE event_id > ? "
-        "ORDER BY event_id ASC"
+        f"SELECT {cols} FROM connections "
+        "WHERE export_seq > ? AND closed_at IS NOT NULL "
+        "AND export_seq IS NOT NULL "
+        "ORDER BY export_seq ASC"
     )
     params: List[Any] = [after]
     if limit is not None:
@@ -343,11 +359,11 @@ def export_after(
     meta = _export_meta(
         ok=True,
         after=after,
-        earliest=earliest,
-        max_event_id=max_event_id,
+        max_export_seq=max_export_seq,
+        pruned_max_export_seq=pruned_max,
         count=len(out),
     )
-    meta["next_cursor"] = out[-1]["event_id"] if out else after
+    meta["next_cursor"] = out[-1]["export_seq"] if out else after
     return ("ok", out, meta)
 
 
@@ -405,12 +421,13 @@ def render_table(rows: Sequence[Dict[str, Any]], query: Dict[str, str]) -> None:
         print("Filters: " + " ".join(extras))
     print()
     print(
-        f"{'EVENT':<8} {'CID':<16} {'GEN':<4} {'USER':<12} {'TAG':<10} "
+        f"{'EVENT':<8} {'SEQ':<8} {'CID':<16} {'GEN':<4} {'USER':<12} {'TAG':<10} "
         f"{'HOST':<20} {'UP':>10} {'DOWN':>10} {'STARTED':<20} {'CLOSED':<20}"
     )
     for r in rows:
         print(
             f"{_cell(r.get('event_id'), 8)} "
+            f"{_cell(r.get('export_seq'), 8)} "
             f"{_cell(r.get('connection_id'), 16)} "
             f"{_cell(r.get('generation'), 4)} "
             f"{_cell(r.get('user_id'), 12)} "
@@ -427,7 +444,10 @@ def render_table(rows: Sequence[Dict[str, Any]], query: Dict[str, str]) -> None:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Vincula connection audit (RFC3339 interval-overlap / event cursor export)"
+        description=(
+            "Vincula connection audit "
+            "(RFC3339 interval-overlap / export_seq cursor export)"
+        )
     )
     p.add_argument("--db", required=True, help="path to accounting.db")
     p.add_argument("--users", required=True, help="path to users.json")
@@ -444,14 +464,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--after",
         dest="after",
         default=None,
-        metavar="EVENT_ID",
-        help="exclusive event_id cursor for JSONL export (0 = from beginning)",
+        metavar="EXPORT_SEQ",
+        help="exclusive export_seq cursor for JSONL export (0 = from beginning)",
     )
     p.add_argument(
         "--jsonl",
         dest="jsonl",
         action="store_true",
-        help="export connections as JSONL (requires --after)",
+        help="export closed connections as JSONL (requires --after)",
     )
     p.add_argument(
         "--limit",

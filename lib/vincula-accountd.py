@@ -52,11 +52,13 @@ DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
 RETENTION_DELETE_BATCH = 2000
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INT64_MAX = 2**63 - 1
 HEARTBEAT_MAX_AGE_SECONDS = 300
 # Reject Clash /connections bodies larger than this before json.loads (P1-05).
 CLASH_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+META_AUDIT_EXPORT_SEQ = "audit_export_seq"
+META_AUDIT_PRUNED_MAX_EXPORT_SEQ = "audit_pruned_max_export_seq"
 
 NODE_ID = "local"
 INSTANCE_ID: Optional[str] = None  # state.json node.instance_id; None → SQL NULL
@@ -91,6 +93,28 @@ _CONNECTIONS_V3_COLUMNS = """
   UNIQUE (connection_id, generation)
 """
 
+# Schema 4 adds export_seq (Fleet durable cursor; NULL while open).
+_CONNECTIONS_V4_COLUMNS = """
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  instance_id TEXT,
+  user_tag TEXT,
+  started_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
+  destination_host TEXT,
+  destination_ip TEXT,
+  destination_port INTEGER,
+  network TEXT,
+  upload_bytes INTEGER NOT NULL DEFAULT 0,
+  download_bytes INTEGER NOT NULL DEFAULT 0,
+  export_seq INTEGER,
+  UNIQUE (connection_id, generation)
+"""
+
 _CONNECTIONS_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_connections_user_seen "
     "ON connections(user_id, last_seen_at)",
@@ -98,6 +122,11 @@ _CONNECTIONS_INDEX_SQL = (
     "ON connections(user_id, started_at)",
     "CREATE INDEX IF NOT EXISTS idx_connections_open "
     "ON connections(closed_at)",
+)
+
+_CONNECTIONS_EXPORT_SEQ_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_export_seq "
+    "ON connections(export_seq) WHERE export_seq IS NOT NULL"
 )
 
 _POLL_BASELINE_SQL = """
@@ -119,12 +148,13 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS connections (
-{_CONNECTIONS_V3_COLUMNS}
+{_CONNECTIONS_V4_COLUMNS}
 );
 
 {_CONNECTIONS_INDEX_SQL[0]};
 {_CONNECTIONS_INDEX_SQL[1]};
 {_CONNECTIONS_INDEX_SQL[2]};
+{_CONNECTIONS_EXPORT_SEQ_INDEX_SQL};
 
 {_POLL_BASELINE_SQL};
 
@@ -290,6 +320,54 @@ def _ensure_schema_3_objects(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+def _ensure_schema_4_objects(conn: sqlite3.Connection) -> None:
+    """Create export_seq index and meta counters if missing."""
+    _ensure_schema_3_objects(conn)
+    conn.execute(_CONNECTIONS_EXPORT_SEQ_INDEX_SQL)
+    if not meta_get(conn, META_AUDIT_EXPORT_SEQ, ""):
+        meta_set(conn, META_AUDIT_EXPORT_SEQ, "0")
+    if not meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, ""):
+        meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0")
+
+
+def next_export_seq(conn: sqlite3.Connection) -> int:
+    """Allocate the next durable export_seq (monotonic, may have gaps after retention)."""
+    current = int(meta_get(conn, META_AUDIT_EXPORT_SEQ, "0") or "0")
+    value = current + 1
+    meta_set(conn, META_AUDIT_EXPORT_SEQ, str(value))
+    return value
+
+
+def migrate_schema_3_to_4(conn: sqlite3.Connection) -> None:
+    """Add export_seq. Preserve all event_id values. Assign seq to closed rows only."""
+    cols = _table_columns(conn, "connections")
+    if "export_seq" not in cols:
+        conn.execute("ALTER TABLE connections ADD COLUMN export_seq INTEGER")
+    conn.execute(_CONNECTIONS_EXPORT_SEQ_INDEX_SQL)
+    closed = conn.execute(
+        "SELECT event_id FROM connections "
+        "WHERE closed_at IS NOT NULL AND export_seq IS NULL "
+        "ORDER BY event_id ASC"
+    ).fetchall()
+    seq = 0
+    for row in closed:
+        eid = row["event_id"] if isinstance(row, sqlite3.Row) else row[0]
+        seq += 1
+        conn.execute(
+            "UPDATE connections SET export_seq = ? WHERE event_id = ?",
+            (seq, eid),
+        )
+    max_row = conn.execute(
+        "SELECT MAX(export_seq) FROM connections WHERE export_seq IS NOT NULL"
+    ).fetchone()
+    max_seq = max_row[0] if max_row and max_row[0] is not None else 0
+    meta_set(conn, META_AUDIT_EXPORT_SEQ, str(int(max_seq)))
+    if not meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, ""):
+        meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0")
+    meta_set(conn, "schema_version", "4")
+    conn.commit()
+
+
 def migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
     """Rewrite connections from schema 2 PK(connection_id) to schema 3.
 
@@ -326,7 +404,7 @@ def migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE connections")
         conn.execute("ALTER TABLE connections_v3 RENAME TO connections")
         _ensure_schema_3_objects(conn)
-        meta_set(conn, "schema_version", str(SCHEMA_VERSION))
+        meta_set(conn, "schema_version", "3")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -334,11 +412,13 @@ def migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
 
 
 def migrate_schema(conn: sqlite3.Connection) -> None:
-    """Migrate schema 0/1 → 2 → 3. Fail closed on unknown or future versions."""
+    """Migrate schema 0/1 → 2 → 3 → 4. Fail closed on unknown or future versions."""
     tables = _table_names(conn)
     if "connections" not in tables and "daily_usage" not in tables:
         conn.executescript(SCHEMA_SQL)
         meta_set(conn, "schema_version", str(SCHEMA_VERSION))
+        meta_set(conn, META_AUDIT_EXPORT_SEQ, "0")
+        meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0")
         conn.commit()
         return
 
@@ -441,9 +521,19 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     conn_cols = _table_columns(conn, "connections")
     if conn_cols and "event_id" not in conn_cols:
         migrate_schema_2_to_3(conn)
+        current = 3
+
+    raw = meta_get(conn, "schema_version", "")
+    try:
+        current = int(raw) if raw else current
+    except ValueError:
+        current = 3
+
+    if current < 4:
+        migrate_schema_3_to_4(conn)
         return
 
-    _ensure_schema_3_objects(conn)
+    _ensure_schema_4_objects(conn)
     meta_set(conn, "schema_version", str(SCHEMA_VERSION))
     conn.commit()
 
@@ -836,9 +926,11 @@ def upsert_connection(
 ) -> bool:
     """Insert or update one (connection_id, generation) row.
 
+    UPDATE-first so open-row polls do not burn AUTOINCREMENT (Schema 4).
     Closed generations are never updated (D6). Returns False when the
     target generation already has closed_at set and this call would have
     been an UPDATE — caller should open a new generation.
+    On first close, assigns export_seq once in the same write.
     """
     now = ev.get("ts") or utc_now_iso()
     closed_at = ev.get("closed_at") if close or ev.get("event") in (
@@ -864,31 +956,66 @@ def upsert_connection(
     user_id = ev.get("user_id") or resolve_user_id(str(ev["user_tag"]))
     if generation is None:
         generation = int(ev.get("generation", 0))
+    cid = ev["connection_id"]
+
+    cur = conn.execute(
+        """
+        UPDATE connections SET
+          user_id = ?,
+          user_tag = ?,
+          destination_host = COALESCE(?, destination_host),
+          destination_ip = COALESCE(?, destination_ip),
+          destination_port = COALESCE(?, destination_port),
+          network = COALESCE(?, network),
+          upload_bytes = ?,
+          download_bytes = ?,
+          closed_at = ?,
+          last_seen_at = ?
+        WHERE connection_id = ?
+          AND generation = ?
+          AND closed_at IS NULL
+        """,
+        (
+            user_id,
+            ev.get("user_tag"),
+            ev.get("destination_host"),
+            ev.get("destination_ip"),
+            ev.get("destination_port"),
+            ev.get("network"),
+            upload,
+            download,
+            closed_at,
+            now,
+            cid,
+            generation,
+        ),
+    )
+    if cur.rowcount:
+        if closed_at is not None:
+            _assign_export_seq_if_needed(conn, cid, int(generation))
+        return True
+
+    existing = conn.execute(
+        "SELECT closed_at FROM connections "
+        "WHERE connection_id = ? AND generation = ?",
+        (cid, generation),
+    ).fetchone()
+    if existing is not None:
+        return False
 
     conn.execute(
         """
         INSERT INTO connections(
           connection_id, generation, instance_id, node_id, user_id, user_tag,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes, started_at, closed_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(connection_id, generation) DO UPDATE SET
-          user_id = excluded.user_id,
-          user_tag = excluded.user_tag,
-          destination_host = COALESCE(excluded.destination_host, connections.destination_host),
-          destination_ip = COALESCE(excluded.destination_ip, connections.destination_ip),
-          destination_port = COALESCE(excluded.destination_port, connections.destination_port),
-          network = COALESCE(excluded.network, connections.network),
-          upload_bytes = excluded.upload_bytes,
-          download_bytes = excluded.download_bytes,
-          closed_at = excluded.closed_at,
-          last_seen_at = excluded.last_seen_at
-        WHERE connections.closed_at IS NULL
+          upload_bytes, download_bytes, started_at, closed_at, last_seen_at,
+          export_seq
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            ev["connection_id"],
+            cid,
             generation,
-            INSTANCE_ID or None,  # instance_id from state.json SoT on INSERT only; never copy node_id
+            INSTANCE_ID or None,
             ev.get("node_id") or NODE_ID,
             user_id,
             ev.get("user_tag"),
@@ -901,10 +1028,41 @@ def upsert_connection(
             ev.get("started_at") or now,
             closed_at,
             now,
+            None,
         ),
     )
-    changed = conn.execute("SELECT changes()").fetchone()[0]
-    return int(changed) > 0
+    if closed_at is not None:
+        _assign_export_seq_if_needed(conn, cid, int(generation))
+    return True
+
+
+def _assign_export_seq_if_needed(
+    conn: sqlite3.Connection,
+    connection_id: str,
+    generation: int,
+) -> Optional[int]:
+    """Assign export_seq once when a generation first closes. Never reassign."""
+    row = conn.execute(
+        "SELECT event_id, closed_at, export_seq FROM connections "
+        "WHERE connection_id = ? AND generation = ?",
+        (connection_id, generation),
+    ).fetchone()
+    if row is None:
+        return None
+    closed_at = row["closed_at"] if isinstance(row, sqlite3.Row) else row[1]
+    export_seq = row["export_seq"] if isinstance(row, sqlite3.Row) else row[2]
+    event_id = row["event_id"] if isinstance(row, sqlite3.Row) else row[0]
+    if closed_at is None:
+        return None
+    if export_seq is not None:
+        return int(export_seq)
+    seq = next_export_seq(conn)
+    conn.execute(
+        "UPDATE connections SET export_seq = ? "
+        "WHERE event_id = ? AND export_seq IS NULL",
+        (seq, event_id),
+    )
+    return seq
 
 
 def close_stale_open_connections(
@@ -914,6 +1072,7 @@ def close_stale_open_connections(
 ) -> int:
     """Close open rows that are not in the live Clash set.
 
+    Assigns export_seq for each newly closed generation (Schema 4).
     If live_ids is None, keep the legacy behaviour of closing every open row
     (used by tests and callers that have no snapshot). An empty live set from a
     *valid* Clash snapshot means every open row is stale. Callers must not pass
@@ -923,17 +1082,31 @@ def close_stale_open_connections(
     ids = None if live_ids is None else [str(cid) for cid in live_ids]
     if ids:
         placeholders = ",".join("?" * len(ids))
+        open_rows = conn.execute(
+            "SELECT connection_id, generation FROM connections "
+            f"WHERE closed_at IS NULL AND connection_id NOT IN ({placeholders})",
+            tuple(ids),
+        ).fetchall()
+    else:
+        open_rows = conn.execute(
+            "SELECT connection_id, generation FROM connections "
+            "WHERE closed_at IS NULL"
+        ).fetchall()
+    closed = 0
+    for row in open_rows:
+        cid = row["connection_id"] if isinstance(row, sqlite3.Row) else row[0]
+        generation = int(
+            row["generation"] if isinstance(row, sqlite3.Row) else row[1]
+        )
         cur = conn.execute(
             "UPDATE connections SET closed_at = ?, last_seen_at = ? "
-            f"WHERE closed_at IS NULL AND connection_id NOT IN ({placeholders})",
-            (now, now, *ids),
+            "WHERE connection_id = ? AND generation = ? AND closed_at IS NULL",
+            (now, now, cid, generation),
         )
-    else:
-        cur = conn.execute(
-            "UPDATE connections SET closed_at = ?, last_seen_at = ? WHERE closed_at IS NULL",
-            (now, now),
-        )
-    return cur.rowcount
+        if cur.rowcount:
+            _assign_export_seq_if_needed(conn, cid, generation)
+            closed += 1
+    return closed
 
 
 def decode_clash_connections_payload(data: Any) -> List[Dict[str, Any]]:
@@ -1272,18 +1445,27 @@ def _delete_expired_connections_batch(
 
     SQLite has no portable DELETE ... LIMIT; select event_id then IN-delete.
     Open rows (closed_at IS NULL) are never selected.
+    Before delete, raise audit_pruned_max_export_seq to cover deleted export_seq.
     """
     rows = conn.execute(
-        "SELECT event_id FROM connections "
+        "SELECT event_id, export_seq FROM connections "
         "WHERE last_seen_at < ? AND closed_at IS NOT NULL "
         "ORDER BY event_id LIMIT ?",
         (cutoff_iso, limit),
     ).fetchall()
     if not rows:
         return 0
-    ids = [r[0] for r in rows]
+    ids = []
+    max_pruned = int(meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0") or "0")
+    for row in rows:
+        eid = row["event_id"] if isinstance(row, sqlite3.Row) else row[0]
+        eseq = row["export_seq"] if isinstance(row, sqlite3.Row) else row[1]
+        ids.append(eid)
+        if eseq is not None:
+            max_pruned = max(max_pruned, int(eseq))
     q = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM connections WHERE event_id IN ({q})", ids)
+    meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, str(max_pruned))
     return len(ids)
 
 

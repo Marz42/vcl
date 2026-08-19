@@ -1,19 +1,19 @@
 # Vincula 0.3.1-dev Release Readiness
 
 **Tree version:** `0.3.1-dev` (living tree).  
-**Date:** 2026-08-18  
-**Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS** + **B15 Local Audit UI**.  
+**Date:** 2026-08-19  
+**Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS** + **B15 Local Audit UI** + **Schema 4 / Export Protocol v2**.  
 **Companion:** [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Live replace runbook: [`live-replace-checklist.md`](live-replace-checklist.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §9.4 / §10.
 
 This is the **living-tree gate** for `0.3.1-dev`. It is **not** a continuation or rewrite of the 0.3.0 freeze record. Frozen-tag evidence stays in [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) / [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (read-only).
 
 ## Release recommendation
 
-**NOT READY** (B14 live evidence **PASS**; B15 UI **implemented**; live upgrade gap remains)
+**NOT READY** (B14 live evidence **PASS**; B15 UI **implemented**; Schema 4 / Protocol v2 on tree; live upgrade + live re-sync after Schema 4 still open)
 
 **B14** (two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd`) is **PASS** — see [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Fixture-green replace alone is still not sufficient; this live log is.
 
-Known P0 on this tree: **0**. Remaining NOT READY: live **`0.3.0 → 0.3.1-dev` upgrade** evidence. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
+Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row freeze, closed by Schema 4 + Protocol v2 in fixtures). Remaining NOT READY: live **`0.3.0 → 0.3.1-dev` upgrade** evidence, deferred **P1-05** branch protection, and at least one live Fleet re-sync after Schema 4 + `--reseed`. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
 
 ## What B17 closed
 
@@ -34,7 +34,8 @@ Earlier living-tree batches (B0–B13, B16) remain in force: replace uses real `
 | --- | --- |
 | **B14** | **PASS (2026-08-18).** Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age`. Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
 | **B15** | **Implemented.** Localhost Audit UI (`vcl-fleet ui`): Overview / Audit / Health; loopback-only; read-only + SSH refresh/sync; CLI recipes for mutations. Fixture AC-3.1 in `tests/test-fleet.sh`. |
-| **Live 0.3.0 → 0.3.1-dev upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. |
+| **Live 0.3.0 → 0.3.1-dev upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. After upgrade: accounting migrates 3→4 on open; run `vcl-fleet sync --reseed NAME` once per node (Protocol mismatch), then normal sync. |
+| **Schema 4 live re-sync** | Fixture green for `export_seq` / UPSERT / CURSOR_* . Live two-node re-sync after Schema 4 still required before READY FOR RC. |
 
 ## Restore contract (B17)
 
