@@ -334,7 +334,7 @@ else
 fi
 
 ssh_add_rc=0
-ssh_add_err=$(fleet node add nantes --host 203.0.113.40 --node-id "$TEST_SG_NODE_ID" 2>&1) || ssh_add_rc=$?
+ssh_add_err=$(fleet node add nantes --host 203.0.113.40 --node-id "$TEST_SG_NODE_ID" 2>&1 </dev/null) || ssh_add_rc=$?
 if (( ssh_add_rc != 0 )); then
   pass "node add without --host-key is non-zero"
 else
@@ -1102,7 +1102,7 @@ export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init
 
 nohk_rc=0
-nohk_err=$(fleet node add lax --host 203.0.113.10 2>&1) || nohk_rc=$?
+nohk_err=$(fleet node add lax --host 203.0.113.10 2>&1 </dev/null) || nohk_rc=$?
 if (( nohk_rc != 0 )); then
   pass "AC-2.8-10 non-TTY add without --host-key fails"
 else
@@ -1114,7 +1114,7 @@ assert_failure "non-TTY without --host-key does not register lax" \
   grep -q 'lax' "${VCL_FLEET_HOME}/fleet.json"
 
 mismatch_rc=0
-mismatch_err=$(fleet node add lax --host 203.0.113.10 --host-key SHA256:deadbeef 2>&1) || mismatch_rc=$?
+mismatch_err=$(fleet node add lax --host 203.0.113.10 --host-key SHA256:deadbeef 2>&1 </dev/null) || mismatch_rc=$?
 if (( mismatch_rc != 0 )); then
   pass "--host-key mismatch fails"
 else
@@ -1126,7 +1126,7 @@ assert_failure "--host-key mismatch does not register lax" \
   grep -q 'lax' "${VCL_FLEET_HOME}/fleet.json"
 
 badfmt_rc=0
-badfmt_err=$(fleet node add lax --host 203.0.113.10 --host-key not-a-fingerprint 2>&1) || badfmt_rc=$?
+badfmt_err=$(fleet node add lax --host 203.0.113.10 --host-key not-a-fingerprint 2>&1 </dev/null) || badfmt_rc=$?
 if (( badfmt_rc != 0 )); then
   pass "invalid --host-key format rejected"
 else
@@ -1172,7 +1172,7 @@ assert_success "live tokyo ssh_host strips user" \
   grep -q 'ssh_host=203.0.113.11' <<< "$tokyo_show"
 
 sg_live_rc=0
-sg_live_err=$(fleet node add sg --host 203.0.113.12 2>&1) || sg_live_rc=$?
+sg_live_err=$(fleet node add sg --host 203.0.113.12 2>&1 </dev/null) || sg_live_rc=$?
 if (( sg_live_rc != 0 )); then
   pass "live SSH add sg without --host-key fails"
 else
@@ -4754,6 +4754,7 @@ now = "2026-08-16T07:00:00Z"
 def row(event_id, connection_id, user_id, tag, node_id, instance_id, started, closed, host, up, down):
     return {
         "event_id": event_id,
+        "export_seq": event_id,
         "connection_id": connection_id,
         "generation": 0,
         "user_id": user_id,
@@ -5341,16 +5342,18 @@ for i in range(6, 9):
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at,
           destination_host, destination_ip, destination_port, network,
-          upload_bytes, download_bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          upload_bytes, download_bytes, export_seq
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             f"lax-retire-{i}", 0, alice_uid, ident["node_id"], ident["instance_id"],
             "alice",
             "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-            "example.com", "203.0.113.80", 443, "tcp", i, i * 2,
+            "example.com", "203.0.113.80", 443, "tcp", i, i * 2, i,
         ),
     )
+acct.meta_set(conn, "audit_export_seq", "8")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
@@ -6009,12 +6012,14 @@ for i in range(1, 6):
         """INSERT INTO connections (
           connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at, destination_host, destination_ip,
-          destination_port, network, upload_bytes, download_bytes)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          destination_port, network, upload_bytes, download_bytes, export_seq)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (f"lax-replace-{i}", 0, "u-alice", node_id, instance_id, "alice",
          "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
-         "example.com", "203.0.113.10", 443, "tcp", 10, 20),
+         "example.com", "203.0.113.10", 443, "tcp", 10, 20, i),
     )
+acct.meta_set(conn, "audit_export_seq", "5")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
 conn.commit()
 conn.close()
 PY
@@ -6201,16 +6206,23 @@ db = state / "lax2" / "accounting.db"
 conn = sqlite3.connect(str(db))
 conn.execute("DELETE FROM connections")
 for i in range(100, 103):
+    eseq = i + 1
     conn.execute(
         """INSERT INTO connections (
           event_id, connection_id, generation, user_id, node_id, instance_id, user_tag,
           started_at, last_seen_at, closed_at, destination_host, destination_ip,
-          destination_port, network, upload_bytes, download_bytes)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          destination_port, network, upload_bytes, download_bytes, export_seq)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (i, f"gap-{i}", 0, "u-alice", node_id, new_iid,
          "alice", "2026-08-16T10:00:00Z", "2026-08-16T10:05:00Z", "2026-08-16T10:05:00Z",
-         "example.com", "203.0.113.18", 443, "tcp", 1, 1),
+         "example.com", "203.0.113.18", 443, "tcp", 1, 1, eseq),
     )
+conn.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_export_seq','103')"
+)
+conn.execute(
+    "INSERT OR REPLACE INTO meta(key,value) VALUES('audit_pruned_max_export_seq','99')"
+)
 conn.commit()
 row = conn.execute("SELECT MIN(event_id), COUNT(*) FROM connections").fetchone()
 conn.close()
@@ -6225,9 +6237,9 @@ fleet.commit()
 fleet.close()
 PY
 if (( expire_replace_rc == 0 )); then
-  pass "replace CURSOR_EXPIRED fixture: MIN=100 cursor=5"
+  pass "replace CURSOR_EXPIRED fixture: pruned_max=99 cursor=5"
 else
-  fail "replace CURSOR_EXPIRED fixture: MIN=100 cursor=5"
+  fail "replace CURSOR_EXPIRED fixture: pruned_max=99 cursor=5"
 fi
 
 expire_sync_rc=0
@@ -6966,6 +6978,7 @@ inst = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 now = "2026-08-16T07:00:00Z"
 row = {
     "event_id": 1,
+    "export_seq": 1,
     "connection_id": "ui-alice-1",
     "generation": 0,
     "user_id": alice,
@@ -7198,6 +7211,7 @@ for eid, host in hosts:
     extra.append(
         {
             "event_id": eid,
+            "export_seq": eid,
             "connection_id": f"ui-alice-{eid}",
             "generation": 0,
             "user_id": uid,
