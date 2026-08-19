@@ -1,8 +1,8 @@
-# Vincula 0.3.1-dev — Known issues / limitations
+# Vincula 0.3.1-rc1 — Known issues / limitations
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-dev`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-dev` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-rc1`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-rc1` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17 contracts).
 
@@ -38,7 +38,7 @@ Inherited from 0.3.0 unless noted.
 | Live secretless `node replace` | **PASS (B14).** Evidence [`evidence/0.3.1-live/`](evidence/0.3.1-live/) |
 | Live `age` on a real node | **PASS (B14):** distro `age` 1.2.1 `--include-secrets` create+verify |
 | AC-3.0-11 live handshake | **PASS (B14)** |
-| Live `0.3.0 → 0.3.1-dev` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
+| Live `0.3.0 → 0.3.1-rc1` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
 | Live 24h soak | **Not a 0.3.1 gate** |
 
 ## Closed on this living tree (B17)
@@ -51,7 +51,7 @@ Inherited from 0.3.0 unless noted.
 | Fleet mutate treated non-zero remote exit as SSH OK | Mutate path requires `returncode == 0` and JSON `ok is True` |
 | Rollback swallowed systemctl failures | `rollback_partial` when files/services cannot be fully restored |
 | Sync skipped unlabeled rows and still advanced cursor | Whole batch fails; cursor unchanged. `--reseed` stamps missing identity only |
-| Upgrade allowlist stopped at 0.2.9 | `0.3.0` is allowed; `0.3.0-dev` / `0.3.1-dev` are not |
+| Upgrade allowlist | `0.3.0` and `0.3.1-dev` are allowed → `0.3.1-rc1`; `0.3.0-dev` / `0.3.1-rc1` are not |
 | Version-boundary rollback dropped `.runtime-only` | Safety copy + journal `had_runtime_only`; marker restored with VERSION rollback |
 | CI used mutable action tags + unused `actions: write` | Full SHA pins; Dependabot; `actions: write` only on the artifact job |
 
@@ -64,7 +64,7 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
 | B15 localhost UI | **Implemented** (+ v0.32: Host/token/CSRF, no UI reseed, GET no SSH; follow-up: per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
 | P1-05 GitHub branch protection | **Deferred 2026-08-19** (operator paused). Still required for READY FOR RC |
-| P1-06 Live `0.3.0 → 0.3.1-dev` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
+| P1-06 Live `0.3.0 → 0.3.1-rc1` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
 
 ## Ops checklist (not executed in-tree)
 
@@ -79,7 +79,7 @@ These stay **operator/GitHub-settings** work. P1-05 / P1-06 are **paused this ro
 - Require branches to be up to date before merging
 - Do not allow force-push or deleting `main`
 
-### P1-06 Live `0.3.0 → 0.3.1-dev` upgrade
+### P1-06 Live `0.3.0 → 0.3.1-rc1` upgrade
 
 **Deferred (operator choice, 2026-08-19):** not running the live upgrade this round. Still the remaining READY FOR RC evidence gap. When resumed, on a real node keep:
 

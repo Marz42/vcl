@@ -1,11 +1,11 @@
-# Vincula 0.3.1-dev Release Readiness
+# Vincula 0.3.1-rc1 Release Readiness
 
-**Tree version:** `0.3.1-dev` (living tree).  
+**Tree version:** `0.3.1-rc1` (living tree).  
 **Date:** 2026-08-19  
 **Focus:** Living-tree gate; B17 restore/sync contracts + **B14 live two-VPS replace PASS** + **B15 Local Audit UI** + **Schema 4 / Export Protocol v2**.  
 **Companion:** [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · Operator: [`backup.md`](backup.md) · [`fleet.md`](fleet.md) · Live replace runbook: [`live-replace-checklist.md`](live-replace-checklist.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §9.4 / §10.
 
-This is the **living-tree gate** for `0.3.1-dev`. It is **not** a continuation or rewrite of the 0.3.0 freeze record. Frozen-tag evidence stays in [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) / [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (read-only).
+This is the **living-tree gate** for `0.3.1-rc1`. It is **not** a continuation or rewrite of the 0.3.0 freeze record. Frozen-tag evidence stays in [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) / [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (read-only).
 
 ## Release recommendation
 
@@ -13,7 +13,7 @@ This is the **living-tree gate** for `0.3.1-dev`. It is **not** a continuation o
 
 **B14** (two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd`) is **PASS** — see [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Fixture-green replace alone is still not sufficient; this live log is.
 
-Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row freeze, closed by Schema 4 + Protocol v2 in fixtures). Remaining NOT READY: live **`0.3.0 → 0.3.1-dev` upgrade** evidence, deferred **P1-05** branch protection, and at least one live Fleet re-sync after Schema 4 + `--reseed`. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
+Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row freeze, closed by Schema 4 + Protocol v2 in fixtures). Remaining NOT READY: live **`0.3.0 → 0.3.1-rc1` upgrade** evidence, deferred **P1-05** branch protection, and at least one live Fleet re-sync after Schema 4 + `--reseed`. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
 
 ## What B17 closed
 
@@ -21,7 +21,7 @@ Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row
 | --- | --- | --- |
 | **P1-01 / P1-02** | Restore is a single final commit. systemd + accountd fail-close before VERSION. Unique public JSON. Fleet mutations require remote `rc=0` and JSON `ok:true`. Rollback that cannot restore service state is `rollback_partial`. | **CLOSED** |
 | **P1-03** | Audit sync fail-close: export meta/rows must carry matching `node_id` (and `instance_id` when expected). Unlabeled rows fail the batch; cursor unchanged. `--reseed` is the only stamp path (`vcl audit export --stamp-identity`). | **CLOSED** |
-| **P1-04** | Installer allowlist includes `0.3.0` (excludes `0.3.0-dev` / `0.3.1-dev`). Fixture keep tests cover identity, credentials, Reality, accounting, dual-service. | **CLOSED** (fixture). Live `0.3.0 → 0.3.1-dev` upgrade is still an evidence gap. |
+| **P1-04** | Installer allowlist includes `0.3.0` and `0.3.1-dev` (excludes `0.3.0-dev` / `0.3.1-rc1`). Fixture keep tests cover identity, credentials, Reality, accounting, dual-service. | **CLOSED** (fixture). Live `0.3.0 → 0.3.1-rc1` upgrade is still an evidence gap. |
 | **P2-01** | Version-boundary rollback restores `.runtime-only` from safety / journal. | **CLOSED** |
 | **P2-02** | CI actions pinned to full commit SHA; unused top-level `actions: write` removed; Dependabot for GitHub Actions. | **CLOSED** |
 | **P2-03** | This file + [`known-issues-0.3.1.md`](known-issues-0.3.1.md); README gate links and `<version>` artifacts; CHANGELOG B17. | **CLOSED** |
@@ -34,7 +34,7 @@ Earlier living-tree batches (B0–B13, B16) remain in force: replace uses real `
 | --- | --- |
 | **B14** | **PASS (2026-08-18).** Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age`. Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
 | **B15** | **Implemented.** Localhost Audit UI (`vcl-fleet ui`): Overview / Audit / Health; loopback-only; read-only + SSH refresh/sync; CLI recipes for mutations. Fixture AC-3.1 in `tests/test-fleet.sh`. |
-| **Live 0.3.0 → 0.3.1-dev upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. After upgrade: accounting migrates 3→4 on open; run `vcl-fleet sync --reseed NAME` once per node (Protocol mismatch), then normal sync. |
+| **Live 0.3.0 → 0.3.1-rc1 upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. After upgrade: accounting migrates 3→4 on open; run `vcl-fleet sync --reseed NAME` once per node (Protocol mismatch), then normal sync. |
 | **Schema 4 live re-sync** | Fixture green for `export_seq` / UPSERT / CURSOR_* . Live two-node re-sync after Schema 4 still required before READY FOR RC. |
 
 ## Restore contract (B17)
@@ -54,14 +54,14 @@ Normal `vcl-fleet sync` refuses unlabeled or mismatched identity; cursor does no
 
 ## Upgrade contract (B17)
 
-`vincula.sh` migrates `0.1.0–0.1.5` and `0.2.0–0.3.0` to `0.3.1-dev`. Spec §9.4 treats `0.3.0 → 0.3.1` as a same-architecture milestone: no remint of `node_id` / `instance_id`, no credential UUID rotation, Reality keys unchanged, accounting schema/`event_id` unchanged.
+`vincula.sh` migrates `0.1.0–0.1.5`, `0.2.0–0.3.0`, and **`0.3.1-dev`** to `0.3.1-rc1`. Spec §9.4 treats `0.3.0 → 0.3.1` as a same-architecture milestone: no remint of `node_id` / `instance_id`, no credential UUID rotation, Reality keys unchanged; accounting migrates schema 3→4 on open.
 
 ## Verification this round
 
-- `bash tests/test.sh` — **1266** passed (sources fleet; includes P2 identity-file + UI worker cap)
-- `bash tests/test-fleet.sh` — **517** passed (includes AC-3.1 UI subset)
+- `bash tests/test.sh` — **1274** passed (sources fleet; Schema 4 fixtures + deploy manual)
+- `bash tests/test-fleet.sh` — **520** passed standalone (includes AC-3.1 UI subset)
 - `bash -n` + `python3 -m py_compile` on first-party node/controller files
 - `bash scripts/gen-release-lock.sh` after first-party edits (node package)
 - `bash scripts/build-controller.sh` — packs `lib/vincula-ui/*` into controller zip
 
-B14 **PASS** (2026-08-18). B15 Local Audit UI is on the tree. P2 identity-file + UI bounds + CI no-double-fleet are on the tree. Recommendation stays **NOT READY** until live `0.3.0 → 0.3.1-dev` upgrade is closed or waived.
+B14 **PASS** (2026-08-18). B15 Local Audit UI is on the tree. P2 identity-file + UI bounds + CI no-double-fleet are on the tree. Recommendation stays **NOT READY** until live `0.3.0 → 0.3.1-rc1` upgrade is closed or waived.

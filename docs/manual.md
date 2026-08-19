@@ -1,6 +1,8 @@
-# Vincula 命令手册（0.3.1-dev）
+# Vincula 命令手册（0.3.1-rc1）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
+从零装两台节点并接入 Fleet 的逐步命令见
+[已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
 
 合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
 
@@ -21,7 +23,8 @@
 9. [开发机脚本](#dev-scripts)
 10. [环境变量总表](#env)
 11. [常见流程](#playbooks)
-12. [Local Audit UI 手动测试指南](#ui-manual-test)
+12. [已验证部署：双 VPS + Fleet（全新）](#deploy-verified)
+13. [Local Audit UI 手动测试指南](#ui-manual-test)
 
 ---
 
@@ -115,7 +118,7 @@ bash vincula.sh --version
 
 - **全新**：已有 `/var/lib/vincula` 或半残安装会拒绝，报错里带确切清理命令。没有 `vcl recover`。
 - **同版本再跑**：校验 `sing-box` + `vincula-accountd`，**不**轮换 UUID / Reality。
-- **升级 allowlist**：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.3.0` → 当前 `0.3.1-dev`。不含 `0.3.0-dev` / `0.3.1-dev`。不降级、不跳未知版本。升级 **不**重 mint `node_id` / `instance_id`，不旋转凭据与 Reality。
+- **升级 allowlist**：`0.1.0`–`0.1.5`、`0.2.0`–`0.3.0` 与 **`0.3.1-dev`** → 当前 `0.3.1-rc1`。不含 `0.3.0-dev` / `0.3.1-rc1`（自身）。不降级、不跳未知版本。升级 **不**重 mint `node_id` / `instance_id`，不旋转凭据与 Reality。
 - 成功必须两个 unit 都 active，否则回滚。
 
 ```bash
@@ -1212,13 +1215,16 @@ python3 bin/vcl-fleet stats node lax --days 30
 
 ## 常见流程 {#playbooks}
 
-### 新 VPS
+短配方。**从零装两台 VPS 并开通用户**请走下一节
+[已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
+
+### 新 VPS（单机、无 Fleet）
 
 ```bash
 # 开发机
-bash scripts/gen-release-lock.sh
+bash scripts/gen-release-lock.sh   # 仅当一等公民节点文件变更时
 bash scripts/build-release.sh
-# 把 dist/vincula-node-<ver>/ 拷到 VPS
+# 把 dist/vincula-node-<ver>/ 或 .tar.gz 拷到 VPS
 
 # VPS
 sha256sum -c vincula.sh.sha256
@@ -1227,23 +1233,28 @@ sudo vcl status
 sudo vcl link
 ```
 
-### 本机加用户
+### 本机加用户（单节点、无 Fleet）
 
 ```bash
 sudo vcl user add bob --display-name Bob --department Eng
 sudo vcl user link bob
 ```
 
-### 工作站管多节点
+### 工作站管多节点（摘要）
+
+完整逐步命令见 [已验证部署](#deploy-verified)。摘要：
 
 ```bash
+export VCL_FLEET_HOME=~/vincula-fleet-live
 python3 bin/vcl-fleet init
-python3 bin/vcl-fleet node add lax --host 203.0.113.10 --host-key SHA256:…
-python3 bin/vcl-fleet node add tokyo --host 203.0.113.20 --host-key SHA256:…
-python3 bin/vcl-fleet user add alice --nodes lax,tokyo --output alice.csv
+python3 bin/vcl-fleet node add node-a --host "$VPS1" --host-key SHA256:…
+python3 bin/vcl-fleet node add node-b --host "$VPS2" --host-key SHA256:…
+python3 bin/vcl-fleet user add alice --nodes node-a,node-b --output alice.csv
 python3 bin/vcl-fleet sync
 python3 bin/vcl-fleet status
-python3 bin/vcl-fleet stats user alice --days 7
+python3 bin/vcl-fleet audit user alice \
+  --from 2026-08-01T00:00:00Z --to 2026-08-20T00:00:00Z
+python3 bin/vcl-fleet stats node node-a --days 30
 python3 bin/vcl-fleet ui   # 浏览器打开 http://127.0.0.1:8765
 ```
 
@@ -1265,6 +1276,268 @@ sudo vcl backup verify /var/backups/vincula/node-….tar
 5. 若 sync 报 `CURSOR_AHEAD`：`vcl-fleet sync --reseed NAME`
 
 不要用 `node set` 冒充换机。不要在已有 VERSION 的新机上 restore。
+完整 live 清单见 [`live-replace-checklist.md`](live-replace-checklist.md)。
+
+---
+
+## 已验证部署：双 VPS + Fleet（全新） {#deploy-verified}
+
+面向操作员的 **端到端全新部署**：开发机打包 → 两台 Debian/Ubuntu VPS
+安装 Schema 4 节点 → 工作站 Fleet 注册 → 开通用户 → sync / audit / stats
+抽查。占位符可换成你的主机与节点名；命令路径以 Linux/WSL 工作站为准
+（Windows 11 把 `python3 bin/vcl-fleet` 换成 `bin\vcl-fleet.cmd`）。
+
+**范围：** 全新安装（节点此前无 Vincula）。从旧版升级到 Schema 4 /
+Protocol v2 时，注册后还须对每个节点跑一次
+`vcl-fleet sync --reseed NAME`；本节 fresh 路径 **不需要** 首次 reseed。
+
+**合同提醒：** 记账仍是 approximate；发布门禁见
+[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md)。本节是操作员
+部署 runbook，不是 READY FOR RC 声明。
+
+### 0. 准备工作站变量
+
+在 **工作站**（推荐 WSL / Linux）打开终端：
+
+```bash
+export REPO=~/src/vcl                    # 本仓库检出路径
+export VCL_FLEET_HOME=~/vincula-fleet-live
+export VPS1=203.0.113.10                 # 第一台公网 IP 或 DNS
+export VPS2=203.0.113.20                 # 第二台
+export NAME1=node-a                      # Fleet 短名（见命名规则）
+export NAME2=node-b
+mkdir -p "$VCL_FLEET_HOME"
+cd "$REPO"
+```
+
+需要：Python 3.10+、系统 OpenSSH（`ssh` / `scp` / `ssh-keyscan`）、
+能 `ssh root@$VPS1` / `$VPS2`（或等价有 sudo 的用户；下文默认 `root`）。
+
+### 1. 打包节点与控制器
+
+```bash
+# 仅当改了一等公民节点文件时再生 lock；日常拉代码后通常直接 build
+bash scripts/build-release.sh
+bash scripts/build-controller.sh   # 可选；工作站也可直接用源树 bin/vcl-fleet
+
+ls -l dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256
+python3 bin/vcl-fleet version      # 期望含 0.3.1-rc1
+```
+
+把 **每个 VPS** 各拷一份节点包（示例用 scp）：
+
+```bash
+scp dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256 \
+  root@"$VPS1":/root/
+scp dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256 \
+  root@"$VPS2":/root/
+```
+
+### 2. 在每台 VPS 上安装（重复 $VPS1、$VPS2）
+
+```bash
+ssh root@"$VPS1"   # 下面对 $VPS2 再做一遍
+```
+
+远端：
+
+```bash
+cd /root
+# 若拷的是 tar.gz：
+tar -xzf vincula-node-*.tar.gz
+cd vincula-node-*    # 解压后的目录，内含 vincula.sh / bin / lib / release.lock
+
+sha256sum -c vincula.sh.sha256
+# VCL_SERVER = 客户端看到的公网地址（写入 VLESS / state）；通常等于本机公网 IP
+sudo env VCL_SERVER="$VPS1" bash vincula.sh
+
+sudo vcl version
+sudo vcl status
+sudo vcl accounting check
+sudo systemctl is-active sing-box vincula-accountd
+```
+
+**验收（每台）：**
+
+| 检查 | 期望 |
+| --- | --- |
+| `vcl version` | 与打包版本一致（如 `0.3.1-rc1`） |
+| `vcl status` | proxy / accounting 可用（非 FAIL） |
+| `vcl accounting check` | Schema **4** 平面通过 |
+| 两服务 | `active` |
+
+**同版本重装注意：** `vincula.sh` 对 **已是同一版本** 的安装往往只做校验、
+**不会**刷新 `/usr/local/lib/vincula`。若你改了源码又未升版本号，须手动
+把 `lib/*.py` 同步到节点并 `systemctl restart vincula-accountd`（必要时
+`sing-box`）。全新首次安装不受影响。
+
+### 3. 节点侧确认 Export Protocol v2
+
+在 **每台** VPS 上（meta 在 **stderr**，不要用 `2>/dev/null` 丢掉）：
+
+```bash
+sudo vcl audit export --after 0 --jsonl 2> /tmp/export.meta >/tmp/export.jsonl
+python3 -c "import json; print(json.dumps(json.load(open('/tmp/export.meta')), indent=2))"
+```
+
+**验收：**
+
+| 字段 | 期望 |
+| --- | --- |
+| `protocol_version` | `2` |
+| `cursor_kind` | `export_seq` |
+| `schema`（若有） | `4` |
+| JSONL 行（若有关闭连接） | 含 `export_seq`；**仅 closed** 行出现在 durable export |
+
+无流量时 JSONL 可为空、`max_export_seq` 可为 `0`，只要 meta 为 Protocol v2。
+
+可选：`sudo vcl link` 拿 owner 链路做连通性烟测（勿提交进仓库）。
+
+### 4. 工作站初始化 Fleet 并注册节点
+
+回到工作站：
+
+```bash
+export VCL_FLEET_HOME=~/vincula-fleet-live
+cd "$REPO"
+
+python3 bin/vcl-fleet init
+
+# 取 host key（示例；也可用 ssh-keygen -lf / ssh-keyscan 管线）
+ssh-keyscan -t ed25519 "$VPS1" 2>/dev/null | ssh-keygen -lf - -E sha256
+# 记下 SHA256:…. 对 $VPS2 同样做
+
+python3 bin/vcl-fleet node add "$NAME1" --host "$VPS1" --host-key SHA256:…
+python3 bin/vcl-fleet node add "$NAME2" --host "$VPS2" --host-key SHA256:…
+
+python3 bin/vcl-fleet node list
+python3 bin/vcl-fleet status
+python3 bin/vcl-fleet verify
+```
+
+非交互环境 **必须** 带 `--host-key`；仅有 keyscan、无 pin 时 add 会失败
+（文案含 `non-interactive add requires --host-key`）。
+
+**验收：** `node list` 两行 `enabled` / `active`；`status` / `verify` 对两节点
+SSH 与身份一致（允许 ACCOUNTING `STALE` 警告，视流量而定）。
+
+### 5. 首次 sync
+
+全新节点 cursor 从 `0` 开始，**不要**先 `--reseed`（reseed 用于升级后
+`CURSOR_PROTOCOL_MISMATCH`、retention `CURSOR_EXPIRED`、或 unlabeled 修复）。
+
+```bash
+python3 bin/vcl-fleet sync --json
+# 或逐台：
+python3 bin/vcl-fleet sync --node "$NAME1" --json
+python3 bin/vcl-fleet sync --node "$NAME2" --json
+```
+
+**验收：** 总体 `ok: true`（或人类表 STATUS 为 `ok`）；有 closed 连接时
+`inserted` ≥ 1 且 `last_export_seq` 前进。空库时 `inserted=0`、cursor 可为 `0`
+仍算成功。
+
+若出现 `CURSOR_PROTOCOL_MISMATCH` / `CURSOR_EXPIRED` / `CURSOR_AHEAD`：
+
+```bash
+python3 bin/vcl-fleet sync --reseed "$NAME1"
+python3 bin/vcl-fleet sync --reseed "$NAME2"
+```
+
+### 6. 开通用户
+
+**单个：**
+
+```bash
+python3 bin/vcl-fleet user add alice \
+  --nodes "$NAME1,$NAME2" \
+  --display-name Alice \
+  --department Eng \
+  --output "$VCL_FLEET_HOME/alice.csv"
+```
+
+**批量（推荐有用户列表时）：** CSV 表头必须是
+`tag,display_name,department,nodes`：
+
+```csv
+tag,display_name,department,nodes
+alice,Alice,Engineering,node-a
+bob,Bob,Sales,"node-a,node-b"
+```
+
+```bash
+python3 bin/vcl-fleet user import users.csv --dry-run
+python3 bin/vcl-fleet user import users.csv \
+  --output "$VCL_FLEET_HOME/credentials.csv"
+```
+
+**验收：**
+
+| 结果 | 含义 |
+| --- | --- |
+| exit 0 + `STATE SUCCESS` | 全部目标节点开通成功 |
+| exit 2 + `STATE PARTIAL` | 部分失败；用输出中的同一 `user_id` 对失败节点补开：`user add TAG --nodes FAILED --user-id UUID` |
+| exit 1 | CSV 校验失败或冲突；**未** SSH 开通 |
+
+凭证 CSV 模式 **0600**，列含 `vless_uri`。妥善保管后分发；不要提交进 git。
+
+```bash
+python3 bin/vcl-fleet user list
+python3 bin/vcl-fleet user show alice
+```
+
+### 7. 抽查 audit / stats（读本地 fleet.db）
+
+先 sync，再查。CLI **不是** `audit --node NAME` 顶层子命令：
+
+```bash
+python3 bin/vcl-fleet sync
+
+python3 bin/vcl-fleet audit user alice \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-20T00:00:00Z \
+  --node "$NAME1"
+
+python3 bin/vcl-fleet stats node "$NAME1" --days 30
+python3 bin/vcl-fleet stats user alice --days 30
+python3 bin/vcl-fleet stats top users --days 7
+```
+
+时间窗必须是 **带时区的 RFC3339**（如 `…Z`）。无连接时表为空属正常。
+
+可选 UI：
+
+```bash
+python3 bin/vcl-fleet ui
+# 浏览器打开 http://127.0.0.1:8765
+```
+
+### 8. 部署完成检查清单
+
+| # | 项 | 通过标准 |
+| --- | --- | --- |
+| 1 | 两台 VPS `vcl accounting check` | Schema 4 平面 OK |
+| 2 | 两台 `audit export` meta | `protocol_version=2`，`cursor_kind=export_seq` |
+| 3 | `vcl-fleet node list` | `$NAME1` / `$NAME2` active |
+| 4 | `vcl-fleet status` / `verify` | 无 SSH FAIL；身份匹配 |
+| 5 | `vcl-fleet sync --json` | 成功；cursor 合理 |
+| 6 | `user add` / `user import` | SUCCESS 或已 PARTIAL 补齐 |
+| 7 | `audit user` / `stats node` | 语法正确；有流量时有行 |
+| 8 | （可选）`vcl-fleet ui` | 仅 `127.0.0.1`；无 mutation |
+
+### 9. 常见翻车点
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `invalid choice: 'node-a' (choose from user)` | 写成了 `audit --node` / `stats --node` 顶层 | 用 `audit user TAG … [--node NAME]`、`stats node NAME` |
+| `non-interactive add requires --host-key` | 非 TTY 未 pin | 加 `--host-key SHA256:…` |
+| 同版本升级后代码仍旧 | 安装器同版本不刷 lib | 手动同步 `lib/` + restart accountd |
+| sync 报 PROTOCOL_MISMATCH | 旧 `event_id` cursor | `sync --reseed NAME` 一次 |
+| export meta「没有」 | 看了 stdout 或 `2>/dev/null` | meta 在 stderr：`2> /tmp/export.meta` |
+| PARTIAL 后重开用户 | 新 mint 了另一个 `user_id` | 必须复用失败报告里的 `--user-id` |
+
+更细的 Fleet 语义见 [`fleet.md`](fleet.md)；换机 live 清单见
+[`live-replace-checklist.md`](live-replace-checklist.md)。
 
 ---
 
@@ -1401,7 +1674,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8765/api/user/
 ```bash
 bash scripts/build-controller.sh
 # 解压到临时目录后：
-cd /path/to/vincula-controller-0.3.1-dev
+cd /path/to/vincula-controller-0.3.1-rc1
 sha256sum -c controller.lock
 # 确认存在 lib/vincula-ui/static/index.html
 env VCL_FLEET_HOME=/tmp/ui-zip-home python3 bin/vcl-fleet ui

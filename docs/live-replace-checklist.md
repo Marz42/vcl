@@ -1,4 +1,4 @@
-# B14 live replace operator checklist (0.3.1-dev)
+# B14 live replace operator checklist (0.3.1-rc1)
 
 **Status: PASS (2026-08-18).** Operator runbook for live VPS evidence.
 Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
@@ -6,7 +6,7 @@ Fixture-green `node replace` (B10) alone is **not** that evidence.
 
 B14 live replace is **executed**. B15 (localhost UI) is **implemented**
 (`vcl-fleet ui`). Do **not** call the tree `READY FOR RC` until the remaining
-living-tree gap (live `0.3.0 → 0.3.1-dev` upgrade) is closed or explicitly
+living-tree gap (live `0.3.0 → 0.3.1-rc1` upgrade) is closed or explicitly
 waived.
 
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
@@ -37,12 +37,12 @@ rewriting `fleet.json`.
 
 | Role | Requirement |
 | --- | --- |
-| **Old VPS** | Existing 0.3.0 or 0.3.1-dev install. Real users and some traffic (so accounting/audit is not an empty lab). SSH as the fleet user (default `root`). Dual plane up: `sing-box.service` + `vincula-accountd.service`. |
+| **Old VPS** | Existing 0.3.0 or 0.3.1-rc1 install. Real users and some traffic (so accounting/audit is not an empty lab). SSH as the fleet user (default `root`). Dual plane up: `sing-box.service` + `vincula-accountd.service`. |
 | **New VPS** | Fresh Debian 12/13 or Ubuntu 22.04/24.04/26.04, amd64 or arm64. **No** prior Vincula install (`test ! -f /etc/vincula/VERSION`). Public IPv4 (or DNS) reachable on TCP 443 after restore. |
-| **Controller workstation** | Linux or macOS for the replace SSH path; Python 3.10+; system OpenSSH (`ssh` / `scp` / `ssh-keyscan`). Unpacked `dist/vincula-controller-*.zip` **or** a git checkout of this `0.3.1-dev` tree. |
+| **Controller workstation** | Linux or macOS for the replace SSH path; Python 3.10+; system OpenSSH (`ssh` / `scp` / `ssh-keyscan`). Unpacked `dist/vincula-controller-*.zip` **or** a git checkout of this `0.3.1-rc1` tree. |
 | **Win11 workstation** | Same zip. Python 3.10+ on PATH. OpenSSH Client optional feature. `bin\vcl-fleet.cmd`. Same `$FLEET_HOME` / `%APPDATA%\vincula` fleet as the Unix controller **or** a documented second init against the same nodes. |
 | **age** | Distro `age` on the node used for step 7 (`command -v age`; **not** `tests/fixtures/fake-age`, **not** `$VCL_AGE_BIN` pointed at the fixture). |
-| **Artifacts** | Built from this `0.3.1-dev` tree: `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`. Do **not** regenerate `release.lock` unless first-party node files changed. |
+| **Artifacts** | Built from this `0.3.1-rc1` tree: `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`. Do **not** regenerate `release.lock` unless first-party node files changed. |
 | **Fleet registry** | Old VPS already `vcl-fleet node add NAME --host OLD --host-key SHA256:…`. `vcl-fleet status` SSH/PROXY/ACCOUNTING OK (accounting may be STALE; FAIL is not a starting point). |
 
 Suggested names in the log: `OLD_HOST`, `NEW_HOST`, `NAME` (registry name).
@@ -80,20 +80,20 @@ result:   PASS | FAIL | SKIP
 
 Placeholders: `NAME`, `OLD_HOST`, `NEW_HOST`, `NEW_HOST_KEY`.
 
-### (1) Build artifacts (workstation, 0.3.1-dev tree)
+### (1) Build artifacts (workstation, 0.3.1-rc1 tree)
 
 ```bash
 git -C ~/projects/vcl describe --always --dirty
 python3 bin/vcl-fleet version
-# expect: vcl-fleet 0.3.1-dev
+# expect: vcl-fleet 0.3.1-rc1
 
 bash scripts/build-release.sh
 bash scripts/build-controller.sh
-ls -l dist/vincula-node-0.3.1-dev.tar.gz \
-      dist/vincula-node-0.3.1-dev.tar.gz.sha256 \
-      dist/vincula-controller-0.3.1-dev.zip \
-      dist/vincula-controller-0.3.1-dev.zip.sha256
-sha256sum -c dist/vincula-controller-0.3.1-dev.zip.sha256
+ls -l dist/vincula-node-0.3.1-rc1.tar.gz \
+      dist/vincula-node-0.3.1-rc1.tar.gz.sha256 \
+      dist/vincula-controller-0.3.1-rc1.zip \
+      dist/vincula-controller-0.3.1-rc1.zip.sha256
+sha256sum -c dist/vincula-controller-0.3.1-rc1.zip.sha256
 ```
 
 Record product stamps and the two sidecar checksums. Copy the **node**
@@ -142,19 +142,19 @@ checksum mismatch is FAIL; do not proceed to replace.
 
 ### (4) Runtime-only install on NEW VPS
 
-Copy `dist/vincula-node-0.3.1-dev.tar.gz` to NEW. Verify the pin, extract,
+Copy `dist/vincula-node-0.3.1-rc1.tar.gz` to NEW. Verify the pin, extract,
 install **runtime only**:
 
 ```bash
 # on NEW — pin required in production
-sha256sum -c vincula-node-0.3.1-dev.tar.gz.sha256
-tar -tzf vincula-node-0.3.1-dev.tar.gz | head
+sha256sum -c vincula-node-0.3.1-rc1.tar.gz.sha256
+tar -tzf vincula-node-0.3.1-rc1.tar.gz | head
 # extract so vincula.sh, bin/, lib/, release.lock are together, then:
 
 sudo bash vincula.sh --runtime-only
 # equivalent: sudo VCL_RUNTIME_ONLY=1 bash vincula.sh
 # or bootstrap + flag (production pin required):
-# sudo env RELEASE_URL='https://…/vincula-node-0.3.1-dev.tar.gz' \
+# sudo env RELEASE_URL='https://…/vincula-node-0.3.1-rc1.tar.gz' \
 #   RELEASE_SHA256='…' bash vincula-bootstrap.sh --runtime-only
 ```
 
@@ -295,7 +295,7 @@ output lines (redacted). Attach Win11 and real-age rows to the same pass.
 
 ## Win11 live `vcl-fleet.cmd` (same evidence pass)
 
-On a real Windows 11 workstation, unzip `vincula-controller-0.3.1-dev.zip`:
+On a real Windows 11 workstation, unzip `vincula-controller-0.3.1-rc1.zip`:
 
 ```bat
 py -3 bin\vcl-fleet.cmd version

@@ -917,7 +917,7 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
             new_clash_secret=os.environ.get("VCL_RESTORE_CLASH_SECRET")
             or "fake-clash-secret",
             target_server=flags.get("server") or host,
-            project_version="0.3.1-dev",
+            project_version="0.3.1-rc1",
         )
     except SystemExit as exc:
         sys.stderr.write(f"fake-ssh: restore failed: {exc}\n")
@@ -929,7 +929,7 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
     node = plan["state"].get("node") if isinstance(plan["state"].get("node"), dict) else {}
     identity = {
         "schema_version": 1,
-        "vincula_version": "0.3.1-dev",
+        "vincula_version": "0.3.1-rc1",
         "node_id": plan["node_id"],
         "instance_id": plan["new_instance_id"],
         "node_name": node.get("node_name") or alias,
@@ -948,7 +948,7 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
     marker = node_dir / ".runtime-only"
     if marker.is_file() or marker.is_symlink():
         marker.unlink()
-    (node_dir / "VERSION").write_text("0.3.1-dev\n", encoding="utf-8")
+    (node_dir / "VERSION").write_text("0.3.1-rc1\n", encoding="utf-8")
     result = {
         "schema_version": 1,
         "ok": True,

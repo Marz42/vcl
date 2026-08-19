@@ -114,7 +114,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only read-only Local Audit UI (Overview / Audit / Health) |
-| `vcl-fleet version` | `vcl-fleet 0.3.1-dev` |
+| `vcl-fleet version` | `vcl-fleet 0.3.1-rc1` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`.

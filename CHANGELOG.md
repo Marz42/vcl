@@ -2,9 +2,20 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.3.1-rc1 (2026-08-19)
+
+**First release candidate** for the 0.3.1 line (SemVer pre-release `0.3.1-rc1`).
+
+- Stamp living tree at `0.3.1-rc1` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests / fixtures).
+- Upgrade allowlist adds **`0.3.1-dev` → `0.3.1-rc1`** (still excludes `0.3.0-dev` and self).
+- **Schema 4 / Export Protocol v2** (from 0.3.1-dev): `export_seq` durable cursor; Fleet `sync --reseed` after upgrade.
+- **Operator manual:** [`docs/manual.md`](docs/manual.md) adds verified dual-VPS + Fleet deploy runbook.
+- **Tests:** `bash tests/test.sh` **1274** PASS (fleet fixtures aligned for Schema 4 + non-TTY host-key).
+- Release recommendation remains **NOT READY** until live `0.3.0 → 0.3.1-rc1` upgrade evidence is recorded ([`release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)).
+
 ## 0.3.1-dev
 
-Unreleased hardening for the 0.3.0 external-audit remediation plan (Phase A: P0/P1/P2; Phase B Local Audit UI). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist is `0.1.0–0.1.5` and `0.2.0–0.3.0` (does **not** add `0.3.0-dev` or `0.3.1-dev`).
+Unreleased development line (superseded by **0.3.1-rc1**). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist was `0.1.0–0.1.5` and `0.2.0–0.3.0` (did **not** add `0.3.0-dev` or `0.3.1-dev`).
 
 **Summary:** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** are on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). Remaining NOT READY gap: live **`0.3.0 → 0.3.1-dev` upgrade** plus deferred P1-05 branch protection (`docs/release-readiness-0.3.1.md`). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only.
 
