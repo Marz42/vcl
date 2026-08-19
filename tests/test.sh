@@ -4895,7 +4895,9 @@ if [[ "$acct_src_fn" == *'check)'* && "$acct_src_fn" == *'cmd_verify_accounting_
 else
   fail "vcl accounting check aliases the shared accounting plane checker"
 fi
-assert_success "installer health checks expect accounting schema 3" \
+assert_success "installer health checks expect accounting schema 4" \
+  grep -q '"$schema" == "4"' "${PROJECT_DIR}/vincula.sh"
+assert_failure "installer health checks no longer expect accounting schema 3" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
 assert_failure "cmd_verify no longer inlines schema SQL" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/bin/vincula"

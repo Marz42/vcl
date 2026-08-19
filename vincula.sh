@@ -1965,7 +1965,7 @@ print(row[0] if row else "")
 conn.close()
 PY
 )
-    if [[ "$schema" == "3" ]]; then
+    if [[ "$schema" == "4" ]]; then
       log_ok "expected DB schema"
     else
       log_warn "expected DB schema"
@@ -2113,10 +2113,10 @@ except Exception:
     pass
 PY
 )
-    [[ "$schema" == "3" ]] && break
+    [[ "$schema" == "4" ]] && break
     sleep 1
   done
-  [[ "$schema" == "3" ]] || return 1
+  [[ "$schema" == "4" ]] || return 1
 
   port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$port" ]] || port=$DEFAULT_CLASH_API_PORT
