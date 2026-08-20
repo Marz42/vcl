@@ -301,6 +301,30 @@ def fleet_db_path() -> Path:
     return _WS.fleet_db_path()
 
 
+workspace_manifest_path = _WS.workspace_manifest_path
+machine_local_dir = _WS.machine_local_dir
+workspace_view_path = _WS.workspace_view_path
+mint_fleet_id = _WS.mint_fleet_id
+empty_workspace_manifest = _WS.empty_workspace_manifest
+validate_workspace_manifest = _WS.validate_workspace_manifest
+load_workspace_manifest = _WS.load_workspace_manifest
+save_workspace_manifest = _WS.save_workspace_manifest
+create_workspace_manifest = _WS.create_workspace_manifest
+compute_state_digest = _WS.compute_state_digest
+refresh_manifest_digest = _WS.refresh_manifest_digest
+load_workspace_view = _WS.load_workspace_view
+save_workspace_view = _WS.save_workspace_view
+remember_workspace_view = _WS.remember_workspace_view
+detect_workspace_conflict = _WS.detect_workspace_conflict
+cas_mutate_workspace = _WS.cas_mutate_workspace
+PORTABLE_DIGEST_NAMES = _WS.PORTABLE_DIGEST_NAMES
+WORKSPACE_VIEW_SCHEMA_VERSION = _WS.WORKSPACE_VIEW_SCHEMA_VERSION
+WS_ERR_ROLLBACK = _WS.WS_ERR_ROLLBACK
+WS_ERR_DIVERGED = _WS.WS_ERR_DIVERGED
+WS_ERR_INCONSISTENT = _WS.WS_ERR_INCONSISTENT
+WS_ERR_CAS = _WS.WS_ERR_CAS
+
+
 def _chmod_private(path: Path, mode: int = 0o600) -> None:
     return _WS._chmod_private(path, mode)
 

@@ -150,6 +150,136 @@ assert_success "D57 observe_credential_ref" \
   grep -q 'observe_credential_ref' "${PROJECT_DIR}/lib/workspace.py"
 assert_success "planned_credential_refs" \
   grep -q 'def planned_credential_refs' "${PROJECT_DIR}/lib/workspace.py"
+
+# --- 0.4.1 B1: workspace.json + fleet_id + D52 + last_seen + CAS (T07) ---
+SAVED_WS_B1_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b1"
+assert_success "B1 workspace fleet init" fleet init
+ws_b1_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || ws_b1_rc=$?
+import importlib.util
+import os
+import sys
+import uuid
+from pathlib import Path
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+a = mod.mint_fleet_id()
+b = mod.mint_fleet_id()
+assert a != b, (a, b)
+assert mod.UUID_RE.fullmatch(a) and mod.UUID_RE.fullmatch(b), (a, b)
+
+m = mod.create_workspace_manifest()
+loaded = mod.load_workspace_manifest()
+assert loaded["fleet_id"] == m["fleet_id"]
+for key in (
+    "schema_version", "fleet_id", "name", "revision", "write_id",
+    "parent_revision", "parent_write_id", "state_digest",
+    "last_writer_controller_id", "created_at", "updated_at",
+):
+    assert key in loaded, key
+assert loaded["state_digest"] == mod.compute_state_digest()
+assert loaded["state_digest"].startswith("sha256:")
+
+bad = dict(loaded)
+bad["schema_version"] = 99
+msgs = []
+orig_die = mod.die
+
+def _capture_die(message, code=1):
+    msgs.append(message)
+    raise SystemExit(code)
+
+mod.die = _capture_die
+try:
+    mod.validate_workspace_manifest(bad)
+    raise AssertionError("expected unsupported workspace schema")
+except SystemExit:
+    pass
+assert any("unsupported workspace schema:" in x for x in msgs), msgs
+mod.die = orig_die
+
+d0 = mod.compute_state_digest()
+fleet_path = Path(os.environ["VCL_FLEET_HOME"]) / "fleet.json"
+fleet_bytes = fleet_path.read_bytes()
+fleet_path.write_bytes(fleet_bytes + b"\n")
+assert mod.compute_state_digest() != d0
+fleet_path.write_bytes(fleet_bytes)
+assert mod.compute_state_digest() == d0
+ml = Path(os.environ["VCL_FLEET_HOME"]) / "machine-local"
+ml.mkdir(parents=True, exist_ok=True)
+(ml / "noise.txt").write_text("x\n", encoding="utf-8")
+assert mod.compute_state_digest() == d0
+
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+
+view_rollback = {
+    "schema_version": mod.WORKSPACE_VIEW_SCHEMA_VERSION,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": m["write_id"],
+    "last_seen_state_digest": m["state_digest"],
+}
+m_roll = dict(m)
+m_roll["revision"] = 3
+assert mod.detect_workspace_conflict(m_roll, view_rollback) == mod.WS_ERR_ROLLBACK
+
+view_div = dict(view_rollback)
+view_div["last_seen_revision"] = m["revision"]
+view_div["last_seen_write_id"] = str(uuid.uuid4())
+assert mod.detect_workspace_conflict(m, view_div) == mod.WS_ERR_DIVERGED
+
+mod.remember_workspace_view(m)
+assert mod.detect_workspace_conflict(m) is None
+fleet_path.write_bytes(fleet_bytes + b"\n#corrupt\n")
+assert mod.detect_workspace_conflict(mod.load_workspace_manifest()) == mod.WS_ERR_INCONSISTENT
+fleet_path.write_bytes(fleet_bytes)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+assert mod.detect_workspace_conflict(m) is None
+
+def _bump(manifest):
+    old_rev = manifest["revision"]
+    old_wid = manifest["write_id"]
+    manifest["parent_revision"] = old_rev
+    manifest["parent_write_id"] = old_wid
+    manifest["revision"] = old_rev + 1
+    manifest["write_id"] = str(uuid.uuid4())
+    mod.refresh_manifest_digest(manifest)
+    return manifest
+
+msgs = []
+mod.die = _capture_die
+
+def _stale_mutator(manifest):
+    stolen = mod.load_workspace_manifest()
+    stolen["write_id"] = str(uuid.uuid4())
+    mod.save_workspace_manifest(stolen)
+    return _bump(manifest)
+
+try:
+    mod.cas_mutate_workspace(_stale_mutator)
+    raise AssertionError("expected WORKSPACE_CAS_REJECTED")
+except SystemExit:
+    pass
+mod.die = orig_die
+assert mod.WS_ERR_CAS in msgs, msgs
+PY
+if (( ws_b1_rc == 0 )); then
+  pass "B1 workspace manifest mint/digest/detect/CAS"
+else
+  fail "B1 workspace manifest mint/digest/CAS"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B1_HOME}"
+
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses UPSERT for audit_events" \
