@@ -9,11 +9,9 @@ This is the **living-tree gate** for `0.3.1-rc2` (**`0.3.1-rc1` superseded** —
 
 ## Release recommendation
 
-**NOT READY** (B14 live evidence **PASS**; B15 UI **implemented**; Schema 4 / Protocol v2 on tree; **B18 Schema 4 health mismatch closed**; live upgrade + live re-sync after Schema 4 still open)
+**NOT READY** (B14 live **PASS**; B15 implemented; B18 Schema 4 health **PASS**; **B19/B20** freeze+CI **PASS**; **B21 fresh-install live PASS**; live **`0.3.0 → rc2` upgrade still open** — B22 this round uses **`0.3.1-rc1 → rc2`** as surrogate; P1-05 deferred)
 
-**B14** (two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd`) is **PASS** — see [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Fixture-green replace alone is still not sufficient; this live log is.
-
-Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row freeze, closed by Schema 4 + Protocol v2 in fixtures). Remaining NOT READY: live **`0.3.0 → 0.3.1-rc2` upgrade** evidence, deferred **P1-05** branch protection, and at least one live Fleet re-sync after Schema 4 + `--reseed`. **B15** Local Audit UI (`vcl-fleet ui`) is on the tree with AC-3.1 fixture coverage; it does **not** by itself make the release READY FOR RC.
+Known P0 on this tree: **0**. Remaining READY FOR RC gaps: true live **`0.3.0 → 0.3.1-rc2`** upgrade (if still required), deferred **P1-05** branch protection, and Schema 4 Fleet re-sync evidence as applicable.
 
 ## B18 — rc1 postmortem / Schema 4 health (PASS)
 
@@ -49,6 +47,7 @@ Policy: **do not mutate** the `v0.3.1-rc2` tag or overwrite published `vincula-n
 
 | ID | Contract | Status |
 | --- | --- | --- |
+| **B21** | Fresh VPS + rc2 artifact: install, schema 4, real client, reboot | **PASS (2026-08-20).** Evidence: [`evidence/0.3.1-rc2/B21-fresh-install.md`](evidence/0.3.1-rc2/B21-fresh-install.md) |
 | **B20** | CI matrix (ubuntu + Debian 12/13) + node/controller artifacts + black-box zip | **PASS** (local equivalent; GitHub Actions on push) |
 | **B19** | Version sources + allowlist unified at `0.3.1-rc2`; immutable tag + freeze policy | **PASS** (tag `v0.3.1-rc2`) |
 | **B18** | Installer / verify / audit runtime health tracks accounting schema **4**; no residual “expect schema 3” on health paths | **PASS** |
@@ -68,8 +67,8 @@ Earlier living-tree batches (B0–B13, B16) remain in force: replace uses real `
 
 | ID | Why it blocks READY FOR RC |
 | --- | --- |
-| **Live 0.3.0 → 0.3.1-rc2 upgrade** | Allowlist + keep tests are fixture-only. No RC-host upgrade run this round. After upgrade: accounting migrates 3→4 on open; run `vcl-fleet sync --reseed NAME` once per node (Protocol mismatch), then normal sync. |
-| **Schema 4 live re-sync** | Fixture green for `export_seq` / UPSERT / CURSOR_* . Live two-node re-sync after Schema 4 still required before READY FOR RC. |
+| **Live 0.3.0 → 0.3.1-rc2 upgrade** | Still no live **0.3.0** host this round. **B22 surrogate:** live **`0.3.1-rc1 → 0.3.1-rc2`** (same allowlist path; schema likely already 4). True 0.3.0→rc2 remains an evidence gap unless waived. |
+| **Schema 4 live re-sync** | Fixture green for `export_seq` / UPSERT / CURSOR_* . Live two-node re-sync after Schema 4 still required before READY FOR RC (may close with B22/B23). |
 | **P1-05 branch protection** | GitHub `main` protection deferred (operator pause). Workflow exists; settings not enforced. |
 
 ## Restore contract (B17)

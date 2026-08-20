@@ -46,6 +46,7 @@ Inherited from 0.3.0 unless noted.
 
 | Issue | Notes |
 | --- | --- |
+| B21 fresh-install live | **PASS (2026-08-20)** — [`evidence/0.3.1-rc2/B21-fresh-install.md`](evidence/0.3.1-rc2/B21-fresh-install.md) |
 | B19 scope freeze | Tag `v0.3.1-rc2` is immutable for live gates; no in-place digest mutation |
 | B18 rc1 Schema 4 health mismatch | **PASS.** Installer `wait_for_accountd_healthy` expects schema 4; `0.3.1-rc1` superseded for fresh install |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
@@ -67,7 +68,7 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | Item | Notes |
 | --- | --- |
 | P1-05 GitHub branch protection | **Deferred 2026-08-19** (operator paused). Still required for READY FOR RC |
-| P1-06 Live `0.3.0 → 0.3.1-rc2` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
+| P1-06 Live upgrade | **In progress as B22 surrogate `0.3.1-rc1 → 0.3.1-rc2`.** True live `0.3.0 → 0.3.1-rc2` still missing unless waived |
 | Schema 4 live re-sync | After upgrade/`--reseed`, record at least one live two-node sync under Protocol v2 |
 
 ## Ops checklist (not executed in-tree)
