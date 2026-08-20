@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import uuid
@@ -163,7 +164,16 @@ def validate_registry(data: Any) -> dict[str, Any]:
         seen_ids.add(node["node_id"])
         seen_names.add(node["name"])
         nodes.append(node)
-    return {"schema_version": _host.FLEET_SCHEMA_VERSION, "nodes": nodes}
+    out: dict[str, Any] = {
+        "schema_version": _host.FLEET_SCHEMA_VERSION,
+        "nodes": nodes,
+    }
+    fid = data.get("fleet_id")
+    if fid is not None and fid != "":
+        if not isinstance(fid, str) or not _host.UUID_RE.fullmatch(fid):
+            _host.die(f"invalid fleet_id: {fid}")
+        out["fleet_id"] = fid
+    return out
 
 def load_registry(path: Optional[Path] = None) -> dict[str, Any]:
     path = fleet_registry_path() if path is None else Path(path)
@@ -350,8 +360,10 @@ def compute_state_digest(
     return "sha256:" + h.hexdigest()
 
 
-def refresh_manifest_digest(manifest: dict[str, Any]) -> dict[str, Any]:
-    manifest["state_digest"] = compute_state_digest(manifest=manifest)
+def refresh_manifest_digest(
+    manifest: dict[str, Any], *, home: Path | None = None
+) -> dict[str, Any]:
+    manifest["state_digest"] = compute_state_digest(home, manifest=manifest)
     return manifest
 
 
@@ -619,13 +631,22 @@ MIGRATE_PIPELINE = (
 )
 
 
-def _open_db_inspect(path: Path) -> Optional[Any]:
-    """SQLite URI mode=ro inspect only — never open_fleet_db (WAL/migrate/chmod)."""
+def _open_db_inspect(
+    path: Path, *, immutable: bool = True
+) -> Optional[Any]:
+    """SQLite URI mode=ro inspect — never open_fleet_db (WAL/migrate/chmod).
+
+    Default immutable=1 avoids creating -wal/-shm (AC-4.0-M06 dry-run).
+    Pass immutable=False when migrate must observe latest WAL pages.
+    """
     import sqlite3
 
     if not path.is_file():
         return None
-    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    uri = f"file:{path.resolve()}?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    return sqlite3.connect(uri, uri=True)
 
 
 def plan_migrate_dry_run() -> dict[str, Any]:
@@ -688,6 +709,338 @@ def plan_migrate_dry_run() -> dict[str, Any]:
         ],
         "d57": "0.4 reserved; runtime observe=admin; SSH still identity_file until 0.5",
     }
+
+
+MIGRATE_FAIL_AFTER_ENV = "VCL_WORKSPACE_MIGRATE_FAIL_AFTER"
+_MIGRATE_STAGING_NAME = ".migrate-staging"
+_COUNT_TABLES = (
+    "instance_history",
+    "audit_events",
+    "sync_cursor",
+    "node_snapshot",
+    "user_snapshot",
+)
+
+
+def _migrate_fail_after(step: str) -> None:
+    if os.environ.get(MIGRATE_FAIL_AFTER_ENV) == step:
+        _host.die(f"migrate fail-inject: {step}", 2)
+
+
+def execute_migrate() -> dict[str, Any]:
+    """Run MIGRATE_PIPELINE for real. Holds fleet_op_lock for whole body. No SSH."""
+    with _host.fleet_op_lock():
+        return _execute_migrate_locked()
+
+
+def _table_count(conn: Any, table: str) -> int:
+    import sqlite3
+
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    except sqlite3.Error:
+        return 0
+
+
+def _copy_fleet_db_to_staging(src: Path, dest: Path) -> None:
+    shutil.copy2(src, dest)
+    for suffix in ("-wal", "-shm"):
+        side = Path(str(src) + suffix)
+        if side.is_file():
+            shutil.copy2(side, Path(str(dest) + suffix))
+
+
+def _open_staging_fleet_db(path: Path) -> Any:
+    """Open a staging fleet.db copy RW and apply schema 1→2→3 (source untouched)."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(path), timeout=30)
+    except sqlite3.Error as exc:
+        _host.die(f"cannot open staging fleet.db: {exc}")
+    conn.row_factory = sqlite3.Row
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        conn.execute("PRAGMA synchronous=NORMAL")
+        if not _host._has_meta_table(conn):
+            conn.executescript(_host.FLEET_DB_DDL)
+            _host.fleet_db_meta_set(
+                conn, "schema_version", str(_host.FLEET_DB_SCHEMA_VERSION)
+            )
+            conn.commit()
+        else:
+            ver = _host.fleet_db_meta_get(conn, "schema_version")
+            if ver == "1":
+                _host._migrate_fleet_db_1_to_2(conn)
+                ver = "2"
+            if ver == "2":
+                _host._migrate_fleet_db_2_to_3(conn)
+            elif ver != str(_host.FLEET_DB_SCHEMA_VERSION):
+                conn.close()
+                _host.die(f"unsupported fleet-cache schema: {ver}")
+        return conn
+    except SystemExit:
+        raise
+    except sqlite3.Error as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _host.die(f"cannot initialize staging fleet.db: {exc}")
+
+
+def _execute_migrate_locked() -> dict[str, Any]:
+    """16-step legacy→workspace migrate. Source untouched until atomic commit."""
+    home = fleet_home()
+    staging: Path | None = None
+    committed = False
+    warnings: list[str] = []
+    ref_map: dict[str, str] = {}
+    history_exported = 0
+    fleet_id = ""
+    bak: Path | None = None
+
+    try:
+        # 1. lock legacy Fleet (already held by execute_migrate)
+        _migrate_fail_after("lock legacy Fleet")
+
+        # 2. validate fleet.json (fleet-registry/v2)
+        reg = _host.load_registry()
+        _migrate_fail_after("validate fleet.json (fleet-registry/v2)")
+
+        # 3. PRAGMA integrity_check fleet.db (fleet-cache/v3)
+        dbp = _host.fleet_db_path()
+        src_counts: dict[str, int] = {t: 0 for t in _COUNT_TABLES}
+        if dbp.is_file():
+            conn = _open_db_inspect(dbp, immutable=False)
+            if conn is None:
+                _host.die("cannot inspect fleet.db")
+            try:
+                row = conn.execute("PRAGMA integrity_check").fetchone()
+                if row is None or str(row[0]) != "ok":
+                    _host.die("fleet.db integrity_check failed")
+                if _host._has_meta_table(conn):
+                    ver = _host.fleet_db_meta_get(conn, "schema_version")
+                    if ver not in ("1", "2", str(_host.FLEET_DB_SCHEMA_VERSION)):
+                        _host.die(f"unsupported fleet-cache schema: {ver}")
+                for table in _COUNT_TABLES:
+                    src_counts[table] = _table_count(conn, table)
+            finally:
+                conn.close()
+        _migrate_fail_after("PRAGMA integrity_check fleet.db (fleet-cache/v3)")
+
+        # 4. inventory legacy files
+        inventory = {
+            p.name: p.stat().st_size for p in home.iterdir() if p.is_file()
+        }
+        del inventory  # observed only; keep zero side effects until staging
+        _migrate_fail_after("inventory legacy files")
+
+        # 5. mint fleet_id
+        fleet_id = mint_fleet_id()
+        _migrate_fail_after("mint fleet_id")
+
+        # 6. create temporary Workspace
+        staging = home / _MIGRATE_STAGING_NAME
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(mode=0o700, parents=True)
+        _chmod_private(staging, 0o700)
+        for sub in ("trust", "history", "machine-local"):
+            d = staging / sub
+            d.mkdir(mode=0o700, parents=True)
+            _chmod_private(d, 0o700)
+        _migrate_fail_after("create temporary Workspace")
+
+        # 7–8. migrate registry + identity_file → credential refs
+        new_reg: dict[str, Any] = {
+            "schema_version": 2,
+            "fleet_id": fleet_id,
+            "nodes": [],
+        }
+        mapping: dict[str, str] = {}
+        i = 0
+        for node in reg.get("nodes") or []:
+            n = dict(node)
+            path = n.pop("identity_file", None)
+            if path:
+                if path not in mapping:
+                    i += 1
+                    mapping[path] = f"migrated-key-{i}"
+                ref = mapping[path]
+                n["admin_credential_ref"] = ref
+                n["observe_credential_ref"] = ref
+            new_reg["nodes"].append(n)
+        _save_registry_unlocked(staging / "fleet.json", new_reg)
+        _migrate_fail_after("migrate registry")
+        _migrate_fail_after("migrate identity_file → credential refs")
+
+        # 9. extract Fleet-only host trust (never keyscan)
+        nodes_for_trust = list(new_reg["nodes"])
+        trust_src = Path.home() / ".ssh" / "known_hosts"
+        trust_dest = staging / "trust" / "known_hosts"
+        trust_result = _host.extract_fleet_host_trust(
+            nodes_for_trust, trust_src, trust_dest
+        )
+        for w in trust_result.get("warnings") or []:
+            if w not in warnings:
+                warnings.append(w)
+        _migrate_fail_after("extract Fleet-only host trust")
+
+        # 10. export instance_history (gaps stay gaps; D48)
+        hist_dest = staging / "history" / "instances.jsonl"
+        src_conn = (
+            _open_db_inspect(dbp, immutable=False) if dbp.is_file() else None
+        )
+        try:
+            if src_conn is not None:
+                history_exported = export_instance_history_from_db(
+                    src_conn, hist_dest
+                )
+            else:
+                hist_dest.write_text("", encoding="utf-8")
+                _chmod_private(hist_dest, 0o600)
+                history_exported = 0
+        finally:
+            if src_conn is not None:
+                src_conn.close()
+        _migrate_fail_after("export instance_history")
+
+        # 11. create machine-local credential bindings
+        bindings = _host.empty_bindings()
+        for path, ref in mapping.items():
+            resolved = _host.validate_identity_file(path, must_exist=True)
+            bindings["bindings"][ref] = {
+                "type": "identity_file",
+                "path": resolved,
+            }
+        _host.save_bindings(
+            bindings, staging / "machine-local" / "credential-bindings.json"
+        )
+        ref_map = {ref: path for path, ref in mapping.items()}
+        _migrate_fail_after("create machine-local credential bindings")
+
+        # 12. migrate fleet.db → local state (source untouched until commit)
+        if dbp.is_file():
+            staging_db = staging / "fleet.db"
+            _copy_fleet_db_to_staging(dbp, staging_db)
+            st_conn = _open_staging_fleet_db(staging_db)
+            try:
+                row = st_conn.execute("PRAGMA integrity_check").fetchone()
+                if row is None or str(row[0]) != "ok":
+                    _host.die("staging fleet.db integrity_check failed")
+                _host.fleet_db_meta_set(st_conn, "fleet_id", fleet_id)
+                for table in _COUNT_TABLES:
+                    got = _table_count(st_conn, table)
+                    if got != src_counts[table]:
+                        _host.die(
+                            f"fleet.db {table} count mismatch: "
+                            f"src={src_counts[table]} staging={got}"
+                        )
+            finally:
+                st_conn.close()
+        _migrate_fail_after("migrate fleet.db → local state")
+
+        # 13. migrate status/users cache as derived state
+        last_status = last_status_path()
+        if last_status.is_file():
+            shutil.copy2(last_status, staging / "last-status.json")
+        _migrate_fail_after("migrate status/users cache as derived state")
+
+        # 14. verify new Workspace
+        manifest = empty_workspace_manifest(fleet_id=fleet_id)
+        save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
+        refresh_manifest_digest(manifest, home=staging)
+        save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
+        old_home_env = os.environ.get("VCL_FLEET_HOME")
+        os.environ["VCL_FLEET_HOME"] = str(staging)
+        try:
+            conflict = detect_workspace_conflict(manifest, view=None)
+        finally:
+            if old_home_env is None:
+                os.environ.pop("VCL_FLEET_HOME", None)
+            else:
+                os.environ["VCL_FLEET_HOME"] = old_home_env
+        if conflict is not None:
+            _host.die(conflict)
+        _migrate_fail_after("verify new Workspace")
+
+        # 15–16. legacy backup then atomic commit
+        utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        bak = home / f"legacy-pre-workspace-{utc}"
+        bak.mkdir(mode=0o700, parents=True)
+        _chmod_private(bak, 0o700)
+        for name in ("fleet.json", "fleet.db", "last-status.json"):
+            src = home / name
+            if src.is_file():
+                shutil.copy2(src, bak / name)
+            for suffix in ("-wal", "-shm"):
+                if name != "fleet.db":
+                    break
+                side = Path(str(src) + suffix)
+                if side.is_file():
+                    shutil.copy2(side, bak / side.name)
+
+        def _replace_into(src: Path, dest: Path) -> None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(dest.parent, 0o700)
+            except OSError:
+                pass
+            os.replace(src, dest)
+
+        _replace_into(staging / "fleet.json", home / "fleet.json")
+        _replace_into(
+            staging / WORKSPACE_MANIFEST_NAME, home / WORKSPACE_MANIFEST_NAME
+        )
+        if (staging / "fleet.db").is_file():
+            _replace_into(staging / "fleet.db", home / "fleet.db")
+            for suffix in ("-wal", "-shm"):
+                side = Path(str(staging / "fleet.db") + suffix)
+                if side.is_file():
+                    _replace_into(side, Path(str(home / "fleet.db") + suffix))
+        if (staging / "last-status.json").is_file():
+            _replace_into(
+                staging / "last-status.json", home / "last-status.json"
+            )
+        _replace_into(
+            staging / "trust" / "known_hosts",
+            home / "trust" / "known_hosts",
+        )
+        _replace_into(
+            staging / "history" / "instances.jsonl",
+            home / "history" / "instances.jsonl",
+        )
+        bind_src = staging / "machine-local" / "credential-bindings.json"
+        if bind_src.is_file():
+            _replace_into(
+                bind_src,
+                home / MACHINE_LOCAL_DIRNAME / "credential-bindings.json",
+            )
+
+        committed = True
+        remember_workspace_view(load_workspace_manifest())
+        _migrate_fail_after("atomic commit")
+        _migrate_fail_after("preserve old tree as legacy backup")
+
+        return {
+            "ok": True,
+            "fleet_id": fleet_id,
+            "ref_map": ref_map,
+            "warnings": warnings,
+            "legacy_backup": str(bak),
+            "history_exported": history_exported,
+        }
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def open_cache_readonly():

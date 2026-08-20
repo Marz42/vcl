@@ -1647,6 +1647,224 @@ else
 fi
 export VCL_FLEET_HOME="${SAVED_WS_B4_HOME}"
 
+# --- 0.4.1 B5: real workspace migrate 16-step (T32) ---
+SAVED_WS_B5_HOME="${VCL_FLEET_HOME}"
+SAVED_WS_B5_SSH="${VCL_FLEET_SSH:-}"
+SAVED_WS_B5_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN:-}"
+B5_HOME="${TEST_TMP}/ws-b5-migrate"
+B5_KEY="${TEST_TMP}/ws-b5-id_ed25519"
+mkdir -p "$B5_HOME"
+printf 'test-only-not-a-real-b5-key\n' > "$B5_KEY"
+chmod 600 "$B5_KEY"
+export VCL_FLEET_HOME="$B5_HOME"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+
+assert_success "B5 fleet init" fleet init
+assert_success "B5 offline node add with identity_file" \
+  fleet node add b5n --host 203.0.113.77 --offline \
+    --node-id "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5" \
+    --identity-file "$B5_KEY"
+
+# Seed one instance_history row so export count is non-zero / comparable
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+nid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5"
+iid = "cccccccc-cccc-4ccc-8ccc-ccccccccc5c5"
+mod.insert_instance(
+    conn,
+    node_id=nid,
+    instance_id=iid,
+    started_at="2026-08-20T00:00:00Z",
+    endpoint="203.0.113.77:22",
+    ssh_host="203.0.113.77",
+)
+conn.commit()
+conn.close()
+PY
+
+B5_PRE_HIST=$(python3 - <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+path = Path(os.environ["VCL_FLEET_HOME"]).parent.parent  # unused
+# count via sqlite
+import sqlite3
+db = os.environ["VCL_FLEET_HOME"] + "/fleet.db"
+conn = sqlite3.connect(db)
+print(conn.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0])
+conn.close()
+PY
+)
+
+# Snapshot pre-dry-run files + mtimes (AC-4.0-M06 zero side effect)
+B5_SNAP="${TEST_TMP}/ws-b5-snap-before.txt"
+(
+  cd "$B5_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$B5_SNAP"
+
+dry_b5=$(fleet workspace migrate --dry-run) || dry_b5_rc=$?
+dry_b5_rc=${dry_b5_rc:-0}
+assert_equal "B5 dry-run exit 0" "0" "$dry_b5_rc"
+
+B5_SNAP_AFTER="${TEST_TMP}/ws-b5-snap-after.txt"
+(
+  cd "$B5_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$B5_SNAP_AFTER"
+if diff -q "$B5_SNAP" "$B5_SNAP_AFTER" >/dev/null; then
+  pass "B5 dry-run zero side effects (file list+mtime+size)"
+else
+  fail "B5 dry-run zero side effects (file list+mtime+size)"
+  diff -u "$B5_SNAP" "$B5_SNAP_AFTER" >&2 || true
+fi
+
+echo "$dry_b5" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True
+assert p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+assert p["counts"]["history_gaps"] >= 0
+assert "NOT SSH" in p["note"]
+' && pass "B5 dry-run JSON dry_run/side_effects/pipeline/note" \
+  || fail "B5 dry-run JSON dry_run/side_effects/pipeline/note"
+
+# history_gaps: we seeded history for the only node, so gaps may be 0;
+# assert pipeline length and SSH-free note above; force gap case separately
+B5_GAP_HOME="${TEST_TMP}/ws-b5-gap"
+mkdir -p "$B5_GAP_HOME"
+export VCL_FLEET_HOME="$B5_GAP_HOME"
+assert_success "B5 gap fleet init" fleet init
+assert_success "B5 gap offline add (no history)" \
+  fleet node add gapn --host 203.0.113.78 --offline \
+    --node-id "dddddddd-dddd-4ddd-8ddd-ddddddddd5d5"
+gap_json=$(fleet workspace migrate --dry-run)
+echo "$gap_json" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["counts"]["history_gaps"] >= 1
+assert p["history_gaps"][0]["name"] == "gapn"
+assert "NOT SSH" in p["note"]
+' && pass "B5 dry-run reports history_gaps>=1 (D48)" \
+  || fail "B5 dry-run reports history_gaps>=1 (D48)"
+
+export VCL_FLEET_HOME="$B5_HOME"
+
+# Fail-inject: after create temporary Workspace — legacy intact (M03)
+B5_FLEET_SHA=$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')
+inj1_rc=0
+inj1_err=$(VCL_WORKSPACE_MIGRATE_FAIL_AFTER='create temporary Workspace' \
+  fleet workspace migrate 2>&1) || inj1_rc=$?
+if (( inj1_rc != 0 )) \
+  && [[ ! -e "${B5_HOME}/workspace.json" ]] \
+  && [[ ! -e "${B5_HOME}/.migrate-staging" ]] \
+  && [[ "$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')" == "$B5_FLEET_SHA" ]]; then
+  pass "B5 fail-after create temporary Workspace preserves legacy (M03)"
+else
+  fail "B5 fail-after create temporary Workspace preserves legacy (M03) rc=${inj1_rc}"
+fi
+
+# Fail-inject: after migrate registry — legacy fleet.json unchanged
+inj2_rc=0
+inj2_err=$(VCL_WORKSPACE_MIGRATE_FAIL_AFTER='migrate registry' \
+  fleet workspace migrate 2>&1) || inj2_rc=$?
+if (( inj2_rc != 0 )) \
+  && [[ ! -e "${B5_HOME}/workspace.json" ]] \
+  && [[ ! -e "${B5_HOME}/.migrate-staging" ]] \
+  && [[ "$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')" == "$B5_FLEET_SHA" ]]; then
+  pass "B5 fail-after migrate registry preserves legacy (M03)"
+else
+  fail "B5 fail-after migrate registry preserves legacy (M03) rc=${inj2_rc}"
+fi
+
+# Real migrate (second migrate after fail-inject succeeds)
+mig_out=$(fleet workspace migrate 2>/dev/null) || mig_rc=$?
+mig_rc=${mig_rc:-0}
+assert_equal "B5 real migrate exit 0" "0" "$mig_rc"
+printf '%s\n' "$mig_out" > "${TEST_TMP}/ws-b5-mig-out.json"
+
+python3 - "$B5_HOME" "$B5_KEY" "$B5_PRE_HIST" "${TEST_TMP}/ws-b5-mig-out.json" <<'PY' || b5_assert_rc=$?
+import json, os, sys, sqlite3
+from pathlib import Path
+home = Path(sys.argv[1])
+key = Path(sys.argv[2]).resolve()
+pre_hist = int(sys.argv[3])
+result = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
+assert result.get("ok") is True, result
+assert "fleet_id" in result and result["fleet_id"]
+ws = json.loads((home / "workspace.json").read_text(encoding="utf-8"))
+assert ws["fleet_id"] == result["fleet_id"]
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+assert reg.get("fleet_id") == result["fleet_id"]
+assert len(reg["nodes"]) == 1
+n = reg["nodes"][0]
+assert n["node_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5"
+assert n["ssh_host"] == "203.0.113.77"
+assert n["ssh_port"] == 22
+assert n["status"] == "active"
+assert "identity_file" not in n, n
+assert n.get("admin_credential_ref") == "migrated-key-1"
+assert n.get("observe_credential_ref") == "migrated-key-1"
+binds = json.loads(
+    (home / "machine-local" / "credential-bindings.json").read_text(encoding="utf-8")
+)
+b = binds["bindings"]["migrated-key-1"]
+assert b["type"] == "identity_file"
+assert Path(b["path"]).resolve() == key
+assert (home / "trust" / "known_hosts").is_file()
+hist = home / "history" / "instances.jsonl"
+assert hist.is_file()
+lines = [ln for ln in hist.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines) == pre_hist == result["history_exported"], (len(lines), pre_hist, result)
+legacies = sorted(home.glob("legacy-pre-workspace-*"))
+assert legacies, "missing legacy backup"
+assert (legacies[0] / "fleet.db").is_file()
+assert (legacies[0] / "fleet.json").is_file()
+conn = sqlite3.connect(str(home / "fleet.db"))
+row = conn.execute("SELECT value FROM meta WHERE key='fleet_id'").fetchone()
+assert row and row[0] == result["fleet_id"], row
+conn.close()
+assert not (home / ".migrate-staging").exists()
+print("ok")
+PY
+b5_assert_rc=${b5_assert_rc:-0}
+if (( b5_assert_rc == 0 )); then
+  pass "B5 real migrate workspace+bindings+trust+history+legacy (M01/M02)"
+else
+  fail "B5 real migrate workspace+bindings+trust+history+legacy (M01/M02)"
+fi
+
+# Dry-run after migrate still works
+dry_after=$(fleet workspace migrate --dry-run) || dry_after_rc=$?
+dry_after_rc=${dry_after_rc:-0}
+assert_equal "B5 dry-run after migrate exit 0" "0" "$dry_after_rc"
+echo "$dry_after" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True and p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+' && pass "B5 dry-run after migrate still plans" \
+  || fail "B5 dry-run after migrate still plans"
+
+# Restore SSH fixtures
+if [[ -n "${SAVED_WS_B5_SSH}" ]]; then
+  export VCL_FLEET_SSH="${SAVED_WS_B5_SSH}"
+else
+  unset VCL_FLEET_SSH
+fi
+if [[ -n "${SAVED_WS_B5_KEYSCAN}" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="${SAVED_WS_B5_KEYSCAN}"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B5_HOME}"
+
 OFFLINE_FLEET_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init

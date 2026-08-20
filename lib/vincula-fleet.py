@@ -325,6 +325,7 @@ save_workspace_view = _WS.save_workspace_view
 remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
 cas_mutate_workspace = _WS.cas_mutate_workspace
+execute_migrate = _WS.execute_migrate
 PORTABLE_DIGEST_NAMES = _WS.PORTABLE_DIGEST_NAMES
 INSTANCE_HISTORY_SCHEMA = _WS.INSTANCE_HISTORY_SCHEMA
 WORKSPACE_VIEW_SCHEMA_VERSION = _WS.WORKSPACE_VIEW_SCHEMA_VERSION
@@ -5382,10 +5383,14 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
 
 def cmd_workspace_migrate(args: argparse.Namespace) -> int:
-    if not getattr(args, "dry_run", False):
-        die("workspace migrate without --dry-run requires 0.4.1", 2)
+    if getattr(args, "dry_run", False):
+        sys.stdout.write(
+            json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False)
+            + "\n"
+        )
+        return 0
     sys.stdout.write(
-        json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False) + "\n"
+        json.dumps(_WS.execute_migrate(), indent=2, ensure_ascii=False) + "\n"
     )
     return 0
 
@@ -5991,17 +5996,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     ws = sub.add_parser(
-        "workspace", help="workspace lifecycle (0.4.0: migrate --dry-run)"
+        "workspace", help="workspace lifecycle (migrate --dry-run or execute)"
     )
     ws_sub = ws.add_subparsers(dest="workspace_command")
     p_mig = ws_sub.add_parser(
-        "migrate", help="legacy→workspace (0.4.0: --dry-run only)"
+        "migrate", help="legacy→workspace migrate (0.4.1)"
     )
     p_mig.add_argument(
         "--dry-run",
         action="store_true",
-        required=True,
-        help="plan only; no SSH/writes/deletes (AC-4.0-04)",
+        help="plan only (AC-4.0-M06); omit to execute (0.4.1)",
     )
 
     sub.add_parser("version", help="print vcl-fleet version")
