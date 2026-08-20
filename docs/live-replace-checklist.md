@@ -1,13 +1,14 @@
-# B14 live replace operator checklist (0.3.1-rc2)
+# B14 live replace operator checklist (0.3.1)
 
 **Status: PASS (2026-08-18).** Operator runbook for live VPS evidence.
 Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
 Fixture-green `node replace` (B10) alone is **not** that evidence.
 
-B14 live replace is **executed**. B15 (localhost UI) is **implemented**
-(`vcl-fleet ui`). Do **not** call the tree `READY FOR RC` until the remaining
-living-tree gap (live `0.3.0 → 0.3.1-rc2` upgrade) is closed or explicitly
-waived.
+B14 live replace is **executed** (**PASS 2026-08-18**). B15 (localhost UI) is
+**implemented** (`vcl-fleet ui`). Tree recommendation is **READY** for `0.3.1`
+(see readiness); this file remains the historical B14 runbook. **B24**
+(rc2/0.3.1 replace smoke) is deferred as a Known Issue — do not treat that
+deferral as “B14 not run”.
 
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·
@@ -37,12 +38,12 @@ rewriting `fleet.json`.
 
 | Role | Requirement |
 | --- | --- |
-| **Old VPS** | Existing 0.3.0 or 0.3.1-rc2 install. Real users and some traffic (so accounting/audit is not an empty lab). SSH as the fleet user (default `root`). Dual plane up: `sing-box.service` + `vincula-accountd.service`. |
+| **Old VPS** | Existing 0.3.0 or 0.3.1 install. Real users and some traffic (so accounting/audit is not an empty lab). SSH as the fleet user (default `root`). Dual plane up: `sing-box.service` + `vincula-accountd.service`. |
 | **New VPS** | Fresh Debian 12/13 or Ubuntu 22.04/24.04/26.04, amd64 or arm64. **No** prior Vincula install (`test ! -f /etc/vincula/VERSION`). Public IPv4 (or DNS) reachable on TCP 443 after restore. |
-| **Controller workstation** | Linux or macOS for the replace SSH path; Python 3.10+; system OpenSSH (`ssh` / `scp` / `ssh-keyscan`). Unpacked `dist/vincula-controller-*.zip` **or** a git checkout of this `0.3.1-rc2` tree. |
+| **Controller workstation** | Linux or macOS for the replace SSH path; Python 3.10+; system OpenSSH (`ssh` / `scp` / `ssh-keyscan`). Unpacked `dist/vincula-controller-*.zip` **or** a git checkout of this `0.3.1` tree. |
 | **Win11 workstation** | Same zip. Python 3.10+ on PATH. OpenSSH Client optional feature. `bin\vcl-fleet.cmd`. Same `$FLEET_HOME` / `%APPDATA%\vincula` fleet as the Unix controller **or** a documented second init against the same nodes. |
 | **age** | Distro `age` on the node used for step 7 (`command -v age`; **not** `tests/fixtures/fake-age`, **not** `$VCL_AGE_BIN` pointed at the fixture). |
-| **Artifacts** | Built from this `0.3.1-rc2` tree: `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`. Do **not** regenerate `release.lock` unless first-party node files changed. |
+| **Artifacts** | Built from this `0.3.1` tree: `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`. Do **not** regenerate `release.lock` unless first-party node files changed. |
 | **Fleet registry** | Old VPS already `vcl-fleet node add NAME --host OLD --host-key SHA256:…`. `vcl-fleet status` SSH/PROXY/ACCOUNTING OK (accounting may be STALE; FAIL is not a starting point). |
 
 Suggested names in the log: `OLD_HOST`, `NEW_HOST`, `NAME` (registry name).
@@ -80,20 +81,20 @@ result:   PASS | FAIL | SKIP
 
 Placeholders: `NAME`, `OLD_HOST`, `NEW_HOST`, `NEW_HOST_KEY`.
 
-### (1) Build artifacts (workstation, 0.3.1-rc2 tree)
+### (1) Build artifacts (workstation, 0.3.1 tree)
 
 ```bash
 git -C ~/projects/vcl describe --always --dirty
 python3 bin/vcl-fleet version
-# expect: vcl-fleet 0.3.1-rc2
+# expect: vcl-fleet 0.3.1
 
 bash scripts/build-release.sh
 bash scripts/build-controller.sh
-ls -l dist/vincula-node-0.3.1-rc2.tar.gz \
-      dist/vincula-node-0.3.1-rc2.tar.gz.sha256 \
-      dist/vincula-controller-0.3.1-rc2.zip \
-      dist/vincula-controller-0.3.1-rc2.zip.sha256
-sha256sum -c dist/vincula-controller-0.3.1-rc2.zip.sha256
+ls -l dist/vincula-node-0.3.1.tar.gz \
+      dist/vincula-node-0.3.1.tar.gz.sha256 \
+      dist/vincula-controller-0.3.1.zip \
+      dist/vincula-controller-0.3.1.zip.sha256
+sha256sum -c dist/vincula-controller-0.3.1.zip.sha256
 ```
 
 Record product stamps and the two sidecar checksums. Copy the **node**
@@ -142,19 +143,19 @@ checksum mismatch is FAIL; do not proceed to replace.
 
 ### (4) Runtime-only install on NEW VPS
 
-Copy `dist/vincula-node-0.3.1-rc2.tar.gz` to NEW. Verify the pin, extract,
+Copy `dist/vincula-node-0.3.1.tar.gz` to NEW. Verify the pin, extract,
 install **runtime only**:
 
 ```bash
 # on NEW — pin required in production
-sha256sum -c vincula-node-0.3.1-rc2.tar.gz.sha256
-tar -tzf vincula-node-0.3.1-rc2.tar.gz | head
+sha256sum -c vincula-node-0.3.1.tar.gz.sha256
+tar -tzf vincula-node-0.3.1.tar.gz | head
 # extract so vincula.sh, bin/, lib/, release.lock are together, then:
 
 sudo bash vincula.sh --runtime-only
 # equivalent: sudo VCL_RUNTIME_ONLY=1 bash vincula.sh
 # or bootstrap + flag (production pin required):
-# sudo env RELEASE_URL='https://…/vincula-node-0.3.1-rc2.tar.gz' \
+# sudo env RELEASE_URL='https://…/vincula-node-0.3.1.tar.gz' \
 #   RELEASE_SHA256='…' bash vincula-bootstrap.sh --runtime-only
 ```
 
@@ -295,7 +296,7 @@ output lines (redacted). Attach Win11 and real-age rows to the same pass.
 
 ## Win11 live `vcl-fleet.cmd` (same evidence pass)
 
-On a real Windows 11 workstation, unzip `vincula-controller-0.3.1-rc2.zip`:
+On a real Windows 11 workstation, unzip `vincula-controller-0.3.1.zip`:
 
 ```bat
 py -3 bin\vcl-fleet.cmd version
@@ -308,34 +309,24 @@ Record OS build, Python version, that `ssh.exe` is the system OpenSSH
 Client, and at least `version` + one live SSH command (`status` or
 `verify`) against the replaced node. Packaging tests are not this row.
 
-## Acceptance — what flips the gate
+## Acceptance — historical (B14)
 
-Living-tree code remediations (B0–B13, B16) are **already** on this tree.
-Known P0 on the living tree is **0**. This checklist does not re-open them.
+This checklist’s live evidence is already **PASS** (2026-08-18). See
+[`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
 
-The freeze-record recommendation stays **NOT READY** until live evidence
-exists. Per the 发行门禁清单, **READY FOR RC** additionally requires the
-rows below (fixture-only PASS is not enough). D20 24h soak still binds
-**0.2.7 only** — do not block 0.3.1 RC on soak, and do not substitute soak
-for live replace.
+Living-tree remediations (B0–B13, B16) and later B18–B23 / B25–B28 are on the
+`0.3.1` tree. Known P0 = **0**. D20 24h soak still binds **0.2.7 only**.
 
-| Must-have evidence | This checklist |
+| Must-have evidence | Status |
 | --- | --- |
-| Live secretless replace | Steps (1)–(5): two real VPS; backup → restore → identity/verify; host, version, command, exit code recorded |
-| AC-3.0-11 | Step (6): old URI → **new IP:443** fails; new URI succeeds; then stop old VPS. Fixture PARTIAL must not be marked PASS |
-| Live `age --include-secrets` | Step (7): real `age` binary, not `tests/fixtures/fake-age` |
-| Win11 live `vcl-fleet.cmd` | Same pass: real workstation, not zip-member tests |
-| Bootstrap production pin | Already closed in B13 (code + unit). Optional live: bootstrap **without** `RELEASE_SHA256` dies; with pin, archive matches pin **and** shipped `.sha256` |
-| Controller integrity | Already closed in B13/B16 (`controller.lock` + sidecar `.zip.sha256` in CI). Re-check in step (1) |
-| P2-01 / P2-02 | Already closed on the living tree (B11/B12). Not re-run here |
-| No open P0/P1 | known-issues living-tree Known P0 = **0**, consistent with code. Remaining RC gap is **this live log** |
+| Live secretless replace | **PASS** (B14) |
+| AC-3.0-11 | **PASS** (B14) |
+| Live `age --include-secrets` | **PASS** (B14) |
+| Win11 live `vcl-fleet.cmd` | **PASS** (B14) |
 
 Do **not** treat fake-ssh / fake-scp / fake-age as live evidence.
 Do **not** document or send node restore `--replace-node`.
 Do **not** install a finished bootstrap on NEW_HOST and then replace.
 
-When `docs/evidence/0.3.1-live/SUMMARY.md` is overall **PASS**, update
-[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) and
-[`known-issues-0.3.1.md`](known-issues-0.3.1.md) in a later docs commit and
-re-evaluate the recommendation. Do **not** rewrite the 0.3.0 freeze record.
-Until then: **NOT READY**.
+For a post-`0.3.1` replace smoke re-run, see deferred **B24**
+([`evidence/0.3.1-rc2/B24-replace-deferred.md`](evidence/0.3.1-rc2/B24-replace-deferred.md)).

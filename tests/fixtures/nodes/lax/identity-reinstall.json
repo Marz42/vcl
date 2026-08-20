@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "vincula_version": "0.3.1-rc2",
+  "vincula_version": "0.3.1",
   "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "instance_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
   "node_name": "lax",

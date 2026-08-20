@@ -1,0 +1,47 @@
+=== B27 black-box 2026-08-20T05:57:04Z ===
+verify root: /tmp/vcl-b27-final2 (clean dirs; no repo lib)
+
+--- node ---
+vincula-node-0.3.1.tar.gz: OK
+vincula.sh: OK
+vincula-bootstrap.sh: OK
+bin/vincula: OK
+lib/vincula-common.sh: OK
+lib/vincula-accountd.py: OK
+lib/vincula-stats.py: OK
+lib/vincula-audit.py: OK
+lib/vincula-backup.py: OK
+lib/vincula-accountd.service: OK
+vincula.sh: OK
+vincula 0.3.1
+node PASS
+
+--- controller ---
+vincula-controller-0.3.1.zip: OK
+README-controller.md: OK
+bin/vcl-fleet: OK
+bin/vcl-fleet.cmd: OK
+lib/vincula-fleet.py: OK
+lib/vincula-audit.py: OK
+lib/vincula-backup.py: OK
+lib/vincula-ui/server.py: OK
+lib/vincula-ui/static/index.html: OK
+lib/vincula-ui/static/app.css: OK
+lib/vincula-ui/static/app.js: OK
+vcl-fleet 0.3.1
+Initialized fleet registry at /tmp/vcl-b27-final2/ctrl/fleet-home/fleet.json
+fleet.db deferred-until-use
+NAME NODE_ID SSH_HOST USER ENABLED STATUS
+audit/backup/UI static OK
+UI HTTP 200
+controller Unix PASS
+
+NODE_SHA256=
+CTRL_SHA256=
+B27 PASS
+
+NODE_SHA256=b83c5769aefd7335484084b04f80c9d7f4bb723b9d7c5ac737f456a256c71256
+CTRL_SHA256=166bc7a1db42dd537e92c13414dbbcb888b93b54a169403a9fa27c1bc9c9e6fb
+fleet.db still missing
+
+fleet.db create/open: PASS (open_fleet_db via zip lib)

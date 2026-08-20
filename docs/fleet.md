@@ -1,4 +1,4 @@
-# Fleet operator guide (0.3.1-rc2)
+# Fleet operator guide (0.3.1)
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, incrementally syncs audit into a local
@@ -28,7 +28,7 @@ B14 live two-VPS replace: **PASS (2026-08-18)** —
 | --- | --- |
 | Python | **3.10+** on PATH (`py -3` / `python` on Windows, `python3` on Unix) |
 | SSH | **system OpenSSH client** (`ssh.exe` / `scp.exe` / `ssh-keyscan.exe` on Windows; `ssh` / `scp` / `ssh-keyscan` on Linux/macOS) |
-| Node | 0.3.0+ (0.3.1-rc2 recommended) with `vcl identity --json`, `vcl user * --json`, `vcl audit export --after N --jsonl` (Protocol v2 / `export_seq`), `vcl backup create --json`, and `vcl restore` reachable as the SSH user (default `root`) |
+| Node | 0.3.0+ (0.3.1 recommended) with `vcl identity --json`, `vcl user * --json`, `vcl audit export --after N --jsonl` (Protocol v2 / `export_seq`), `vcl backup create --json`, and `vcl restore` reachable as the SSH user (default `root`) |
 | Not bundled | CPython, OpenSSH, paramiko, pip packages, `age` |
 
 Vincula does not ship a management HTTP API. The only workstation → node
@@ -116,7 +116,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet status` | Probe table (see below) |
 | `vcl-fleet verify` | Aggregate identity / health / clock |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only read-only Local Audit UI (Overview / Audit / Health) |
-| `vcl-fleet version` | `vcl-fleet 0.3.1-rc2` |
+| `vcl-fleet version` | `vcl-fleet 0.3.1` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`.

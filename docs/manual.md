@@ -1,4 +1,4 @@
-# Vincula 命令手册（0.3.1-rc2）
+# Vincula 命令手册（0.3.1）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
 从零装两台节点并接入 Fleet 的逐步命令见
@@ -118,7 +118,7 @@ bash vincula.sh --version
 
 - **全新**：已有 `/var/lib/vincula` 或半残安装会拒绝，报错里带确切清理命令。没有 `vcl recover`。
 - **同版本再跑**：校验 `sing-box` + `vincula-accountd`，**不**轮换 UUID / Reality。
-- **升级 allowlist**：`0.1.0`–`0.1.5`、`0.2.0`–`0.3.0`、**`0.3.1-dev`**、**`0.3.1-rc1`** → 当前 `0.3.1-rc2`。不含 `0.3.0-dev` / `0.3.1-rc2`（自身）。不降级、不跳未知版本。升级 **不**重 mint `node_id` / `instance_id`，不旋转凭据与 Reality。
+- **升级 allowlist**：`0.1.0`–`0.1.5`、`0.2.0`–`0.3.0`、**`0.3.1-dev`**、**`0.3.1-rc1`**、**`0.3.1-rc2`** → 当前 `0.3.1`。不含 `0.3.0-dev` / `0.3.1`（自身）。不降级、不跳未知版本。升级 **不**重 mint `node_id` / `instance_id`，不旋转凭据与 Reality。
 - 成功必须两个 unit 都 active，否则回滚。
 
 ```bash
@@ -1322,7 +1322,7 @@ bash scripts/build-release.sh
 bash scripts/build-controller.sh   # 可选；工作站也可直接用源树 bin/vcl-fleet
 
 ls -l dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256
-python3 bin/vcl-fleet version      # 期望含 0.3.1-rc2
+python3 bin/vcl-fleet version      # 期望含 0.3.1
 ```
 
 把 **每个 VPS** 各拷一份节点包（示例用 scp）：
@@ -1362,7 +1362,7 @@ sudo systemctl is-active sing-box vincula-accountd
 
 | 检查 | 期望 |
 | --- | --- |
-| `vcl version` | 与打包版本一致（如 `0.3.1-rc2`） |
+| `vcl version` | 与打包版本一致（如 `0.3.1`） |
 | `vcl status` | proxy / accounting 可用（非 FAIL） |
 | `vcl accounting check` | Schema **4** 平面通过 |
 | 两服务 | `active` |
@@ -1675,7 +1675,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8765/api/user/
 ```bash
 bash scripts/build-controller.sh
 # 解压到临时目录后：
-cd /path/to/vincula-controller-0.3.1-rc2
+cd /path/to/vincula-controller-0.3.1
 sha256sum -c controller.lock
 # 确认存在 lib/vincula-ui/static/index.html
 env VCL_FLEET_HOME=/tmp/ui-zip-home python3 bin/vcl-fleet ui

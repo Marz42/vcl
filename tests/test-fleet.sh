@@ -147,9 +147,9 @@ assert_success "build-controller.sh writes zip sha256 sidecar" \
 assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
-assert_equal "vcl-fleet version" "vcl-fleet 0.3.1-rc2" \
+assert_equal "vcl-fleet version" "vcl-fleet 0.3.1" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
-assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.1-rc2" \
+assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.1" \
   "$(fleet version)"
 
 node_help=$(fleet node -h)
@@ -1360,7 +1360,7 @@ if (( verify_rc != 0 )); then
 else
   fail "verify three-fixture exits non-zero (sg FAIL) (rc=${verify_rc})"
 fi
-assert_success "verify reports lax version" grep -q '0.3.1-rc2' <<< "$verify_out"
+assert_success "verify reports lax version" grep -q '0.3.1' <<< "$verify_out"
 assert_success "verify reports lax node_id" grep -q "$LAX_REMOTE_NODE_ID" <<< "$verify_out"
 assert_success "verify reports lax instance_id" \
   grep -q 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' <<< "$verify_out"
@@ -1391,7 +1391,7 @@ need = [
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
 assert nodes["lax"]["ok"] is True
-assert nodes["lax"]["vincula_version"] == "0.3.1-rc2"
+assert nodes["lax"]["vincula_version"] == "0.3.1"
 assert nodes["lax"]["node_id"] == lax_id
 assert nodes["lax"]["ssh"] == "OK"
 assert nodes["lax"]["proxy"] == "OK"
@@ -6319,7 +6319,7 @@ BOOT_FAKE_STATE="${TEST_TMP}/fake-bootstrapped-state"
 export VCL_FLEET_HOME="$BOOT_FLEET_HOME"
 export VCL_FAKE_STATE_DIR="$BOOT_FAKE_STATE"
 mkdir -p "$VCL_FLEET_HOME" "${VCL_FAKE_STATE_DIR}/lax" "${VCL_FAKE_STATE_DIR}/lax2"
-printf '0.3.1-rc2\n' > "${VCL_FAKE_STATE_DIR}/lax2/VERSION"
+printf '0.3.1\n' > "${VCL_FAKE_STATE_DIR}/lax2/VERSION"
 printf '%s\n' '#!/bin/sh' > "${VCL_FAKE_STATE_DIR}/lax2/vcl"
 chmod +x "${VCL_FAKE_STATE_DIR}/lax2/vcl"
 assert_success "bootstrapped-target fleet init" fleet init

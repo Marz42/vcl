@@ -1,4 +1,4 @@
-# vincula V0.3.1-rc2
+# vincula V0.3.1
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -51,8 +51,8 @@ docs/fleet.md              # 控制器运维指南
 docs/backup.md             # 备份 / restore / replace
 docs/manual.md             # 全量命令手册（参数与用法）
 docs/live-replace-checklist.md  # B14 live VPS 操作清单（PASS 2026-08-18）
-docs/release-readiness-0.3.1.md # living-tree gate（NOT READY：缺 live 升级证据）
-docs/known-issues-0.3.1.md      # living-tree 已知限制
+docs/release-readiness-0.3.1.md # release gate（READY）
+docs/known-issues-0.3.1.md      # known limitations（P0/P1 blockers = 0）
 docs/legacy/               # 历史 freeze / readiness / known-issues（只读）
 dist/                      # 生成物（gitignore，勿手改）
 ```
@@ -262,7 +262,7 @@ vcl uninstall --yes
 
 现有 UUID `node_id`（`state.json` `node.node_id` / `config.toml` `node_id` / `users.json` credentials / accounting）**就是逻辑节点 ID**，永久冻结。`name` 可改；改 IP / hostname **不**改 `node_id`。**禁止重铸**，也不引入第二套逻辑 ID。
 
-`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。`0.2.8` → `0.2.9` → `0.3.0` → `0.3.1-rc2` 升级 **不**重 mint。重装/替换（`vcl restore` / `vcl-fleet node replace`）保留 `node_id`，新 mint `instance_id`。
+`instance_id` 表示一次物理安装。单一事实来源（SoT）是 `state.json` 的 `node.instance_id`。升级 `0.2.7` → `0.2.8` 才为当前安装 mint；**禁止**把 `node_id` 复制进 `instance_id`。`0.2.8` → `0.2.9` → `0.3.0` → `0.3.1` 升级 **不**重 mint。重装/替换（`vcl restore` / `vcl-fleet node replace`）保留 `node_id`，新 mint `instance_id`。
 
 Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器注入同一 `--user-id` 到每个节点。详见 [`docs/identity.md`](docs/identity.md)。
 
@@ -274,7 +274,7 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace / UI：[`docs/fleet.md`](docs/fleet.md)。命令手册与 **UI 手测清单**：[`docs/manual.md`](docs/manual.md#ui-manual-test)。
 
-AC 夹具证据是 **fake-ssh 多节点**（lax + tokyo；replace 用 lax2）。**B14 live replace 已 PASS**（两台真 VPS + AC-3.0-11 + 真机 `age` + Win11 `vcl-fleet.cmd`）：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md) · [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)。发行建议仍是 **NOT READY**（剩余：live `0.3.0 → 0.3.1-rc2` upgrade + Schema 4 真机 re-sync）：
+AC 夹具证据是 **fake-ssh 多节点**（lax + tokyo；replace 用 lax2）。**B14 live replace 已 PASS**；**B21–B23** live gates PASS。发行建议：**READY**（见 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)；B24 replace smoke 延后为 Known Issue；真 `0.3.0→0.3.1` 以 B22 rc1→rc2 为替代证据）：
 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
 
 ```bash
@@ -313,7 +313,7 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 - `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 - `0.2.8` → **0.2.9**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
 - `0.2.9` → **0.3.0**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
-- `0.3.0` → **0.3.1-rc2**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting **schema 3→4**（开库迁移）。升级后每节点一次 `vcl-fleet sync --reseed NAME`。**真机升级证据尚未跑**（阻塞 READY FOR RC）
+- `0.3.0` / `0.3.1-dev` / `0.3.1-rc1` / `0.3.1-rc2` → **0.3.1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting 若仍为 schema 3 则开库 **3→4**。升级后若 Fleet 仍为 legacy `event_id` cursor：每节点一次 `vcl-fleet sync --reseed NAME`
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
@@ -357,7 +357,7 @@ Merge gate is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.
 | **failure-injection** | `bash tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER` (stage / install / health and later boundaries), P1-03 upgrade preflight injects, and P1-05 bad Clash envelopes. |
 | **artifact** | `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`; black-box unzip of `dist/vincula-controller-*.zip` with no repo `lib/`; `sha256sum --check` on the zip sidecar and `controller.lock`; node tarball listing + `release.lock`. |
 
-Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth. B14 live secretless replace is **PASS** ([`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)); remaining manual gate is live `0.3.0 → 0.3.1-rc2` upgrade.
+Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth. B14 live secretless replace is **PASS** ([`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)); remaining manual gate is live `0.3.0 → 0.3.1` upgrade.
 
 ---
 
