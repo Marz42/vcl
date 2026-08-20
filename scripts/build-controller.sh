@@ -9,8 +9,8 @@ IFS=$'\n\t'
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$ROOT"
 
-VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${ROOT}/vincula.sh" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-[[ -n "$VERSION" ]] || { printf 'ERROR: could not parse VINCULA_VERSION\n' >&2; exit 1; }
+VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${ROOT}/lib/vincula-fleet.py" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+[[ -n "$VERSION" ]] || { printf 'ERROR: could not parse VCL_FLEET_VERSION\n' >&2; exit 1; }
 
 NAME="vincula-controller-${VERSION}"
 DIST_ROOT="${ROOT}/dist"

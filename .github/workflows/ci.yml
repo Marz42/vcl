@@ -102,10 +102,11 @@ jobs:
       - name: Verify sidecar digests and release.lock
         run: |
           set -euo pipefail
-          VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          [[ -n "$VERSION" ]]
-          NODE="vincula-node-${VERSION}"
-          CTRL="vincula-controller-${VERSION}"
+          NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          CTRL_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' lib/vincula-fleet.py | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+          [[ -n "$NODE_VERSION" && -n "$CTRL_VERSION" ]]
+          NODE="vincula-node-${NODE_VERSION}"
+          CTRL="vincula-controller-${CTRL_VERSION}"
           tar -tzf "dist/${NODE}.tar.gz" >/dev/null
           ( cd dist && sha256sum --check --status "${NODE}.tar.gz.sha256" )
           ( cd "dist/${NODE}" && sha256sum --check --status release.lock )
@@ -113,15 +114,17 @@ jobs:
       - name: Black-box controller zip (no repo lib/)
         run: |
           set -euo pipefail
-          VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          ZIP="dist/vincula-controller-${VERSION}.zip"
+          NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' vincula.sh | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          CTRL_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' lib/vincula-fleet.py | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+          [[ -n "$NODE_VERSION" && -n "$CTRL_VERSION" ]]
+          ZIP="dist/vincula-controller-${CTRL_VERSION}.zip"
           BB=$(mktemp -d /tmp/vcl-ci-bb.XXXXXXXX)
           CWD="${BB}/cwd"
           HOME_DIR="${BB}/user-home"
           FLEET_HOME="${BB}/fleet-home"
           mkdir -p "$CWD" "$HOME_DIR" "$FLEET_HOME"
           python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$ZIP" "$BB"
-          UNPACK="${BB}/vincula-controller-${VERSION}"
+          UNPACK="${BB}/vincula-controller-${CTRL_VERSION}"
           test -f "${UNPACK}/bin/vcl-fleet"
           test -f "${UNPACK}/lib/vincula-audit.py"
           test -f "${UNPACK}/lib/vincula-backup.py"
@@ -134,7 +137,7 @@ jobs:
               python3 -s "${UNPACK}/bin/vcl-fleet" "$@"
           }
           version_out=$(cd "$CWD" && bb_fleet version)
-          [[ "$version_out" == "vcl-fleet ${VERSION}" ]]
+          [[ "$version_out" == "vcl-fleet ${CTRL_VERSION}" ]]
           ( cd "$CWD" && bb_fleet init )
           test -f "${FLEET_HOME}/fleet.json"
           audit_err=$(cd "$CWD" && bb_fleet audit user alice \

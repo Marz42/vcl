@@ -1005,18 +1005,20 @@ assert_failure "node tarball does not contain vincula-fleet.py" \
   grep -q 'vincula-fleet.py' <<< "$node_listing"
 assert_success "node tarball contains vincula-backup.py" \
   grep -q 'vincula-backup.py' <<< "$node_listing"
+VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+[[ -n "$VCL_FLEET_VERSION" ]]
 assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
-  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 assert_success "controller zip sidecar sha256 exists" \
-  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256"
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip.sha256"
 if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
   pass "controller zip sha256sum -c verifies"
 else
   fail "controller zip sha256sum -c verifies"
 fi
-controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 controller_zip_rc=0
 python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
 import sys
@@ -1088,7 +1090,7 @@ import zipfile
 
 zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
 PY
-UNPACK="${BB_DIR}/vincula-controller-${VINCULA_VERSION}"
+UNPACK="${BB_DIR}/vincula-controller-${VCL_FLEET_VERSION}"
 assert_success "controller zip black-box unpack has vcl-fleet" \
   test -f "${UNPACK}/bin/vcl-fleet"
 assert_success "controller zip black-box unpack has vincula-audit.py" \
@@ -1125,7 +1127,7 @@ bb_version=$(
   cd "$BB_CWD"
   bb_fleet version
 ) || bb_version_rc=$?
-if (( bb_version_rc == 0 )) && [[ "$bb_version" == "vcl-fleet ${VINCULA_VERSION}" ]]; then
+if (( bb_version_rc == 0 )) && [[ "$bb_version" == "vcl-fleet ${VCL_FLEET_VERSION}" ]]; then
   pass "controller zip black-box version"
 else
   fail "controller zip black-box version (rc=${bb_version_rc} out=${bb_version})"
