@@ -52,7 +52,8 @@ DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
 RETENTION_DELETE_BATCH = 2000
-SCHEMA_VERSION = 4
+ACCOUNTING_DB_SCHEMA_VERSION = 4
+SCHEMA_VERSION = ACCOUNTING_DB_SCHEMA_VERSION
 INT64_MAX = 2**63 - 1
 HEARTBEAT_MAX_AGE_SECONDS = 300
 # Reject Clash /connections bodies larger than this before json.loads (P1-05).
@@ -432,15 +433,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     try:
         current = int(raw) if raw else 0
     except ValueError:
-        raise SystemExit(
-            f"accounting database corrupt or unreadable: schema_version={raw!r}"
-        ) from None
+        raise SystemExit(f"unsupported accounting-db schema: {raw!r}") from None
 
     if current > SCHEMA_VERSION:
-        raise SystemExit(
-            f"accounting database schema_version={current} is newer than "
-            f"supported {SCHEMA_VERSION}"
-        )
+        raise SystemExit(f"unsupported accounting-db schema: {current}")
 
     if current < 2:
         # Legacy 0/1 → 2: add user_id. Fail closed if user_tag cannot map.

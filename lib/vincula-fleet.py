@@ -41,9 +41,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.3.1"
-FLEET_SCHEMA_VERSION = 2
+FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_DB_SCHEMA_VERSION = 3
+FLEET_CACHE_SCHEMA_VERSION = 3
+WORKSPACE_SCHEMA_VERSION = 1
+AUDIT_ARCHIVE_SCHEMA_VERSION = 1
+TELEMETRY_SCHEMA_VERSION = 1
+FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION
+FLEET_DB_SCHEMA_VERSION = FLEET_CACHE_SCHEMA_VERSION
 NODE_STATUS_ACTIVE = "active"
 NODE_STATUS_DISABLED = "disabled"
 NODE_STATUS_RETIRED = "retired"
@@ -493,7 +498,7 @@ def open_fleet_db() -> sqlite3.Connection:
                 _migrate_fleet_db_2_to_3(conn)
             elif ver != str(FLEET_DB_SCHEMA_VERSION):
                 conn.close()
-                die(f"unsupported fleet.db schema_version: {ver}")
+                die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
         for suffix in ("-wal", "-shm"):
             sidecar = Path(str(path) + suffix)
@@ -1926,7 +1931,7 @@ def validate_registry(data: Any) -> dict[str, Any]:
             die("fleet.json must not store SSH passwords")
     ver = data.get("schema_version")
     if ver not in FLEET_SCHEMA_VERSIONS_READ:
-        die(f"unsupported fleet.json schema_version: {ver}")
+        die(f"unsupported fleet-registry schema: {ver}")
     nodes_raw = data.get("nodes", [])
     if not isinstance(nodes_raw, list):
         die("fleet.json nodes must be a list")

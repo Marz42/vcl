@@ -4903,7 +4903,7 @@ assert_failure "installer health checks no longer expect accounting schema 3" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
 # B18: rc1 fresh-install blocker — health check must track accountd SCHEMA_VERSION.
 assert_success "B18 accountd SCHEMA_VERSION is 4" \
-  grep -q '^SCHEMA_VERSION = 4$' "${PROJECT_DIR}/lib/vincula-accountd.py"
+  grep -qE '^(ACCOUNTING_DB_SCHEMA_VERSION = 4|SCHEMA_VERSION = ACCOUNTING_DB_SCHEMA_VERSION)$' "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_success "B18 audit export requires schema 4" \
   grep -q 'schema_version={ver!r} is not 4' "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_success "B18 wait_for_accountd_healthy is the install commit gate" \

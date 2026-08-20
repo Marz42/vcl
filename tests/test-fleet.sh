@@ -123,9 +123,13 @@ assert_success "clock skew fail is 300s" \
 assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 2" \
-  grep -q 'FLEET_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
+  grep -q 'FLEET_REGISTRY_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db schema version is 3" \
-  grep -q 'FLEET_DB_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
+  grep -q 'FLEET_CACHE_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet schema aliases retained" \
+  grep -q 'FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema alias retained" \
+  grep -q 'FLEET_DB_SCHEMA_VERSION = FLEET_CACHE_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses UPSERT for audit_events" \
