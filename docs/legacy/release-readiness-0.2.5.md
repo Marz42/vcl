@@ -4,7 +4,7 @@
 **Date:** 2026-08-15  
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** (User Provisioning API freeze candidate)
 
-Companion: [`known-issues-0.2.5.md`](known-issues-0.2.5.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](specs/V0.2.5-V0.2.6_dev_spec.md) Part I.
+Companion: [`known-issues-0.2.5.md`](known-issues-0.2.5.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](../specs/V0.2.5-V0.2.6_dev_spec.md) Part I.
 
 ## Scope delivered
 

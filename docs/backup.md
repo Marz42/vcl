@@ -1,12 +1,14 @@
-# Backup, restore, and replace (0.3.0)
+# Backup, restore, and replace (0.3.1-rc1)
 
 Node **identity / audit archives** and physical-instance replacement.
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md)
-(0.3.0 freeze record: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)).
+(0.3.0 freeze record: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md)).
 Fleet replace: [`fleet.md`](fleet.md). Identity: [`identity.md`](identity.md).
 CLI flags for every command: [`manual.md`](manual.md).
-Live two-VPS runbook (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
+B14 live two-VPS runbook: **PASS (2026-08-18)** —
+[`live-replace-checklist.md`](live-replace-checklist.md) ·
+[`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
 
 `require_root`. `vcl backup *` also `require_install`. The node helper has
 **no** `fleet` subcommand.
@@ -342,10 +344,10 @@ runtime present, **no** `$STATE_DIR/VERSION`. Then:
 
 `--host-key SHA256:…` is **required**. Replace does **not** mark the logical
 node `retired`. Fixture replace is not live evidence; the two-VPS runbook is
-[`live-replace-checklist.md`](live-replace-checklist.md) (B14, not yet run).
+[`live-replace-checklist.md`](live-replace-checklist.md) (B14 **PASS** 2026-08-18).
 Operator notes: [`fleet.md`](fleet.md). Intended replace keeps
-`sync_cursor.last_event_id`.
-If `--from-backup` restored an older `accounting.db` whose `MAX(event_id)` is
+`sync_cursor.last_export_seq` (Protocol v2; legacy `event_id` cursors need `--reseed`).
+If `--from-backup` restored an older `accounting.db` whose export watermark is
 below that cursor, the next `vcl-fleet sync` is **CURSOR_AHEAD** (exit 3 on
 the node; controller does not import or advance). Remedy: `vcl-fleet sync
 --reseed NAME`.

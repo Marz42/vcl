@@ -18,9 +18,10 @@ sing-box 固定：1.13.18（不追 latest）
 | 默认 REALITY SNI | `www.cloudflare.com` |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
 | 用户 registry | `users.json` schema 2 |
-| Accounting | schema 3；raw 90 天 / daily 90 天 |
+| Accounting | schema **4**（`export_seq`）；raw 90 天 / daily 90 天 |
 
-Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)
+Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)  
+历史冻结门禁：[`docs/legacy/`](docs/legacy/)
 
 ---
 
@@ -49,9 +50,10 @@ docs/identity.md           # 身份合同
 docs/fleet.md              # 控制器运维指南
 docs/backup.md             # 备份 / restore / replace
 docs/manual.md             # 全量命令手册（参数与用法）
-docs/live-replace-checklist.md  # B14 live VPS 操作清单（证据未跑）
-docs/release-readiness-0.3.1.md # living-tree gate（NOT READY）
+docs/live-replace-checklist.md  # B14 live VPS 操作清单（PASS 2026-08-18）
+docs/release-readiness-0.3.1.md # living-tree gate（NOT READY：缺 live 升级证据）
 docs/known-issues-0.3.1.md      # living-tree 已知限制
+docs/legacy/               # 历史 freeze / readiness / known-issues（只读）
 dist/                      # 生成物（gitignore，勿手改）
 ```
 
@@ -242,8 +244,8 @@ sudo vcl restore FILE.tar.age --include-secrets --age-identity /root/age-identit
 `sudo bash vincula.sh --runtime-only`（装运行时、**不**写 VERSION），再由控制器
 `vcl restore FILE --reissue-output FILE --server HOST`。不要用 `node set` 冒充换机。
 节点侧也可在 **runtime-only / fresh host** 上手动 `vcl restore FILE --reissue-output FILE`。
-节点 **没有** `--replace-node` 旗标。夹具合同已对齐（B10）；**两台真 VPS 的 live 证据尚未跑**，
-操作清单：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。
+节点 **没有** `--replace-node` 旗标。夹具合同已对齐（B10）；**两台真 VPS live replace 已 PASS（B14，2026-08-18）**：
+[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md) · 证据 [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)。
 格式、CSV、DR 清单：[`docs/backup.md`](docs/backup.md)。
 
 ### 卸载
@@ -272,9 +274,7 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace / UI：[`docs/fleet.md`](docs/fleet.md)。命令手册与 **UI 手测清单**：[`docs/manual.md`](docs/manual.md#ui-manual-test)。
 
-AC 证据是 **fake-ssh 多节点夹具**（lax + tokyo；replace 用 lax2），不是 live VPS。
-`node replace` 的夹具合同已落地；**不要**把夹具绿当成真机换机已验证。Live 操作清单：
-[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)。发行建议仍是 **NOT READY**（live `0.3.0 → 0.3.1-rc1` upgrade 仍缺）：
+AC 夹具证据是 **fake-ssh 多节点**（lax + tokyo；replace 用 lax2）。**B14 live replace 已 PASS**（两台真 VPS + AC-3.0-11 + 真机 `age` + Win11 `vcl-fleet.cmd`）：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md) · [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)。发行建议仍是 **NOT READY**（剩余：live `0.3.0 → 0.3.1-rc1` upgrade + Schema 4 真机 re-sync）：
 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
 
 ```bash
@@ -313,13 +313,13 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 - `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 - `0.2.8` → **0.2.9**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
 - `0.2.9` → **0.3.0**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
-- `0.3.0` → **0.3.1-rc1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality / accounting schema（不重 mint、不旋转凭据）。真机升级证据尚未跑
+- `0.3.0` → **0.3.1-rc1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting **schema 3→4**（开库迁移）。升级后每节点一次 `vcl-fleet sync --reseed NAME`。**真机升级证据尚未跑**（阻塞 READY FOR RC）
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
-远端升级链实测（Debian 13，止于 0.2.6）：[`docs/rc-live-upgrade-0.2.4-0.2.6.md`](docs/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
+远端升级链实测（Debian 13，止于 0.2.6）：[`docs/legacy/rc-live-upgrade-0.2.4-0.2.6.md`](docs/legacy/rc-live-upgrade-0.2.4-0.2.6.md) · 证据 [`docs/evidence/0.2.4-0.2.6-live/SUMMARY.md`](docs/evidence/0.2.4-0.2.6-live/SUMMARY.md)
 
-Live secretless replace / AC-3.0-11 / 真机 `age` / Win11 `vcl-fleet.cmd`：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)（B14 **PASS** 2026-08-18；证据 [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)）。夹具全绿仍不等于 live PASS。
+Live secretless replace / AC-3.0-11 / 真机 `age` / Win11 `vcl-fleet.cmd`：[`docs/live-replace-checklist.md`](docs/live-replace-checklist.md)（B14 **PASS** 2026-08-18；证据 [`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)）。
 
 ```bash
 # 编排机示例
@@ -357,11 +357,12 @@ Merge gate is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.
 | **failure-injection** | `bash tests/test.sh`, which includes `VCL_RESTORE_FAIL_AFTER` (stage / install / health and later boundaries), P1-03 upgrade preflight injects, and P1-05 bad Clash envelopes. |
 | **artifact** | `bash scripts/build-release.sh` and `bash scripts/build-controller.sh`; black-box unzip of `dist/vincula-controller-*.zip` with no repo `lib/`; `sha256sum --check` on the zip sidecar and `controller.lock`; node tarball listing + `release.lock`. |
 
-Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth. Live secretless replace is the same class of manual gate: [`docs/live-replace-checklist.md`](docs/live-replace-checklist.md) (B14, not yet run).
+Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manual**. It is not a merge gate. Local `act` is optional and is not the CI source of truth. B14 live secretless replace is **PASS** ([`docs/evidence/0.3.1-live/SUMMARY.md`](docs/evidence/0.3.1-live/SUMMARY.md)); remaining manual gate is live `0.3.0 → 0.3.1-rc1` upgrade.
 
 ---
 
 ## 明确不做
 
-Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、localhost UI（**0.3.1**）、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
+Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
+（工作站 **localhost-only** Local Audit UI 已在 0.3.1：`vcl-fleet ui`。）
 全新安装若发现残留路径会拒绝，并在报错中打印确切的 `rm -f` / `rmdir` 清理命令；仍然没有 `vcl recover`。

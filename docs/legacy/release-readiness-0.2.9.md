@@ -3,7 +3,7 @@
 **Tree version:** 0.2.9  
 **Date:** 2026-08-16  
 **Focus:** Fleet Users & Audit (`--user-id`, PARTIAL multi-node provision, `audit export --after` / `CURSOR_EXPIRED`, `vcl-fleet sync` / `fleet.db`, fleet audit/stats with node tags, `node retire`, `fleet.json` schema 2)  
-**Companion:** [`known-issues-0.2.9.md`](known-issues-0.2.9.md) · Operator: [`fleet.md`](fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §6 / §9 / §10 / §11 / D9 / D15 / D16.
+**Companion:** [`known-issues-0.2.9.md`](known-issues-0.2.9.md) · Operator: [`fleet.md`](../fleet.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](../specs/V0.2.7-V0.3.1_spec.md) §6 / §9 / §10 / §11 / D9 / D15 / D16.
 
 ## Release recommendation
 

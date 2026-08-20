@@ -2,7 +2,7 @@
 
 **Tree version:** 0.2.6  
 **Focus:** Accounting UX (query / export / health visibility)  
-**Companion:** [`known-issues-0.2.6.md`](known-issues-0.2.6.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](specs/V0.2.5-V0.2.6_dev_spec.md) Part II.
+**Companion:** [`known-issues-0.2.6.md`](known-issues-0.2.6.md) · Spec: [`specs/V0.2.5-V0.2.6_dev_spec.md`](../specs/V0.2.5-V0.2.6_dev_spec.md) Part II.
 
 ## Scope
 

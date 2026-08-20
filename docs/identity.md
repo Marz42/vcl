@@ -77,7 +77,7 @@ mint 后若偶然 `instance_id == node_id`，再 mint 一次；仍相等则失�
 | 审计 | accounting `event_id` 历史（行上的旧 `instance_id` **不**回填） | 新连接写入**新** `instance_id` |
 | 公网 | Reality handshake / SNI（备份里的） | `server` / `listen` / `port` 取 **新** VPS（`--server`） |
 
-节点 CLI：`vcl restore FILE` 只接受 **fresh node**（无 `VERSION`）。已安装拒绝覆盖。没有 `--replace-node` 旗标。详见 [`backup.md`](backup.md)。夹具合同已对齐；**两台真 VPS 的 live 证据尚未跑**（[`live-replace-checklist.md`](live-replace-checklist.md)）。
+节点 CLI：`vcl restore FILE` 只接受 **fresh node**（无 `VERSION`）。已安装拒绝覆盖。没有 `--replace-node` 旗标。详见 [`backup.md`](backup.md)。夹具合同已对齐；**两台真 VPS live replace 已 PASS（B14，2026-08-18）**（[`live-replace-checklist.md`](live-replace-checklist.md) · [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)）。
 
 控制器：
 

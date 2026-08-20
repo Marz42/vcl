@@ -3,7 +3,7 @@
 **Tree version:** 0.2.7  
 **Date:** 2026-08-16  
 **Focus:** Stability & Audit Foundation (schema 3, durable baseline, JSONL A2, batched retention, `vcl audit`, D3 checker)  
-**Companion:** [`known-issues-0.2.7.md`](known-issues-0.2.7.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §4 / §10 / §11 / D20.
+**Companion:** [`known-issues-0.2.7.md`](known-issues-0.2.7.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](../specs/V0.2.7-V0.3.1_spec.md) §4 / §10 / §11 / D20.
 
 ## Release recommendation
 

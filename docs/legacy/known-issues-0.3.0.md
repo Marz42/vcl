@@ -1,10 +1,13 @@
 # Vincula 0.3.0 — Known issues / limitations
 
+> **Historical freeze record.** Living tree: [`../known-issues-0.3.1.md`](../known-issues-0.3.1.md).
+> **B14 later PASS (2026-08-18)**; “B14 deferred / NOT RUN” below is freeze-era text only.
+
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — 2026-08-16 contract audit (P2-04 / remediation batch B1) reclassified P0-01 and P0-02 from “documented limitations” to **P0 blockers**. Freeze-era **READY WITH DOCUMENTED LIMITATIONS** is superseded. Living-tree code remediations closed those P0s (B3 / B10) and the remaining P1/P2 + REQ-CI items. **B14 live evidence is deferred** (runbook [`live-replace-checklist.md`](live-replace-checklist.md); [`evidence/0.3.1-live/`](evidence/0.3.1-live/) is NOT RUN). Live-evidence gaps (Win11 `vcl-fleet.cmd`, live VPS replace, real `age`, AC-3.0-11 LIVE-only) remain the RC gate, not a contract mismatch. 0.3.0 does **not** use the D20 24h soak gate. See [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
+**Release recommendation:** **NOT READY** — 2026-08-16 contract audit (P2-04 / remediation batch B1) reclassified P0-01 and P0-02 from “documented limitations” to **P0 blockers**. Freeze-era **READY WITH DOCUMENTED LIMITATIONS** is superseded. Living-tree code remediations closed those P0s (B3 / B10) and the remaining P1/P2 + REQ-CI items. **B14 live evidence is deferred** (runbook [`live-replace-checklist.md`](../live-replace-checklist.md); [`evidence/0.3.1-live/`](../evidence/0.3.1-live/) is NOT RUN). Live-evidence gaps (Win11 `vcl-fleet.cmd`, live VPS replace, real `age`, AC-3.0-11 LIVE-only) remain the RC gate, not a contract mismatch. 0.3.0 does **not** use the D20 24h soak gate. See [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 
-~~Known P0/P1 at freeze: **0**.~~ **Correction (2026-08-16):** freeze filed the replace argv mismatch and the four-member zip as limitations, then claimed zero P0/P1. Those two items are contract failures. **B3 (2026-08-16):** P0-02 is closed on the living tree (`0.3.1-dev`) — the controller zip ships `lib/vincula-audit.py` and `lib/vincula-backup.py`. **B10 (2026-08-16):** P0-01 is closed on the living tree — `node replace` uses the real restore argv on a runtime-only host. **Known P0: 0**. This page does not re-assert Known P1 = 0; remaining audit P1/P2 items were closed in later living-tree batches (see Resolved in 0.3.1-dev). **B14 (2026-08-17):** live secretless replace on two VPS is still a READY FOR RC evidence gap (deferred). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md).
+~~Known P0/P1 at freeze: **0**.~~ **Correction (2026-08-16):** freeze filed the replace argv mismatch and the four-member zip as limitations, then claimed zero P0/P1. Those two items are contract failures. **B3 (2026-08-16):** P0-02 is closed on the living tree (`0.3.1-dev`) — the controller zip ships `lib/vincula-audit.py` and `lib/vincula-backup.py`. **B10 (2026-08-16):** P0-01 is closed on the living tree — `node replace` uses the real restore argv on a runtime-only host. **Known P0: 0**. This page does not re-assert Known P1 = 0; remaining audit P1/P2 items were closed in later living-tree batches (see Resolved in 0.3.1-dev). **B14 (2026-08-17):** live secretless replace on two VPS is still a READY FOR RC evidence gap (deferred). Runbook: [`live-replace-checklist.md`](../live-replace-checklist.md).
 
 ## P0 blockers (post-audit 2026-08-16)
 
@@ -22,7 +25,7 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 | Approximate accounting | Clash API polling; not byte-perfect. Unchanged from 0.2.7–0.2.9 |
 | Fleet stats vs node `vcl stats` | Fleet `daily_usage` is rebuilt from synced `audit_events` using UTC day of `started_at`. Cross-midnight connections have no per-day delta |
 | No Win11 live controller | Zip layout and stdlib/OpenSSH contract are unit-tested. Live OpenSSH Client + `py -3` on Win11 is operator evidence |
-| No live VPS replace | AC-3.0 replace CI = lax → lax2 **fixtures** on the real restore contract (runtime-only NEW_HOST). Live secretless replace + old URI on the new IP is still required before `READY FOR RC` (B14 deferred). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). Evidence dir: [`evidence/0.3.1-live/`](evidence/0.3.1-live/) (**NOT RUN**). |
+| No live VPS replace | AC-3.0 replace CI = lax → lax2 **fixtures** on the real restore contract (runtime-only NEW_HOST). Live secretless replace + old URI on the new IP is still required before `READY FOR RC` (B14 deferred). Runbook: [`live-replace-checklist.md`](../live-replace-checklist.md). Evidence dir: [`evidence/0.3.1-live/`](../evidence/0.3.1-live/) (**NOT RUN**). |
 | AC-3.0-11 is LIVE-only | “Old credential links fail” needs a real VLESS handshake against the new sing-box. Fixtures only prove the old uuid is absent from inbound `users` (**PARTIAL**). Unit tests must **not** report PASS |
 | `age` is a system package | Secretless backups never call age. `--include-secrets` requires `age` (or `$VCL_AGE_BIN`) on PATH. 0.3.0 does not bundle it and does not implement passphrase mode |
 | `--from-backup` may drop the sync tail | Escape hatch when the old host is dead. Skips final sync. WARN in stderr. Next sync with a kept cursor past restored `MAX(event_id)` is `CURSOR_AHEAD` (or `CURSOR_EXPIRED` for a retention hole). Remedy is `--reseed`, not another restore |
@@ -44,9 +47,9 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 
 | Gap | Notes |
 | --- | --- |
-| Windows 11 live `vcl-fleet.cmd` | **Not run.** Packaging tests cover zip members and `.cmd` launcher. Same B14 pass: [`live-replace-checklist.md`](live-replace-checklist.md) |
+| Windows 11 live `vcl-fleet.cmd` | **Not run.** Packaging tests cover zip members and `.cmd` launcher. Same B14 pass: [`live-replace-checklist.md`](../live-replace-checklist.md) |
 | Live SSH against real VPS | **Not run.** CI uses `tests/fixtures/fake-ssh` / `fake-scp` |
-| Live secretless `node replace` | **Not run on two public VPS** (B14 deferred). Living-tree fixture replace (lax → lax2, runtime-only, real `--reissue-output`) is a contract pass, not live PASS. Runbook: [`live-replace-checklist.md`](live-replace-checklist.md) |
+| Live secretless `node replace` | **Not run on two public VPS** (B14 deferred). Living-tree fixture replace (lax → lax2, runtime-only, real `--reissue-output`) is a contract pass, not live PASS. Runbook: [`live-replace-checklist.md`](../live-replace-checklist.md) |
 | Live `age` on a real node | **Not run.** CI uses `tests/fixtures/fake-age`. Distro `age` + recipient/identity files are operator evidence (same B14 pass) |
 | AC-3.0-11 live handshake | **Not run.** Old URI to the **new** IP:443 must fail; new URI must succeed; then stop the old VPS |
 | Live 0.2.9 → 0.3.0 upgrade | Allowlist + schema-unchanged unit tests PASS. No live RC-host upgrade run for 0.3.0 |
@@ -85,15 +88,15 @@ Not product limitations. Fixture green does not close them. P0-02 is closed on t
 
 | Item | Notes |
 | --- | --- |
-| B14 live two-VPS replace + AC-3.0-11 | Operator checklist [`live-replace-checklist.md`](live-replace-checklist.md); evidence [`evidence/0.3.1-live/`](evidence/0.3.1-live/) is **NOT RUN**. Win11 `vcl-fleet.cmd` and real `age` are the same pass |
+| B14 live two-VPS replace + AC-3.0-11 | Operator checklist [`live-replace-checklist.md`](../live-replace-checklist.md); evidence [`evidence/0.3.1-live/`](../evidence/0.3.1-live/) is **NOT RUN**. Win11 `vcl-fleet.cmd` and real `age` are the same pass |
 | B15 localhost UI | Phase B. Not started. Blocked on B14 policy |
 
 ## Related docs
 
 - [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)
-- [`live-replace-checklist.md`](live-replace-checklist.md)
-- [`backup.md`](backup.md)
-- [`fleet.md`](fleet.md)
-- [`identity.md`](identity.md)
-- [`accounting-reliability.md`](accounting-reliability.md)
+- [`live-replace-checklist.md`](../live-replace-checklist.md)
+- [`backup.md`](../backup.md)
+- [`fleet.md`](../fleet.md)
+- [`identity.md`](../identity.md)
+- [`accounting-reliability.md`](../accounting-reliability.md)
 - [`known-issues-0.2.9.md`](known-issues-0.2.9.md)

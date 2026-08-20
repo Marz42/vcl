@@ -3,7 +3,7 @@
 **Tree version:** 0.2.8  
 **Date:** 2026-08-16  
 **Focus:** Fleet Foundation (`instance_id` mint, `vcl-fleet` registry/SSH/status/verify, dual artifact, D14 host-key, clock skew)  
-**Companion:** [`known-issues-0.2.8.md`](known-issues-0.2.8.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](specs/V0.2.7-V0.3.1_spec.md) §5 / §10 / §11 / D10 / D13 / D14 / 修正 C.
+**Companion:** [`known-issues-0.2.8.md`](known-issues-0.2.8.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](../specs/V0.2.7-V0.3.1_spec.md) §5 / §10 / §11 / D10 / D13 / D14 / 修正 C.
 
 ## Release recommendation
 

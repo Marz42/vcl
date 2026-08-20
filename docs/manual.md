@@ -848,7 +848,7 @@ python3 bin/vcl-fleet node retire lax
 
 成功后：更新 `sync_cursor.instance_id`，**保留** `last_event_id`，**不**自动 `--reseed`。下一步 sync 若 cursor 超前恢复库 → `CURSOR_AHEAD` → `--reseed`。
 
-Live 两台 VPS 证据尚未跑。夹具绿 ≠ live PASS。清单：[`live-replace-checklist.md`](live-replace-checklist.md)。
+Live 两台 VPS replace **已 PASS（B14，2026-08-18）**。夹具绿 ≠ 升级门禁。清单：[`live-replace-checklist.md`](live-replace-checklist.md) · 证据 [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md)。
 
 ```bash
 # 新机
@@ -1276,7 +1276,8 @@ sudo vcl backup verify /var/backups/vincula/node-….tar
 5. 若 sync 报 `CURSOR_AHEAD`：`vcl-fleet sync --reseed NAME`
 
 不要用 `node set` 冒充换机。不要在已有 VERSION 的新机上 restore。
-完整 live 清单见 [`live-replace-checklist.md`](live-replace-checklist.md)。
+完整 live 清单见 [`live-replace-checklist.md`](live-replace-checklist.md)
+（B14 **PASS** 2026-08-18）。
 
 ---
 
@@ -1536,7 +1537,7 @@ python3 bin/vcl-fleet ui
 | export meta「没有」 | 看了 stdout 或 `2>/dev/null` | meta 在 stderr：`2> /tmp/export.meta` |
 | PARTIAL 后重开用户 | 新 mint 了另一个 `user_id` | 必须复用失败报告里的 `--user-id` |
 
-更细的 Fleet 语义见 [`fleet.md`](fleet.md)；换机 live 清单见
+更细的 Fleet 语义见 [`fleet.md`](fleet.md)；换机 live 清单（B14 PASS）见
 [`live-replace-checklist.md`](live-replace-checklist.md)。
 
 ---

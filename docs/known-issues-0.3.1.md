@@ -2,7 +2,7 @@
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-rc1`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-rc1` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) · [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-rc1`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-rc1` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md) · [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md). Older gates: [`legacy/`](legacy/).
 
 Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17 contracts).
 
@@ -39,12 +39,15 @@ Inherited from 0.3.0 unless noted.
 | Live `age` on a real node | **PASS (B14):** distro `age` 1.2.1 `--include-secrets` create+verify |
 | AC-3.0-11 live handshake | **PASS (B14)** |
 | Live `0.3.0 → 0.3.1-rc1` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
+| Schema 4 live Fleet re-sync | Fixture green; live two-node re-sync after Schema 4 + `--reseed` still required |
 | Live 24h soak | **Not a 0.3.1 gate** |
 
-## Closed on this living tree (B17)
+## Closed on this living tree (B14 / B15 / B17 / Schema 4)
 
 | Issue | Notes |
 | --- | --- |
+| B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
+| B15 localhost UI | **Implemented** (+ Host/token/CSRF, no UI reseed, GET no SSH; per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
 | P0 sync AUTOINCREMENT burn + contiguous `event_id` reject | Schema 4 `export_seq` + UPDATE-first upsert; Fleet validates monotonic `export_seq` (gaps OK). Live re-verify still needed after upgrade/`--reseed` |
 | P0 open-row export frozen by `INSERT OR IGNORE` | Durable export is closed-only; Fleet UPSERT on `(node_id, event_id)` |
 | Restore JSON / systemd ignore-errors before VERSION | Shell is the only public JSON emitter. Both units must enable/active + health before `commit-version`. Unique `ok:false` on failure |
@@ -55,16 +58,15 @@ Inherited from 0.3.0 unless noted.
 | Version-boundary rollback dropped `.runtime-only` | Safety copy + journal `had_runtime_only`; marker restored with VERSION rollback |
 | CI used mutable action tags + unused `actions: write` | Full SHA pins; Dependabot; `actions: write` only on the artifact job |
 
-Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, streaming backup, bootstrap pin, GitHub Actions workflow) remain closed; see [`known-issues-0.3.0.md`](known-issues-0.3.0.md) “Resolved in 0.3.1-dev” for B0–B16.
+Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, streaming backup, bootstrap pin, GitHub Actions workflow) remain closed; see [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md) “Resolved in 0.3.1-dev” for B0–B16.
 
-## Deferred
+## Deferred (blocks READY FOR RC)
 
 | Item | Notes |
 | --- | --- |
-| B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
-| B15 localhost UI | **Implemented** (+ v0.32: Host/token/CSRF, no UI reseed, GET no SSH; follow-up: per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
 | P1-05 GitHub branch protection | **Deferred 2026-08-19** (operator paused). Still required for READY FOR RC |
 | P1-06 Live `0.3.0 → 0.3.1-rc1` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
+| Schema 4 live re-sync | After upgrade/`--reseed`, record at least one live two-node sync under Protocol v2 |
 
 ## Ops checklist (not executed in-tree)
 
@@ -85,8 +87,9 @@ These stay **operator/GitHub-settings** work. P1-05 / P1-06 are **paused this ro
 
 - `node_id` / `instance_id` (no remint)
 - credential UUIDs / Reality keys
-- accounting `event_id` continuity
+- accounting `event_id` continuity + schema 3→4 migrate on open
 - both `sing-box` and `vincula-accountd` enabled+active
+- one `vcl-fleet sync --reseed NAME` per node, then normal sync
 
 Record evidence, then update [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md). UI / Fleet setup work does **not** by itself make the release READY FOR RC.
 
@@ -97,5 +100,7 @@ Record evidence, then update [`release-readiness-0.3.1.md`](release-readiness-0.
 - [`backup.md`](backup.md)
 - [`fleet.md`](fleet.md)
 - [`identity.md`](identity.md)
-- [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md) (freeze record; read-only)
-- [`known-issues-0.3.0.md`](known-issues-0.3.0.md) (freeze record; read-only)
+- [`legacy/`](legacy/) (freeze / older readiness & known-issues)
+- [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md) (freeze record; read-only)
+- [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md) (freeze record; read-only)
+- [`legacy/v0.32_KnownIssue.md`](legacy/v0.32_KnownIssue.md) (UI security review tracker; absorbed)

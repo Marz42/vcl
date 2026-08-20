@@ -1,4 +1,4 @@
-# Fleet operator guide (0.3.0)
+# Fleet operator guide (0.3.1-rc1)
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, incrementally syncs audit into a local
@@ -17,8 +17,10 @@ Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md)
-(0.3.0 freeze record: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md)).
-Live two-VPS replace (not yet run): [`live-replace-checklist.md`](live-replace-checklist.md).
+(0.3.0 freeze record: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md)).
+B14 live two-VPS replace: **PASS (2026-08-18)** —
+[`live-replace-checklist.md`](live-replace-checklist.md) ·
+[`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
 
 ## Prerequisites
 
@@ -26,7 +28,7 @@ Live two-VPS replace (not yet run): [`live-replace-checklist.md`](live-replace-c
 | --- | --- |
 | Python | **3.10+** on PATH (`py -3` / `python` on Windows, `python3` on Unix) |
 | SSH | **system OpenSSH client** (`ssh.exe` / `scp.exe` / `ssh-keyscan.exe` on Windows; `ssh` / `scp` / `ssh-keyscan` on Linux/macOS) |
-| Node | 0.3.0 (or later) with `vcl identity --json`, `vcl user * --json`, `vcl audit export --after N --jsonl`, `vcl backup create --json`, and `vcl restore` reachable as the SSH user (default `root`) |
+| Node | 0.3.0+ (0.3.1-rc1 recommended) with `vcl identity --json`, `vcl user * --json`, `vcl audit export --after N --jsonl` (Protocol v2 / `export_seq`), `vcl backup create --json`, and `vcl restore` reachable as the SSH user (default `root`) |
 | Not bundled | CPython, OpenSSH, paramiko, pip packages, `age` |
 
 Vincula does not ship a management HTTP API. The only workstation → node
@@ -77,7 +79,7 @@ bin\vcl-fleet.cmd init
 `lib/vincula-audit.py` and `lib/vincula-backup.py` beside `vincula-fleet.py`
 (P0-02 / B3). The zip also ships `controller.lock` (member list + sha256) and a
 sidecar `vincula-controller-<ver>.zip.sha256` (P2-03 / B13). Verify with
-`sha256sum -c`. See [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+`sha256sum -c`. See [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md) for freeze-era notes; living tree: [`known-issues-0.3.1.md`](known-issues-0.3.1.md).
 
 ## Linux / macOS
 
@@ -255,9 +257,10 @@ python3 bin/vcl-fleet node instances lax
 ```
 
 Living-tree **fixture** replace is a contract pass (B10). **Live** two-VPS
-evidence is still missing (B14 deferred). Run
-[`live-replace-checklist.md`](live-replace-checklist.md) on real hosts before
-calling replace RC-ready. Do not treat fake-ssh as that pass.
+evidence is **PASS (B14, 2026-08-18)** —
+[`live-replace-checklist.md`](live-replace-checklist.md) ·
+[`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
+Do not treat fake-ssh alone as that pass.
 
 Flow:
 
@@ -600,7 +603,7 @@ UI still does not mutate identity (CLI recipes only).
 
 Fleet Users & Audit evidence remains **fake-ssh multi-node fixtures**. Mock
 is not live VPS. Full Status / Code / Test / Remaining risk table:
-[`release-readiness-0.2.9.md`](release-readiness-0.2.9.md).
+[`legacy/release-readiness-0.2.9.md`](legacy/release-readiness-0.2.9.md).
 
 | ID | Criterion | Fixture evidence pointer |
 | --- | --- | --- |
@@ -621,7 +624,7 @@ is not live VPS. Full Status / Code / Test / Remaining risk table:
 
 Backup / restore / replace. Evidence is **fixtures** unless noted.
 AC-3.0-11 is **LIVE-only** (must not be marked PASS from unit tests).
-Full table: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
+Full table: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md).
 
 | ID | Criterion | Fixture evidence pointer |
 | --- | --- | --- |
@@ -635,7 +638,7 @@ Full table: [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
 | AC-3.0-08 | `user_id` unchanged | `AC-3.0-08 fixture PASS: restore keeps user_id` |
 | AC-3.0-09 | History accounting/audit still queryable | `AC-3.0-09 fixture PASS` + `AC-3.0-09 replace sync keeps old instance rows and cursor` |
 | AC-3.0-10 | Reissue CSV correct | `AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id` |
-| AC-3.0-11 | Old credential links fail after revoke | **PARTIAL / LIVE-only.** Fixture: inbound omits old uuid. Not PASS |
+| AC-3.0-11 | Old credential links fail after revoke | **PASS (B14 live 2026-08-18).** Fixture remains PARTIAL/LIVE-only label in unit tests. Live: old URI→new IP fails; new URI succeeds |
 | AC-3.0-12 | Failed restore does not destroy target or source | `AC-3.0-12 fixture PASS`; fleet replace fail inject leaves old `ssh_host` |
 
 ## AC-3.1 matrix (01–11)

@@ -12,7 +12,7 @@ waived.
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·
 operator: [`fleet.md`](fleet.md) · [`backup.md`](backup.md).
-0.3.0 freeze record (read-only): [`release-readiness-0.3.0.md`](release-readiness-0.3.0.md).
+0.3.0 freeze record (read-only): [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md).
 
 ## What this pass proves
 

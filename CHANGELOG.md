@@ -12,12 +12,13 @@
 - **Operator manual:** [`docs/manual.md`](docs/manual.md) adds verified dual-VPS + Fleet deploy runbook.
 - **Tests:** `bash tests/test.sh` **1274** PASS (fleet fixtures aligned for Schema 4 + non-TTY host-key).
 - Release recommendation remains **NOT READY** until live `0.3.0 → 0.3.1-rc1` upgrade evidence is recorded ([`release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)).
+- **Docs status unify (2026-08-20):** README / fleet / backup / known-issues / readiness aligned on **B14 PASS** + Schema 4; historical freeze gates moved to [`docs/legacy/`](docs/legacy/).
 
 ## 0.3.1-dev
 
 Unreleased development line (superseded by **0.3.1-rc1**). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist was `0.1.0–0.1.5` and `0.2.0–0.3.0` (did **not** add `0.3.0-dev` or `0.3.1-dev`).
 
-**Summary:** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** are on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). Remaining NOT READY gap: live **`0.3.0 → 0.3.1-dev` upgrade** plus deferred P1-05 branch protection (`docs/release-readiness-0.3.1.md`). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only.
+**Summary:** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** are on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). Remaining NOT READY gap: live **`0.3.0 → 0.3.1-rc1` upgrade** plus deferred P1-05 branch protection (`docs/release-readiness-0.3.1.md`). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only under `docs/legacy/`.
 
 - **Schema 4 / Export Protocol v2:** Split `event_id` (stable generation identity; sparsity OK) from `export_seq` (Fleet durable cursor, assigned once on close). Accountd UPDATE-first polls no longer burn AUTOINCREMENT. `vcl audit export` is closed-only by `export_seq` with Protocol v2 meta; `CURSOR_EXPIRED` / `CURSOR_AHEAD` use prune/max export_seq watermarks (not contiguous `event_id`). Fleet `fleet.db` schema **3** stores `cursor_kind` / `last_export_seq`, validates monotonic `export_seq` (gaps allowed), UPSERT-imports on `(node_id, event_id)`, and refuses legacy `event_id` cursors with `CURSOR_PROTOCOL_MISMATCH` until `sync --reseed`. After upgrade, run `--reseed` once per node. Live re-sync evidence still required before READY FOR RC.
 - **v0.32 P2:** Per-node `--identity-file` makes SSH/SCP pass `-i KEY -o IdentitiesOnly=yes` (no password-SSH fallback). Local Audit UI caps concurrent workers at 8 with a 30s request timeout (503 when busy). CI `unit` / `concurrency` no longer run `tests/test-fleet.sh` a second time (`tests/test.sh` already sources it). Fixed a `pipefail` + `awk|grep -q` false fail in `tests/test.sh` (`user add dispatch documents --user-id`). Debian container apt install uses dash-safe `set -eu` (no `pipefail`).
@@ -37,7 +38,7 @@ Unreleased development line (superseded by **0.3.1-rc1**). Frozen tag `v0.3.0` i
 - **B4 / P1-01:** SSH 远程命令用 `shlex.join` 合成一条 POSIX 引用字符串；校验 `ssh_user` / `ssh_host`（DNS/IPv4/IPv6，拒绝控制字符与 shell 元字符）以及 `display_name` / `department`（拒绝 ASCII 控制字符与换行）。节点 CLI / CSV import 同步拒绝。对抗测试覆盖空格、`;`、backtick、`$()`、换行。
 - **B3 / P0-02:** 控制器 zip 纳入 `lib/vincula-audit.py` 与 `lib/vincula-backup.py`。解压黑盒（无仓库 `lib/`）覆盖 `version` / `init` / `audit` / `stats` 与 `node replace` fail-closed。删除「zip omits backup.py」断言。`load_audit_module` / `load_backup_module` 从控制器自己的 `lib/` 解析兄弟文件。
 - **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/fleet.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
-- **B1 / P2-04:** Freeze-record honesty. `docs/release-readiness-0.3.0.md` / `docs/known-issues-0.3.0.md` recommendation **NOT READY**; Known P0/P1 = 0 struck; P0-01 / P0-02 reclassified from limitations to contract blockers. Fixture PASS is not a live replace contract.
+- **B1 / P2-04:** Freeze-record honesty. `docs/legacy/release-readiness-0.3.0.md` / `docs/legacy/known-issues-0.3.0.md` recommendation **NOT READY**; Known P0/P1 = 0 struck; P0-01 / P0-02 reclassified from limitations to contract blockers. Fixture PASS is not a live replace contract.
 - **B0:** Living tree stamped `0.3.1-dev` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests). Frozen tag `v0.3.0` unchanged. Upgrade allowlist still ends at `0.2.9`.
 
 ## 0.3.0
@@ -96,11 +97,11 @@ Backup / Replace / Restore。记账仍为 **approximate / Clash polling**（非�
 - allowlist **含** `0.2.9`，**不含** `0.3.0` / `0.3.0-dev`
 - 升级 **不**旋转 UUID / Reality（与既有 migrate 相同）。替换旋转只走 restore / `node replace`
 - D18：`730` 从 0.2.9 来 **preserve**
-- 不提供自动 fleet.db 2→1；回滚见 `docs/release-readiness-0.3.0.md`
+- 不提供自动 fleet.db 2→1；回滚见 `docs/legacy/release-readiness-0.3.0.md`
 
 ### 验收摘要
 
-AC-3.0-01…12 的 fixture / 静态证据见 `docs/release-readiness-0.3.0.md`。已知限制见 `docs/known-issues-0.3.0.md`。AC-3.0-11 为 **LIVE-only**，单测不得报 PASS。0.3.0 **不**套用 D20 24h soak 门槛。MINOR bump 理由：backup/restore 合同（§9.3），不是同世代 milestone。
+AC-3.0-01…12 的 fixture / 静态证据见 `docs/legacy/release-readiness-0.3.0.md`。已知限制见 `docs/legacy/known-issues-0.3.0.md`。AC-3.0-11 为 **LIVE-only**，单测不得报 PASS。0.3.0 **不**套用 D20 24h soak 门槛。MINOR bump 理由：backup/restore 合同（§9.3），不是同世代 milestone。
 
 ## 0.2.9
 
@@ -154,11 +155,11 @@ Fleet Users & Audit。记账仍为 **approximate / Clash polling**（非计费�
 - 接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.8` → `0.2.9`
 - allowlist **含** `0.2.8`，**不含** `0.2.9` / `0.2.9-dev`
 - 保留 `user_id` / `node_id` / `instance_id`；不重 mint；D18 不对 0.2.8 源重迁 730
-- 不提供自动 fleet.json 2→1；回滚见 `docs/release-readiness-0.2.9.md`
+- 不提供自动 fleet.json 2→1；回滚见 `docs/legacy/release-readiness-0.2.9.md`
 
 ### 验收摘要
 
-AC-2.9-01…12 的 fixture / 静态证据见 `docs/release-readiness-0.2.9.md`。已知限制见 `docs/known-issues-0.2.9.md`。0.2.9 **不**套用 D20 24h soak 门槛。原 AC-2.8-08/09 的 incremental sync / cursor 语义在本版落地为 AC-2.9-08/09/12。
+AC-2.9-01…12 的 fixture / 静态证据见 `docs/legacy/release-readiness-0.2.9.md`。已知限制见 `docs/legacy/known-issues-0.2.9.md`。0.2.9 **不**套用 D20 24h soak 门槛。原 AC-2.8-08/09 的 incremental sync / cursor 语义在本版落地为 AC-2.9-08/09/12。
 
 ## 0.2.8
 
@@ -207,7 +208,7 @@ Fleet Foundation。记账仍为 **approximate / Clash polling**（非计费级�
 
 ### 验收摘要
 
-AC-2.8-01…13 的 fixture / 静态证据见 `docs/release-readiness-0.2.8.md`。已知限制见 `docs/known-issues-0.2.8.md`。0.2.8 **不**套用 D20 24h soak 门槛。
+AC-2.8-01…13 的 fixture / 静态证据见 `docs/legacy/release-readiness-0.2.8.md`。已知限制见 `docs/legacy/known-issues-0.2.8.md`。0.2.8 **不**套用 D20 24h soak 门槛。
 
 ## 0.2.7
 
@@ -250,7 +251,7 @@ Stability & Audit Foundation. 记账仍为 **approximate / Clash polling**（非
 ### Soak / gate
 
 - LIVE-ONLY 协议：`scripts/soak-0.2.7.sh`（默认拒绝在非 live 节点跑；单测/加速时钟不满足 AC-2.7-09）
-- 无 24h soak 证据 → 不得 `READY FOR RC`；见 `docs/release-readiness-0.2.7.md` 与 `docs/known-issues-0.2.7.md`
+- 无 24h soak 证据 → 不得 `READY FOR RC`；见 `docs/legacy/release-readiness-0.2.7.md` 与 `docs/legacy/known-issues-0.2.7.md`
 
 ### 迁移
 
@@ -329,7 +330,7 @@ User provisioning & lifecycle：批量导入/导出、metadata、verify，以及
 
 Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / 迁移 / 校验保证；收敛数据模型与 packaging integrity。本版本**不新增** stats/功能面。
 
-**Freeze (2026-08-15):** 门禁 V-MIG / V-RB / V-PY310 PASS；此后 **只接受 P0/P1 regression fix**。见 `docs/freeze-0.2.4.md`。
+**Freeze (2026-08-15):** 门禁 V-MIG / V-RB / V-PY310 PASS；此后 **只接受 P0/P1 regression fix**。见 `docs/legacy/freeze-0.2.4.md`。
 
 ### 生命周期（P0）
 
@@ -368,9 +369,9 @@ Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / �
 
 ### 文档与验证
 
-- Gate 报告：`docs/release-readiness-0.2.4.md`（R01–R25 / F01–F15）
-- RC 测试手册：`docs/rc-test-manual-0.2.4.md`
-- 现存问题：`docs/known-issues-0.2.4.md`
+- Gate 报告：`docs/legacy/release-readiness-0.2.4.md`（R01–R25 / F01–F15）
+- RC 测试手册：`docs/legacy/rc-test-manual-0.2.4.md`
+- 现存问题：`docs/legacy/known-issues-0.2.4.md`
 - 自动化：`bash tests/test.sh`（207+）
 
 ### Fixes（RC 实机）
@@ -380,7 +381,7 @@ Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / �
 - 实现 `vcl stats yesterday`（usage 已文档化但此前未接解析）
 - **Freeze P0：** migration 对 sing-box 1.13 legacy inbound（`sniff`）预检失败时警告并继续，跳过旧 config health wait，从 SoT 重生配置；owner UUID 经 `owner_active_uuid_from_registry`
 - Debian 13：0.2.3-shaped → 0.2.4 migration + 强制 rollback PASS；Ubuntu 22.04 Docker：Python 3.10.12 `py_compile` PASS
-- Debian 13 amd64 实机：主路径 / Clash 鉴权 / owner 记账 / user 生命周期部分 PASS；完整 RC 矩阵仍见 `docs/known-issues-0.2.4.md`
+- Debian 13 amd64 实机：主路径 / Clash 鉴权 / owner 记账 / user 生命周期部分 PASS；完整 RC 矩阵仍见 `docs/legacy/known-issues-0.2.4.md`
 
 ## 0.2.3
 
