@@ -204,3 +204,13 @@ def plan_migrate_dry_run() -> dict[str, Any]:
         "warnings": warns,
         "note": "D48: migration will NOT SSH to fill history gaps",
     }
+
+
+def open_cache_readonly():
+    """0.4.0 query seam; still open_fleet_db (RW+WAL). True mode=ro ≥0.4.2."""
+    return _host.open_fleet_db()
+
+
+def open_cache_for_sync():
+    """0.4.0 sync/migrate RW seam; same backing until 0.4.2."""
+    return _host.open_fleet_db()

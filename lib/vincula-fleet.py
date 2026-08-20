@@ -309,6 +309,14 @@ def _ensure_fleet_home() -> Path:
     return _WS._ensure_fleet_home()
 
 
+def open_cache_readonly():
+    return _WS.open_cache_readonly()
+
+
+def open_cache_for_sync():
+    return _WS.open_cache_for_sync()
+
+
 _AC = _load_controller_sibling("vcl_access", "access.py")
 _AC.bind(_FLEET_HOST)
 
