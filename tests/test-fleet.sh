@@ -2400,32 +2400,34 @@ assert_success "verify --help mentions audit-clock-health" \
   grep -q 'audit-clock-health' <<< "$verify_help"
 assert_success "status --help lists NODE_ID column" \
   grep -q 'NODE_ID' <<< "$(fleet status --help)"
+assert_success "status --help mentions cache-only (D58)" \
+  grep -Eqi 'cache' <<< "$(fleet status --help)"
 
-status_rc=0
-status_out=$(fleet status 2>&1) || status_rc=$?
-if (( status_rc != 0 )); then
-  pass "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL)"
+probe_rc=0
+probe_out=$(fleet probe 2>&1) || probe_rc=$?
+if (( probe_rc != 0 )); then
+  pass "AC-2.8-03 three-fixture probe exits non-zero (sg SSH FAIL)"
 else
-  fail "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL) (rc=${status_rc})"
+  fail "AC-2.8-03 three-fixture probe exits non-zero (sg SSH FAIL) (rc=${probe_rc})"
 fi
-assert_success "status table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING" \
-  grep -Eq 'NAME.+NODE_ID.+INSTANCE.+SSH.+PROXY.+ACCOUNTING' <<< "$status_out"
-assert_success "AC-2.8-03 status lax OK/OK/OK" \
-  grep -Eq '^lax[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+OK[[:space:]]*$' <<< "$status_out"
-assert_success "AC-2.8-03 status tokyo OK/OK/STALE" \
-  grep -Eq '^tokyo[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+STALE[[:space:]]*$' <<< "$status_out"
-assert_success "AC-2.8-03 status sg FAIL/UNKNOWN/UNKNOWN" \
-  grep -Eq '^sg[[:space:]].*[[:space:]]FAIL[[:space:]]+UNKNOWN[[:space:]]+UNKNOWN[[:space:]]*$' <<< "$status_out"
+assert_success "probe table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING" \
+  grep -Eq 'NAME.+NODE_ID.+INSTANCE.+SSH.+PROXY.+ACCOUNTING' <<< "$probe_out"
+assert_success "AC-2.8-03 probe lax OK/OK/OK" \
+  grep -Eq '^lax[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+OK[[:space:]]*$' <<< "$probe_out"
+assert_success "AC-2.8-03 probe tokyo OK/OK/STALE" \
+  grep -Eq '^tokyo[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+STALE[[:space:]]*$' <<< "$probe_out"
+assert_success "AC-2.8-03 probe sg FAIL/UNKNOWN/UNKNOWN" \
+  grep -Eq '^sg[[:space:]].*[[:space:]]FAIL[[:space:]]+UNKNOWN[[:space:]]+UNKNOWN[[:space:]]*$' <<< "$probe_out"
 
-status_json_rc=0
-status_json=$(fleet status --json 2>/dev/null) || status_json_rc=$?
-if (( status_json_rc != 0 )); then
-  pass "status --json exits non-zero with sg FAIL"
+probe_json_rc=0
+probe_json=$(fleet probe --json 2>/dev/null) || probe_json_rc=$?
+if (( probe_json_rc != 0 )); then
+  pass "probe --json exits non-zero with sg FAIL"
 else
-  fail "status --json exits non-zero with sg FAIL (rc=${status_json_rc})"
+  fail "probe --json exits non-zero with sg FAIL (rc=${probe_json_rc})"
 fi
-status_json_shape_rc=0
-python3 - "$status_json" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY' || status_json_shape_rc=$?
+probe_json_shape_rc=0
+python3 - "$probe_json" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY' || probe_json_shape_rc=$?
 import json, sys
 doc = json.loads(sys.argv[1])
 lax_id, tokyo_id, sg_id = sys.argv[2:5]
@@ -2451,10 +2453,10 @@ assert nodes["sg"]["proxy"] == "UNKNOWN"
 assert nodes["sg"]["accounting"] == "UNKNOWN"
 assert nodes["sg"]["instance_id"] is None
 PY
-if (( status_json_shape_rc == 0 )); then
-  pass "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+if (( probe_json_shape_rc == 0 )); then
+  pass "probe --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
 else
-  fail "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+  fail "probe --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
 fi
 
 verify_rc=0
@@ -2516,18 +2518,18 @@ else
   fail "verify --json shape: lax pass, tokyo STALE, sg FAIL"
 fi
 
-assert_success "disable sg for stale-only status" fleet node disable sg
-stale_status_rc=0
-stale_status=$(fleet status 2>&1) || stale_status_rc=$?
-if (( stale_status_rc == 0 )); then
-  pass "status exits 0 when only accounting STALE remains"
+assert_success "disable sg for stale-only probe" fleet node disable sg
+stale_probe_rc=0
+stale_probe=$(fleet probe 2>&1) || stale_probe_rc=$?
+if (( stale_probe_rc == 0 )); then
+  pass "probe exits 0 when only accounting STALE remains"
 else
-  fail "status exits 0 when only accounting STALE remains (rc=${stale_status_rc})"
+  fail "probe exits 0 when only accounting STALE remains (rc=${stale_probe_rc})"
 fi
-assert_failure "status without --all omits disabled sg" \
-  grep -Eq '^sg[[:space:]]' <<< "$stale_status"
-assert_success "status --all shows disabled sg" \
-  grep -Eq '^sg[[:space:]].*DISABLED' <<< "$(fleet status --all)"
+assert_failure "probe without --all omits disabled sg" \
+  grep -Eq '^sg[[:space:]]' <<< "$stale_probe"
+assert_success "probe --all shows disabled sg" \
+  grep -Eq '^sg[[:space:]].*DISABLED' <<< "$(fleet probe --all)"
 stale_verify_rc=0
 fleet verify >/dev/null 2>&1 || stale_verify_rc=$?
 if (( stale_verify_rc == 0 )); then
@@ -2536,6 +2538,50 @@ else
   fail "verify exits 0 when sg is disabled and tokyo is STALE (rc=${stale_verify_rc})"
 fi
 assert_success "re-enable sg" fleet node enable sg
+
+# --- 0.4.1 B7: D58 status cache-only / probe live / status --live alias ---
+export VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/d58-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+fleet probe >/dev/null || true
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet status >/dev/null
+assert_equal "AC-4.1-02 bare status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+fleet status --live >/dev/null || true
+L2=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+if (( L2 > L0 )); then
+  pass "status --live SSHes"
+else
+  fail "status --live SSHes (L0=${L0} L2=${L2})"
+fi
+fleet probe >/dev/null || true
+if (( $(wc -l <"$VCL_FAKE_SSH_ARGV_LOG") > L2 )); then
+  pass "probe SSHes"
+else
+  fail "probe SSHes"
+fi
+cache_status_json=$(fleet status --json 2>/dev/null) || true
+assert_success "status --json mode is cache" \
+  grep -q '"mode": "cache"' <<< "$cache_status_json"
+cache_table=$(fleet status 2>/dev/null || true)
+assert_success "cache status table has LAST_SYNC and DATA_AGE" \
+  grep -Eq 'LAST_SYNC.+DATA_AGE' <<< "$cache_table"
+d58_cache_shape_rc=0
+python3 - "$cache_status_json" <<'PY' || d58_cache_shape_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("mode") == "cache"
+assert doc.get("ok") is True
+for n in doc["nodes"]:
+    assert "last_sync_at" in n, n
+    assert "data_age" in n, n
+    assert "cursor_status" in n, n
+PY
+if (( d58_cache_shape_rc == 0 )); then
+  pass "cache status --json has last_sync_at/data_age/cursor_status"
+else
+  fail "cache status --json has last_sync_at/data_age/cursor_status"
+fi
+unset VCL_FAKE_SSH_ARGV_LOG
 
 CLOCK_FLEET_HOME="${TEST_TMP}/fleet-home-clock"
 SAVED_STATUS_HOME="${VCL_FLEET_HOME}"

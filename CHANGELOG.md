@@ -2,6 +2,12 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.1 (unreleased)
+
+### Breaking
+
+- Bare `vcl-fleet status` is **cache-only** (no SSH; AC-4.1-S01 / D58). Live health: `vcl-fleet probe` or `status --live`.
+
 ## 0.3.1 (2026-08-20)
 
 **Stable release** of the 0.3.1 line.

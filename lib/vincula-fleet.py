@@ -3064,6 +3064,20 @@ def probe_node(
 
 
 def format_status_table(rows: list[dict[str, Any]]) -> str:
+    # Cache path (D58): last_sync_at present → LAST_SYNC / DATA_AGE / NODE_STATUS / CURSOR
+    if rows and "last_sync_at" in rows[0]:
+        lines = [
+            f"{'NAME':<8} {'NODE_ID':<8} {'LAST_SYNC':<20} {'DATA_AGE':<8} "
+            f"{'NODE_STATUS':<11} CURSOR"
+        ]
+        for row in rows:
+            lines.append(
+                f"{row['name']:<8} {short_id(row.get('node_id')):<8} "
+                f"{str(row.get('last_sync_at') or '-'):<20} "
+                f"{str(row.get('data_age') or '-'):<8} "
+                f"{row['ssh']:<11} {row.get('cursor_status') or '-'}"
+            )
+        return "\n".join(lines) + "\n"
     lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<7} {'PROXY':<7} ACCOUNTING"]
     for row in rows:
         instance = "-"
@@ -3204,7 +3218,7 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
 
 
 def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Probe status and write last-status.json; return payload (no stdout)."""
+    """Live probe; write last-status.json."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
@@ -3219,6 +3233,87 @@ def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
     }
     write_last_status(payload)
     payload["_rows"] = rows  # CLI table only; strip before JSON emit
+    return payload
+
+
+def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
+    """Cache-only: last-status.json + sync_cursor. No SSH. Does not write."""
+    registry = load_registry()
+    controller_utc = datetime.now(timezone.utc)
+    prev: dict[str, Any] = {}
+    path = last_status_path()
+    if path.is_file():
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+    by = {
+        n["name"]: n
+        for n in (prev.get("nodes") or [])
+        if isinstance(n, dict) and n.get("name")
+    }
+    conn = open_fleet_db() if fleet_db_path().is_file() else None
+    rows: list[dict[str, Any]] = []
+    try:
+        for node in _selected_nodes(registry, include_all):
+            sl = by.get(node["name"]) or {}
+            cur = (
+                read_sync_cursor_row(conn, node["node_id"]) if conn is not None else None
+            )
+            ls = cur["last_sync_at"] if cur is not None else None
+            age = "-"
+            if ls:
+                try:
+                    age = (
+                        f"{int((controller_utc - datetime.fromisoformat(ls.replace('Z', '+00:00'))).total_seconds())}s"
+                    )
+                except ValueError:
+                    age = "?"
+            life = node_lifecycle_status(node)
+            if life == NODE_STATUS_DISABLED:
+                st = "DISABLED"
+            elif life == NODE_STATUS_RETIRED:
+                st = "-"
+            else:
+                st = sl.get("ssh") or "UNKNOWN"
+            instance_id = sl.get("instance_id")
+            if instance_id is None and cur is not None:
+                instance_id = cur["instance_id"]
+            cursor_status = cur["status"] if cur is not None else None
+            rows.append(
+                {
+                    "name": node["name"],
+                    "node_id": node["node_id"],
+                    "instance_id": instance_id,
+                    "ssh": st,
+                    "proxy": sl.get("proxy") or "UNKNOWN",
+                    "accounting": sl.get("accounting") or "UNKNOWN",
+                    "last_sync_at": ls or "-",
+                    "data_age": age,
+                    "cursor_status": cursor_status or "-",
+                    "enabled": node.get("enabled", True),
+                }
+            )
+    finally:
+        if conn is not None:
+            conn.close()
+    nodes = [
+        {
+            **_status_json_node(r),
+            "last_sync_at": r["last_sync_at"],
+            "data_age": r["data_age"],
+            "cursor_status": r["cursor_status"],
+        }
+        for r in rows
+    ]
+    payload: dict[str, Any] = {
+        "schema_version": STATUS_JSON_SCHEMA_VERSION,
+        "ok": True,
+        "mode": "cache",
+        "controller_utc": format_utc(controller_utc),
+        "nodes": nodes,
+    }
+    payload["_rows"] = rows
     return payload
 
 
@@ -3248,6 +3343,16 @@ def run_verify_payload(*, include_all: bool = False) -> dict[str, Any]:
 
 
 def cmd_status(*, as_json: bool, include_all: bool) -> int:
+    payload = run_cached_status_payload(include_all=include_all)
+    rows = payload.pop("_rows")
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_status_table(rows))
+    return 0 if payload["ok"] else 1
+
+
+def cmd_probe(*, as_json: bool, include_all: bool) -> int:
     payload = run_status_payload(include_all=include_all)
     rows = payload.pop("_rows")
     if as_json:
@@ -4761,6 +4866,8 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 @with_fleet_op_lock
 def cmd_sync(args: argparse.Namespace) -> int:
+    if getattr(args, "full", False):
+        die("sync --full requires 0.4.2", 2)
     as_json = bool(getattr(args, "as_json", False))
     code, doc = run_sync_payload(args)
     if as_json:
@@ -5657,13 +5764,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser(
         "status",
-        help="remote status table: NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING",
+        help="cache-only (D58); use probe or --live for SSH",
         description=(
-            "Probe enabled nodes over SSH (vcl identity --json and "
-            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
-            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
-            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
-            "Exit 1 if any node is SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+            "Cache-only (D58): last observation from last-status.json + "
+            "fleet.db sync_cursor. No SSH. Table columns: NAME NODE_ID "
+            "LAST_SYNC DATA_AGE NODE_STATUS CURSOR. Use `probe` or "
+            "`status --live` for live SSH health (writes last-status.json)."
         ),
     )
     p_status.add_argument(
@@ -5673,6 +5779,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="print JSON (schema_version 1)",
     )
     p_status.add_argument(
+        "--all",
+        action="store_true",
+        help="include disabled and retired nodes (retired NODE_STATUS=-; no SSH)",
+    )
+    p_status.add_argument(
+        "--live",
+        action="store_true",
+        help="0.4.x alias for probe (deprecated)",
+    )
+    p_probe = sub.add_parser(
+        "probe",
+        help="live SSH health (writes last-status.json)",
+        description=(
+            "Probe enabled nodes over SSH (vcl identity --json and "
+            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
+            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
+            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
+            "Writes last-status.json. Exit 1 if any node is "
+            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+        ),
+    )
+    p_probe.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+    p_probe.add_argument(
         "--all",
         action="store_true",
         help="include disabled and retired nodes (retired SSH=-; no SSH)",
@@ -5922,6 +6056,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="print JSON (schema_version 1)",
     )
+    p_sync.add_argument(
+        "--full",
+        action="store_true",
+        help="full re-sync (requires 0.4.2)",
+    )
 
     p_audit = sub.add_parser(
         "audit",
@@ -6105,7 +6244,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "init":
         return cmd_init()
     if command == "status":
+        if getattr(args, "live", False):
+            return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
         return cmd_status(as_json=bool(args.as_json), include_all=bool(args.all))
+    if command == "probe":
+        return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "verify":
         return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "sync":
