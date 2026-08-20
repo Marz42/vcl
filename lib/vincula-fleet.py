@@ -326,6 +326,9 @@ remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
 cas_mutate_workspace = _WS.cas_mutate_workspace
 execute_migrate = _WS.execute_migrate
+export_workspace = _WS.export_workspace
+import_workspace = _WS.import_workspace
+EXPORT_MEMBERS = _WS.EXPORT_MEMBERS
 PORTABLE_DIGEST_NAMES = _WS.PORTABLE_DIGEST_NAMES
 INSTANCE_HISTORY_SCHEMA = _WS.INSTANCE_HISTORY_SCHEMA
 WORKSPACE_VIEW_SCHEMA_VERSION = _WS.WORKSPACE_VIEW_SCHEMA_VERSION
@@ -5395,6 +5398,55 @@ def cmd_workspace_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workspace_init(_args: argparse.Namespace) -> int:
+    home = _ensure_fleet_home()
+    for dname in ("trust", "history", "machine-local"):
+        d = home / dname
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+    if not fleet_registry_path().is_file():
+        _WS._save_registry_unlocked(None, empty_registry())
+    create_workspace_manifest()
+    return 0
+
+
+def cmd_workspace_show(_args: argparse.Namespace) -> int:
+    manifest = load_workspace_manifest()
+    sys.stdout.write(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    )
+    return 0
+
+
+def cmd_workspace_verify(_args: argparse.Namespace) -> int:
+    manifest = load_workspace_manifest()
+    validate_workspace_manifest(manifest)
+    if compute_state_digest() != manifest["state_digest"]:
+        die(WS_ERR_INCONSISTENT, 2)
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        die(conflict, 2)
+    sys.stdout.write(
+        f"OK fleet_id={manifest['fleet_id']} revision={manifest['revision']}\n"
+    )
+    return 0
+
+
+def cmd_workspace_export(args: argparse.Namespace) -> int:
+    dest = export_workspace(Path(args.file))
+    sys.stdout.write(f"{dest}\n")
+    return 0
+
+
+def cmd_workspace_import(args: argparse.Namespace) -> int:
+    manifest = import_workspace(Path(args.file))
+    sys.stdout.write(
+        f"imported fleet_id={manifest['fleet_id']} "
+        f"revision={manifest['revision']}\n"
+    )
+    return 0
+
+
 def cmd_access_list(_args: argparse.Namespace) -> int:
     bindings = list_bindings()
     for ref in sorted(bindings):
@@ -5453,6 +5505,15 @@ def build_parser() -> argparse.ArgumentParser:
             "user add provisions the same user_id on one or more nodes; "
             "any per-node failure is PARTIAL (exit 2). Distributed rollback "
             "is not promised."
+        ),
+    )
+    parser.add_argument(
+        "--workspace",
+        dest="workspace_path",
+        metavar="PATH",
+        help=(
+            "portable workspace root (sets VCL_FLEET_HOME); "
+            "env VCL_FLEET_WORKSPACE aliases to VCL_FLEET_HOME when unset"
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -5996,9 +6057,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     ws = sub.add_parser(
-        "workspace", help="workspace lifecycle (migrate --dry-run or execute)"
+        "workspace",
+        help="workspace lifecycle (init/show/verify/export/import/migrate)",
     )
     ws_sub = ws.add_subparsers(dest="workspace_command")
+    ws_sub.add_parser("init", help="create workspace.json + dirs")
+    ws_sub.add_parser("show", help="print workspace.json")
+    ws_sub.add_parser(
+        "verify", help="validate manifest + D52 digest/conflict"
+    )
+    p_export = ws_sub.add_parser(
+        "export", help="portable snapshot (no secrets / machine-local)"
+    )
+    p_export.add_argument("file", help="destination .tgz path")
+    p_import = ws_sub.add_parser(
+        "import", help="import portable snapshot into fleet home"
+    )
+    p_import.add_argument("file", help="source .tgz path")
     p_mig = ws_sub.add_parser(
         "migrate", help="legacy→workspace migrate (0.4.1)"
     )
@@ -6017,6 +6092,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     parser = build_parser()
     args = parser.parse_args(argv)
+    wp = getattr(args, "workspace_path", None)
+    if wp:
+        os.environ["VCL_FLEET_HOME"] = str(Path(wp).expanduser().resolve())
     command = args.command
     if command in (None, "help"):
         parser.print_help()
@@ -6114,6 +6192,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sub is None:
             parser.parse_args(["workspace", "--help"])
             return 2
+        if sub == "init":
+            return cmd_workspace_init(args)
+        if sub == "show":
+            return cmd_workspace_show(args)
+        if sub == "verify":
+            return cmd_workspace_verify(args)
+        if sub == "export":
+            return cmd_workspace_export(args)
+        if sub == "import":
+            return cmd_workspace_import(args)
         if sub == "migrate":
             return cmd_workspace_migrate(args)
         die(f"unknown workspace command: {sub}", 2)

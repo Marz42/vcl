@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import os
 import shutil
 import sys
+import tarfile
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -47,6 +49,13 @@ WS_ERR_ROLLBACK, WS_ERR_DIVERGED, WS_ERR_INCONSISTENT = (
     "WORKSPACE_INCONSISTENT",
 )
 WS_ERR_CAS = "WORKSPACE_CAS_REJECTED"
+# Portable snapshot members only (D22/D28): never machine-local/, fleet.db, keys.
+EXPORT_MEMBERS = (
+    "workspace.json",
+    "fleet.json",
+    "trust/known_hosts",
+    "history/instances.jsonl",
+)
 _ZERO_STATE_DIGEST = "sha256:" + ("0" * 64)
 _MANIFEST_REQUIRED_KEYS = (
     "schema_version",
@@ -1051,6 +1060,160 @@ def open_cache_readonly():
 def open_cache_for_sync():
     """0.4.0 sync/migrate RW seam; same backing until 0.4.2."""
     return _host.open_fleet_db()
+
+
+def _assert_portable_registry(registry: dict[str, Any]) -> None:
+    """Reject secrets / machine absolute credential paths (D22/D28)."""
+    for i, node in enumerate(registry.get("nodes") or []):
+        if not isinstance(node, dict):
+            _host.die(f"nodes[{i}] must be an object")
+        for key in node:
+            kl = str(key).lower()
+            if kl == "identity_file" or "password" in kl or kl in (
+                "passwd",
+                "ssh_password",
+            ):
+                _host.die(
+                    f"portable workspace forbids credential field: {key}"
+                )
+            if kl.endswith("_file") and isinstance(node.get(key), str):
+                val = node[key]
+                if val.startswith("/") or (len(val) > 1 and val[1] == ":"):
+                    _host.die(
+                        f"portable workspace forbids absolute path in {key}"
+                    )
+
+
+def _safe_export_member_name(name: str) -> str:
+    n = str(name).replace("\\", "/").lstrip("./")
+    if not n or n.startswith("/") or ".." in n.split("/"):
+        _host.die(f"unsafe archive member: {name}")
+    if n not in EXPORT_MEMBERS:
+        _host.die(f"non-portable archive member: {n}")
+    return n
+
+
+def export_workspace(dest: Path) -> Path:
+    """Write tar.gz of portable workspace members (no secrets / machine-local)."""
+    dest = Path(dest).expanduser()
+    if not dest.is_absolute():
+        dest = dest.resolve()
+    home = fleet_home()
+    manifest = load_workspace_manifest()
+    validate_workspace_manifest(manifest)
+    reg = load_registry()
+    _assert_portable_registry(reg)
+    # Re-check raw fleet.json bytes for residual identity_file / passwords.
+    fleet_path = fleet_registry_path()
+    if not fleet_path.is_file():
+        _host.die(f"fleet.json not found: {fleet_path}")
+    raw = fleet_path.read_text(encoding="utf-8")
+    if '"identity_file"' in raw or "'identity_file'" in raw:
+        _host.die("portable workspace forbids identity_file in fleet.json")
+    lowered = raw.lower()
+    if '"password"' in lowered or "passwd" in lowered:
+        _host.die("portable workspace forbids credentials in fleet.json")
+
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".workspace-export.", suffix=".tgz", dir=str(parent)
+    )
+    os.close(fd)
+    try:
+        mtime = int(datetime.now(timezone.utc).timestamp())
+        with tarfile.open(tmp, "w:gz") as tf:
+            for name in EXPORT_MEMBERS:
+                path = home / name
+                if not path.is_file():
+                    continue
+                data = path.read_bytes()
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                info.mode = 0o600
+                info.mtime = mtime
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                tf.addfile(info, io.BytesIO(data))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest)
+        os.chmod(dest, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return dest
+
+
+def import_workspace(src: Path) -> dict[str, Any]:
+    """Extract portable snapshot into fleet_home; never import bindings/secrets."""
+    src = Path(src).expanduser()
+    if not src.is_file():
+        _host.die(f"workspace archive not found: {src}")
+    home = _ensure_fleet_home()
+    for dname in ("trust", "history", MACHINE_LOCAL_DIRNAME):
+        d = home / dname
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+
+    extracted: set[str] = set()
+    try:
+        with tarfile.open(src, "r:gz") as tf:
+            for member in tf.getmembers():
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    _host.die(f"unsupported archive member type: {member.name}")
+                name = _safe_export_member_name(member.name)
+                if member.size < 0:
+                    _host.die(f"invalid archive member size: {name}")
+                fh = tf.extractfile(member)
+                if fh is None:
+                    _host.die(f"cannot read archive member: {name}")
+                data = fh.read()
+                dest = home / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(
+                    prefix=f".{dest.name}.",
+                    suffix=".tmp",
+                    dir=str(dest.parent),
+                )
+                try:
+                    with os.fdopen(fd, "wb") as out:
+                        out.write(data)
+                    os.chmod(tmp, 0o600)
+                    os.replace(tmp, dest)
+                    os.chmod(dest, 0o600)
+                except Exception:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+                extracted.add(name)
+    except tarfile.TarError as exc:
+        _host.die(f"invalid workspace archive: {exc}")
+
+    if "workspace.json" not in extracted:
+        _host.die("workspace archive missing workspace.json")
+    if "fleet.json" not in extracted:
+        _host.die("workspace archive missing fleet.json")
+
+    reg = load_registry()
+    _assert_portable_registry(reg)
+    raw = fleet_registry_path().read_text(encoding="utf-8")
+    if '"identity_file"' in raw:
+        _host.die("portable workspace forbids identity_file in fleet.json")
+
+    manifest = load_workspace_manifest()
+    refresh_manifest_digest(manifest)
+    save_workspace_manifest(manifest)
+    remember_workspace_view(manifest)
+    return manifest
 
 
 ADMIN_CREDENTIAL_REF_KEY = "admin_credential_ref"

@@ -1865,6 +1865,342 @@ else
 fi
 export VCL_FLEET_HOME="${SAVED_WS_B5_HOME}"
 
+# --- 0.4.1 B6: workspace CLI init/show/verify/export/import (T36) ---
+SAVED_WS_B6_HOME="${VCL_FLEET_HOME}"
+B6_HOME="${TEST_TMP}/ws-b6-cli"
+B6_TGZ="${TEST_TMP}/ws-b6.tgz"
+rm -rf "$B6_HOME"
+mkdir -p "$B6_HOME"
+
+assert_success "B6 workspace init via --workspace" \
+  fleet --workspace "$B6_HOME" workspace init
+assert_success "B6 workspace.json exists" test -f "${B6_HOME}/workspace.json"
+assert_success "B6 trust dir" test -d "${B6_HOME}/trust"
+assert_success "B6 history dir" test -d "${B6_HOME}/history"
+assert_success "B6 machine-local dir" test -d "${B6_HOME}/machine-local"
+assert_success "B6 fleet.json exists after init" test -f "${B6_HOME}/fleet.json"
+
+show_out=$(fleet --workspace "$B6_HOME" workspace show) || show_rc=$?
+show_rc=${show_rc:-0}
+assert_equal "B6 workspace show exit 0" "0" "$show_rc"
+echo "$show_out" | python3 -c '
+import json, re, sys
+m = json.load(sys.stdin)
+uuid_re = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.I,
+)
+assert uuid_re.fullmatch(m["fleet_id"]), m["fleet_id"]
+assert "revision" in m and "write_id" in m and "state_digest" in m
+assert "last_writer_controller_id" in m
+' && pass "B6 workspace show prints fleet_id UUID + D52 fields" \
+  || fail "B6 workspace show prints fleet_id UUID + D52 fields"
+
+B6_FID=$(echo "$show_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+
+assert_success "B6 verify clean" fleet --workspace "$B6_HOME" workspace verify
+
+# Tamper fleet.json → WORKSPACE_INCONSISTENT
+python3 - "$B6_HOME" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]) / "fleet.json"
+p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+PY
+inc_rc=0
+inc_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || inc_rc=$?
+if (( inc_rc != 0 )) && [[ "$inc_err" == *WORKSPACE_INCONSISTENT* ]]; then
+  pass "B6 verify detects WORKSPACE_INCONSISTENT (S02)"
+else
+  fail "B6 verify detects WORKSPACE_INCONSISTENT (S02) rc=${inc_rc} err=${inc_err}"
+fi
+# Restore digest by rewriting clean registry + refresh
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, json, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {"schema_version": 2, "nodes": []}
+mod._WS._save_registry_unlocked(None, reg)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+print("restored")
+PY
+assert_success "B6 verify after restore" fleet --workspace "$B6_HOME" workspace verify
+
+# ROLLBACK: view rev=5, manifest rev=3
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6r", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+view = {
+    "schema_version": 1,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": m["write_id"],
+    "last_seen_state_digest": m["state_digest"],
+}
+mod.save_workspace_view(view)
+m["revision"] = 3
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+print("rollback-seeded")
+PY
+roll_rc=0
+roll_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || roll_rc=$?
+if (( roll_rc != 0 )) && [[ "$roll_err" == *WORKSPACE_ROLLBACK* ]]; then
+  pass "B6 verify detects WORKSPACE_ROLLBACK (S02)"
+else
+  fail "B6 verify detects WORKSPACE_ROLLBACK (S02) rc=${roll_rc} err=${roll_err}"
+fi
+
+# DIVERGED: same rev, different write_id
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6d", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+m["revision"] = 5
+m["write_id"] = str(uuid.uuid4())
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+view = {
+    "schema_version": 1,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": str(uuid.uuid4()),
+    "last_seen_state_digest": m["state_digest"],
+}
+mod.save_workspace_view(view)
+print("diverged-seeded")
+PY
+div_rc=0
+div_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || div_rc=$?
+if (( div_rc != 0 )) && [[ "$div_err" == *WORKSPACE_DIVERGED* ]]; then
+  pass "B6 verify detects WORKSPACE_DIVERGED (S02)"
+else
+  fail "B6 verify detects WORKSPACE_DIVERGED (S02) rc=${div_rc} err=${div_err}"
+fi
+
+# Fresh clean workspace for export/import (refs-only)
+B6_EXP_HOME="${TEST_TMP}/ws-b6-export"
+rm -rf "$B6_EXP_HOME"
+mkdir -p "$B6_EXP_HOME"
+assert_success "B6 export-home init" fleet --workspace "$B6_EXP_HOME" workspace init
+# Seed refs-only node (no identity_file)
+python3 - "$B6_EXP_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6e", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {
+    "schema_version": 2,
+    "fleet_id": mod.load_workspace_manifest()["fleet_id"],
+    "nodes": [
+        {
+            "name": "lax",
+            "node_id": str(uuid.uuid4()),
+            "ssh_host": "203.0.113.10",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+            "admin_credential_ref": "admin-default",
+            "observe_credential_ref": "admin-default",
+        }
+    ],
+}
+mod._WS._save_registry_unlocked(None, reg)
+# optional trust + history lines
+(home / "trust").mkdir(parents=True, exist_ok=True)
+(home / "trust" / "known_hosts").write_text(
+    "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB6portabletrust\n",
+    encoding="utf-8",
+)
+(home / "history").mkdir(parents=True, exist_ok=True)
+(home / "history" / "instances.jsonl").write_text(
+    '{"node_id":"%s","instance_id":"%s","started_at":"2026-01-01T00:00:00Z",'
+    '"retired_at":null,"endpoint":"203.0.113.10","reason":"sync-first-sight"}\n'
+    % (reg["nodes"][0]["node_id"], str(uuid.uuid4())),
+    encoding="utf-8",
+)
+# machine-local must NOT be exported
+(home / "machine-local").mkdir(parents=True, exist_ok=True)
+(home / "machine-local" / "credential-bindings.json").write_text(
+    '{"schema_version":1,"bindings":{"admin-default":'
+    '{"type":"identity_file","path":"/home/secret/id_ed25519"}}}\n',
+    encoding="utf-8",
+)
+(home / "fleet.db").write_bytes(b"not-a-real-db")
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+print(m["fleet_id"])
+PY
+B6_EXP_FID=$(fleet --workspace "$B6_EXP_HOME" workspace show | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+
+# identity_file seed must refuse export
+B6_BAD_HOME="${TEST_TMP}/ws-b6-bad-export"
+rm -rf "$B6_BAD_HOME"
+mkdir -p "$B6_BAD_HOME"
+assert_success "B6 bad-export init" fleet --workspace "$B6_BAD_HOME" workspace init
+python3 - "$B6_BAD_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6bad", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {
+    "schema_version": 2,
+    "nodes": [
+        {
+            "name": "lax",
+            "node_id": str(uuid.uuid4()),
+            "ssh_host": "203.0.113.10",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+            "identity_file": "/home/secret/id_ed25519",
+        }
+    ],
+}
+mod._WS._save_registry_unlocked(None, reg)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+print("bad-seeded")
+PY
+bad_rc=0
+bad_err=$(fleet --workspace "$B6_BAD_HOME" workspace export "$B6_TGZ.bad" 2>&1) || bad_rc=$?
+if (( bad_rc != 0 )) && [[ "$bad_err" == *identity_file* || "$bad_err" == *credential* || "$bad_err" == *portable* ]]; then
+  pass "B6 export refuses identity_file secrets (D22/D28)"
+else
+  fail "B6 export refuses identity_file secrets (D22/D28) rc=${bad_rc} err=${bad_err}"
+fi
+
+rm -f "$B6_TGZ"
+assert_success "B6 export clean refs-only" \
+  fleet --workspace "$B6_EXP_HOME" workspace export "$B6_TGZ"
+assert_success "B6 export archive exists" test -f "$B6_TGZ"
+
+tar_list=$(tar -tzf "$B6_TGZ")
+echo "$tar_list" | grep -q 'workspace.json' \
+  && pass "B6 export contains workspace.json" \
+  || fail "B6 export contains workspace.json"
+echo "$tar_list" | grep -q 'fleet.json' \
+  && pass "B6 export contains fleet.json" \
+  || fail "B6 export contains fleet.json"
+if echo "$tar_list" | grep -qE 'machine-local|fleet\.db|last-status'; then
+  fail "B6 export omits machine-local/fleet.db/last-status"
+else
+  pass "B6 export omits machine-local/fleet.db/last-status"
+fi
+# strings / content must not leak secrets or machine paths
+if tar -xOzf "$B6_TGZ" | grep -qE 'identity_file|/home/|machine-local|fleet\.db'; then
+  fail "B6 export payload has no identity_file/home/machine-local/fleet.db"
+else
+  pass "B6 export payload has no identity_file/home/machine-local/fleet.db"
+fi
+
+B6_IMP_HOME="${TEST_TMP}/ws-b6-import"
+rm -rf "$B6_IMP_HOME"
+mkdir -p "$B6_IMP_HOME"
+assert_success "B6 import into new home" \
+  fleet --workspace "$B6_IMP_HOME" workspace import "$B6_TGZ"
+imp_show=$(fleet --workspace "$B6_IMP_HOME" workspace show)
+imp_fid=$(echo "$imp_show" | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+assert_equal "B6 import preserves fleet_id" "$B6_EXP_FID" "$imp_fid"
+assert_success "B6 import verify OK" fleet --workspace "$B6_IMP_HOME" workspace verify
+assert_failure "B6 import did not copy machine-local bindings" \
+  test -f "${B6_IMP_HOME}/machine-local/credential-bindings.json"
+assert_failure "B6 import did not copy fleet.db" \
+  test -f "${B6_IMP_HOME}/fleet.db"
+
+# VCL_FLEET_WORKSPACE alias when VCL_FLEET_HOME unset
+SAVED_B6_FLEET_HOME_ENV="${VCL_FLEET_HOME:-}"
+unset VCL_FLEET_HOME
+export VCL_FLEET_WORKSPACE="$B6_IMP_HOME"
+alias_out=$(fleet workspace show) || alias_rc=$?
+alias_rc=${alias_rc:-0}
+assert_equal "B6 VCL_FLEET_WORKSPACE alias show exit 0" "0" "$alias_rc"
+echo "$alias_out" | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+assert m["fleet_id"]
+' && pass "B6 VCL_FLEET_WORKSPACE alias works for workspace show" \
+  || fail "B6 VCL_FLEET_WORKSPACE alias works for workspace show"
+unset VCL_FLEET_WORKSPACE
+export VCL_FLEET_HOME="${SAVED_B6_FLEET_HOME_ENV}"
+
+# Dry-run still zero side-effect (T32 regression)
+B6_DRY_HOME="${TEST_TMP}/ws-b6-dry"
+rm -rf "$B6_DRY_HOME"
+mkdir -p "$B6_DRY_HOME"
+SAVED_B6_DRY_HOME="${VCL_FLEET_HOME}"
+SAVED_B6_DRY_SSH="${VCL_FLEET_SSH:-}"
+SAVED_B6_DRY_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN:-}"
+export VCL_FLEET_HOME="$B6_DRY_HOME"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+fleet init >/dev/null
+fleet node add offline1 --host 203.0.113.99 --offline \
+  --node-id 6fc96a10-1111-4111-8111-111111111111 >/dev/null
+snap_before=$(find "$B6_DRY_HOME" -type f -printf '%P %s %T@\n' | sort)
+dry_b6=$(fleet workspace migrate --dry-run) || dry_b6_rc=$?
+dry_b6_rc=${dry_b6_rc:-0}
+snap_after=$(find "$B6_DRY_HOME" -type f -printf '%P %s %T@\n' | sort)
+assert_equal "B6 dry-run exit 0" "0" "$dry_b6_rc"
+assert_equal "B6 dry-run zero side-effect files" "$snap_before" "$snap_after"
+echo "$dry_b6" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True and p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+assert "NOT SSH" in p.get("note", "")
+' && pass "B6 dry-run still plans without SSH" \
+  || fail "B6 dry-run still plans without SSH"
+if [[ -n "${SAVED_B6_DRY_SSH}" ]]; then
+  export VCL_FLEET_SSH="${SAVED_B6_DRY_SSH}"
+else
+  unset VCL_FLEET_SSH
+fi
+if [[ -n "${SAVED_B6_DRY_KEYSCAN}" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="${SAVED_B6_DRY_KEYSCAN}"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+export VCL_FLEET_HOME="${SAVED_B6_DRY_HOME}"
+
+# No SSH in workspace migrate helpers
+if grep -nE 'ssh_run|candidate_host_keys' "${PROJECT_DIR}/lib/workspace.py" >/dev/null 2>&1; then
+  fail "B6 workspace.py has no ssh_run/candidate_host_keys"
+else
+  pass "B6 workspace.py has no ssh_run/candidate_host_keys"
+fi
+
+export VCL_FLEET_HOME="${SAVED_WS_B6_HOME}"
+
 OFFLINE_FLEET_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init
