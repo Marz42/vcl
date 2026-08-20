@@ -123,9 +123,33 @@ assert_success "clock skew fail is 300s" \
 assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 2" \
-  grep -q 'FLEET_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
+  grep -q 'FLEET_REGISTRY_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db schema version is 3" \
-  grep -q 'FLEET_DB_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
+  grep -q 'FLEET_CACHE_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet schema aliases retained" \
+  grep -q 'FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema alias retained" \
+  grep -q 'FLEET_DB_SCHEMA_VERSION = FLEET_CACHE_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "namespaced fleet-cache error" \
+  grep -q 'unsupported fleet-cache schema:' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "namespaced fleet-registry error" \
+  grep -q 'unsupported fleet-registry schema:' "${PROJECT_DIR}/lib/workspace.py"
+assert_failure "no bare fleet.json schema die" \
+  grep -q 'unsupported fleet.json schema_version:' "${PROJECT_DIR}/lib/vincula-fleet.py" "${PROJECT_DIR}/lib/workspace.py"
+assert_success "build-controller uses VCL_FLEET_VERSION" \
+  grep -q 'VCL_FLEET_VERSION' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_failure "build-controller ignores VINCULA_VERSION" \
+  grep -q 'VINCULA_VERSION' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "RO seam" \
+  grep -q 'def open_cache_readonly' "${PROJECT_DIR}/lib/workspace.py"
+assert_success "RW seam" \
+  grep -q 'def open_cache_for_sync' "${PROJECT_DIR}/lib/workspace.py"
+assert_success "D57 admin_credential_ref" \
+  grep -q 'admin_credential_ref' "${PROJECT_DIR}/lib/workspace.py"
+assert_success "D57 observe_credential_ref" \
+  grep -q 'observe_credential_ref' "${PROJECT_DIR}/lib/workspace.py"
+assert_success "planned_credential_refs" \
+  grep -q 'def planned_credential_refs' "${PROJECT_DIR}/lib/workspace.py"
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses UPSERT for audit_events" \
@@ -147,9 +171,10 @@ assert_success "build-controller.sh writes zip sha256 sidecar" \
 assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
-assert_equal "vcl-fleet version" "vcl-fleet 0.3.1" \
+VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
-assert_equal "vcl-fleet.py version" "vcl-fleet 0.3.1" \
+assert_equal "vcl-fleet.py version" "vcl-fleet ${VCL_FLEET_VERSION}" \
   "$(fleet version)"
 
 node_help=$(fleet node -h)

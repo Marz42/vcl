@@ -1005,20 +1005,22 @@ assert_failure "node tarball does not contain vincula-fleet.py" \
   grep -q 'vincula-fleet.py' <<< "$node_listing"
 assert_success "node tarball contains vincula-backup.py" \
   grep -q 'vincula-backup.py' <<< "$node_listing"
+VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+[[ -n "$VCL_FLEET_VERSION" ]]
 assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
-  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 assert_success "controller zip sidecar sha256 exists" \
-  test -f "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256"
-if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+  test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip.sha256"
+if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" ); then
   pass "controller zip sha256sum -c verifies"
 else
   fail "controller zip sha256sum -c verifies"
 fi
-controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip"
+controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 controller_zip_rc=0
-python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
+python3 - "$controller_zip" "${VCL_FLEET_VERSION}" <<'PY' || controller_zip_rc=$?
 import sys
 import zipfile
 
@@ -1031,6 +1033,10 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",
@@ -1052,7 +1058,7 @@ else
   fail "AC-2.8-11 controller zip members"
 fi
 controller_runtime_rc=0
-python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_runtime_rc=$?
+python3 - "$controller_zip" "${VCL_FLEET_VERSION}" <<'PY' || controller_runtime_rc=$?
 import sys
 import zipfile
 
@@ -1061,6 +1067,10 @@ prefix = f"vincula-controller-{version}"
 need = (
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
 )
 with zipfile.ZipFile(archive) as zf:
     names = set(zf.namelist())
@@ -1088,13 +1098,21 @@ import zipfile
 
 zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
 PY
-UNPACK="${BB_DIR}/vincula-controller-${VINCULA_VERSION}"
+UNPACK="${BB_DIR}/vincula-controller-${VCL_FLEET_VERSION}"
 assert_success "controller zip black-box unpack has vcl-fleet" \
   test -f "${UNPACK}/bin/vcl-fleet"
 assert_success "controller zip black-box unpack has vincula-audit.py" \
   test -f "${UNPACK}/lib/vincula-audit.py"
 assert_success "controller zip black-box unpack has vincula-backup.py" \
   test -f "${UNPACK}/lib/vincula-backup.py"
+assert_success "controller zip black-box unpack has workspace.py" \
+  test -f "${UNPACK}/lib/workspace.py"
+assert_success "controller zip black-box unpack has access.py" \
+  test -f "${UNPACK}/lib/access.py"
+assert_success "controller zip black-box unpack has trust.py" \
+  test -f "${UNPACK}/lib/trust.py"
+assert_success "controller zip black-box unpack has legacy.py" \
+  test -f "${UNPACK}/lib/legacy.py"
 assert_success "controller zip contains controller.lock manifest" \
   test -f "${UNPACK}/controller.lock"
 if ( cd "$UNPACK" && sha256sum --check --status controller.lock ); then
@@ -1108,6 +1126,14 @@ assert_success "controller.lock lists vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists workspace.py" \
+  grep -q 'lib/workspace.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists access.py" \
+  grep -q 'lib/access.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists trust.py" \
+  grep -q 'lib/trust.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists legacy.py" \
+  grep -q 'lib/legacy.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-ui server" \
   grep -q 'lib/vincula-ui/server.py' "${UNPACK}/controller.lock"
 assert_success "controller zip contains vincula-ui static index" \
@@ -1125,7 +1151,7 @@ bb_version=$(
   cd "$BB_CWD"
   bb_fleet version
 ) || bb_version_rc=$?
-if (( bb_version_rc == 0 )) && [[ "$bb_version" == "vcl-fleet ${VINCULA_VERSION}" ]]; then
+if (( bb_version_rc == 0 )) && [[ "$bb_version" == "vcl-fleet ${VCL_FLEET_VERSION}" ]]; then
   pass "controller zip black-box version"
 else
   fail "controller zip black-box version (rc=${bb_version_rc} out=${bb_version})"
@@ -1276,11 +1302,11 @@ assert_success "README mentions vincula-controller artifact" \
 # P2-03 / B13: controller sidecar digest is a real check (tamper → fail).
 TAMPER_DIR="${TEST_TMP}/controller-zip-tamper"
 mkdir -p "$TAMPER_DIR"
-cp -a "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" \
-  "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256" \
+cp -a "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip" \
+  "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" \
   "$TAMPER_DIR/"
-printf 'x' >> "${TAMPER_DIR}/vincula-controller-${VINCULA_VERSION}.zip"
-if ( cd "$TAMPER_DIR" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+printf 'x' >> "${TAMPER_DIR}/vincula-controller-${VCL_FLEET_VERSION}.zip"
+if ( cd "$TAMPER_DIR" && sha256sum --check --status "vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" ); then
   fail "controller zip sha256sum -c rejects a tampered zip"
 else
   pass "controller zip sha256sum -c rejects a tampered zip"
@@ -4903,7 +4929,7 @@ assert_failure "installer health checks no longer expect accounting schema 3" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
 # B18: rc1 fresh-install blocker — health check must track accountd SCHEMA_VERSION.
 assert_success "B18 accountd SCHEMA_VERSION is 4" \
-  grep -q '^SCHEMA_VERSION = 4$' "${PROJECT_DIR}/lib/vincula-accountd.py"
+  grep -qE '^(ACCOUNTING_DB_SCHEMA_VERSION = 4|SCHEMA_VERSION = ACCOUNTING_DB_SCHEMA_VERSION)$' "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_success "B18 audit export requires schema 4" \
   grep -q 'schema_version={ver!r} is not 4' "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_success "B18 wait_for_accountd_healthy is the install commit gate" \

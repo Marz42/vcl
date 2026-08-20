@@ -9,8 +9,8 @@ IFS=$'\n\t'
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$ROOT"
 
-VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${ROOT}/vincula.sh" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-[[ -n "$VERSION" ]] || { printf 'ERROR: could not parse VINCULA_VERSION\n' >&2; exit 1; }
+VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${ROOT}/lib/vincula-fleet.py" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+[[ -n "$VERSION" ]] || { printf 'ERROR: could not parse VCL_FLEET_VERSION\n' >&2; exit 1; }
 
 NAME="vincula-controller-${VERSION}"
 DIST_ROOT="${ROOT}/dist"
@@ -25,6 +25,10 @@ FILES=(
   lib/vincula-fleet.py
   lib/vincula-audit.py
   lib/vincula-backup.py
+  lib/workspace.py
+  lib/access.py
+  lib/trust.py
+  lib/legacy.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -85,6 +89,10 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",

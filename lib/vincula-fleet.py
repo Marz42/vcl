@@ -41,9 +41,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.3.1"
-FLEET_SCHEMA_VERSION = 2
+FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_DB_SCHEMA_VERSION = 3
+FLEET_CACHE_SCHEMA_VERSION = 3
+WORKSPACE_SCHEMA_VERSION = 1
+AUDIT_ARCHIVE_SCHEMA_VERSION = 1
+TELEMETRY_SCHEMA_VERSION = 1
+FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION
+FLEET_DB_SCHEMA_VERSION = FLEET_CACHE_SCHEMA_VERSION
 NODE_STATUS_ACTIVE = "active"
 NODE_STATUS_DISABLED = "disabled"
 NODE_STATUS_RETIRED = "retired"
@@ -171,14 +176,7 @@ UUID_RE = re.compile(
 # Same contract as is_valid_user_tag: lowercase alnum / . _ - ; max 32.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 # OpenSSH-safe POSIX username: starts with [a-z_], then [a-z0-9_-]; max 32.
-SSH_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-SSH_USER_MAX = 32
-SSH_HOST_MAX = 253
-SSH_REMOTE_CMD_MAX_BYTES = 8192
 USER_METADATA_MAX = 128
-_HOSTNAME_LABEL_RE = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
-)
 FORBIDDEN_NODE_KEYS = ("password", "passwd", "ssh_password")
 NODE_KEYS = (
     "node_id",
@@ -190,11 +188,6 @@ NODE_KEYS = (
     "enabled",
     "status",
 )
-SSH_TIMEOUT_SECONDS = 20
-SSH_MUTATION_TIMEOUT_SECONDS = 60
-SSH_BACKUP_TIMEOUT_SECONDS = 120
-SSH_KEYSCAN_TIMEOUT_SECONDS = 10
-SCP_TIMEOUT_SECONDS = 60
 REMOTE_BACKUP_TAR = "/var/backups/vincula/backup.tar"
 REMOTE_RESTORE_TAR = "/tmp/vincula-restore.tar"
 REMOTE_REISSUE_CSV = "/tmp/reissue.csv"
@@ -232,62 +225,291 @@ OP_PARTIAL = "PARTIAL"
 MUTATION_SCHEMA_VERSION = 1
 MUTATION_EXIT_SUCCESS = 0
 MUTATION_EXIT_PARTIAL = 2
-HOST_KEY_TYPES = (
-    "ssh-ed25519",
-    "ssh-rsa",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "ssh-dss",
-)
-HOST_KEY_FP_BODY_RE = re.compile(r"^[A-Za-z0-9+/]+$")
-NONINTERACTIVE_HOST_KEY_MSG = "non-interactive add requires --host-key SHA256:..."
-
-
 def die(message: str, code: int = 1) -> None:
     sys.stderr.write(f"vcl-fleet: {message}\n")
     raise SystemExit(code)
 
 
+def _controller_lib_dir() -> Path:
+    """Directory that holds this file and sibling runtime modules.
+
+    Zip unpack, repo checkout, and ``python3 bin/vcl-fleet`` all resolve
+    ``vincula-fleet.py`` to a real path; audit/backup must load from that
+    same ``lib/`` directory. Never cwd, never ``PYTHONPATH``, never a
+    sibling checkout the operator is not running.
+    """
+    here = Path(__file__).resolve()
+    parent = here.parent
+    if parent.name == "__pycache__":
+        parent = parent.parent
+    return parent
+
+
+def _load_controller_sibling(modname: str, filename: str) -> Any:
+    path = _controller_lib_dir() / filename
+    if not path.is_file():
+        die(f"{filename} not found: {path}")
+    existing = sys.modules.get(modname)
+    if existing is not None:
+        existing_file = getattr(existing, "__file__", None)
+        if existing_file is None or Path(existing_file).resolve() != path:
+            del sys.modules[modname]
+    loader = importlib.machinery.SourceFileLoader(modname, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        die(f"cannot load {filename}")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class _FleetHostProxy:
+    """Attribute host for seam bind(); works under importlib without sys.modules."""
+
+    __slots__ = ("_g",)
+
+    def __init__(self, g: dict[str, Any]) -> None:
+        object.__setattr__(self, "_g", g)
+
+    def __getattr__(self, name: str) -> Any:
+        g = object.__getattribute__(self, "_g")
+        try:
+            return g[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+_FLEET_HOST = _FleetHostProxy(globals())
+
+_WS = _load_controller_sibling("vcl_workspace", "workspace.py")
+_WS.bind(_FLEET_HOST)
+
+
 def fleet_home() -> Path:
-    override = os.environ.get("VCL_FLEET_HOME")
-    if override:
-        return Path(override)
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            return Path(appdata) / "vincula"
-        return Path.home() / "AppData" / "Roaming" / "vincula"
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        return Path(xdg) / "vincula"
-    return Path.home() / ".config" / "vincula"
+    return _WS.fleet_home()
 
 
 def fleet_registry_path() -> Path:
-    return fleet_home() / "fleet.json"
+    return _WS.fleet_registry_path()
 
 
 def last_status_path() -> Path:
-    return fleet_home() / "last-status.json"
+    return _WS.last_status_path()
 
 
 def fleet_db_path() -> Path:
-    return fleet_home() / "fleet.db"
+    return _WS.fleet_db_path()
 
 
 def _chmod_private(path: Path, mode: int = 0o600) -> None:
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
+    return _WS._chmod_private(path, mode)
 
 
 def _ensure_fleet_home() -> Path:
-    home = fleet_home()
-    home.mkdir(parents=True, exist_ok=True)
-    _chmod_private(home, 0o700)
-    return home
+    return _WS._ensure_fleet_home()
+
+
+def open_cache_readonly():
+    return _WS.open_cache_readonly()
+
+
+def open_cache_for_sync():
+    return _WS.open_cache_for_sync()
+
+
+planned_credential_refs = _WS.planned_credential_refs
+node_schema_field_names = _WS.node_schema_field_names
+RESERVED_NODE_CREDENTIAL_KEYS = _WS.RESERVED_NODE_CREDENTIAL_KEYS
+
+
+_AC = _load_controller_sibling("vcl_access", "access.py")
+_AC.bind(_FLEET_HOST)
+
+SSH_USER_RE = _AC.SSH_USER_RE
+SSH_USER_MAX = _AC.SSH_USER_MAX
+SSH_HOST_MAX = _AC.SSH_HOST_MAX
+SSH_REMOTE_CMD_MAX_BYTES = _AC.SSH_REMOTE_CMD_MAX_BYTES
+SSH_TIMEOUT_SECONDS = 20
+SSH_MUTATION_TIMEOUT_SECONDS = 60
+SSH_BACKUP_TIMEOUT_SECONDS = 120
+SSH_KEYSCAN_TIMEOUT_SECONDS = 10
+SCP_TIMEOUT_SECONDS = 60
+
+
+def ssh_bin() -> str:
+    return _AC.ssh_bin()
+
+
+def scp_bin() -> str:
+    return _AC.scp_bin()
+
+
+def ssh_keyscan_bin() -> str:
+    return _AC.ssh_keyscan_bin()
+
+
+def stdin_is_tty() -> bool:
+    return _AC.stdin_is_tty()
+
+
+def _ssh_option_text(arg: str) -> str:
+    return _AC._ssh_option_text(arg)
+
+
+def _reject_forbidden_ssh_options(argv: list[str]) -> None:
+    return _AC._reject_forbidden_ssh_options(argv)
+
+
+def validate_identity_file(path: str, *, must_exist: bool = True) -> str:
+    return _AC.validate_identity_file(path, must_exist=must_exist)
+
+
+def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
+    return _AC.ssh_identity_args(identity_file)
+
+
+def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
+    return _AC._node_identity_file(node)
+
+
+def ssh_argv(
+    host: str,
+    user: str,
+    port: int,
+    remote_cmd: list[str],
+    *,
+    batch: bool,
+    extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
+) -> list[str]:
+    """Build OpenSSH argv; remote operand is shlex.join'd in access.ssh_argv."""
+    return _AC.ssh_argv(
+        host,
+        user,
+        port,
+        remote_cmd,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+    )
+
+
+def ssh_run(
+    host: str,
+    user: str,
+    port: int,
+    remote_cmd: list[str],
+    *,
+    batch: bool = True,
+    extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
+    timeout: float = SSH_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    return _AC.ssh_run(
+        host,
+        user,
+        port,
+        remote_cmd,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+        timeout=timeout,
+    )
+
+
+def scp_argv(
+    *,
+    port: int,
+    src: str,
+    dest: str,
+    batch: bool = True,
+    extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
+) -> list[str]:
+    return _AC.scp_argv(
+        port=port,
+        src=src,
+        dest=dest,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+    )
+
+
+def scp_run(
+    *,
+    port: int,
+    src: str,
+    dest: str,
+    batch: bool = True,
+    extra: list[str] | None = None,
+    identity_file: Optional[str] = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    return _AC.scp_run(
+        port=port,
+        src=src,
+        dest=dest,
+        batch=batch,
+        extra=extra,
+        identity_file=identity_file,
+        timeout=timeout,
+    )
+
+
+def _scp_remote_spec(node: dict[str, Any], remote_path: str) -> str:
+    return _AC._scp_remote_spec(node, remote_path)
+
+
+def scp_pull(
+    node: dict[str, Any],
+    remote_path: str,
+    local_path: Path,
+    *,
+    extra: list[str] | None = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> None:
+    return _AC.scp_pull(
+        node, remote_path, local_path, extra=extra, timeout=timeout
+    )
+
+
+def scp_push(
+    node: dict[str, Any],
+    local_path: Path,
+    remote_path: str,
+    *,
+    extra: list[str] | None = None,
+    timeout: float = SCP_TIMEOUT_SECONDS,
+) -> None:
+    return _AC.scp_push(
+        node, local_path, remote_path, extra=extra, timeout=timeout
+    )
+
+
+def validate_ssh_user(user: str) -> str:
+    return _AC.validate_ssh_user(user)
+
+
+def validate_ssh_host(host: str) -> str:
+    return _AC.validate_ssh_host(host)
+
+
+_TR = _load_controller_sibling("vcl_trust", "trust.py")
+_TR.bind(_FLEET_HOST)
+
+HOST_KEY_TYPES = _TR.HOST_KEY_TYPES
+HOST_KEY_FP_BODY_RE = _TR.HOST_KEY_FP_BODY_RE
+NONINTERACTIVE_HOST_KEY_MSG = _TR.NONINTERACTIVE_HOST_KEY_MSG
+
+default_known_hosts_path = _TR.default_known_hosts_path
+normalize_fingerprint = _TR.normalize_fingerprint
+_key_blob_from_line = _TR._key_blob_from_line
+fingerprint_sha256 = _TR.fingerprint_sha256
+candidate_host_keys = _TR.candidate_host_keys
+append_known_hosts = _TR.append_known_hosts
+pin_host_key = _TR.pin_host_key
+prepare_ssh_host_key = _TR.prepare_ssh_host_key
 
 
 def fleet_lock_path() -> Path:
@@ -493,7 +715,7 @@ def open_fleet_db() -> sqlite3.Connection:
                 _migrate_fleet_db_2_to_3(conn)
             elif ver != str(FLEET_DB_SCHEMA_VERSION):
                 conn.close()
-                die(f"unsupported fleet.db schema_version: {ver}")
+                die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
         for suffix in ("-wal", "-shm"):
             sidecar = Path(str(path) + suffix)
@@ -1295,405 +1517,6 @@ def remediation_protocol_mismatch(name: str) -> str:
         f"run: {remediation_sync_reseed(name)}"
     )
 
-def ssh_bin() -> str:
-    env = os.environ.get("VCL_FLEET_SSH")
-    if env:
-        return env
-    return "ssh.exe" if sys.platform == "win32" else "ssh"
-
-
-def scp_bin() -> str:
-    env = os.environ.get("VCL_FLEET_SCP")
-    if env:
-        return env
-    return "scp.exe" if sys.platform == "win32" else "scp"
-
-
-def ssh_keyscan_bin() -> str:
-    env = os.environ.get("VCL_FLEET_SSH_KEYSCAN")
-    if env:
-        return env
-    return "ssh-keyscan.exe" if sys.platform == "win32" else "ssh-keyscan"
-
-
-def stdin_is_tty() -> bool:
-    try:
-        return bool(sys.stdin.isatty())
-    except Exception:
-        return False
-
-
-def _ssh_option_text(arg: str) -> str:
-    if arg.startswith("-o") and len(arg) > 2 and not arg.startswith("-o "):
-        return arg[2:]
-    return arg
-
-
-def _reject_forbidden_ssh_options(argv: list[str]) -> None:
-    # Split literals so source grep cannot see the forbidden OpenSSH values.
-    strict_no = "StrictHostKeyChecking=" + "no"
-    known_null = "UserKnownHostsFile=" + "/dev/null"
-    joined = " ".join(argv)
-    if strict_no in argv or strict_no in joined:
-        die(f"refusing forbidden SSH option {strict_no}", 2)
-    if known_null in argv or known_null in joined:
-        die(f"refusing forbidden SSH option {known_null}", 2)
-    for arg in argv:
-        option = _ssh_option_text(arg)
-        if option.startswith("UserKnownHostsFile="):
-            die("refusing forbidden SSH option UserKnownHostsFile=", 2)
-
-
-def validate_identity_file(path: str, *, must_exist: bool = True) -> str:
-    """Return a local private-key path. Never stores key bytes."""
-    raw = (path or "").strip()
-    if not raw or "\x00" in raw or "\n" in raw or "\r" in raw:
-        die("invalid --identity-file")
-    candidate = Path(raw).expanduser()
-    if must_exist:
-        try:
-            resolved = candidate.resolve()
-        except OSError as exc:
-            die(f"invalid --identity-file: {exc}")
-        if not resolved.is_file():
-            die(f"identity file not found: {resolved}")
-        return str(resolved)
-    if candidate.is_file():
-        try:
-            return str(candidate.resolve())
-        except OSError:
-            return str(candidate)
-    return str(candidate)
-
-
-def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
-    path = _optional_text(identity_file)
-    if not path:
-        return []
-    return ["-i", validate_identity_file(path, must_exist=True), "-o", "IdentitiesOnly=yes"]
-
-
-def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
-    return _optional_text(node.get("identity_file"))
-
-
-def ssh_argv(
-    host: str,
-    user: str,
-    port: int,
-    remote_cmd: list[str],
-    *,
-    batch: bool,
-    extra: list[str] | None = None,
-    identity_file: Optional[str] = None,
-) -> list[str]:
-    """Build an OpenSSH argv. Never weakens host-key checking.
-
-    OpenSSH concatenates operands after the destination into one string
-    for the remote login shell. Passing a single ``shlex.join`` string
-    preserves argv boundaries (spaces, quotes, metacharacters). The
-    remote shell is POSIX even when the local client is Windows OpenSSH.
-    """
-    validate_ssh_user(user)
-    validate_ssh_host(host)
-    if not isinstance(remote_cmd, (list, tuple)) or not remote_cmd:
-        die("remote command must be a non-empty argv list")
-    parts: list[str] = []
-    for part in remote_cmd:
-        if not isinstance(part, str):
-            die("remote command argv must be strings")
-        if "\x00" in part:
-            die("remote command argv must not contain NUL")
-        parts.append(part)
-    remote = shlex.join(parts)
-    if len(remote.encode("utf-8")) > SSH_REMOTE_CMD_MAX_BYTES:
-        die(f"remote command exceeds {SSH_REMOTE_CMD_MAX_BYTES} bytes")
-    argv = [ssh_bin(), "-p", str(port)]
-    if extra:
-        argv.extend(extra)
-    if batch:
-        argv.extend(["-o", "BatchMode=yes"])
-    argv.extend(ssh_identity_args(identity_file))
-    argv.extend([f"{user}@{host}", "--", remote])
-    _reject_forbidden_ssh_options(argv)
-    return argv
-
-
-def ssh_run(
-    host: str,
-    user: str,
-    port: int,
-    remote_cmd: list[str],
-    *,
-    batch: bool = True,
-    extra: list[str] | None = None,
-    identity_file: Optional[str] = None,
-    timeout: float = SSH_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved."""
-    argv = ssh_argv(
-        host,
-        user,
-        port,
-        remote_cmd,
-        batch=batch,
-        extra=extra,
-        identity_file=identity_file,
-    )
-    try:
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout
-        stderr = exc.stderr
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", "replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", "replace")
-        detail = (stderr or "").strip()
-        timeout_msg = f"ssh timed out after {timeout}s"
-        stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
-        return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
-    except OSError as exc:
-        die(f"cannot execute {argv[0]}: {exc}")
-
-
-def scp_argv(
-    *,
-    port: int,
-    src: str,
-    dest: str,
-    batch: bool = True,
-    extra: list[str] | None = None,
-    identity_file: Optional[str] = None,
-) -> list[str]:
-    """Build an OpenSSH scp argv. Never weakens host-key checking."""
-    argv = [scp_bin(), "-P", str(port)]
-    if extra:
-        argv.extend(extra)
-    if batch:
-        argv.extend(["-o", "BatchMode=yes"])
-    argv.extend(ssh_identity_args(identity_file))
-    argv.extend([src, dest])
-    _reject_forbidden_ssh_options(argv)
-    return argv
-
-
-def scp_run(
-    *,
-    port: int,
-    src: str,
-    dest: str,
-    batch: bool = True,
-    extra: list[str] | None = None,
-    identity_file: Optional[str] = None,
-    timeout: float = SCP_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    """Copy src to dest via scp. List argv only; never shell=True."""
-    argv = scp_argv(
-        port=port,
-        src=src,
-        dest=dest,
-        batch=batch,
-        extra=extra,
-        identity_file=identity_file,
-    )
-    try:
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout
-        stderr = exc.stderr
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", "replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", "replace")
-        detail = (stderr or "").strip()
-        timeout_msg = f"scp timed out after {timeout}s"
-        stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
-        return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
-    except OSError as exc:
-        die(f"cannot execute {argv[0]}: {exc}")
-
-
-def _scp_remote_spec(node: dict[str, Any], remote_path: str) -> str:
-    return f"{node['ssh_user']}@{node['ssh_host']}:{remote_path}"
-
-
-def scp_pull(
-    node: dict[str, Any],
-    remote_path: str,
-    local_path: Path,
-    *,
-    extra: list[str] | None = None,
-    timeout: float = SCP_TIMEOUT_SECONDS,
-) -> None:
-    dest = Path(local_path)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    proc = scp_run(
-        port=int(node.get("ssh_port") or 22),
-        src=_scp_remote_spec(node, remote_path),
-        dest=str(dest),
-        extra=extra,
-        identity_file=_node_identity_file(node),
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
-        die(f"scp pull failed: {_ssh_failure_detail(proc)}")
-    if not dest.is_file():
-        die(f"scp pull did not write {dest}")
-    _chmod_private(dest, 0o600)
-
-
-def scp_push(
-    node: dict[str, Any],
-    local_path: Path,
-    remote_path: str,
-    *,
-    extra: list[str] | None = None,
-    timeout: float = SCP_TIMEOUT_SECONDS,
-) -> None:
-    src = Path(local_path)
-    if not src.is_file():
-        die(f"scp push source not found: {src}")
-    proc = scp_run(
-        port=int(node.get("ssh_port") or 22),
-        src=str(src),
-        dest=_scp_remote_spec(node, remote_path),
-        extra=extra,
-        identity_file=_node_identity_file(node),
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
-        die(f"scp push failed: {_ssh_failure_detail(proc)}")
-
-
-def default_known_hosts_path() -> Path:
-    return Path.home() / ".ssh" / "known_hosts"
-
-
-def normalize_fingerprint(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw.startswith("SHA256:"):
-        die("invalid --host-key: expected SHA256:<base64>")
-    body = raw[len("SHA256:") :].replace("=", "")
-    if not body or not HOST_KEY_FP_BODY_RE.fullmatch(body):
-        die("invalid --host-key: expected SHA256:<base64>")
-    return "SHA256:" + body
-
-
-def _key_blob_from_line(raw_key_line: str) -> bytes:
-    parts = raw_key_line.split()
-    blob_b64 = None
-    for i, part in enumerate(parts):
-        if part in HOST_KEY_TYPES and i + 1 < len(parts):
-            blob_b64 = parts[i + 1]
-            break
-    if not blob_b64:
-        raise ValueError(f"cannot parse host key line: {raw_key_line}")
-    pad = "=" * ((4 - len(blob_b64) % 4) % 4)
-    return base64.b64decode(blob_b64 + pad)
-
-
-def fingerprint_sha256(raw_key_line: str) -> str:
-    """OpenSSH SHA256 fingerprint of a known_hosts / keyscan line.
-
-    Hashlib of the key blob is the CI-stable implementation. Matches
-    `ssh-keygen -l` display form SHA256:... (unpadded standard base64).
-    """
-    blob = _key_blob_from_line(raw_key_line)
-    digest = hashlib.sha256(blob).digest()
-    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
-
-
-def candidate_host_keys(host: str, port: int) -> list[str]:
-    """ssh-keyscan candidates only. Empty on failure; never means verified."""
-    argv = [ssh_keyscan_bin(), "-p", str(port), "-T", "5", host]
-    try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=SSH_KEYSCAN_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    lines: list[str] = []
-    for line in (proc.stdout or "").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        lines.append(stripped)
-    return lines
-
-
-def append_known_hosts(line: str) -> None:
-    path = default_known_hosts_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
-    existing = ""
-    if path.is_file():
-        existing = path.read_text(encoding="utf-8")
-        present = {row.strip() for row in existing.splitlines() if row.strip()}
-        if line.strip() in present:
-            return
-    with path.open("a", encoding="utf-8") as fh:
-        if existing and not existing.endswith("\n"):
-            fh.write("\n")
-        fh.write(line.rstrip("\n") + "\n")
-    os.chmod(path, 0o600)
-
-
-def pin_host_key(host: str, port: int, host_key: str) -> None:
-    expected = normalize_fingerprint(host_key)
-    matched = None
-    for line in candidate_host_keys(host, port):
-        try:
-            fp = fingerprint_sha256(line)
-        except (ValueError, OSError):
-            continue
-        if fp == expected:
-            matched = line
-            break
-    if matched is None:
-        die("host key mismatch")
-    append_known_hosts(matched)
-
-
-def prepare_ssh_host_key(
-    host: str,
-    port: int,
-    host_key: Optional[str],
-) -> tuple[Optional[list[str]], bool]:
-    """Return (extra ssh -o args, batch). Never weakens host-key checking.
-
-    --host-key: keyscan is candidate acquisition only; fingerprint match
-    writes the user default known_hosts, then StrictHostKeyChecking=yes.
-    No --host-key on a TTY: no BatchMode, OpenSSH prompts. Non-TTY without
-    --host-key is refused; keyscan alone never makes add succeed.
-    """
-    if host_key:
-        pin_host_key(host, port, host_key)
-        return ["-o", "StrictHostKeyChecking=yes"], True
-    if not stdin_is_tty():
-        die(NONINTERACTIVE_HOST_KEY_MSG)
-    return None, False
-
-
 def _is_host_key_failure(detail: str) -> bool:
     text = detail.lower()
     return (
@@ -1740,7 +1563,7 @@ def _ssh_failure_detail(proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def empty_registry() -> dict[str, Any]:
-    return {"schema_version": FLEET_SCHEMA_VERSION, "nodes": []}
+    return _WS.empty_registry()
 
 
 def _is_forbidden_key(key: str) -> bool:
@@ -1750,43 +1573,6 @@ def _is_forbidden_key(key: str) -> bool:
 
 def _has_ascii_control(value: str) -> bool:
     return any(ord(c) < 32 or ord(c) == 127 for c in value)
-
-
-def validate_ssh_user(user: str) -> str:
-    """Reject control chars, whitespace, shell-unsafe, and overlong users."""
-    if not isinstance(user, str) or not user:
-        die("invalid ssh_user: empty")
-    if _has_ascii_control(user) or any(c.isspace() for c in user):
-        die("invalid ssh_user: whitespace or control characters")
-    if len(user) > SSH_USER_MAX or not SSH_USER_RE.fullmatch(user):
-        die(f"invalid ssh_user: {user}")
-    return user
-
-
-def _is_dns_hostname(host: str) -> bool:
-    name = host[:-1] if host.endswith(".") else host
-    if not name or len(host) > SSH_HOST_MAX:
-        return False
-    labels = name.split(".")
-    return bool(labels) and all(_HOSTNAME_LABEL_RE.fullmatch(label) for label in labels)
-
-
-def validate_ssh_host(host: str) -> str:
-    """Allow DNS / IPv4 / IPv6 only. No whitespace, controls, or shell metacharacters."""
-    if not isinstance(host, str) or not host:
-        die("invalid ssh_host: empty")
-    if _has_ascii_control(host) or any(c.isspace() for c in host):
-        die("invalid ssh_host: whitespace or control characters")
-    if len(host) > SSH_HOST_MAX:
-        die("invalid ssh_host: too long")
-    try:
-        ipaddress.ip_address(host)
-        return host
-    except ValueError:
-        pass
-    if not _is_dns_hostname(host):
-        die(f"invalid ssh_host: {host}")
-    return host
 
 
 def _user_metadata_error(value: str, field: str) -> Optional[str]:
@@ -1915,74 +1701,31 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
     }
     if identity_file:
         record["identity_file"] = identity_file
+    ar, obr = raw.get("admin_credential_ref"), raw.get("observe_credential_ref")
+    if ar is not None and ar != "":
+        if not isinstance(ar, str) or not ar.strip():
+            die(f"nodes[{index}] invalid admin_credential_ref: {ar}")
+        record["admin_credential_ref"] = ar.strip()
+    if obr is not None and obr != "":
+        if not isinstance(obr, str) or not obr.strip():
+            die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
+        record["observe_credential_ref"] = obr.strip()
+    elif record.get("admin_credential_ref"):
+        record["observe_credential_ref"] = record["admin_credential_ref"]  # observe=admin
     return record
 
 
 def validate_registry(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        die("fleet.json must be a JSON object")
-    for key in data:
-        if _is_forbidden_key(str(key)):
-            die("fleet.json must not store SSH passwords")
-    ver = data.get("schema_version")
-    if ver not in FLEET_SCHEMA_VERSIONS_READ:
-        die(f"unsupported fleet.json schema_version: {ver}")
-    nodes_raw = data.get("nodes", [])
-    if not isinstance(nodes_raw, list):
-        die("fleet.json nodes must be a list")
-    nodes: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    seen_names: set[str] = set()
-    for i, raw in enumerate(nodes_raw):
-        node = normalize_node(raw, index=i)
-        if node["node_id"] in seen_ids:
-            die(f"duplicate node_id: {node['node_id']}")
-        if node["name"] in seen_names:
-            die(f"duplicate name: {node['name']}")
-        seen_ids.add(node["node_id"])
-        seen_names.add(node["name"])
-        nodes.append(node)
-    return {"schema_version": FLEET_SCHEMA_VERSION, "nodes": nodes}
+    return _WS.validate_registry(data)
 
 
 def load_registry(path: Optional[Path] = None) -> dict[str, Any]:
-    path = fleet_registry_path() if path is None else Path(path)
-    if not path.is_file():
-        return empty_registry()
-    try:
-        with path.open(encoding="utf-8") as fh:
-            data = json.load(fh)
-    except json.JSONDecodeError as exc:
-        die(f"invalid fleet.json: {exc}")
-    except OSError as exc:
-        die(f"cannot read {path}: {exc}")
-    return validate_registry(data)
+    return _WS.load_registry(path)
 
 
 def save_registry(path: Optional[Path], registry: dict[str, Any]) -> None:
     with fleet_op_lock():
-        path = fleet_registry_path() if path is None else Path(path)
-        payload = validate_registry(registry)
-        parent = path.parent
-        parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(parent, 0o700)
-        except OSError:
-            pass
-        fd, tmp = tempfile.mkstemp(prefix=".fleet.json.", suffix=".tmp", dir=str(parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
-                fh.write("\n")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-            os.chmod(path, 0o600)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        return _WS._save_registry_unlocked(path, registry)
 
 
 def find_by_name(registry: dict[str, Any], name: str) -> Optional[dict[str, Any]]:
@@ -4932,39 +4675,6 @@ _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
 
 
-def _controller_lib_dir() -> Path:
-    """Directory that holds this file and sibling runtime modules.
-
-    Zip unpack, repo checkout, and ``python3 bin/vcl-fleet`` all resolve
-    ``vincula-fleet.py`` to a real path; audit/backup must load from that
-    same ``lib/`` directory. Never cwd, never ``PYTHONPATH``, never a
-    sibling checkout the operator is not running.
-    """
-    here = Path(__file__).resolve()
-    parent = here.parent
-    if parent.name == "__pycache__":
-        parent = parent.parent
-    return parent
-
-
-def _load_controller_sibling(modname: str, filename: str) -> Any:
-    path = _controller_lib_dir() / filename
-    if not path.is_file():
-        die(f"{filename} not found: {path}")
-    existing = sys.modules.get(modname)
-    if existing is not None:
-        existing_file = getattr(existing, "__file__", None)
-        if existing_file is None or Path(existing_file).resolve() != path:
-            del sys.modules[modname]
-    loader = importlib.machinery.SourceFileLoader(modname, str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    if spec is None or spec.loader is None:
-        die(f"cannot load {filename}")
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
-
-
 def load_audit_module() -> Any:
     """Load lib/vincula-audit.py for parse_rfc3339 / interval-overlap SQL."""
     global _AUDIT_MOD
@@ -5549,6 +5259,7 @@ def load_ui_server_module() -> Any:
 
 def cmd_ui(args: argparse.Namespace) -> int:
     """Start localhost-only read-only Local Audit UI (AC-3.1 / D19)."""
+    _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     ui = load_ui_server_module()
     static_dir = _controller_lib_dir() / "vincula-ui" / "static"
     host = getattr(args, "host", None) or ui.DEFAULT_HOST
@@ -5573,6 +5284,15 @@ def cmd_ui(args: argparse.Namespace) -> int:
             static_dir=static_dir,
         )
     )
+
+
+def cmd_workspace_migrate(args: argparse.Namespace) -> int:
+    if not getattr(args, "dry_run", False):
+        die("workspace migrate without --dry-run requires 0.4.1", 2)
+    sys.stdout.write(
+        json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False) + "\n"
+    )
+    return 0
 
 
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
@@ -6124,12 +5844,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP port (default: 8765)",
     )
 
+    ws = sub.add_parser(
+        "workspace", help="workspace lifecycle (0.4.0: migrate --dry-run)"
+    )
+    ws_sub = ws.add_subparsers(dest="workspace_command")
+    p_mig = ws_sub.add_parser(
+        "migrate", help="legacy→workspace (0.4.0: --dry-run only)"
+    )
+    p_mig.add_argument(
+        "--dry-run",
+        action="store_true",
+        required=True,
+        help="plan only; no SSH/writes/deletes (AC-4.0-04)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command
@@ -6212,6 +5947,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         die(f"unknown user command: {sub}", 2)
     if command == "ui":
         return cmd_ui(args)
+    if command == "workspace":
+        sub = getattr(args, "workspace_command", None)
+        if sub is None:
+            parser.parse_args(["workspace", "--help"])
+            return 2
+        if sub == "migrate":
+            return cmd_workspace_migrate(args)
+        die(f"unknown workspace command: {sub}", 2)
     die(f"unknown command: {command}", 2)
     return 2
 
