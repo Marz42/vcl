@@ -1517,6 +1517,136 @@ else
 fi
 export VCL_FLEET_HOME="${SAVED_WS_B3_HOME}"
 
+# --- 0.4.1 B4: portable instance history jsonl (T23) ---
+SAVED_WS_B4_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b4"
+mkdir -p "$VCL_FLEET_HOME"
+assert_success "B4 history fleet init" fleet init
+ws_b4_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || ws_b4_rc=$?
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_b4", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.INSTANCE_HISTORY_SCHEMA == "instance-history/v1"
+assert "history/instances.jsonl" in mod.PORTABLE_DIGEST_NAMES
+assert mod.history_dir() == Path(os.environ["VCL_FLEET_HOME"]) / "history"
+assert mod.instances_history_path() == mod.history_dir() / "instances.jsonl"
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+old_iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+new_iid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+hist_path = mod.instances_history_path()
+assert not hist_path.is_file()
+
+conn = mod.open_fleet_db()
+mod.record_instance(
+    conn, node_id, old_iid, "203.0.113.10", "203.0.113.10",
+    now_iso="2026-08-16T04:00:00Z",
+)
+conn.commit()
+
+assert hist_path.is_file()
+lines = [ln for ln in hist_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines) == 1, lines
+rec0 = json.loads(lines[0])
+assert set(rec0.keys()) == {
+    "node_id", "instance_id", "started_at", "retired_at", "endpoint", "reason"
+}, rec0
+assert "ssh_host" not in rec0
+assert "status" not in rec0
+for bad in ("password", "identity", "token", "secret"):
+    assert bad not in rec0
+    assert not any(bad in k.lower() for k in rec0)
+assert rec0["node_id"] == node_id
+assert rec0["instance_id"] == old_iid
+assert rec0["started_at"] == "2026-08-16T04:00:00Z"
+assert rec0["retired_at"] is None
+assert rec0["endpoint"] == "203.0.113.10"
+assert rec0["reason"] == "sync-first-sight"
+parsed = mod.parse_instance_history_jsonl()
+assert parsed == [rec0], (parsed, rec0)
+
+mod.record_instance(
+    conn, node_id, new_iid, "203.0.113.18", "203.0.113.18",
+    now_iso="2026-08-16T05:00:00Z",
+)
+conn.commit()
+lines2 = [ln for ln in hist_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines2) >= 2, lines2
+db_rows = mod.list_instances(conn, node_id)
+assert db_rows[0]["retired_at"] == "2026-08-16T05:00:00Z"
+objs = [json.loads(ln) for ln in lines2]
+assert any(
+    o.get("instance_id") == old_iid
+    and o.get("retired_at") == "2026-08-16T05:00:00Z"
+    and o.get("reason") == "retired"
+    for o in objs
+), objs
+assert any(
+    o.get("instance_id") == new_iid
+    and o.get("retired_at") is None
+    and o.get("reason") == "sync-first-sight"
+    for o in objs
+), objs
+parsed2 = mod.parse_instance_history_jsonl()
+assert parsed2 == objs
+
+mod.mark_instance_retired(conn, node_id, new_iid, "2026-08-16T06:00:00Z")
+conn.commit()
+objs3 = mod.parse_instance_history_jsonl()
+assert any(
+    o.get("instance_id") == new_iid
+    and o.get("retired_at") == "2026-08-16T06:00:00Z"
+    and o.get("reason") == "retired"
+    for o in objs3
+), objs3
+
+db_count = conn.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
+export_dest = Path(os.environ["VCL_FLEET_HOME"]) / "history" / "export-roundtrip.jsonl"
+n = mod.export_instance_history_from_db(conn, export_dest)
+assert n == db_count == 2, (n, db_count)
+exported = mod.parse_instance_history_jsonl(export_dest)
+assert len(exported) == db_count
+for row in exported:
+    assert set(row.keys()) == {
+        "node_id", "instance_id", "started_at", "retired_at", "endpoint", "reason"
+    }
+conn.close()
+PY
+if (( ws_b4_rc == 0 )); then
+  pass "B4 portable instance history jsonl dual-write + export"
+else
+  fail "B4 portable instance history jsonl dual-write + export"
+fi
+
+# D48: offline node add must not write instance history jsonl
+B4_OFFLINE_HOME="${TEST_TMP}/ws-b4-offline-add"
+export VCL_FLEET_HOME="$B4_OFFLINE_HOME"
+mkdir -p "$VCL_FLEET_HOME"
+assert_success "B4 offline-add fleet init" fleet init
+assert_success "B4 offline node add does not call record_instance" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+if [[ ! -e "${VCL_FLEET_HOME}/history/instances.jsonl" ]]; then
+  pass "B4 offline node add leaves history/instances.jsonl absent (D48)"
+else
+  fail "B4 offline node add leaves history/instances.jsonl absent (D48)"
+fi
+dry_b4=$(fleet workspace migrate --dry-run 2>/dev/null) || true
+if echo "$dry_b4" | grep -q 'history_gaps' && echo "$dry_b4" | grep -q 'D48'; then
+  pass "B4 dry-run still reports history_gaps (D48)"
+else
+  fail "B4 dry-run still reports history_gaps (D48)"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B4_HOME}"
+
 OFFLINE_FLEET_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init

@@ -24,7 +24,22 @@ WORKSPACE_MANIFEST_NAME = "workspace.json"
 MACHINE_LOCAL_DIRNAME = "machine-local"
 WORKSPACE_VIEW_NAME = "workspace-view.json"
 WORKSPACE_VIEW_SCHEMA_VERSION = 1
-PORTABLE_DIGEST_NAMES = ("fleet.json", "workspace.json", "trust/known_hosts")
+PORTABLE_DIGEST_NAMES = (
+    "fleet.json",
+    "workspace.json",
+    "trust/known_hosts",
+    "history/instances.jsonl",
+)
+INSTANCE_HISTORY_SCHEMA = "instance-history/v1"  # D45 namespaced
+_HISTORY_KEYS = (
+    "node_id",
+    "instance_id",
+    "started_at",
+    "retired_at",
+    "endpoint",
+    "reason",
+)
+_HISTORY_FORBIDDEN_SUBSTR = ("password", "identity", "key", "token")
 WS_ERR_ROLLBACK, WS_ERR_DIVERGED, WS_ERR_INCONSISTENT = (
     "WORKSPACE_ROLLBACK",
     "WORKSPACE_DIVERGED",
@@ -98,6 +113,14 @@ def known_hosts_path() -> Path:
 
 def workspace_trust_active() -> bool:
     return workspace_manifest_path().is_file()
+
+
+def history_dir() -> Path:
+    return fleet_home() / "history"
+
+
+def instances_history_path() -> Path:
+    return history_dir() / "instances.jsonl"
 
 
 def _chmod_private(path: Path, mode: int = 0o600) -> None:
@@ -473,6 +496,107 @@ def cas_mutate_workspace(
     save_workspace_manifest(mutated)
     remember_workspace_view(mutated)
     return mutated
+
+
+def append_instance_history_line(rec: dict[str, Any]) -> None:
+    """Atomic append one portable instance-history/v1 JSONL record (no secrets)."""
+    if not isinstance(rec, dict):
+        _host.die("instance-history/v1 record must be an object")
+    for k in rec:
+        kl = str(k).lower()
+        if any(s in kl for s in _HISTORY_FORBIDDEN_SUBSTR):
+            _host.die(f"instance-history/v1 forbids secret field: {k}")
+        if k not in _HISTORY_KEYS:
+            _host.die(f"unsupported instance-history/v1 field: {k}")
+    payload = {k: rec.get(k) for k in _HISTORY_KEYS}
+    d = history_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    _chmod_private(d, 0o700)
+    path = instances_history_path()
+    data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    _chmod_private(path, 0o600)
+
+
+def parse_instance_history_jsonl(path: Path | None = None) -> list[dict[str, Any]]:
+    path = instances_history_path() if path is None else Path(path)
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _host.die(f"cannot read {path}: {exc}")
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            _host.die("invalid instance-history/v1 line")
+        if not isinstance(obj, dict):
+            _host.die("invalid instance-history/v1 line")
+        out.append(obj)
+    return out
+
+
+def export_instance_history_from_db(
+    conn: Any, dest: Path | None = None
+) -> int:
+    """Export DB instance_history rows to portable JSONL. Returns row count."""
+    dest = instances_history_path() if dest is None else Path(dest)
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, retired_at, endpoint
+        FROM instance_history
+        ORDER BY started_at, rowid
+        """
+    ).fetchall()
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(
+        prefix=".instances.jsonl.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            for row in rows:
+                if hasattr(row, "keys"):
+                    node_id = row["node_id"]
+                    instance_id = row["instance_id"]
+                    started_at = row["started_at"]
+                    retired_at = row["retired_at"]
+                    endpoint = row["endpoint"]
+                else:
+                    node_id, instance_id, started_at, retired_at, endpoint = row
+                rec = {
+                    "node_id": node_id,
+                    "instance_id": instance_id,
+                    "started_at": started_at,
+                    "retired_at": retired_at,
+                    "endpoint": endpoint,
+                    "reason": (
+                        "retired" if retired_at else "sync-first-sight"
+                    ),
+                }
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest)
+        os.chmod(dest, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return len(rows)
 
 
 MIGRATE_PIPELINE = (

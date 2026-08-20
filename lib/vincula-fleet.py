@@ -307,6 +307,11 @@ workspace_view_path = _WS.workspace_view_path
 trust_dir = _WS.trust_dir
 known_hosts_path = _WS.known_hosts_path
 workspace_trust_active = _WS.workspace_trust_active
+history_dir = _WS.history_dir
+instances_history_path = _WS.instances_history_path
+append_instance_history_line = _WS.append_instance_history_line
+parse_instance_history_jsonl = _WS.parse_instance_history_jsonl
+export_instance_history_from_db = _WS.export_instance_history_from_db
 mint_fleet_id = _WS.mint_fleet_id
 empty_workspace_manifest = _WS.empty_workspace_manifest
 validate_workspace_manifest = _WS.validate_workspace_manifest
@@ -321,6 +326,7 @@ remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
 cas_mutate_workspace = _WS.cas_mutate_workspace
 PORTABLE_DIGEST_NAMES = _WS.PORTABLE_DIGEST_NAMES
+INSTANCE_HISTORY_SCHEMA = _WS.INSTANCE_HISTORY_SCHEMA
 WORKSPACE_VIEW_SCHEMA_VERSION = _WS.WORKSPACE_VIEW_SCHEMA_VERSION
 WS_ERR_ROLLBACK = _WS.WS_ERR_ROLLBACK
 WS_ERR_DIVERGED = _WS.WS_ERR_DIVERGED
@@ -851,6 +857,14 @@ def retire_active_instance(
     """Mark every active instance for node_id as retired."""
     validate_node_id(node_id)
     ts = retired_at or now or format_utc(datetime.now(timezone.utc))
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND status = ?
+        """,
+        (node_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchall()
     conn.execute(
         """
         UPDATE instance_history
@@ -859,6 +873,17 @@ def retire_active_instance(
         """,
         (INSTANCE_STATUS_RETIRED, ts, node_id, INSTANCE_STATUS_ACTIVE),
     )
+    for row in rows:
+        append_instance_history_line(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
 
 
 def mark_instance_retired(
@@ -870,6 +895,14 @@ def mark_instance_retired(
     """Retire one (node_id, instance_id) row if it is still active."""
     validate_node_id(node_id)
     ts = retired_at or format_utc(datetime.now(timezone.utc))
+    row = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND instance_id = ? AND status = ?
+        """,
+        (node_id, instance_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchone()
     conn.execute(
         """
         UPDATE instance_history
@@ -878,6 +911,17 @@ def mark_instance_retired(
         """,
         (INSTANCE_STATUS_RETIRED, ts, node_id, instance_id, INSTANCE_STATUS_ACTIVE),
     )
+    if row is not None:
+        append_instance_history_line(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
 
 
 def record_instance(
@@ -916,6 +960,16 @@ def record_instance(
         endpoint=endpoint,
         ssh_host=ssh_host,
         status=INSTANCE_STATUS_ACTIVE,
+    )
+    append_instance_history_line(
+        {
+            "node_id": node_id,
+            "instance_id": iid,
+            "started_at": ts,
+            "retired_at": None,
+            "endpoint": _optional_text(endpoint) or _optional_text(ssh_host),
+            "reason": "sync-first-sight",
+        }
     )
 
 
