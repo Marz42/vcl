@@ -31,4 +31,4 @@ Local verification: `release.lock` / `controller.lock` / sidecar digests OK; bla
 | failure-injection fixtures present | PASS (grep gates) |
 | artifact build + black-box | PASS |
 
-GitHub Actions evidence: run after push of `main` + `v0.3.1-rc2`.
+GitHub Actions evidence: [ci run 32329621883](https://github.com/Marz42/vcl/actions/runs/32329621883) — **success** (unit ubuntu-latest, unit debian:12, unit debian:13, concurrency, failure-injection, artifact).
