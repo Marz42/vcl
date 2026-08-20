@@ -150,6 +150,259 @@ assert_success "D57 observe_credential_ref" \
   grep -q 'observe_credential_ref' "${PROJECT_DIR}/lib/workspace.py"
 assert_success "planned_credential_refs" \
   grep -q 'def planned_credential_refs' "${PROJECT_DIR}/lib/workspace.py"
+
+# --- 0.4.1 B1: workspace.json + fleet_id + D52 + last_seen + CAS (T07) ---
+SAVED_WS_B1_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b1"
+assert_success "B1 workspace fleet init" fleet init
+ws_b1_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || ws_b1_rc=$?
+import importlib.util
+import os
+import sys
+import uuid
+from pathlib import Path
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+a = mod.mint_fleet_id()
+b = mod.mint_fleet_id()
+assert a != b, (a, b)
+assert mod.UUID_RE.fullmatch(a) and mod.UUID_RE.fullmatch(b), (a, b)
+
+m = mod.create_workspace_manifest()
+loaded = mod.load_workspace_manifest()
+assert loaded["fleet_id"] == m["fleet_id"]
+for key in (
+    "schema_version", "fleet_id", "name", "revision", "write_id",
+    "parent_revision", "parent_write_id", "state_digest",
+    "last_writer_controller_id", "created_at", "updated_at",
+):
+    assert key in loaded, key
+assert loaded["state_digest"] == mod.compute_state_digest()
+assert loaded["state_digest"].startswith("sha256:")
+
+bad = dict(loaded)
+bad["schema_version"] = 99
+msgs = []
+orig_die = mod.die
+
+def _capture_die(message, code=1):
+    msgs.append(message)
+    raise SystemExit(code)
+
+mod.die = _capture_die
+try:
+    mod.validate_workspace_manifest(bad)
+    raise AssertionError("expected unsupported workspace schema")
+except SystemExit:
+    pass
+assert any("unsupported workspace schema:" in x for x in msgs), msgs
+mod.die = orig_die
+
+d0 = mod.compute_state_digest()
+fleet_path = Path(os.environ["VCL_FLEET_HOME"]) / "fleet.json"
+fleet_bytes = fleet_path.read_bytes()
+fleet_path.write_bytes(fleet_bytes + b"\n")
+assert mod.compute_state_digest() != d0
+fleet_path.write_bytes(fleet_bytes)
+assert mod.compute_state_digest() == d0
+ml = Path(os.environ["VCL_FLEET_HOME"]) / "machine-local"
+ml.mkdir(parents=True, exist_ok=True)
+(ml / "noise.txt").write_text("x\n", encoding="utf-8")
+assert mod.compute_state_digest() == d0
+
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+
+view_rollback = {
+    "schema_version": mod.WORKSPACE_VIEW_SCHEMA_VERSION,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": m["write_id"],
+    "last_seen_state_digest": m["state_digest"],
+}
+m_roll = dict(m)
+m_roll["revision"] = 3
+assert mod.detect_workspace_conflict(m_roll, view_rollback) == mod.WS_ERR_ROLLBACK
+
+view_div = dict(view_rollback)
+view_div["last_seen_revision"] = m["revision"]
+view_div["last_seen_write_id"] = str(uuid.uuid4())
+assert mod.detect_workspace_conflict(m, view_div) == mod.WS_ERR_DIVERGED
+
+mod.remember_workspace_view(m)
+assert mod.detect_workspace_conflict(m) is None
+fleet_path.write_bytes(fleet_bytes + b"\n#corrupt\n")
+assert mod.detect_workspace_conflict(mod.load_workspace_manifest()) == mod.WS_ERR_INCONSISTENT
+fleet_path.write_bytes(fleet_bytes)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+assert mod.detect_workspace_conflict(m) is None
+
+def _bump(manifest):
+    old_rev = manifest["revision"]
+    old_wid = manifest["write_id"]
+    manifest["parent_revision"] = old_rev
+    manifest["parent_write_id"] = old_wid
+    manifest["revision"] = old_rev + 1
+    manifest["write_id"] = str(uuid.uuid4())
+    mod.refresh_manifest_digest(manifest)
+    return manifest
+
+msgs = []
+mod.die = _capture_die
+
+def _stale_mutator(manifest):
+    stolen = mod.load_workspace_manifest()
+    stolen["write_id"] = str(uuid.uuid4())
+    mod.save_workspace_manifest(stolen)
+    return _bump(manifest)
+
+try:
+    mod.cas_mutate_workspace(_stale_mutator)
+    raise AssertionError("expected WORKSPACE_CAS_REJECTED")
+except SystemExit:
+    pass
+mod.die = orig_die
+assert mod.WS_ERR_CAS in msgs, msgs
+PY
+if (( ws_b1_rc == 0 )); then
+  pass "B1 workspace manifest mint/digest/detect/CAS"
+else
+  fail "B1 workspace manifest mint/digest/CAS"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B1_HOME}"
+
+# --- 0.4.1 B2: D28 credential bindings + access CLI + SSH resolve (T11) ---
+SAVED_WS_B2_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b2"
+assert_success "B2 access fleet init" fleet init
+B2_KEY="${TEST_TMP}/ws-b2-id_ed25519"
+printf 'test-only-not-a-real-key\n' > "$B2_KEY"
+assert_success "B2 access bind identity-file" \
+  fleet access bind admin-default --identity-file "$B2_KEY"
+B2_LIST=$(fleet access list)
+if [[ "$B2_LIST" == *"admin-default"* ]] && [[ "$B2_LIST" == *"identity_file"* ]]; then
+  pass "B2 access list shows admin-default identity_file"
+else
+  fail "B2 access list shows admin-default identity_file (${B2_LIST})"
+fi
+B2_ABS=$(python3 -c 'import sys; from pathlib import Path; print(Path(sys.argv[1]).resolve())' "$B2_KEY")
+if [[ "$B2_LIST" == *"$B2_ABS"* ]]; then
+  pass "B2 access list shows absolute identity path"
+else
+  fail "B2 access list shows absolute identity path (${B2_LIST})"
+fi
+assert_success "B2 access verify after bind" fleet access verify
+assert_success "B2 access bind openssh-default" \
+  fleet access bind agent --openssh-default
+B2_LIST2=$(fleet access list)
+if [[ "$B2_LIST2" == *"agent"* ]] && [[ "$B2_LIST2" == *"openssh-default"* ]]; then
+  pass "B2 access list shows openssh-default"
+else
+  fail "B2 access list shows openssh-default (${B2_LIST2})"
+fi
+assert_success "B2 bindings stay machine-local (not in fleet.json)" \
+  bash -c '! grep -q credential-bindings "${VCL_FLEET_HOME}/fleet.json"'
+assert_success "B2 bindings file under machine-local" \
+  test -f "${VCL_FLEET_HOME}/machine-local/credential-bindings.json"
+
+ws_b2_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$B2_KEY" "$FAKE_SSH" <<'PY' || ws_b2_rc=$?
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+path, key_path, fake = sys.argv[1], sys.argv[2], sys.argv[3]
+os.environ["VCL_FLEET_SSH"] = fake
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+key = str(Path(key_path).resolve())
+node_ref = {"admin_credential_ref": "admin-default", "ssh_host": "203.0.113.10"}
+assert mod._node_identity_file(node_ref) == key
+argv_ref = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=mod._node_identity_file(node_ref),
+)
+assert "-i" in argv_ref
+assert key in argv_ref
+assert "IdentitiesOnly=yes" in argv_ref
+
+legacy_key = Path(os.environ["VCL_FLEET_HOME"]) / "legacy-id"
+legacy_key.write_text("legacy-only\n", encoding="utf-8")
+node_legacy = {"identity_file": str(legacy_key), "ssh_host": "203.0.113.10"}
+leg_path = mod._node_identity_file(node_legacy)
+assert leg_path == str(legacy_key) or Path(leg_path).resolve() == legacy_key.resolve()
+argv_leg = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=leg_path,
+)
+assert "-i" in argv_leg
+assert "IdentitiesOnly=yes" in argv_leg
+
+msgs = []
+orig_die = mod.die
+
+def _capture_die(message, code=1):
+    msgs.append(message)
+    raise SystemExit(code)
+
+mod.die = _capture_die
+raised = False
+try:
+    mod._node_identity_file({"admin_credential_ref": "missing"})
+except SystemExit:
+    raised = True
+mod.die = orig_die
+assert raised, "expected unbound credential ref"
+assert any("unbound credential ref" in m for m in msgs), msgs
+
+# Neither ref nor identity_file → no -i (ssh inject expectation unchanged)
+argv_bare = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=mod._node_identity_file({"ssh_host": "203.0.113.10"}),
+)
+assert "-i" not in argv_bare
+assert "IdentitiesOnly=yes" not in argv_bare
+
+# openssh-default binding → None → no -i
+assert mod._node_identity_file({"admin_credential_ref": "agent"}) is None
+
+# Bindings must not leak absolute key paths into portable fleet.json
+home = Path(os.environ["VCL_FLEET_HOME"])
+fleet_blob = (home / "fleet.json").read_text(encoding="utf-8")
+assert "credential-bindings" not in fleet_blob
+assert key not in fleet_blob
+PY
+if (( ws_b2_rc == 0 )); then
+  pass "B2 credential ref resolve / legacy / unbound / no -i"
+else
+  fail "B2 credential ref resolve / legacy / unbound / no -i"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B2_HOME}"
+
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses UPSERT for audit_events" \
@@ -172,6 +425,9 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+assert_equal "CTRL 0.4.1" "0.4.1" "$VCL_FLEET_VERSION"
+VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
+assert_equal "NODE 0.3.1" "0.3.1" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
 assert_equal "vcl-fleet.py version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -1122,6 +1378,832 @@ else
   fail "host-key policy: keyscan candidates, pin, TTY authenticity guidance"
 fi
 
+# --- 0.4.1 B3: D27 dedicated known_hosts + trust extract (T18) ---
+SAVED_WS_B3_HOME="${VCL_FLEET_HOME}"
+ws_b3_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" "$FAKE_KEYSCAN" \
+  "$LAX_HOSTKEY_PUB" "$TOKYO_HOSTKEY_PUB" "$HOME" "${TEST_TMP}/ws-b3" <<'PY' || ws_b3_rc=$?
+import importlib.util
+import io
+import os
+import sys
+from pathlib import Path
+
+path, fake, keyscan, lax_pub, tokyo_pub, home, ws_home = sys.argv[1:8]
+os.environ["VCL_FLEET_SSH"] = fake
+os.environ["VCL_FLEET_SSH_KEYSCAN"] = keyscan
+os.environ["HOME"] = home
+
+# (1) Legacy: no workspace.json → pin writes ~/.ssh/known_hosts; no UserKnownHostsFile=
+legacy_home = Path(home) / "fleet-home-b3-legacy"
+os.environ["VCL_FLEET_HOME"] = str(legacy_home)
+legacy_home.mkdir(parents=True, exist_ok=True)
+spec = importlib.util.spec_from_file_location("vincula_fleet_b3", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert not mod.workspace_trust_active()
+assert not mod.workspace_manifest_path().is_file()
+lax_line = open(lax_pub, encoding="utf-8").read().strip()
+fp = mod.fingerprint_sha256(lax_line)
+mod.pin_host_key("203.0.113.10", 22, fp)
+kh = mod.default_known_hosts_path()
+assert kh == Path(home) / ".ssh" / "known_hosts", kh
+assert "203.0.113.10" in kh.read_text(encoding="utf-8")
+extra, batch = mod.prepare_ssh_host_key("203.0.113.10", 22, fp)
+argv = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=batch,
+    extra=extra,
+)
+assert not any(
+    (a.startswith("UserKnownHostsFile=") or a.startswith("-oUserKnownHostsFile="))
+    for a in argv
+), argv
+assert "UserKnownHostsFile=" not in " ".join(argv)
+
+# (2) Workspace: pin/TOFU → trust/known_hosts; ssh_argv injects UserKnownHostsFile
+os.environ["VCL_FLEET_HOME"] = ws_home
+Path(ws_home).mkdir(parents=True, exist_ok=True)
+# Re-load so fleet_home / trust paths pick up new VCL_FLEET_HOME
+spec2 = importlib.util.spec_from_file_location("vincula_fleet_b3w", path)
+modw = importlib.util.module_from_spec(spec2)
+spec2.loader.exec_module(modw)
+(modw.fleet_home() / "fleet.json").write_text(
+    '{"schema_version": 2, "nodes": []}\n', encoding="utf-8"
+)
+modw.create_workspace_manifest()
+assert modw.workspace_trust_active()
+trust_kh = modw.known_hosts_path()
+assert trust_kh == Path(ws_home) / "trust" / "known_hosts"
+modw.pin_host_key("203.0.113.10", 22, fp)
+assert trust_kh.is_file()
+text = trust_kh.read_text(encoding="utf-8")
+assert "203.0.113.10" in text
+assert "/dev/null" not in text
+assert modw.default_known_hosts_path() == trust_kh
+extra_w, batch_w = modw.prepare_ssh_host_key("203.0.113.10", 22, fp)
+argv_w = modw.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=batch_w,
+    extra=extra_w,
+)
+ukh = f"UserKnownHostsFile={trust_kh}"
+assert ukh in argv_w, argv_w
+assert "StrictHostKeyChecking=yes" in argv_w
+assert "UserKnownHostsFile=/dev/null" not in " ".join(argv_w)
+assert "/dev/null" not in " ".join(argv_w)
+
+# (4) Reject evil UserKnownHostsFile under workspace
+raised = False
+buf = io.StringIO()
+old_err = sys.stderr
+sys.stderr = buf
+try:
+    modw.ssh_argv(
+        "203.0.113.10",
+        "root",
+        22,
+        ["vcl", "identity", "--json"],
+        batch=True,
+        extra=["-o", "UserKnownHostsFile=/tmp/evil"],
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old_err
+assert raised, buf.getvalue()
+assert "UserKnownHostsFile=" in buf.getvalue()
+
+# (3) Extract: lax only in src; nodes=[lax,tokyo] → dest has lax; TRUST_MIGRATION_REQUIRED
+src_kh = Path(ws_home) / "extract-src-known_hosts"
+tokyo_line = open(tokyo_pub, encoding="utf-8").read().strip()
+# Seed only lax; also include a decoy non-fleet host line that must not be copied wholesale
+src_kh.write_text(
+    lax_line + "\n"
+    + "198.51.100.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDecoyKeyNotInFleetXXXXXXXXXXXXX=\n",
+    encoding="utf-8",
+)
+dest_kh = Path(ws_home) / "trust" / "extracted_known_hosts"
+nodes = [
+    {"name": "lax", "ssh_host": "203.0.113.10", "ssh_port": 22},
+    {"name": "tokyo", "ssh_host": "203.0.113.11", "ssh_port": 22},
+]
+result = modw.extract_fleet_host_trust(nodes, src_kh, dest_kh)
+assert dest_kh.is_file()
+dest_text = dest_kh.read_text(encoding="utf-8")
+assert "203.0.113.10" in dest_text
+assert "203.0.113.11" not in dest_text
+assert "198.51.100.1" not in dest_text
+assert dest_text != src_kh.read_text(encoding="utf-8")
+assert modw.TRUST_MIGRATION_REQUIRED in result["warnings"]
+assert "203.0.113.11" in result["missing_hosts"]
+assert any("203.0.113.10" in line for line in result["matched"])
+# extract body must not call candidate_host_keys / ssh-keyscan
+extract_src = Path(path).with_name("trust.py").read_text(encoding="utf-8")
+extract_fn = extract_src.split("def extract_fleet_host_trust", 1)[1]
+assert "candidate_host_keys" not in extract_fn
+assert "ssh-keyscan" not in extract_fn
+assert "ssh_keyscan" not in extract_fn
+assert tokyo_line  # fixture loaded
+PY
+if (( ws_b3_rc == 0 )); then
+  pass "B3 D27 workspace trust store + extract API"
+else
+  fail "B3 D27 workspace trust store + extract API"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B3_HOME}"
+
+# --- 0.4.1 B4: portable instance history jsonl (T23) ---
+SAVED_WS_B4_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b4"
+mkdir -p "$VCL_FLEET_HOME"
+assert_success "B4 history fleet init" fleet init
+ws_b4_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || ws_b4_rc=$?
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_b4", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.INSTANCE_HISTORY_SCHEMA == "instance-history/v1"
+assert "history/instances.jsonl" in mod.PORTABLE_DIGEST_NAMES
+assert mod.history_dir() == Path(os.environ["VCL_FLEET_HOME"]) / "history"
+assert mod.instances_history_path() == mod.history_dir() / "instances.jsonl"
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+old_iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+new_iid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+hist_path = mod.instances_history_path()
+assert not hist_path.is_file()
+
+conn = mod.open_fleet_db()
+mod.record_instance(
+    conn, node_id, old_iid, "203.0.113.10", "203.0.113.10",
+    now_iso="2026-08-16T04:00:00Z",
+)
+conn.commit()
+
+assert hist_path.is_file()
+lines = [ln for ln in hist_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines) == 1, lines
+rec0 = json.loads(lines[0])
+assert set(rec0.keys()) == {
+    "node_id", "instance_id", "started_at", "retired_at", "endpoint", "reason"
+}, rec0
+assert "ssh_host" not in rec0
+assert "status" not in rec0
+for bad in ("password", "identity", "token", "secret"):
+    assert bad not in rec0
+    assert not any(bad in k.lower() for k in rec0)
+assert rec0["node_id"] == node_id
+assert rec0["instance_id"] == old_iid
+assert rec0["started_at"] == "2026-08-16T04:00:00Z"
+assert rec0["retired_at"] is None
+assert rec0["endpoint"] == "203.0.113.10"
+assert rec0["reason"] == "sync-first-sight"
+parsed = mod.parse_instance_history_jsonl()
+assert parsed == [rec0], (parsed, rec0)
+
+mod.record_instance(
+    conn, node_id, new_iid, "203.0.113.18", "203.0.113.18",
+    now_iso="2026-08-16T05:00:00Z",
+)
+conn.commit()
+lines2 = [ln for ln in hist_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines2) >= 2, lines2
+db_rows = mod.list_instances(conn, node_id)
+assert db_rows[0]["retired_at"] == "2026-08-16T05:00:00Z"
+objs = [json.loads(ln) for ln in lines2]
+assert any(
+    o.get("instance_id") == old_iid
+    and o.get("retired_at") == "2026-08-16T05:00:00Z"
+    and o.get("reason") == "retired"
+    for o in objs
+), objs
+assert any(
+    o.get("instance_id") == new_iid
+    and o.get("retired_at") is None
+    and o.get("reason") == "sync-first-sight"
+    for o in objs
+), objs
+parsed2 = mod.parse_instance_history_jsonl()
+assert parsed2 == objs
+
+mod.mark_instance_retired(conn, node_id, new_iid, "2026-08-16T06:00:00Z")
+conn.commit()
+objs3 = mod.parse_instance_history_jsonl()
+assert any(
+    o.get("instance_id") == new_iid
+    and o.get("retired_at") == "2026-08-16T06:00:00Z"
+    and o.get("reason") == "retired"
+    for o in objs3
+), objs3
+
+db_count = conn.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
+export_dest = Path(os.environ["VCL_FLEET_HOME"]) / "history" / "export-roundtrip.jsonl"
+n = mod.export_instance_history_from_db(conn, export_dest)
+assert n == db_count == 2, (n, db_count)
+exported = mod.parse_instance_history_jsonl(export_dest)
+assert len(exported) == db_count
+for row in exported:
+    assert set(row.keys()) == {
+        "node_id", "instance_id", "started_at", "retired_at", "endpoint", "reason"
+    }
+conn.close()
+PY
+if (( ws_b4_rc == 0 )); then
+  pass "B4 portable instance history jsonl dual-write + export"
+else
+  fail "B4 portable instance history jsonl dual-write + export"
+fi
+
+# D48: offline node add must not write instance history jsonl
+B4_OFFLINE_HOME="${TEST_TMP}/ws-b4-offline-add"
+export VCL_FLEET_HOME="$B4_OFFLINE_HOME"
+mkdir -p "$VCL_FLEET_HOME"
+assert_success "B4 offline-add fleet init" fleet init
+assert_success "B4 offline node add does not call record_instance" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+if [[ ! -e "${VCL_FLEET_HOME}/history/instances.jsonl" ]]; then
+  pass "B4 offline node add leaves history/instances.jsonl absent (D48)"
+else
+  fail "B4 offline node add leaves history/instances.jsonl absent (D48)"
+fi
+dry_b4=$(fleet workspace migrate --dry-run 2>/dev/null) || true
+if echo "$dry_b4" | grep -q 'history_gaps' && echo "$dry_b4" | grep -q 'D48'; then
+  pass "B4 dry-run still reports history_gaps (D48)"
+else
+  fail "B4 dry-run still reports history_gaps (D48)"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B4_HOME}"
+
+# --- 0.4.1 B5: real workspace migrate 16-step (T32) ---
+SAVED_WS_B5_HOME="${VCL_FLEET_HOME}"
+SAVED_WS_B5_SSH="${VCL_FLEET_SSH:-}"
+SAVED_WS_B5_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN:-}"
+B5_HOME="${TEST_TMP}/ws-b5-migrate"
+B5_KEY="${TEST_TMP}/ws-b5-id_ed25519"
+mkdir -p "$B5_HOME"
+printf 'test-only-not-a-real-b5-key\n' > "$B5_KEY"
+chmod 600 "$B5_KEY"
+export VCL_FLEET_HOME="$B5_HOME"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+
+assert_success "B5 fleet init" fleet init
+assert_success "B5 offline node add with identity_file" \
+  fleet node add b5n --host 203.0.113.77 --offline \
+    --node-id "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5" \
+    --identity-file "$B5_KEY"
+
+# Seed one instance_history row so export count is non-zero / comparable
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+nid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5"
+iid = "cccccccc-cccc-4ccc-8ccc-ccccccccc5c5"
+mod.insert_instance(
+    conn,
+    node_id=nid,
+    instance_id=iid,
+    started_at="2026-08-20T00:00:00Z",
+    endpoint="203.0.113.77:22",
+    ssh_host="203.0.113.77",
+)
+conn.commit()
+conn.close()
+PY
+
+B5_PRE_HIST=$(python3 - <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+path = Path(os.environ["VCL_FLEET_HOME"]).parent.parent  # unused
+# count via sqlite
+import sqlite3
+db = os.environ["VCL_FLEET_HOME"] + "/fleet.db"
+conn = sqlite3.connect(db)
+print(conn.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0])
+conn.close()
+PY
+)
+
+# Snapshot pre-dry-run files + mtimes (AC-4.0-M06 zero side effect)
+B5_SNAP="${TEST_TMP}/ws-b5-snap-before.txt"
+(
+  cd "$B5_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$B5_SNAP"
+
+dry_b5=$(fleet workspace migrate --dry-run) || dry_b5_rc=$?
+dry_b5_rc=${dry_b5_rc:-0}
+assert_equal "B5 dry-run exit 0" "0" "$dry_b5_rc"
+
+B5_SNAP_AFTER="${TEST_TMP}/ws-b5-snap-after.txt"
+(
+  cd "$B5_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$B5_SNAP_AFTER"
+if diff -q "$B5_SNAP" "$B5_SNAP_AFTER" >/dev/null; then
+  pass "B5 dry-run zero side effects (file list+mtime+size)"
+else
+  fail "B5 dry-run zero side effects (file list+mtime+size)"
+  diff -u "$B5_SNAP" "$B5_SNAP_AFTER" >&2 || true
+fi
+
+echo "$dry_b5" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True
+assert p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+assert p["counts"]["history_gaps"] >= 0
+assert "NOT SSH" in p["note"]
+' && pass "B5 dry-run JSON dry_run/side_effects/pipeline/note" \
+  || fail "B5 dry-run JSON dry_run/side_effects/pipeline/note"
+
+# history_gaps: we seeded history for the only node, so gaps may be 0;
+# assert pipeline length and SSH-free note above; force gap case separately
+B5_GAP_HOME="${TEST_TMP}/ws-b5-gap"
+mkdir -p "$B5_GAP_HOME"
+export VCL_FLEET_HOME="$B5_GAP_HOME"
+assert_success "B5 gap fleet init" fleet init
+assert_success "B5 gap offline add (no history)" \
+  fleet node add gapn --host 203.0.113.78 --offline \
+    --node-id "dddddddd-dddd-4ddd-8ddd-ddddddddd5d5"
+gap_json=$(fleet workspace migrate --dry-run)
+echo "$gap_json" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["counts"]["history_gaps"] >= 1
+assert p["history_gaps"][0]["name"] == "gapn"
+assert "NOT SSH" in p["note"]
+' && pass "B5 dry-run reports history_gaps>=1 (D48)" \
+  || fail "B5 dry-run reports history_gaps>=1 (D48)"
+
+export VCL_FLEET_HOME="$B5_HOME"
+
+# Fail-inject: after create temporary Workspace — legacy intact (M03)
+B5_FLEET_SHA=$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')
+inj1_rc=0
+inj1_err=$(VCL_WORKSPACE_MIGRATE_FAIL_AFTER='create temporary Workspace' \
+  fleet workspace migrate 2>&1) || inj1_rc=$?
+if (( inj1_rc != 0 )) \
+  && [[ ! -e "${B5_HOME}/workspace.json" ]] \
+  && [[ ! -e "${B5_HOME}/.migrate-staging" ]] \
+  && [[ "$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')" == "$B5_FLEET_SHA" ]]; then
+  pass "B5 fail-after create temporary Workspace preserves legacy (M03)"
+else
+  fail "B5 fail-after create temporary Workspace preserves legacy (M03) rc=${inj1_rc}"
+fi
+
+# Fail-inject: after migrate registry — legacy fleet.json unchanged
+inj2_rc=0
+inj2_err=$(VCL_WORKSPACE_MIGRATE_FAIL_AFTER='migrate registry' \
+  fleet workspace migrate 2>&1) || inj2_rc=$?
+if (( inj2_rc != 0 )) \
+  && [[ ! -e "${B5_HOME}/workspace.json" ]] \
+  && [[ ! -e "${B5_HOME}/.migrate-staging" ]] \
+  && [[ "$(sha256sum "${B5_HOME}/fleet.json" | awk '{print $1}')" == "$B5_FLEET_SHA" ]]; then
+  pass "B5 fail-after migrate registry preserves legacy (M03)"
+else
+  fail "B5 fail-after migrate registry preserves legacy (M03) rc=${inj2_rc}"
+fi
+
+# Real migrate (second migrate after fail-inject succeeds)
+mig_out=$(fleet workspace migrate 2>/dev/null) || mig_rc=$?
+mig_rc=${mig_rc:-0}
+assert_equal "B5 real migrate exit 0" "0" "$mig_rc"
+printf '%s\n' "$mig_out" > "${TEST_TMP}/ws-b5-mig-out.json"
+
+python3 - "$B5_HOME" "$B5_KEY" "$B5_PRE_HIST" "${TEST_TMP}/ws-b5-mig-out.json" <<'PY' || b5_assert_rc=$?
+import json, os, sys, sqlite3
+from pathlib import Path
+home = Path(sys.argv[1])
+key = Path(sys.argv[2]).resolve()
+pre_hist = int(sys.argv[3])
+result = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
+assert result.get("ok") is True, result
+assert "fleet_id" in result and result["fleet_id"]
+ws = json.loads((home / "workspace.json").read_text(encoding="utf-8"))
+assert ws["fleet_id"] == result["fleet_id"]
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+assert reg.get("fleet_id") == result["fleet_id"]
+assert len(reg["nodes"]) == 1
+n = reg["nodes"][0]
+assert n["node_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb5b5"
+assert n["ssh_host"] == "203.0.113.77"
+assert n["ssh_port"] == 22
+assert n["status"] == "active"
+assert "identity_file" not in n, n
+assert n.get("admin_credential_ref") == "migrated-key-1"
+assert n.get("observe_credential_ref") == "migrated-key-1"
+binds = json.loads(
+    (home / "machine-local" / "credential-bindings.json").read_text(encoding="utf-8")
+)
+b = binds["bindings"]["migrated-key-1"]
+assert b["type"] == "identity_file"
+assert Path(b["path"]).resolve() == key
+assert (home / "trust" / "known_hosts").is_file()
+hist = home / "history" / "instances.jsonl"
+assert hist.is_file()
+lines = [ln for ln in hist.read_text(encoding="utf-8").splitlines() if ln.strip()]
+assert len(lines) == pre_hist == result["history_exported"], (len(lines), pre_hist, result)
+legacies = sorted(home.glob("legacy-pre-workspace-*"))
+assert legacies, "missing legacy backup"
+assert (legacies[0] / "fleet.db").is_file()
+assert (legacies[0] / "fleet.json").is_file()
+conn = sqlite3.connect(str(home / "fleet.db"))
+row = conn.execute("SELECT value FROM meta WHERE key='fleet_id'").fetchone()
+assert row and row[0] == result["fleet_id"], row
+conn.close()
+assert not (home / ".migrate-staging").exists()
+print("ok")
+PY
+b5_assert_rc=${b5_assert_rc:-0}
+if (( b5_assert_rc == 0 )); then
+  pass "B5 real migrate workspace+bindings+trust+history+legacy (M01/M02)"
+else
+  fail "B5 real migrate workspace+bindings+trust+history+legacy (M01/M02)"
+fi
+
+# Dry-run after migrate still works
+dry_after=$(fleet workspace migrate --dry-run) || dry_after_rc=$?
+dry_after_rc=${dry_after_rc:-0}
+assert_equal "B5 dry-run after migrate exit 0" "0" "$dry_after_rc"
+echo "$dry_after" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True and p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+' && pass "B5 dry-run after migrate still plans" \
+  || fail "B5 dry-run after migrate still plans"
+
+# Restore SSH fixtures
+if [[ -n "${SAVED_WS_B5_SSH}" ]]; then
+  export VCL_FLEET_SSH="${SAVED_WS_B5_SSH}"
+else
+  unset VCL_FLEET_SSH
+fi
+if [[ -n "${SAVED_WS_B5_KEYSCAN}" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="${SAVED_WS_B5_KEYSCAN}"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B5_HOME}"
+
+# --- 0.4.1 B6: workspace CLI init/show/verify/export/import (T36) ---
+SAVED_WS_B6_HOME="${VCL_FLEET_HOME}"
+B6_HOME="${TEST_TMP}/ws-b6-cli"
+B6_TGZ="${TEST_TMP}/ws-b6.tgz"
+rm -rf "$B6_HOME"
+mkdir -p "$B6_HOME"
+
+assert_success "B6 workspace init via --workspace" \
+  fleet --workspace "$B6_HOME" workspace init
+assert_success "B6 workspace.json exists" test -f "${B6_HOME}/workspace.json"
+assert_success "B6 trust dir" test -d "${B6_HOME}/trust"
+assert_success "B6 history dir" test -d "${B6_HOME}/history"
+assert_success "B6 machine-local dir" test -d "${B6_HOME}/machine-local"
+assert_success "B6 fleet.json exists after init" test -f "${B6_HOME}/fleet.json"
+
+show_out=$(fleet --workspace "$B6_HOME" workspace show) || show_rc=$?
+show_rc=${show_rc:-0}
+assert_equal "B6 workspace show exit 0" "0" "$show_rc"
+echo "$show_out" | python3 -c '
+import json, re, sys
+m = json.load(sys.stdin)
+uuid_re = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.I,
+)
+assert uuid_re.fullmatch(m["fleet_id"]), m["fleet_id"]
+assert "revision" in m and "write_id" in m and "state_digest" in m
+assert "last_writer_controller_id" in m
+' && pass "B6 workspace show prints fleet_id UUID + D52 fields" \
+  || fail "B6 workspace show prints fleet_id UUID + D52 fields"
+
+B6_FID=$(echo "$show_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+
+assert_success "B6 verify clean" fleet --workspace "$B6_HOME" workspace verify
+
+# Tamper fleet.json → WORKSPACE_INCONSISTENT
+python3 - "$B6_HOME" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]) / "fleet.json"
+p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+PY
+inc_rc=0
+inc_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || inc_rc=$?
+if (( inc_rc != 0 )) && [[ "$inc_err" == *WORKSPACE_INCONSISTENT* ]]; then
+  pass "B6 verify detects WORKSPACE_INCONSISTENT (S02)"
+else
+  fail "B6 verify detects WORKSPACE_INCONSISTENT (S02) rc=${inc_rc} err=${inc_err}"
+fi
+# Restore digest by rewriting clean registry + refresh
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, json, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {"schema_version": 2, "nodes": []}
+mod._WS._save_registry_unlocked(None, reg)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+print("restored")
+PY
+assert_success "B6 verify after restore" fleet --workspace "$B6_HOME" workspace verify
+
+# ROLLBACK: view rev=5, manifest rev=3
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6r", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+view = {
+    "schema_version": 1,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": m["write_id"],
+    "last_seen_state_digest": m["state_digest"],
+}
+mod.save_workspace_view(view)
+m["revision"] = 3
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+print("rollback-seeded")
+PY
+roll_rc=0
+roll_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || roll_rc=$?
+if (( roll_rc != 0 )) && [[ "$roll_err" == *WORKSPACE_ROLLBACK* ]]; then
+  pass "B6 verify detects WORKSPACE_ROLLBACK (S02)"
+else
+  fail "B6 verify detects WORKSPACE_ROLLBACK (S02) rc=${roll_rc} err=${roll_err}"
+fi
+
+# DIVERGED: same rev, different write_id
+python3 - "$B6_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6d", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+m["revision"] = 5
+m["write_id"] = str(uuid.uuid4())
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+view = {
+    "schema_version": 1,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": 5,
+    "last_seen_write_id": str(uuid.uuid4()),
+    "last_seen_state_digest": m["state_digest"],
+}
+mod.save_workspace_view(view)
+print("diverged-seeded")
+PY
+div_rc=0
+div_err=$(fleet --workspace "$B6_HOME" workspace verify 2>&1) || div_rc=$?
+if (( div_rc != 0 )) && [[ "$div_err" == *WORKSPACE_DIVERGED* ]]; then
+  pass "B6 verify detects WORKSPACE_DIVERGED (S02)"
+else
+  fail "B6 verify detects WORKSPACE_DIVERGED (S02) rc=${div_rc} err=${div_err}"
+fi
+
+# Fresh clean workspace for export/import (refs-only)
+B6_EXP_HOME="${TEST_TMP}/ws-b6-export"
+rm -rf "$B6_EXP_HOME"
+mkdir -p "$B6_EXP_HOME"
+assert_success "B6 export-home init" fleet --workspace "$B6_EXP_HOME" workspace init
+# Seed refs-only node (no identity_file)
+python3 - "$B6_EXP_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6e", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {
+    "schema_version": 2,
+    "fleet_id": mod.load_workspace_manifest()["fleet_id"],
+    "nodes": [
+        {
+            "name": "lax",
+            "node_id": str(uuid.uuid4()),
+            "ssh_host": "203.0.113.10",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+            "admin_credential_ref": "admin-default",
+            "observe_credential_ref": "admin-default",
+        }
+    ],
+}
+mod._WS._save_registry_unlocked(None, reg)
+# optional trust + history lines
+(home / "trust").mkdir(parents=True, exist_ok=True)
+(home / "trust" / "known_hosts").write_text(
+    "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB6portabletrust\n",
+    encoding="utf-8",
+)
+(home / "history").mkdir(parents=True, exist_ok=True)
+(home / "history" / "instances.jsonl").write_text(
+    '{"node_id":"%s","instance_id":"%s","started_at":"2026-01-01T00:00:00Z",'
+    '"retired_at":null,"endpoint":"203.0.113.10","reason":"sync-first-sight"}\n'
+    % (reg["nodes"][0]["node_id"], str(uuid.uuid4())),
+    encoding="utf-8",
+)
+# machine-local must NOT be exported
+(home / "machine-local").mkdir(parents=True, exist_ok=True)
+(home / "machine-local" / "credential-bindings.json").write_text(
+    '{"schema_version":1,"bindings":{"admin-default":'
+    '{"type":"identity_file","path":"/home/secret/id_ed25519"}}}\n',
+    encoding="utf-8",
+)
+(home / "fleet.db").write_bytes(b"not-a-real-db")
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+print(m["fleet_id"])
+PY
+B6_EXP_FID=$(fleet --workspace "$B6_EXP_HOME" workspace show | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+
+# identity_file seed must refuse export
+B6_BAD_HOME="${TEST_TMP}/ws-b6-bad-export"
+rm -rf "$B6_BAD_HOME"
+mkdir -p "$B6_BAD_HOME"
+assert_success "B6 bad-export init" fleet --workspace "$B6_BAD_HOME" workspace init
+python3 - "$B6_BAD_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys, uuid
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_fleet_b6bad", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+reg = {
+    "schema_version": 2,
+    "nodes": [
+        {
+            "name": "lax",
+            "node_id": str(uuid.uuid4()),
+            "ssh_host": "203.0.113.10",
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "enabled": True,
+            "status": "active",
+            "identity_file": "/home/secret/id_ed25519",
+        }
+    ],
+}
+mod._WS._save_registry_unlocked(None, reg)
+m = mod.load_workspace_manifest()
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+print("bad-seeded")
+PY
+bad_rc=0
+bad_err=$(fleet --workspace "$B6_BAD_HOME" workspace export "$B6_TGZ.bad" 2>&1) || bad_rc=$?
+if (( bad_rc != 0 )) && [[ "$bad_err" == *identity_file* || "$bad_err" == *credential* || "$bad_err" == *portable* ]]; then
+  pass "B6 export refuses identity_file secrets (D22/D28)"
+else
+  fail "B6 export refuses identity_file secrets (D22/D28) rc=${bad_rc} err=${bad_err}"
+fi
+
+rm -f "$B6_TGZ"
+assert_success "B6 export clean refs-only" \
+  fleet --workspace "$B6_EXP_HOME" workspace export "$B6_TGZ"
+assert_success "B6 export archive exists" test -f "$B6_TGZ"
+
+tar_list=$(tar -tzf "$B6_TGZ")
+echo "$tar_list" | grep -q 'workspace.json' \
+  && pass "B6 export contains workspace.json" \
+  || fail "B6 export contains workspace.json"
+echo "$tar_list" | grep -q 'fleet.json' \
+  && pass "B6 export contains fleet.json" \
+  || fail "B6 export contains fleet.json"
+if echo "$tar_list" | grep -qE 'machine-local|fleet\.db|last-status'; then
+  fail "B6 export omits machine-local/fleet.db/last-status"
+else
+  pass "B6 export omits machine-local/fleet.db/last-status"
+fi
+# strings / content must not leak secrets or machine paths
+if tar -xOzf "$B6_TGZ" | grep -qE 'identity_file|/home/|machine-local|fleet\.db'; then
+  fail "B6 export payload has no identity_file/home/machine-local/fleet.db"
+else
+  pass "B6 export payload has no identity_file/home/machine-local/fleet.db"
+fi
+
+B6_IMP_HOME="${TEST_TMP}/ws-b6-import"
+rm -rf "$B6_IMP_HOME"
+mkdir -p "$B6_IMP_HOME"
+assert_success "B6 import into new home" \
+  fleet --workspace "$B6_IMP_HOME" workspace import "$B6_TGZ"
+imp_show=$(fleet --workspace "$B6_IMP_HOME" workspace show)
+imp_fid=$(echo "$imp_show" | python3 -c 'import json,sys; print(json.load(sys.stdin)["fleet_id"])')
+assert_equal "B6 import preserves fleet_id" "$B6_EXP_FID" "$imp_fid"
+assert_success "B6 import verify OK" fleet --workspace "$B6_IMP_HOME" workspace verify
+assert_failure "B6 import did not copy machine-local bindings" \
+  test -f "${B6_IMP_HOME}/machine-local/credential-bindings.json"
+assert_failure "B6 import did not copy fleet.db" \
+  test -f "${B6_IMP_HOME}/fleet.db"
+
+# VCL_FLEET_WORKSPACE alias when VCL_FLEET_HOME unset
+SAVED_B6_FLEET_HOME_ENV="${VCL_FLEET_HOME:-}"
+unset VCL_FLEET_HOME
+export VCL_FLEET_WORKSPACE="$B6_IMP_HOME"
+alias_out=$(fleet workspace show) || alias_rc=$?
+alias_rc=${alias_rc:-0}
+assert_equal "B6 VCL_FLEET_WORKSPACE alias show exit 0" "0" "$alias_rc"
+echo "$alias_out" | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+assert m["fleet_id"]
+' && pass "B6 VCL_FLEET_WORKSPACE alias works for workspace show" \
+  || fail "B6 VCL_FLEET_WORKSPACE alias works for workspace show"
+unset VCL_FLEET_WORKSPACE
+export VCL_FLEET_HOME="${SAVED_B6_FLEET_HOME_ENV}"
+
+# Dry-run still zero side-effect (T32 regression)
+B6_DRY_HOME="${TEST_TMP}/ws-b6-dry"
+rm -rf "$B6_DRY_HOME"
+mkdir -p "$B6_DRY_HOME"
+SAVED_B6_DRY_HOME="${VCL_FLEET_HOME}"
+SAVED_B6_DRY_SSH="${VCL_FLEET_SSH:-}"
+SAVED_B6_DRY_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN:-}"
+export VCL_FLEET_HOME="$B6_DRY_HOME"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+fleet init >/dev/null
+fleet node add offline1 --host 203.0.113.99 --offline \
+  --node-id 6fc96a10-1111-4111-8111-111111111111 >/dev/null
+snap_before=$(find "$B6_DRY_HOME" -type f -printf '%P %s %T@\n' | sort)
+dry_b6=$(fleet workspace migrate --dry-run) || dry_b6_rc=$?
+dry_b6_rc=${dry_b6_rc:-0}
+snap_after=$(find "$B6_DRY_HOME" -type f -printf '%P %s %T@\n' | sort)
+assert_equal "B6 dry-run exit 0" "0" "$dry_b6_rc"
+assert_equal "B6 dry-run zero side-effect files" "$snap_before" "$snap_after"
+echo "$dry_b6" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p["dry_run"] is True and p["side_effects"] == "none"
+assert len(p["pipeline"]) == 16
+assert "NOT SSH" in p.get("note", "")
+' && pass "B6 dry-run still plans without SSH" \
+  || fail "B6 dry-run still plans without SSH"
+if [[ -n "${SAVED_B6_DRY_SSH}" ]]; then
+  export VCL_FLEET_SSH="${SAVED_B6_DRY_SSH}"
+else
+  unset VCL_FLEET_SSH
+fi
+if [[ -n "${SAVED_B6_DRY_KEYSCAN}" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="${SAVED_B6_DRY_KEYSCAN}"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+export VCL_FLEET_HOME="${SAVED_B6_DRY_HOME}"
+
+# No SSH in workspace migrate helpers
+if grep -nE 'ssh_run|candidate_host_keys' "${PROJECT_DIR}/lib/workspace.py" >/dev/null 2>&1; then
+  fail "B6 workspace.py has no ssh_run/candidate_host_keys"
+else
+  pass "B6 workspace.py has no ssh_run/candidate_host_keys"
+fi
+
+export VCL_FLEET_HOME="${SAVED_WS_B6_HOME}"
+
 OFFLINE_FLEET_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init
@@ -1321,32 +2403,34 @@ assert_success "verify --help mentions audit-clock-health" \
   grep -q 'audit-clock-health' <<< "$verify_help"
 assert_success "status --help lists NODE_ID column" \
   grep -q 'NODE_ID' <<< "$(fleet status --help)"
+assert_success "status --help mentions cache-only (D58)" \
+  grep -Eqi 'cache' <<< "$(fleet status --help)"
 
-status_rc=0
-status_out=$(fleet status 2>&1) || status_rc=$?
-if (( status_rc != 0 )); then
-  pass "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL)"
+probe_rc=0
+probe_out=$(fleet probe 2>&1) || probe_rc=$?
+if (( probe_rc != 0 )); then
+  pass "AC-2.8-03 three-fixture probe exits non-zero (sg SSH FAIL)"
 else
-  fail "AC-2.8-03 three-fixture status exits non-zero (sg SSH FAIL) (rc=${status_rc})"
+  fail "AC-2.8-03 three-fixture probe exits non-zero (sg SSH FAIL) (rc=${probe_rc})"
 fi
-assert_success "status table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING" \
-  grep -Eq 'NAME.+NODE_ID.+INSTANCE.+SSH.+PROXY.+ACCOUNTING' <<< "$status_out"
-assert_success "AC-2.8-03 status lax OK/OK/OK" \
-  grep -Eq '^lax[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+OK[[:space:]]*$' <<< "$status_out"
-assert_success "AC-2.8-03 status tokyo OK/OK/STALE" \
-  grep -Eq '^tokyo[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+STALE[[:space:]]*$' <<< "$status_out"
-assert_success "AC-2.8-03 status sg FAIL/UNKNOWN/UNKNOWN" \
-  grep -Eq '^sg[[:space:]].*[[:space:]]FAIL[[:space:]]+UNKNOWN[[:space:]]+UNKNOWN[[:space:]]*$' <<< "$status_out"
+assert_success "probe table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING" \
+  grep -Eq 'NAME.+NODE_ID.+INSTANCE.+SSH.+PROXY.+ACCOUNTING' <<< "$probe_out"
+assert_success "AC-2.8-03 probe lax OK/OK/OK" \
+  grep -Eq '^lax[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+OK[[:space:]]*$' <<< "$probe_out"
+assert_success "AC-2.8-03 probe tokyo OK/OK/STALE" \
+  grep -Eq '^tokyo[[:space:]].*[[:space:]]OK[[:space:]]+OK[[:space:]]+STALE[[:space:]]*$' <<< "$probe_out"
+assert_success "AC-2.8-03 probe sg FAIL/UNKNOWN/UNKNOWN" \
+  grep -Eq '^sg[[:space:]].*[[:space:]]FAIL[[:space:]]+UNKNOWN[[:space:]]+UNKNOWN[[:space:]]*$' <<< "$probe_out"
 
-status_json_rc=0
-status_json=$(fleet status --json 2>/dev/null) || status_json_rc=$?
-if (( status_json_rc != 0 )); then
-  pass "status --json exits non-zero with sg FAIL"
+probe_json_rc=0
+probe_json=$(fleet probe --json 2>/dev/null) || probe_json_rc=$?
+if (( probe_json_rc != 0 )); then
+  pass "probe --json exits non-zero with sg FAIL"
 else
-  fail "status --json exits non-zero with sg FAIL (rc=${status_json_rc})"
+  fail "probe --json exits non-zero with sg FAIL (rc=${probe_json_rc})"
 fi
-status_json_shape_rc=0
-python3 - "$status_json" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY' || status_json_shape_rc=$?
+probe_json_shape_rc=0
+python3 - "$probe_json" "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$TEST_SG_NODE_ID" <<'PY' || probe_json_shape_rc=$?
 import json, sys
 doc = json.loads(sys.argv[1])
 lax_id, tokyo_id, sg_id = sys.argv[2:5]
@@ -1372,10 +2456,10 @@ assert nodes["sg"]["proxy"] == "UNKNOWN"
 assert nodes["sg"]["accounting"] == "UNKNOWN"
 assert nodes["sg"]["instance_id"] is None
 PY
-if (( status_json_shape_rc == 0 )); then
-  pass "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+if (( probe_json_shape_rc == 0 )); then
+  pass "probe --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
 else
-  fail "status --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
+  fail "probe --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN"
 fi
 
 verify_rc=0
@@ -1437,18 +2521,18 @@ else
   fail "verify --json shape: lax pass, tokyo STALE, sg FAIL"
 fi
 
-assert_success "disable sg for stale-only status" fleet node disable sg
-stale_status_rc=0
-stale_status=$(fleet status 2>&1) || stale_status_rc=$?
-if (( stale_status_rc == 0 )); then
-  pass "status exits 0 when only accounting STALE remains"
+assert_success "disable sg for stale-only probe" fleet node disable sg
+stale_probe_rc=0
+stale_probe=$(fleet probe 2>&1) || stale_probe_rc=$?
+if (( stale_probe_rc == 0 )); then
+  pass "probe exits 0 when only accounting STALE remains"
 else
-  fail "status exits 0 when only accounting STALE remains (rc=${stale_status_rc})"
+  fail "probe exits 0 when only accounting STALE remains (rc=${stale_probe_rc})"
 fi
-assert_failure "status without --all omits disabled sg" \
-  grep -Eq '^sg[[:space:]]' <<< "$stale_status"
-assert_success "status --all shows disabled sg" \
-  grep -Eq '^sg[[:space:]].*DISABLED' <<< "$(fleet status --all)"
+assert_failure "probe without --all omits disabled sg" \
+  grep -Eq '^sg[[:space:]]' <<< "$stale_probe"
+assert_success "probe --all shows disabled sg" \
+  grep -Eq '^sg[[:space:]].*DISABLED' <<< "$(fleet probe --all)"
 stale_verify_rc=0
 fleet verify >/dev/null 2>&1 || stale_verify_rc=$?
 if (( stale_verify_rc == 0 )); then
@@ -1457,6 +2541,50 @@ else
   fail "verify exits 0 when sg is disabled and tokyo is STALE (rc=${stale_verify_rc})"
 fi
 assert_success "re-enable sg" fleet node enable sg
+
+# --- 0.4.1 B7: D58 status cache-only / probe live / status --live alias ---
+export VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/d58-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+fleet probe >/dev/null || true
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet status >/dev/null
+assert_equal "AC-4.1-02 bare status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+fleet status --live >/dev/null || true
+L2=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+if (( L2 > L0 )); then
+  pass "status --live SSHes"
+else
+  fail "status --live SSHes (L0=${L0} L2=${L2})"
+fi
+fleet probe >/dev/null || true
+if (( $(wc -l <"$VCL_FAKE_SSH_ARGV_LOG") > L2 )); then
+  pass "probe SSHes"
+else
+  fail "probe SSHes"
+fi
+cache_status_json=$(fleet status --json 2>/dev/null) || true
+assert_success "status --json mode is cache" \
+  grep -q '"mode": "cache"' <<< "$cache_status_json"
+cache_table=$(fleet status 2>/dev/null || true)
+assert_success "cache status table has LAST_SYNC and DATA_AGE" \
+  grep -Eq 'LAST_SYNC.+DATA_AGE' <<< "$cache_table"
+d58_cache_shape_rc=0
+python3 - "$cache_status_json" <<'PY' || d58_cache_shape_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("mode") == "cache"
+assert doc.get("ok") is True
+for n in doc["nodes"]:
+    assert "last_sync_at" in n, n
+    assert "data_age" in n, n
+    assert "cursor_status" in n, n
+PY
+if (( d58_cache_shape_rc == 0 )); then
+  pass "cache status --json has last_sync_at/data_age/cursor_status"
+else
+  fail "cache status --json has last_sync_at/data_age/cursor_status"
+fi
+unset VCL_FAKE_SSH_ARGV_LOG
 
 CLOCK_FLEET_HOME="${TEST_TMP}/fleet-home-clock"
 SAVED_STATUS_HOME="${VCL_FLEET_HOME}"
@@ -7461,6 +8589,436 @@ else
 fi
 
 unset VCL_FLEET_STATS_NOW
+
+# --- 0.4.1 AC offline ---
+# T42: offline AC pack (M01–M04/M06/S01/S02); reuses B5 migrate fixture pattern.
+SAVED_AC041_HOME="${VCL_FLEET_HOME}"
+SAVED_AC041_SSH="${VCL_FLEET_SSH:-}"
+SAVED_AC041_KEYSCAN="${VCL_FLEET_SSH_KEYSCAN:-}"
+SAVED_AC041_FAKE_STATE="${VCL_FAKE_STATE_DIR:-}"
+AC041_HOME="${TEST_TMP}/ac-041-offline"
+AC041_KEY="${TEST_TMP}/ac-041-id_ed25519"
+AC041_FAKE="${TEST_TMP}/ac-041-fake-state"
+AC041_UID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa041"
+rm -rf "$AC041_HOME" "$AC041_FAKE"
+mkdir -p "$AC041_HOME" "$AC041_FAKE/lax"
+printf 'test-only-not-a-real-ac041-key\n' > "$AC041_KEY"
+chmod 600 "$AC041_KEY"
+export VCL_FLEET_HOME="$AC041_HOME"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+unset VCL_FAKE_STATE_DIR
+
+assert_success "AC-4.0 fixture fleet init" fleet init
+assert_success "AC-4.0 fixture offline add lax with identity_file" \
+  fleet node add lax --host 203.0.113.10 --offline \
+    --node-id "$LAX_REMOTE_NODE_ID" \
+    --identity-file "$AC041_KEY"
+
+# Seed user known_hosts so migrate extract copies into workspace trust (M04 verify).
+mkdir -p "${HOME}/.ssh"
+chmod 700 "${HOME}/.ssh"
+if [[ -f "$LAX_HOSTKEY_PUB" ]]; then
+  cat "$LAX_HOSTKEY_PUB" >> "${HOME}/.ssh/known_hosts"
+  chmod 600 "${HOME}/.ssh/known_hosts"
+fi
+
+# Seed one audit_events user_id row (M01 +user_id) without filling instance_history
+# so dry-run still reports history_gaps (M06 / D48).
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$AC041_UID" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("vincula_fleet", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+uid = sys.argv[2]
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+conn = mod.open_fleet_db()
+conn.execute(
+    """
+    INSERT INTO audit_events (
+      node_id, instance_id, event_id, export_seq, connection_id, generation,
+      user_id, user_tag, started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, imported_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        nid, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", 1, 1, "ac041-c1", 0,
+        uid, "alice", "2026-08-20T00:00:00Z", "2026-08-20T01:00:00Z",
+        "2026-08-20T01:00:00Z", "example.com", "203.0.113.80", 443, "tcp",
+        10, 20, "2026-08-20T02:00:00Z",
+    ),
+)
+conn.commit()
+conn.close()
+print("seeded")
+PY
+
+# Capture pre-migrate identity fields for M01
+python3 - "$AC041_HOME" "$AC041_UID" "${TEST_TMP}/ac-041-pre.json" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+home, uid, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+n = reg["nodes"][0]
+conn = sqlite3.connect(str(home / "fleet.db"))
+uids = sorted(
+    r[0] for r in conn.execute("SELECT DISTINCT user_id FROM audit_events").fetchall()
+)
+conn.close()
+assert uid in uids
+out.write_text(
+    json.dumps(
+        {
+            "node_id": n["node_id"],
+            "ssh_host": n["ssh_host"],
+            "ssh_port": n["ssh_port"],
+            "status": n["status"],
+            "user_ids": uids,
+        }
+    ),
+    encoding="utf-8",
+)
+print("ok")
+PY
+
+# --- AC-4.0-M06: dry-run history_gaps nonempty + mtime unchanged ---
+AC041_SNAP_BEFORE="${TEST_TMP}/ac-041-snap-before.txt"
+(
+  cd "$AC041_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$AC041_SNAP_BEFORE"
+ac041_dry=$(fleet workspace migrate --dry-run) || ac041_dry_rc=$?
+ac041_dry_rc=${ac041_dry_rc:-0}
+assert_equal "AC-4.0-M06 dry-run exit 0" "0" "$ac041_dry_rc"
+AC041_SNAP_AFTER="${TEST_TMP}/ac-041-snap-after.txt"
+(
+  cd "$AC041_HOME"
+  find . -type f -printf '%P\t%T@\t%s\n' | sort
+) > "$AC041_SNAP_AFTER"
+if diff -q "$AC041_SNAP_BEFORE" "$AC041_SNAP_AFTER" >/dev/null; then
+  pass "AC-4.0-M06 dry-run mtime/size unchanged"
+else
+  fail "AC-4.0-M06 dry-run mtime/size unchanged"
+  diff -u "$AC041_SNAP_BEFORE" "$AC041_SNAP_AFTER" >&2 || true
+fi
+echo "$ac041_dry" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+assert p.get("dry_run") is True
+assert p["counts"]["history_gaps"] >= 1
+assert p.get("history_gaps"), p
+assert "NOT SSH" in p.get("note", "")
+' && pass "AC-4.0-M06 dry-run JSON history_gaps nonempty" \
+  || fail "AC-4.0-M06 dry-run JSON history_gaps nonempty"
+
+# --- AC-4.0-M03: fail-inject preserves legacy fleet.json ---
+# Plan string "migrate registry to credential refs" maps to pipeline step
+# "migrate identity_file → credential refs" (MIGRATE_PIPELINE entry).
+AC041_FLEET_SHA=$(sha256sum "${AC041_HOME}/fleet.json" | awk '{print $1}')
+ac041_m03_rc=0
+ac041_m03_err=$(VCL_WORKSPACE_MIGRATE_FAIL_AFTER='migrate identity_file → credential refs' \
+  fleet workspace migrate 2>&1) || ac041_m03_rc=$?
+if (( ac041_m03_rc != 0 )) \
+  && [[ ! -e "${AC041_HOME}/workspace.json" ]] \
+  && [[ "$(sha256sum "${AC041_HOME}/fleet.json" | awk '{print $1}')" == "$AC041_FLEET_SHA" ]]; then
+  pass "AC-4.0-M03 fail-inject preserves legacy fleet.json sha256"
+else
+  fail "AC-4.0-M03 fail-inject preserves legacy fleet.json sha256 rc=${ac041_m03_rc}"
+fi
+
+# --- AC-4.0-M02: migrate with VCL_FLEET_SSH=/bin/false (no remote) ---
+ac041_mig_rc=0
+ac041_mig_out=$(fleet workspace migrate 2>/dev/null) || ac041_mig_rc=$?
+ac041_mig_rc=${ac041_mig_rc:-0}
+assert_equal "AC-4.0-M02 migrate with SSH=/bin/false rc=0" "0" "$ac041_mig_rc"
+printf '%s\n' "$ac041_mig_out" > "${TEST_TMP}/ac-041-mig-out.json"
+
+# --- AC-4.0-M01: node_id/ssh_host/ssh_port/status (+user_id) equal pre vs post ---
+python3 - "$AC041_HOME" "${TEST_TMP}/ac-041-pre.json" <<'PY' || ac041_m01_rc=$?
+import json, sqlite3, sys
+from pathlib import Path
+home, pre_path = Path(sys.argv[1]), Path(sys.argv[2])
+pre = json.loads(pre_path.read_text(encoding="utf-8"))
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+n = reg["nodes"][0]
+assert n["node_id"] == pre["node_id"]
+assert n["ssh_host"] == pre["ssh_host"]
+assert n["ssh_port"] == pre["ssh_port"]
+assert n["status"] == pre["status"]
+assert "identity_file" not in n
+conn = sqlite3.connect(str(home / "fleet.db"))
+uids = sorted(
+    r[0] for r in conn.execute("SELECT DISTINCT user_id FROM audit_events").fetchall()
+)
+conn.close()
+assert uids == pre["user_ids"], (uids, pre["user_ids"])
+print("ok")
+PY
+ac041_m01_rc=${ac041_m01_rc:-0}
+if (( ac041_m01_rc == 0 )); then
+  pass "AC-4.0-M01 node_id/ssh_host/ssh_port/status(+user_id) equal pre/post"
+else
+  fail "AC-4.0-M01 node_id/ssh_host/ssh_port/status(+user_id) equal pre/post"
+fi
+
+# Restore fake-ssh for post-migrate live-ish smoke (still offline fixtures)
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+export VCL_FAKE_STATE_DIR="$AC041_FAKE"
+
+# Seed lax accounting for sync --node lax
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$AC041_FAKE" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, export_seq
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "ac041-sync-1", 0, "u-alice", ident["node_id"], ident["instance_id"], "alice",
+        "2026-08-20T08:00:00Z", "2026-08-20T09:00:00Z", "2026-08-20T09:00:00Z",
+        "example.com", "203.0.113.10", 443, "tcp", 10, 20, 1,
+    ),
+)
+acct.meta_set(conn, "audit_export_seq", "1")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+conn.close()
+print("ok")
+PY
+
+# --- AC-4.0-M04: post-migrate verify / sync / status / audit / stats / ui ---
+assert_success "AC-4.0-M04 post-migrate verify" fleet verify
+assert_success "AC-4.0-M04 post-migrate sync --node lax" fleet sync --node lax
+ac041_status_json=$(fleet status --json 2>/dev/null) || true
+assert_success "AC-4.0-M04 post-migrate status cache mode" \
+  grep -q '"mode": "cache"' <<< "$ac041_status_json"
+assert_success "AC-4.0-M04 post-migrate status" fleet status
+assert_success "AC-4.0-M04 post-migrate audit" fleet audit
+assert_success "AC-4.0-M04 post-migrate stats top users --days 1" \
+  fleet stats top users --days 1
+assert_success "AC-4.0-M04 post-migrate ui --help" fleet ui --help
+
+# --- AC-4.1-S01: CHANGELOG + status help cache-only ---
+assert_success "AC-4.1-S01 CHANGELOG mentions cache-only" \
+  grep -q 'cache-only' "${PROJECT_DIR}/CHANGELOG.md"
+assert_success "AC-4.1-S01 status help mentions cache" \
+  grep -Eqi 'cache' <<< "$(fleet status --help)"
+
+# --- AC-4.0-S02: conflict codes detectable (stderr) ---
+# Sync may bump history/instances.jsonl → digest drift; any D52 conflict code satisfies S02.
+python3 - "$AC041_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_ac_s02", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+# Force rollback even if digest already drifted: set last_seen_revision high
+# after refreshing digest so conflict order prefers ROLLBACK when digests match.
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+view = {
+    "schema_version": 1,
+    "fleet_id": m["fleet_id"],
+    "last_seen_revision": (m["revision"] or 0) + 5,
+    "last_seen_write_id": m["write_id"],
+    "last_seen_state_digest": m["state_digest"],
+}
+mod.save_workspace_view(view)
+print("rollback-seeded")
+PY
+ac041_s02_rc=0
+ac041_s02_err=$(fleet workspace verify 2>&1) || ac041_s02_rc=$?
+if (( ac041_s02_rc != 0 )) && echo "$ac041_s02_err" | grep -Eq \
+  'WORKSPACE_ROLLBACK|WORKSPACE_DIVERGED|WORKSPACE_INCONSISTENT|WORKSPACE_CAS_REJECTED'; then
+  pass "AC-4.0-S02 stderr contains WORKSPACE_ROLLBACK|DIVERGED|INCONSISTENT|CAS_REJECTED"
+else
+  fail "AC-4.0-S02 stderr contains conflict code rc=${ac041_s02_rc} err=${ac041_s02_err}"
+fi
+# Restore view so later M05 copy sees a consistent workspace
+python3 - "$AC041_HOME" "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vcl_ac_s02r", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+mod.remember_workspace_view(m)
+print("restored")
+PY
+
+# --- T43: AC-4.0-M05 structural offline (no real SSH; fake-ssh OK) ---
+HA="${TEST_TMP}/m05-a"
+HB="${TEST_TMP}/m05-b"
+M05_FAKE="${TEST_TMP}/m05-fake-state"
+rm -rf "$HA" "$HB" "$M05_FAKE"
+mkdir -p "${HA}/keys" "$M05_FAKE/lax"
+printf 'test-only-not-a-real-m05-key\n' > "${HA}/keys/id"
+chmod 600 "${HA}/keys/id"
+export VCL_FLEET_HOME="$HA"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+unset VCL_FAKE_STATE_DIR
+assert_success "AC-4.0-M05-A fleet init" fleet init
+assert_success "AC-4.0-M05-A offline add" \
+  fleet node add lax --host 203.0.113.10 --offline \
+    --node-id "$LAX_REMOTE_NODE_ID" \
+    --identity-file "${HA}/keys/id"
+# Ensure machine-local cache exists so migrate copies fleet.db onto A
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vincula_fleet", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+conn.close()
+print("fleet.db ready")
+PY
+assert_success "AC-4.0-M05-A fleet.db pre-migrate" test -f "${HA}/fleet.db"
+assert_success "AC-4.0-M05-A migrate" fleet workspace migrate
+# Copy portable workspace to B (exclude machine-local + fleet.db + last-status)
+mkdir -p "$HB"
+# Prefer rsync-like selective copy via tar
+(
+  cd "$HA"
+  tar -cf - \
+    --exclude='./machine-local' \
+    --exclude='./fleet.db' \
+    --exclude='./fleet.db-wal' \
+    --exclude='./fleet.db-shm' \
+    --exclude='./last-status.json' \
+    --exclude='./.migrate-staging' \
+    .
+) | ( cd "$HB" && tar -xf - )
+# Ensure exclusions took effect
+rm -rf "${HB}/machine-local"
+rm -f "${HB}/fleet.db" "${HB}/fleet.db-wal" "${HB}/fleet.db-shm" "${HB}/last-status.json"
+assert_failure "AC-4.0-M05-B has no machine-local before bind" \
+  test -d "${HB}/machine-local"
+assert_failure "AC-4.0-M05-B has no fleet.db before bind/sync" \
+  test -f "${HB}/fleet.db"
+
+export VCL_FLEET_HOME="$HB"
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+export VCL_FAKE_STATE_DIR="$M05_FAKE"
+M05_REF=$(python3 -c 'import json; print(json.load(open("'"${HB}/fleet.json"'"))["nodes"][0]["admin_credential_ref"])')
+assert_success "AC-4.0-M05-B access bind credential" \
+  fleet access bind "$M05_REF" --identity-file "${HB}/keys/id"
+
+# Seed accounting + sync so B gets an independent fleet.db (structural smoke)
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$M05_FAKE" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, export_seq
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "m05-sync-1", 0, "u-alice", ident["node_id"], ident["instance_id"], "alice",
+        "2026-08-20T08:00:00Z", "2026-08-20T09:00:00Z", "2026-08-20T09:00:00Z",
+        "example.com", "203.0.113.10", 443, "tcp", 1, 2, 1,
+    ),
+)
+acct.meta_set(conn, "audit_export_seq", "1")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+conn.close()
+print("ok")
+PY
+assert_success "AC-4.0-M05-B sync structural" fleet sync --node lax
+assert_success "AC-4.0-M05-B status structural" fleet status
+assert_success "AC-4.0-M05-B ui --help structural" fleet ui --help
+assert_success "AC-4.0-M05-B fleet.db exists" test -f "${HB}/fleet.db"
+assert_success "AC-4.0-M05-A fleet.db still exists" test -f "${HA}/fleet.db"
+if [[ "${HA}/fleet.db" -ef "${HB}/fleet.db" ]]; then
+  fail "AC-4.0-M05 independent fleet.db (A and B must not be same inode)"
+else
+  pass "AC-4.0-M05 independent fleet.db (A and B not same inode)"
+fi
+python3 - "$HA" "$HB" <<'PY' || m05_id_rc=$?
+import json, sys
+from pathlib import Path
+ha, hb = Path(sys.argv[1]), Path(sys.argv[2])
+wa = json.loads((ha / "workspace.json").read_text(encoding="utf-8"))
+wb = json.loads((hb / "workspace.json").read_text(encoding="utf-8"))
+assert wa["fleet_id"] == wb["fleet_id"], (wa["fleet_id"], wb["fleet_id"])
+ra = json.loads((ha / "fleet.json").read_text(encoding="utf-8"))
+rb = json.loads((hb / "fleet.json").read_text(encoding="utf-8"))
+assert [n["node_id"] for n in ra["nodes"]] == [n["node_id"] for n in rb["nodes"]]
+print("ok")
+PY
+m05_id_rc=${m05_id_rc:-0}
+if (( m05_id_rc == 0 )); then
+  pass "AC-4.0-M05 same fleet_id + node_ids on A and B (offline half)"
+else
+  fail "AC-4.0-M05 same fleet_id + node_ids on A and B (offline half)"
+fi
+
+# --- T44: AC-4.0-M05 LIVE gate (skippable in CI) ---
+if [[ "${VCL_LIVE_M05:-}" != "1" ]]; then
+  pass "AC-4.0-M05 SKIP (REQUIRES-LIVE)"
+fi
+assert_failure "ci.yml never sets VCL_LIVE_M05" \
+  grep -q 'VCL_LIVE_M05' "${PROJECT_DIR}/.github/workflows/ci.yml"
+assert_success "AC-4.0-M05 runbook README exists" \
+  test -f "${PROJECT_DIR}/docs/evidence/0.4.1-m05/README.md"
+assert_success "AC-4.0-M05 RUNBOOK exists" \
+  test -f "${PROJECT_DIR}/docs/evidence/0.4.1-m05/RUNBOOK.md"
+assert_success "AC-4.0-M05 SUMMARY is NOT RUN" \
+  grep -q 'NOT RUN' "${PROJECT_DIR}/docs/evidence/0.4.1-m05/SUMMARY.md"
+
+# Restore env after AC pack / M05
+if [[ -n "${SAVED_AC041_SSH}" ]]; then
+  export VCL_FLEET_SSH="${SAVED_AC041_SSH}"
+else
+  unset VCL_FLEET_SSH
+fi
+if [[ -n "${SAVED_AC041_KEYSCAN}" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="${SAVED_AC041_KEYSCAN}"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+if [[ -n "${SAVED_AC041_FAKE_STATE}" ]]; then
+  export VCL_FAKE_STATE_DIR="${SAVED_AC041_FAKE_STATE}"
+else
+  unset VCL_FAKE_STATE_DIR
+fi
+export VCL_FLEET_HOME="${SAVED_AC041_HOME}"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then

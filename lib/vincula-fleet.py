@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.3.1"
+VCL_FLEET_VERSION = "0.4.1"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 3
@@ -301,6 +301,43 @@ def fleet_db_path() -> Path:
     return _WS.fleet_db_path()
 
 
+workspace_manifest_path = _WS.workspace_manifest_path
+machine_local_dir = _WS.machine_local_dir
+workspace_view_path = _WS.workspace_view_path
+trust_dir = _WS.trust_dir
+known_hosts_path = _WS.known_hosts_path
+workspace_trust_active = _WS.workspace_trust_active
+history_dir = _WS.history_dir
+instances_history_path = _WS.instances_history_path
+append_instance_history_line = _WS.append_instance_history_line
+parse_instance_history_jsonl = _WS.parse_instance_history_jsonl
+export_instance_history_from_db = _WS.export_instance_history_from_db
+mint_fleet_id = _WS.mint_fleet_id
+empty_workspace_manifest = _WS.empty_workspace_manifest
+validate_workspace_manifest = _WS.validate_workspace_manifest
+load_workspace_manifest = _WS.load_workspace_manifest
+save_workspace_manifest = _WS.save_workspace_manifest
+create_workspace_manifest = _WS.create_workspace_manifest
+compute_state_digest = _WS.compute_state_digest
+refresh_manifest_digest = _WS.refresh_manifest_digest
+load_workspace_view = _WS.load_workspace_view
+save_workspace_view = _WS.save_workspace_view
+remember_workspace_view = _WS.remember_workspace_view
+detect_workspace_conflict = _WS.detect_workspace_conflict
+cas_mutate_workspace = _WS.cas_mutate_workspace
+execute_migrate = _WS.execute_migrate
+export_workspace = _WS.export_workspace
+import_workspace = _WS.import_workspace
+EXPORT_MEMBERS = _WS.EXPORT_MEMBERS
+PORTABLE_DIGEST_NAMES = _WS.PORTABLE_DIGEST_NAMES
+INSTANCE_HISTORY_SCHEMA = _WS.INSTANCE_HISTORY_SCHEMA
+WORKSPACE_VIEW_SCHEMA_VERSION = _WS.WORKSPACE_VIEW_SCHEMA_VERSION
+WS_ERR_ROLLBACK = _WS.WS_ERR_ROLLBACK
+WS_ERR_DIVERGED = _WS.WS_ERR_DIVERGED
+WS_ERR_INCONSISTENT = _WS.WS_ERR_INCONSISTENT
+WS_ERR_CAS = _WS.WS_ERR_CAS
+
+
 def _chmod_private(path: Path, mode: int = 0o600) -> None:
     return _WS._chmod_private(path, mode)
 
@@ -370,6 +407,18 @@ def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
 
 def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
     return _AC._node_identity_file(node)
+
+
+BINDINGS_SCHEMA_VERSION = _AC.BINDINGS_SCHEMA_VERSION
+credential_bindings_path = _AC.credential_bindings_path
+empty_bindings = _AC.empty_bindings
+load_bindings = _AC.load_bindings
+save_bindings = _AC.save_bindings
+bind_identity_file = _AC.bind_identity_file
+bind_openssh_default = _AC.bind_openssh_default
+resolve_binding = _AC.resolve_binding
+list_bindings = _AC.list_bindings
+verify_bindings = _AC.verify_bindings
 
 
 def ssh_argv(
@@ -510,6 +559,8 @@ candidate_host_keys = _TR.candidate_host_keys
 append_known_hosts = _TR.append_known_hosts
 pin_host_key = _TR.pin_host_key
 prepare_ssh_host_key = _TR.prepare_ssh_host_key
+TRUST_MIGRATION_REQUIRED = _TR.TRUST_MIGRATION_REQUIRED
+extract_fleet_host_trust = _TR.extract_fleet_host_trust
 
 
 def fleet_lock_path() -> Path:
@@ -810,6 +861,14 @@ def retire_active_instance(
     """Mark every active instance for node_id as retired."""
     validate_node_id(node_id)
     ts = retired_at or now or format_utc(datetime.now(timezone.utc))
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND status = ?
+        """,
+        (node_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchall()
     conn.execute(
         """
         UPDATE instance_history
@@ -818,6 +877,17 @@ def retire_active_instance(
         """,
         (INSTANCE_STATUS_RETIRED, ts, node_id, INSTANCE_STATUS_ACTIVE),
     )
+    for row in rows:
+        append_instance_history_line(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
 
 
 def mark_instance_retired(
@@ -829,6 +899,14 @@ def mark_instance_retired(
     """Retire one (node_id, instance_id) row if it is still active."""
     validate_node_id(node_id)
     ts = retired_at or format_utc(datetime.now(timezone.utc))
+    row = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND instance_id = ? AND status = ?
+        """,
+        (node_id, instance_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchone()
     conn.execute(
         """
         UPDATE instance_history
@@ -837,6 +915,17 @@ def mark_instance_retired(
         """,
         (INSTANCE_STATUS_RETIRED, ts, node_id, instance_id, INSTANCE_STATUS_ACTIVE),
     )
+    if row is not None:
+        append_instance_history_line(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
 
 
 def record_instance(
@@ -875,6 +964,16 @@ def record_instance(
         endpoint=endpoint,
         ssh_host=ssh_host,
         status=INSTANCE_STATUS_ACTIVE,
+    )
+    append_instance_history_line(
+        {
+            "node_id": node_id,
+            "instance_id": iid,
+            "started_at": ts,
+            "retired_at": None,
+            "endpoint": _optional_text(endpoint) or _optional_text(ssh_host),
+            "reason": "sync-first-sight",
+        }
     )
 
 
@@ -2965,6 +3064,20 @@ def probe_node(
 
 
 def format_status_table(rows: list[dict[str, Any]]) -> str:
+    # Cache path (D58): last_sync_at present → LAST_SYNC / DATA_AGE / NODE_STATUS / CURSOR
+    if rows and "last_sync_at" in rows[0]:
+        lines = [
+            f"{'NAME':<8} {'NODE_ID':<8} {'LAST_SYNC':<20} {'DATA_AGE':<8} "
+            f"{'NODE_STATUS':<11} CURSOR"
+        ]
+        for row in rows:
+            lines.append(
+                f"{row['name']:<8} {short_id(row.get('node_id')):<8} "
+                f"{str(row.get('last_sync_at') or '-'):<20} "
+                f"{str(row.get('data_age') or '-'):<8} "
+                f"{row['ssh']:<11} {row.get('cursor_status') or '-'}"
+            )
+        return "\n".join(lines) + "\n"
     lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<7} {'PROXY':<7} ACCOUNTING"]
     for row in rows:
         instance = "-"
@@ -3105,7 +3218,7 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
 
 
 def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Probe status and write last-status.json; return payload (no stdout)."""
+    """Live probe; write last-status.json."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
@@ -3120,6 +3233,87 @@ def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
     }
     write_last_status(payload)
     payload["_rows"] = rows  # CLI table only; strip before JSON emit
+    return payload
+
+
+def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
+    """Cache-only: last-status.json + sync_cursor. No SSH. Does not write."""
+    registry = load_registry()
+    controller_utc = datetime.now(timezone.utc)
+    prev: dict[str, Any] = {}
+    path = last_status_path()
+    if path.is_file():
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+    by = {
+        n["name"]: n
+        for n in (prev.get("nodes") or [])
+        if isinstance(n, dict) and n.get("name")
+    }
+    conn = open_fleet_db() if fleet_db_path().is_file() else None
+    rows: list[dict[str, Any]] = []
+    try:
+        for node in _selected_nodes(registry, include_all):
+            sl = by.get(node["name"]) or {}
+            cur = (
+                read_sync_cursor_row(conn, node["node_id"]) if conn is not None else None
+            )
+            ls = cur["last_sync_at"] if cur is not None else None
+            age = "-"
+            if ls:
+                try:
+                    age = (
+                        f"{int((controller_utc - datetime.fromisoformat(ls.replace('Z', '+00:00'))).total_seconds())}s"
+                    )
+                except ValueError:
+                    age = "?"
+            life = node_lifecycle_status(node)
+            if life == NODE_STATUS_DISABLED:
+                st = "DISABLED"
+            elif life == NODE_STATUS_RETIRED:
+                st = "-"
+            else:
+                st = sl.get("ssh") or "UNKNOWN"
+            instance_id = sl.get("instance_id")
+            if instance_id is None and cur is not None:
+                instance_id = cur["instance_id"]
+            cursor_status = cur["status"] if cur is not None else None
+            rows.append(
+                {
+                    "name": node["name"],
+                    "node_id": node["node_id"],
+                    "instance_id": instance_id,
+                    "ssh": st,
+                    "proxy": sl.get("proxy") or "UNKNOWN",
+                    "accounting": sl.get("accounting") or "UNKNOWN",
+                    "last_sync_at": ls or "-",
+                    "data_age": age,
+                    "cursor_status": cursor_status or "-",
+                    "enabled": node.get("enabled", True),
+                }
+            )
+    finally:
+        if conn is not None:
+            conn.close()
+    nodes = [
+        {
+            **_status_json_node(r),
+            "last_sync_at": r["last_sync_at"],
+            "data_age": r["data_age"],
+            "cursor_status": r["cursor_status"],
+        }
+        for r in rows
+    ]
+    payload: dict[str, Any] = {
+        "schema_version": STATUS_JSON_SCHEMA_VERSION,
+        "ok": True,
+        "mode": "cache",
+        "controller_utc": format_utc(controller_utc),
+        "nodes": nodes,
+    }
+    payload["_rows"] = rows
     return payload
 
 
@@ -3149,6 +3343,16 @@ def run_verify_payload(*, include_all: bool = False) -> dict[str, Any]:
 
 
 def cmd_status(*, as_json: bool, include_all: bool) -> int:
+    payload = run_cached_status_payload(include_all=include_all)
+    rows = payload.pop("_rows")
+    if as_json:
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(format_status_table(rows))
+    return 0 if payload["ok"] else 1
+
+
+def cmd_probe(*, as_json: bool, include_all: bool) -> int:
     payload = run_status_payload(include_all=include_all)
     rows = payload.pop("_rows")
     if as_json:
@@ -4662,6 +4866,8 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 @with_fleet_op_lock
 def cmd_sync(args: argparse.Namespace) -> int:
+    if getattr(args, "full", False):
+        die("sync --full requires 0.4.2", 2)
     as_json = bool(getattr(args, "as_json", False))
     code, doc = run_sync_payload(args)
     if as_json:
@@ -5287,11 +5493,93 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
 
 def cmd_workspace_migrate(args: argparse.Namespace) -> int:
-    if not getattr(args, "dry_run", False):
-        die("workspace migrate without --dry-run requires 0.4.1", 2)
+    if getattr(args, "dry_run", False):
+        sys.stdout.write(
+            json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False)
+            + "\n"
+        )
+        return 0
     sys.stdout.write(
-        json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False) + "\n"
+        json.dumps(_WS.execute_migrate(), indent=2, ensure_ascii=False) + "\n"
     )
+    return 0
+
+
+def cmd_workspace_init(_args: argparse.Namespace) -> int:
+    home = _ensure_fleet_home()
+    for dname in ("trust", "history", "machine-local"):
+        d = home / dname
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+    if not fleet_registry_path().is_file():
+        _WS._save_registry_unlocked(None, empty_registry())
+    create_workspace_manifest()
+    return 0
+
+
+def cmd_workspace_show(_args: argparse.Namespace) -> int:
+    manifest = load_workspace_manifest()
+    sys.stdout.write(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    )
+    return 0
+
+
+def cmd_workspace_verify(_args: argparse.Namespace) -> int:
+    manifest = load_workspace_manifest()
+    validate_workspace_manifest(manifest)
+    if compute_state_digest() != manifest["state_digest"]:
+        die(WS_ERR_INCONSISTENT, 2)
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        die(conflict, 2)
+    sys.stdout.write(
+        f"OK fleet_id={manifest['fleet_id']} revision={manifest['revision']}\n"
+    )
+    return 0
+
+
+def cmd_workspace_export(args: argparse.Namespace) -> int:
+    dest = export_workspace(Path(args.file))
+    sys.stdout.write(f"{dest}\n")
+    return 0
+
+
+def cmd_workspace_import(args: argparse.Namespace) -> int:
+    manifest = import_workspace(Path(args.file))
+    sys.stdout.write(
+        f"imported fleet_id={manifest['fleet_id']} "
+        f"revision={manifest['revision']}\n"
+    )
+    return 0
+
+
+def cmd_access_list(_args: argparse.Namespace) -> int:
+    bindings = list_bindings()
+    for ref in sorted(bindings):
+        binding = bindings[ref]
+        btype = binding.get("type") if isinstance(binding, dict) else ""
+        if isinstance(binding, dict) and btype == "identity_file":
+            path = binding.get("path") or "-"
+        else:
+            path = "-"
+        sys.stdout.write(f"{ref}\t{btype}\t{path}\n")
+    return 0
+
+
+def cmd_access_bind(args: argparse.Namespace) -> int:
+    ref = str(args.ref)
+    if getattr(args, "openssh_default", False):
+        bind_openssh_default(ref)
+    else:
+        bind_identity_file(ref, str(args.identity_file))
+    return 0
+
+
+def cmd_access_verify(_args: argparse.Namespace) -> int:
+    problems = verify_bindings()
+    if problems:
+        die("\n".join(problems), 1)
     return 0
 
 
@@ -5326,6 +5614,15 @@ def build_parser() -> argparse.ArgumentParser:
             "is not promised."
         ),
     )
+    parser.add_argument(
+        "--workspace",
+        dest="workspace_path",
+        metavar="PATH",
+        help=(
+            "portable workspace root (sets VCL_FLEET_HOME); "
+            "env VCL_FLEET_WORKSPACE aliases to VCL_FLEET_HOME when unset"
+        ),
+    )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init", help="create a user-local fleet.json registry")
@@ -5355,7 +5652,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument(
         "--host-key",
         dest="host_key",
-        help="pin remote host-key fingerprint SHA256:... (writes user known_hosts)",
+        help="pin remote host-key fingerprint SHA256:... (writes Fleet known_hosts (workspace/trust or ~/.ssh))",
     )
     p_add.add_argument(
         "--identity-file",
@@ -5467,13 +5764,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser(
         "status",
-        help="remote status table: NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING",
+        help="cache-only (D58); use probe or --live for SSH",
         description=(
-            "Probe enabled nodes over SSH (vcl identity --json and "
-            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
-            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
-            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
-            "Exit 1 if any node is SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+            "Cache-only (D58): last observation from last-status.json + "
+            "fleet.db sync_cursor. No SSH. Table columns: NAME NODE_ID "
+            "LAST_SYNC DATA_AGE NODE_STATUS CURSOR. Use `probe` or "
+            "`status --live` for live SSH health (writes last-status.json)."
         ),
     )
     p_status.add_argument(
@@ -5483,6 +5779,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="print JSON (schema_version 1)",
     )
     p_status.add_argument(
+        "--all",
+        action="store_true",
+        help="include disabled and retired nodes (retired NODE_STATUS=-; no SSH)",
+    )
+    p_status.add_argument(
+        "--live",
+        action="store_true",
+        help="0.4.x alias for probe (deprecated)",
+    )
+    p_probe = sub.add_parser(
+        "probe",
+        help="live SSH health (writes last-status.json)",
+        description=(
+            "Probe enabled nodes over SSH (vcl identity --json and "
+            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
+            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
+            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
+            "Writes last-status.json. Exit 1 if any node is "
+            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+        ),
+    )
+    p_probe.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON (schema_version 1)",
+    )
+    p_probe.add_argument(
         "--all",
         action="store_true",
         help="include disabled and retired nodes (retired SSH=-; no SSH)",
@@ -5732,6 +6056,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="print JSON (schema_version 1)",
     )
+    p_sync.add_argument(
+        "--full",
+        action="store_true",
+        help="full re-sync (requires 0.4.2)",
+    )
 
     p_audit = sub.add_parser(
         "audit",
@@ -5844,18 +6173,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP port (default: 8765)",
     )
 
+    access = sub.add_parser(
+        "access", help="machine-local credential bindings (D28)"
+    )
+    asub = access.add_subparsers(dest="access_command")
+    asub.add_parser("list", help="list credential bindings")
+    asub.add_parser("verify", help="verify bound identity files exist")
+    pb = asub.add_parser("bind", help="bind a credential ref on this machine")
+    pb.add_argument("ref", help="credential ref name")
+    g = pb.add_mutually_exclusive_group(required=True)
+    g.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        metavar="PATH",
+        help="local SSH private key path",
+    )
+    g.add_argument(
+        "--openssh-default",
+        dest="openssh_default",
+        action="store_true",
+        help="use OpenSSH default identities (no -i)",
+    )
+
     ws = sub.add_parser(
-        "workspace", help="workspace lifecycle (0.4.0: migrate --dry-run)"
+        "workspace",
+        help="workspace lifecycle (init/show/verify/export/import/migrate)",
     )
     ws_sub = ws.add_subparsers(dest="workspace_command")
+    ws_sub.add_parser("init", help="create workspace.json + dirs")
+    ws_sub.add_parser("show", help="print workspace.json")
+    ws_sub.add_parser(
+        "verify", help="validate manifest + D52 digest/conflict"
+    )
+    p_export = ws_sub.add_parser(
+        "export", help="portable snapshot (no secrets / machine-local)"
+    )
+    p_export.add_argument("file", help="destination .tgz path")
+    p_import = ws_sub.add_parser(
+        "import", help="import portable snapshot into fleet home"
+    )
+    p_import.add_argument("file", help="source .tgz path")
     p_mig = ws_sub.add_parser(
-        "migrate", help="legacy→workspace (0.4.0: --dry-run only)"
+        "migrate", help="legacy→workspace migrate (0.4.1)"
     )
     p_mig.add_argument(
         "--dry-run",
         action="store_true",
-        required=True,
-        help="plan only; no SSH/writes/deletes (AC-4.0-04)",
+        help="plan only (AC-4.0-M06); omit to execute (0.4.1)",
     )
 
     sub.add_parser("version", help="print vcl-fleet version")
@@ -5867,6 +6231,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     parser = build_parser()
     args = parser.parse_args(argv)
+    wp = getattr(args, "workspace_path", None)
+    if wp:
+        os.environ["VCL_FLEET_HOME"] = str(Path(wp).expanduser().resolve())
     command = args.command
     if command in (None, "help"):
         parser.print_help()
@@ -5877,7 +6244,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "init":
         return cmd_init()
     if command == "status":
+        if getattr(args, "live", False):
+            return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
         return cmd_status(as_json=bool(args.as_json), include_all=bool(args.all))
+    if command == "probe":
+        return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "verify":
         return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "sync":
@@ -5947,11 +6318,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         die(f"unknown user command: {sub}", 2)
     if command == "ui":
         return cmd_ui(args)
+    if command == "access":
+        sub = getattr(args, "access_command", None)
+        if sub is None:
+            parser.parse_args(["access", "--help"])
+            return 2
+        if sub == "list":
+            return cmd_access_list(args)
+        if sub == "bind":
+            return cmd_access_bind(args)
+        if sub == "verify":
+            return cmd_access_verify(args)
+        die(f"unknown access command: {sub}", 2)
     if command == "workspace":
         sub = getattr(args, "workspace_command", None)
         if sub is None:
             parser.parse_args(["workspace", "--help"])
             return 2
+        if sub == "init":
+            return cmd_workspace_init(args)
+        if sub == "show":
+            return cmd_workspace_show(args)
+        if sub == "verify":
+            return cmd_workspace_verify(args)
+        if sub == "export":
+            return cmd_workspace_export(args)
+        if sub == "import":
+            return cmd_workspace_import(args)
         if sub == "migrate":
             return cmd_workspace_migrate(args)
         die(f"unknown workspace command: {sub}", 2)

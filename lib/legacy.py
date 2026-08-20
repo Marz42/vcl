@@ -1,8 +1,9 @@
 """Legacy compatibility facade (0.4.0 B4).
 
-Canonical env remains VCL_FLEET_HOME (fleet_home). Optional future alias:
+Canonical env remains VCL_FLEET_HOME (fleet_home). Optional alias:
 if VCL_FLEET_WORKSPACE is set and VCL_FLEET_HOME is unset, treat the workspace
 path as VCL_FLEET_HOME (read-only env alias; no new disk layout).
+CLI ``--workspace PATH`` (0.4.1) sets VCL_FLEET_HOME and prefers over this alias.
 
 Loaded as a controller sibling via _load_controller_sibling — never import
 this module from sys.path.
