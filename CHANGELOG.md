@@ -8,6 +8,7 @@
 
 - Stamp living tree at `0.3.1-rc2`. Upgrade allowlist adds **`0.3.1-rc1` → `0.3.1-rc2`** (also `0.3.1-dev` / `0.3.0`; excludes `0.3.0-dev` and self).
 - **B18 / rc1 postmortem:** `0.3.1-rc1` fresh install could fail `wait_for_accountd_healthy` because the installer still required accounting schema **3** while `vincula-accountd` creates schema **4**. Runtime health now requires schema **4**; regression tests pin accountd / installer / audit agreement. **`0.3.1-rc1` is superseded** for fresh install.
+- **B19 / scope freeze:** Tag `v0.3.1-rc2` is the immutable candidate for remaining live gates. No in-place mutation of that RC’s published digests; further product changes require a new RC.
 - Docs: gate status unify (B14 PASS) + `docs/legacy/` for freeze records (landed just before this stamp).
 - **Tests:** `bash tests/test.sh` **1280** PASS; standalone `bash tests/test-fleet.sh` **521** PASS.
 - Release recommendation remains **NOT READY** until live `0.3.0 → 0.3.1-rc2` upgrade + Schema 4 live re-sync evidence ([`release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)).

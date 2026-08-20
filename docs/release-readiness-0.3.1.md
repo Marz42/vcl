@@ -25,10 +25,31 @@ Known P0 on this tree: **0** (including prior live sync AUTOINCREMENT / open-row
 
 **Gate note:** **`0.3.1-rc1` is superseded** for fresh install. Prefer `0.3.1-rc2` artifacts.
 
+## B19 — Scope freeze (`0.3.1-rc2`)
+
+**Feature freeze** starts at tag `v0.3.1-rc2`. Living verification (B20+) must use **one immutable** node/controller artifact pair built from that tag.
+
+Allowed after freeze:
+- P0/P1 defect fixes
+- release-blocker fixes
+- tests / live evidence
+- documentation consistency
+- release-engineering (locks, digests, packaging)
+
+Not allowed without a **new RC** (`0.3.1-rc3`+):
+- new UI / Fleet features
+- REALITY/SNI tuning
+- large refactors
+- new protocols / schemas
+- other planned 0.4 work
+
+Policy: **do not mutate** the `v0.3.1-rc2` tag or overwrite published `vincula-node-0.3.1-rc2.*` / `vincula-controller-0.3.1-rc2.*` digests. Fixes ship as a new RC (or stable `0.3.2` only after all live gates PASS).
+
 ## Closed on this living tree
 
 | ID | Contract | Status |
 | --- | --- | --- |
+| **B19** | Version sources + allowlist unified at `0.3.1-rc2`; immutable tag + freeze policy | **PASS** (this stamp) |
 | **B18** | Installer / verify / audit runtime health tracks accounting schema **4**; no residual “expect schema 3” on health paths | **PASS** |
 | **B14** | Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age` | **PASS (2026-08-18).** Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
 | **B15** | Localhost Audit UI (`vcl-fleet ui`): Overview / Audit / Health; loopback-only; read-only + SSH refresh/sync; CLI recipes for mutations | **Implemented.** Fixture AC-3.1 in `tests/test-fleet.sh`. |

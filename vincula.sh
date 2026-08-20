@@ -2006,7 +2006,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5 and 0.2.0–0.3.0 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5, 0.2.0–0.3.0, 0.3.1-dev, and 0.3.1-rc1 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {

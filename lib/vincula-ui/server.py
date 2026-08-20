@@ -1033,7 +1033,8 @@ def api_refresh_users() -> dict[str, Any]:
 
 
 class FleetUIHandler(BaseHTTPRequestHandler):
-    server_version = "VinculaFleetUI/0.3.1"
+    def version_string(self) -> str:
+        return f"VinculaFleetUI/{fleet().VCL_FLEET_VERSION}"
 
     def setup(self) -> None:
         super().setup()

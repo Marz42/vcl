@@ -46,6 +46,7 @@ Inherited from 0.3.0 unless noted.
 
 | Issue | Notes |
 | --- | --- |
+| B19 scope freeze | Tag `v0.3.1-rc2` is immutable for live gates; no in-place digest mutation |
 | B18 rc1 Schema 4 health mismatch | **PASS.** Installer `wait_for_accountd_healthy` expects schema 4; `0.3.1-rc1` superseded for fresh install |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
 | B15 localhost UI | **Implemented** (+ Host/token/CSRF, no UI reseed, GET no SSH; per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
