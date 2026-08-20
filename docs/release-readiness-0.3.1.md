@@ -49,7 +49,8 @@ Policy: **do not mutate** the `v0.3.1-rc2` tag or overwrite published `vincula-n
 
 | ID | Contract | Status |
 | --- | --- | --- |
-| **B19** | Version sources + allowlist unified at `0.3.1-rc2`; immutable tag + freeze policy | **PASS** (this stamp) |
+| **B20** | CI matrix (ubuntu + Debian 12/13) + node/controller artifacts + black-box zip | **PASS** (local equivalent; GitHub Actions on push) |
+| **B19** | Version sources + allowlist unified at `0.3.1-rc2`; immutable tag + freeze policy | **PASS** (tag `v0.3.1-rc2`) |
 | **B18** | Installer / verify / audit runtime health tracks accounting schema **4**; no residual “expect schema 3” on health paths | **PASS** |
 | **B14** | Live secretless replace on two VPS + AC-3.0-11 + Win11 `vcl-fleet.cmd` + real `age` | **PASS (2026-08-18).** Evidence: [`evidence/0.3.1-live/`](evidence/0.3.1-live/). Runbook: [`live-replace-checklist.md`](live-replace-checklist.md). |
 | **B15** | Localhost Audit UI (`vcl-fleet ui`): Overview / Audit / Health; loopback-only; read-only + SSH refresh/sync; CLI recipes for mutations | **Implemented.** Fixture AC-3.1 in `tests/test-fleet.sh`. |
@@ -92,10 +93,15 @@ Normal `vcl-fleet sync` refuses unlabeled or mismatched identity; cursor does no
 
 ## Verification this round
 
-- `bash tests/test.sh` — **1280** passed (includes B18 schema-health regressions + fleet)
+- `bash tests/test.sh` — **1280** passed on WSL host (includes B18 schema-health regressions + fleet); **1279** passed in Debian 12 / Debian 13 / Ubuntu containers (writable tree copy; build tests need write)
 - `bash tests/test-fleet.sh` — **521** passed standalone (includes AC-3.1 UI subset)
 - `bash -n` + `python3 -m py_compile` on first-party node/controller files
-- `bash scripts/gen-release-lock.sh` after first-party edits (node package)
-- `vincula.sh.sha256` / `release.lock` digests match
+- `bash scripts/gen-release-lock.sh` + `vincula.sh.sha256` match tagged tree
+- **B19:** annotated tag `v0.3.1-rc2` @ `63755b5`; freeze policy above
+- **B20 artifacts (from tagged tree):**
+  - `dist/vincula-node-0.3.1-rc2.tar.gz` — `ce80645029aefe075097156e1f2929ca1ac0e0370224d0d48bc68e5c84c93d92`
+  - `dist/vincula-controller-0.3.1-rc2.zip` — `4ac88c4b03e52f309942e31ac1dd7eed982b4e6139f2a9340851f500a727415f`
+  - node `release.lock` / controller `controller.lock` / sidecar `.sha256` verified
+  - black-box controller (no repo `lib/`): `version` / `help` / `init` / audit+backup module load **PASS**
 
-B18 **PASS**. B14 **PASS** (2026-08-18). B15 Local Audit UI is on the tree. Recommendation stays **NOT READY** until live `0.3.0 → 0.3.1-rc2` upgrade is closed or waived.
+B19 **PASS**. B20 local matrix + artifact black-box **PASS**. B18 **PASS**. Recommendation stays **NOT READY** until live `0.3.0 → 0.3.1-rc2` upgrade is closed or waived.
