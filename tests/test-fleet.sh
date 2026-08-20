@@ -280,6 +280,129 @@ else
 fi
 export VCL_FLEET_HOME="${SAVED_WS_B1_HOME}"
 
+# --- 0.4.1 B2: D28 credential bindings + access CLI + SSH resolve (T11) ---
+SAVED_WS_B2_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-b2"
+assert_success "B2 access fleet init" fleet init
+B2_KEY="${TEST_TMP}/ws-b2-id_ed25519"
+printf 'test-only-not-a-real-key\n' > "$B2_KEY"
+assert_success "B2 access bind identity-file" \
+  fleet access bind admin-default --identity-file "$B2_KEY"
+B2_LIST=$(fleet access list)
+if [[ "$B2_LIST" == *"admin-default"* ]] && [[ "$B2_LIST" == *"identity_file"* ]]; then
+  pass "B2 access list shows admin-default identity_file"
+else
+  fail "B2 access list shows admin-default identity_file (${B2_LIST})"
+fi
+B2_ABS=$(python3 -c 'import sys; from pathlib import Path; print(Path(sys.argv[1]).resolve())' "$B2_KEY")
+if [[ "$B2_LIST" == *"$B2_ABS"* ]]; then
+  pass "B2 access list shows absolute identity path"
+else
+  fail "B2 access list shows absolute identity path (${B2_LIST})"
+fi
+assert_success "B2 access verify after bind" fleet access verify
+assert_success "B2 access bind openssh-default" \
+  fleet access bind agent --openssh-default
+B2_LIST2=$(fleet access list)
+if [[ "$B2_LIST2" == *"agent"* ]] && [[ "$B2_LIST2" == *"openssh-default"* ]]; then
+  pass "B2 access list shows openssh-default"
+else
+  fail "B2 access list shows openssh-default (${B2_LIST2})"
+fi
+assert_success "B2 bindings stay machine-local (not in fleet.json)" \
+  bash -c '! grep -q credential-bindings "${VCL_FLEET_HOME}/fleet.json"'
+assert_success "B2 bindings file under machine-local" \
+  test -f "${VCL_FLEET_HOME}/machine-local/credential-bindings.json"
+
+ws_b2_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$B2_KEY" "$FAKE_SSH" <<'PY' || ws_b2_rc=$?
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+path, key_path, fake = sys.argv[1], sys.argv[2], sys.argv[3]
+os.environ["VCL_FLEET_SSH"] = fake
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+key = str(Path(key_path).resolve())
+node_ref = {"admin_credential_ref": "admin-default", "ssh_host": "203.0.113.10"}
+assert mod._node_identity_file(node_ref) == key
+argv_ref = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=mod._node_identity_file(node_ref),
+)
+assert "-i" in argv_ref
+assert key in argv_ref
+assert "IdentitiesOnly=yes" in argv_ref
+
+legacy_key = Path(os.environ["VCL_FLEET_HOME"]) / "legacy-id"
+legacy_key.write_text("legacy-only\n", encoding="utf-8")
+node_legacy = {"identity_file": str(legacy_key), "ssh_host": "203.0.113.10"}
+leg_path = mod._node_identity_file(node_legacy)
+assert leg_path == str(legacy_key) or Path(leg_path).resolve() == legacy_key.resolve()
+argv_leg = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=leg_path,
+)
+assert "-i" in argv_leg
+assert "IdentitiesOnly=yes" in argv_leg
+
+msgs = []
+orig_die = mod.die
+
+def _capture_die(message, code=1):
+    msgs.append(message)
+    raise SystemExit(code)
+
+mod.die = _capture_die
+raised = False
+try:
+    mod._node_identity_file({"admin_credential_ref": "missing"})
+except SystemExit:
+    raised = True
+mod.die = orig_die
+assert raised, "expected unbound credential ref"
+assert any("unbound credential ref" in m for m in msgs), msgs
+
+# Neither ref nor identity_file → no -i (ssh inject expectation unchanged)
+argv_bare = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=mod._node_identity_file({"ssh_host": "203.0.113.10"}),
+)
+assert "-i" not in argv_bare
+assert "IdentitiesOnly=yes" not in argv_bare
+
+# openssh-default binding → None → no -i
+assert mod._node_identity_file({"admin_credential_ref": "agent"}) is None
+
+# Bindings must not leak absolute key paths into portable fleet.json
+home = Path(os.environ["VCL_FLEET_HOME"])
+fleet_blob = (home / "fleet.json").read_text(encoding="utf-8")
+assert "credential-bindings" not in fleet_blob
+assert key not in fleet_blob
+PY
+if (( ws_b2_rc == 0 )); then
+  pass "B2 credential ref resolve / legacy / unbound / no -i"
+else
+  fail "B2 credential ref resolve / legacy / unbound / no -i"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B2_HOME}"
+
 assert_success "fleet.db DDL includes instance_history" \
   grep -q 'CREATE TABLE instance_history' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db uses UPSERT for audit_events" \

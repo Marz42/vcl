@@ -396,6 +396,18 @@ def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
     return _AC._node_identity_file(node)
 
 
+BINDINGS_SCHEMA_VERSION = _AC.BINDINGS_SCHEMA_VERSION
+credential_bindings_path = _AC.credential_bindings_path
+empty_bindings = _AC.empty_bindings
+load_bindings = _AC.load_bindings
+save_bindings = _AC.save_bindings
+bind_identity_file = _AC.bind_identity_file
+bind_openssh_default = _AC.bind_openssh_default
+resolve_binding = _AC.resolve_binding
+list_bindings = _AC.list_bindings
+verify_bindings = _AC.verify_bindings
+
+
 def ssh_argv(
     host: str,
     user: str,
@@ -5319,6 +5331,35 @@ def cmd_workspace_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_access_list(_args: argparse.Namespace) -> int:
+    bindings = list_bindings()
+    for ref in sorted(bindings):
+        binding = bindings[ref]
+        btype = binding.get("type") if isinstance(binding, dict) else ""
+        if isinstance(binding, dict) and btype == "identity_file":
+            path = binding.get("path") or "-"
+        else:
+            path = "-"
+        sys.stdout.write(f"{ref}\t{btype}\t{path}\n")
+    return 0
+
+
+def cmd_access_bind(args: argparse.Namespace) -> int:
+    ref = str(args.ref)
+    if getattr(args, "openssh_default", False):
+        bind_openssh_default(ref)
+    else:
+        bind_identity_file(ref, str(args.identity_file))
+    return 0
+
+
+def cmd_access_verify(_args: argparse.Namespace) -> int:
+    problems = verify_bindings()
+    if problems:
+        die("\n".join(problems), 1)
+    return 0
+
+
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -5868,6 +5909,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP port (default: 8765)",
     )
 
+    access = sub.add_parser(
+        "access", help="machine-local credential bindings (D28)"
+    )
+    asub = access.add_subparsers(dest="access_command")
+    asub.add_parser("list", help="list credential bindings")
+    asub.add_parser("verify", help="verify bound identity files exist")
+    pb = asub.add_parser("bind", help="bind a credential ref on this machine")
+    pb.add_argument("ref", help="credential ref name")
+    g = pb.add_mutually_exclusive_group(required=True)
+    g.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        metavar="PATH",
+        help="local SSH private key path",
+    )
+    g.add_argument(
+        "--openssh-default",
+        dest="openssh_default",
+        action="store_true",
+        help="use OpenSSH default identities (no -i)",
+    )
+
     ws = sub.add_parser(
         "workspace", help="workspace lifecycle (0.4.0: migrate --dry-run)"
     )
@@ -5971,6 +6034,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         die(f"unknown user command: {sub}", 2)
     if command == "ui":
         return cmd_ui(args)
+    if command == "access":
+        sub = getattr(args, "access_command", None)
+        if sub is None:
+            parser.parse_args(["access", "--help"])
+            return 2
+        if sub == "list":
+            return cmd_access_list(args)
+        if sub == "bind":
+            return cmd_access_bind(args)
+        if sub == "verify":
+            return cmd_access_verify(args)
+        die(f"unknown access command: {sub}", 2)
     if command == "workspace":
         sub = getattr(args, "workspace_command", None)
         if sub is None:

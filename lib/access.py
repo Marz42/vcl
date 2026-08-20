@@ -8,11 +8,13 @@ _chmod_private / _ssh_failure_detail / _has_ascii_control resolve from fleet.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,10 +33,133 @@ SSH_BACKUP_TIMEOUT_SECONDS = 120
 SSH_KEYSCAN_TIMEOUT_SECONDS = 10
 SCP_TIMEOUT_SECONDS = 60
 
+BINDINGS_SCHEMA_VERSION = 1
+BINDINGS_FILE_NAME = "credential-bindings.json"
+
 
 def bind(host: Any) -> None:
     global _host
     _host = host
+
+
+def credential_bindings_path() -> Path:
+    return _host.fleet_home() / "machine-local" / BINDINGS_FILE_NAME
+
+
+def empty_bindings() -> dict[str, Any]:
+    return {"schema_version": BINDINGS_SCHEMA_VERSION, "bindings": {}}
+
+
+def _validate_bindings(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        _host.die("invalid credential-bindings.json: expected object")
+    ver = data.get("schema_version")
+    if ver != BINDINGS_SCHEMA_VERSION:
+        _host.die(f"unsupported credential-bindings schema: {ver}")
+    bindings = data.get("bindings")
+    if not isinstance(bindings, dict):
+        _host.die("invalid credential-bindings.json: bindings must be an object")
+    return {"schema_version": BINDINGS_SCHEMA_VERSION, "bindings": dict(bindings)}
+
+
+def load_bindings(path: Optional[Path] = None) -> dict[str, Any]:
+    path = credential_bindings_path() if path is None else Path(path)
+    if not path.is_file():
+        return empty_bindings()
+    try:
+        with path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        _host.die(f"invalid credential-bindings.json: {exc}")
+    except OSError as exc:
+        _host.die(f"cannot read {path}: {exc}")
+    return _validate_bindings(data)
+
+
+def save_bindings(
+    data: dict[str, Any], path: Optional[Path] = None
+) -> None:
+    path = credential_bindings_path() if path is None else Path(path)
+    payload = _validate_bindings(data)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(
+        prefix=".credential-bindings.json.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _validate_credential_ref(ref: str) -> str:
+    raw = (ref or "").strip()
+    if not raw or "\x00" in raw or "\n" in raw or "\r" in raw:
+        _host.die("invalid credential ref")
+    return raw
+
+
+def bind_identity_file(ref: str, path: str) -> dict[str, Any]:
+    key = _validate_credential_ref(ref)
+    resolved = validate_identity_file(path, must_exist=True)
+    data = load_bindings()
+    data["bindings"][key] = {"type": "identity_file", "path": resolved}
+    save_bindings(data)
+    return data["bindings"][key]
+
+
+def bind_openssh_default(ref: str) -> dict[str, Any]:
+    key = _validate_credential_ref(ref)
+    data = load_bindings()
+    data["bindings"][key] = {"type": "openssh-default"}
+    save_bindings(data)
+    return data["bindings"][key]
+
+
+def resolve_binding(ref: str) -> dict[str, Any]:
+    key = _validate_credential_ref(ref)
+    binding = load_bindings().get("bindings", {}).get(key)
+    if binding is None:
+        _host.die(f"unbound credential ref: {key}")
+    if not isinstance(binding, dict):
+        _host.die(f"invalid binding for {key}")
+    return binding
+
+
+def list_bindings() -> dict[str, Any]:
+    return dict(load_bindings().get("bindings") or {})
+
+
+def verify_bindings() -> list[str]:
+    """Return human-readable problems; empty list means OK. No SSH."""
+    messages: list[str] = []
+    for ref, binding in sorted(list_bindings().items()):
+        if not isinstance(binding, dict):
+            messages.append(f"invalid binding for {ref}")
+            continue
+        btype = binding.get("type")
+        if btype == "openssh-default":
+            continue
+        if btype == "identity_file":
+            path = binding.get("path")
+            if not path or not Path(str(path)).is_file():
+                messages.append(f"missing identity file for {ref}: {path}")
+            continue
+        messages.append(f"invalid binding type for {ref}")
+    return messages
 
 
 def ssh_bin() -> str:
@@ -116,6 +241,18 @@ def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
 
 
 def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
+    # D57: runtime observe=admin; prefer admin_credential_ref, else observe.
+    ref = _host._optional_text(node.get("admin_credential_ref"))
+    if not ref:
+        ref = _host._optional_text(node.get("observe_credential_ref"))
+    if ref:
+        binding = resolve_binding(ref)
+        btype = binding.get("type")
+        if btype == "openssh-default":
+            return None
+        if btype == "identity_file":
+            return binding["path"]
+        _host.die(f"invalid binding type for {ref}")
     return _host._optional_text(node.get("identity_file"))
 
 
