@@ -5235,6 +5235,7 @@ def load_ui_server_module() -> Any:
 
 def cmd_ui(args: argparse.Namespace) -> int:
     """Start localhost-only read-only Local Audit UI (AC-3.1 / D19)."""
+    _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     ui = load_ui_server_module()
     static_dir = _controller_lib_dir() / "vincula-ui" / "static"
     host = getattr(args, "host", None) or ui.DEFAULT_HOST
@@ -5816,6 +5817,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _load_controller_sibling("vcl_legacy", "legacy.py").apply_env_aliases()
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command

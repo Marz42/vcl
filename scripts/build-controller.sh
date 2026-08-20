@@ -28,6 +28,7 @@ FILES=(
   lib/workspace.py
   lib/access.py
   lib/trust.py
+  lib/legacy.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -91,6 +92,7 @@ need = (
     f"{prefix}/lib/workspace.py",
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",

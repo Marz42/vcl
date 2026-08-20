@@ -1036,6 +1036,7 @@ need = (
     f"{prefix}/lib/workspace.py",
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",
@@ -1069,6 +1070,7 @@ need = (
     f"{prefix}/lib/workspace.py",
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
+    f"{prefix}/lib/legacy.py",
 )
 with zipfile.ZipFile(archive) as zf:
     names = set(zf.namelist())
@@ -1109,6 +1111,8 @@ assert_success "controller zip black-box unpack has access.py" \
   test -f "${UNPACK}/lib/access.py"
 assert_success "controller zip black-box unpack has trust.py" \
   test -f "${UNPACK}/lib/trust.py"
+assert_success "controller zip black-box unpack has legacy.py" \
+  test -f "${UNPACK}/lib/legacy.py"
 assert_success "controller zip contains controller.lock manifest" \
   test -f "${UNPACK}/controller.lock"
 if ( cd "$UNPACK" && sha256sum --check --status controller.lock ); then
@@ -1128,6 +1132,8 @@ assert_success "controller.lock lists access.py" \
   grep -q 'lib/access.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists trust.py" \
   grep -q 'lib/trust.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists legacy.py" \
+  grep -q 'lib/legacy.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-ui server" \
   grep -q 'lib/vincula-ui/server.py' "${UNPACK}/controller.lock"
 assert_success "controller zip contains vincula-ui static index" \
