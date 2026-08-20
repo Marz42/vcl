@@ -304,6 +304,9 @@ def fleet_db_path() -> Path:
 workspace_manifest_path = _WS.workspace_manifest_path
 machine_local_dir = _WS.machine_local_dir
 workspace_view_path = _WS.workspace_view_path
+trust_dir = _WS.trust_dir
+known_hosts_path = _WS.known_hosts_path
+workspace_trust_active = _WS.workspace_trust_active
 mint_fleet_id = _WS.mint_fleet_id
 empty_workspace_manifest = _WS.empty_workspace_manifest
 validate_workspace_manifest = _WS.validate_workspace_manifest
@@ -546,6 +549,8 @@ candidate_host_keys = _TR.candidate_host_keys
 append_known_hosts = _TR.append_known_hosts
 pin_host_key = _TR.pin_host_key
 prepare_ssh_host_key = _TR.prepare_ssh_host_key
+TRUST_MIGRATION_REQUIRED = _TR.TRUST_MIGRATION_REQUIRED
+extract_fleet_host_trust = _TR.extract_fleet_host_trust
 
 
 def fleet_lock_path() -> Path:
@@ -5420,7 +5425,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument(
         "--host-key",
         dest="host_key",
-        help="pin remote host-key fingerprint SHA256:... (writes user known_hosts)",
+        help="pin remote host-key fingerprint SHA256:... (writes Fleet known_hosts (workspace/trust or ~/.ssh))",
     )
     p_add.add_argument(
         "--identity-file",

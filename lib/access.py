@@ -205,10 +205,22 @@ def _reject_forbidden_ssh_options(argv: list[str]) -> None:
         _host.die(f"refusing forbidden SSH option {strict_no}", 2)
     if known_null in argv or known_null in joined:
         _host.die(f"refusing forbidden SSH option {known_null}", 2)
+    allowed_ukh: Optional[str] = None
+    if _host.workspace_trust_active():
+        allowed_ukh = f"UserKnownHostsFile={_host.default_known_hosts_path()}"
     for arg in argv:
         option = _ssh_option_text(arg)
         if option.startswith("UserKnownHostsFile="):
+            if allowed_ukh is not None and option == allowed_ukh:
+                continue
             _host.die("refusing forbidden SSH option UserKnownHostsFile=", 2)
+
+
+def host_key_ssh_extra() -> list[str]:
+    if not _host.workspace_trust_active():
+        return []
+    p = str(_host.known_hosts_path())
+    return ["-o", f"UserKnownHostsFile={p}", "-o", "StrictHostKeyChecking=yes"]
 
 
 def validate_identity_file(path: str, *, must_exist: bool = True) -> str:
@@ -288,6 +300,7 @@ def ssh_argv(
     if len(remote.encode("utf-8")) > SSH_REMOTE_CMD_MAX_BYTES:
         _host.die(f"remote command exceeds {SSH_REMOTE_CMD_MAX_BYTES} bytes")
     argv = [ssh_bin(), "-p", str(port)]
+    argv[1:1] = host_key_ssh_extra()
     if extra:
         argv.extend(extra)
     if batch:
@@ -353,6 +366,7 @@ def scp_argv(
 ) -> list[str]:
     """Build an OpenSSH scp argv. Never weakens host-key checking."""
     argv = [scp_bin(), "-P", str(port)]
+    argv[1:1] = host_key_ssh_extra()
     if extra:
         argv.extend(extra)
     if batch:

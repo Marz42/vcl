@@ -24,7 +24,7 @@ WORKSPACE_MANIFEST_NAME = "workspace.json"
 MACHINE_LOCAL_DIRNAME = "machine-local"
 WORKSPACE_VIEW_NAME = "workspace-view.json"
 WORKSPACE_VIEW_SCHEMA_VERSION = 1
-PORTABLE_DIGEST_NAMES = ("fleet.json", "workspace.json")
+PORTABLE_DIGEST_NAMES = ("fleet.json", "workspace.json", "trust/known_hosts")
 WS_ERR_ROLLBACK, WS_ERR_DIVERGED, WS_ERR_INCONSISTENT = (
     "WORKSPACE_ROLLBACK",
     "WORKSPACE_DIVERGED",
@@ -86,6 +86,18 @@ def machine_local_dir() -> Path:
 
 def workspace_view_path() -> Path:
     return machine_local_dir() / WORKSPACE_VIEW_NAME
+
+
+def trust_dir() -> Path:
+    return fleet_home() / "trust"
+
+
+def known_hosts_path() -> Path:
+    return trust_dir() / "known_hosts"
+
+
+def workspace_trust_active() -> bool:
+    return workspace_manifest_path().is_file()
 
 
 def _chmod_private(path: Path, mode: int = 0o600) -> None:

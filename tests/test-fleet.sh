@@ -1375,6 +1375,148 @@ else
   fail "host-key policy: keyscan candidates, pin, TTY authenticity guidance"
 fi
 
+# --- 0.4.1 B3: D27 dedicated known_hosts + trust extract (T18) ---
+SAVED_WS_B3_HOME="${VCL_FLEET_HOME}"
+ws_b3_rc=0
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$FAKE_SSH" "$FAKE_KEYSCAN" \
+  "$LAX_HOSTKEY_PUB" "$TOKYO_HOSTKEY_PUB" "$HOME" "${TEST_TMP}/ws-b3" <<'PY' || ws_b3_rc=$?
+import importlib.util
+import io
+import os
+import sys
+from pathlib import Path
+
+path, fake, keyscan, lax_pub, tokyo_pub, home, ws_home = sys.argv[1:8]
+os.environ["VCL_FLEET_SSH"] = fake
+os.environ["VCL_FLEET_SSH_KEYSCAN"] = keyscan
+os.environ["HOME"] = home
+
+# (1) Legacy: no workspace.json → pin writes ~/.ssh/known_hosts; no UserKnownHostsFile=
+legacy_home = Path(home) / "fleet-home-b3-legacy"
+os.environ["VCL_FLEET_HOME"] = str(legacy_home)
+legacy_home.mkdir(parents=True, exist_ok=True)
+spec = importlib.util.spec_from_file_location("vincula_fleet_b3", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert not mod.workspace_trust_active()
+assert not mod.workspace_manifest_path().is_file()
+lax_line = open(lax_pub, encoding="utf-8").read().strip()
+fp = mod.fingerprint_sha256(lax_line)
+mod.pin_host_key("203.0.113.10", 22, fp)
+kh = mod.default_known_hosts_path()
+assert kh == Path(home) / ".ssh" / "known_hosts", kh
+assert "203.0.113.10" in kh.read_text(encoding="utf-8")
+extra, batch = mod.prepare_ssh_host_key("203.0.113.10", 22, fp)
+argv = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=batch,
+    extra=extra,
+)
+assert not any(
+    (a.startswith("UserKnownHostsFile=") or a.startswith("-oUserKnownHostsFile="))
+    for a in argv
+), argv
+assert "UserKnownHostsFile=" not in " ".join(argv)
+
+# (2) Workspace: pin/TOFU → trust/known_hosts; ssh_argv injects UserKnownHostsFile
+os.environ["VCL_FLEET_HOME"] = ws_home
+Path(ws_home).mkdir(parents=True, exist_ok=True)
+# Re-load so fleet_home / trust paths pick up new VCL_FLEET_HOME
+spec2 = importlib.util.spec_from_file_location("vincula_fleet_b3w", path)
+modw = importlib.util.module_from_spec(spec2)
+spec2.loader.exec_module(modw)
+(modw.fleet_home() / "fleet.json").write_text(
+    '{"schema_version": 2, "nodes": []}\n', encoding="utf-8"
+)
+modw.create_workspace_manifest()
+assert modw.workspace_trust_active()
+trust_kh = modw.known_hosts_path()
+assert trust_kh == Path(ws_home) / "trust" / "known_hosts"
+modw.pin_host_key("203.0.113.10", 22, fp)
+assert trust_kh.is_file()
+text = trust_kh.read_text(encoding="utf-8")
+assert "203.0.113.10" in text
+assert "/dev/null" not in text
+assert modw.default_known_hosts_path() == trust_kh
+extra_w, batch_w = modw.prepare_ssh_host_key("203.0.113.10", 22, fp)
+argv_w = modw.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=batch_w,
+    extra=extra_w,
+)
+ukh = f"UserKnownHostsFile={trust_kh}"
+assert ukh in argv_w, argv_w
+assert "StrictHostKeyChecking=yes" in argv_w
+assert "UserKnownHostsFile=/dev/null" not in " ".join(argv_w)
+assert "/dev/null" not in " ".join(argv_w)
+
+# (4) Reject evil UserKnownHostsFile under workspace
+raised = False
+buf = io.StringIO()
+old_err = sys.stderr
+sys.stderr = buf
+try:
+    modw.ssh_argv(
+        "203.0.113.10",
+        "root",
+        22,
+        ["vcl", "identity", "--json"],
+        batch=True,
+        extra=["-o", "UserKnownHostsFile=/tmp/evil"],
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old_err
+assert raised, buf.getvalue()
+assert "UserKnownHostsFile=" in buf.getvalue()
+
+# (3) Extract: lax only in src; nodes=[lax,tokyo] → dest has lax; TRUST_MIGRATION_REQUIRED
+src_kh = Path(ws_home) / "extract-src-known_hosts"
+tokyo_line = open(tokyo_pub, encoding="utf-8").read().strip()
+# Seed only lax; also include a decoy non-fleet host line that must not be copied wholesale
+src_kh.write_text(
+    lax_line + "\n"
+    + "198.51.100.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDecoyKeyNotInFleetXXXXXXXXXXXXX=\n",
+    encoding="utf-8",
+)
+dest_kh = Path(ws_home) / "trust" / "extracted_known_hosts"
+nodes = [
+    {"name": "lax", "ssh_host": "203.0.113.10", "ssh_port": 22},
+    {"name": "tokyo", "ssh_host": "203.0.113.11", "ssh_port": 22},
+]
+result = modw.extract_fleet_host_trust(nodes, src_kh, dest_kh)
+assert dest_kh.is_file()
+dest_text = dest_kh.read_text(encoding="utf-8")
+assert "203.0.113.10" in dest_text
+assert "203.0.113.11" not in dest_text
+assert "198.51.100.1" not in dest_text
+assert dest_text != src_kh.read_text(encoding="utf-8")
+assert modw.TRUST_MIGRATION_REQUIRED in result["warnings"]
+assert "203.0.113.11" in result["missing_hosts"]
+assert any("203.0.113.10" in line for line in result["matched"])
+# extract body must not call candidate_host_keys / ssh-keyscan
+extract_src = Path(path).with_name("trust.py").read_text(encoding="utf-8")
+extract_fn = extract_src.split("def extract_fleet_host_trust", 1)[1]
+assert "candidate_host_keys" not in extract_fn
+assert "ssh-keyscan" not in extract_fn
+assert "ssh_keyscan" not in extract_fn
+assert tokyo_line  # fixture loaded
+PY
+if (( ws_b3_rc == 0 )); then
+  pass "B3 D27 workspace trust store + extract API"
+else
+  fail "B3 D27 workspace trust store + extract API"
+fi
+export VCL_FLEET_HOME="${SAVED_WS_B3_HOME}"
+
 OFFLINE_FLEET_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home-hostkey"
 assert_success "host-key fleet home init" fleet init
