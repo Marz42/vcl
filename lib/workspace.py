@@ -123,3 +123,84 @@ def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> N
         except OSError:
             pass
         raise
+
+
+MIGRATE_PIPELINE = (
+    "lock legacy Fleet",
+    "validate fleet.json (fleet-registry/v2)",
+    "PRAGMA integrity_check fleet.db (fleet-cache/v3)",
+    "inventory legacy files",
+    "mint fleet_id",
+    "create temporary Workspace",
+    "migrate registry",
+    "migrate identity_file → credential refs",
+    "extract Fleet-only host trust",
+    "export instance_history",
+    "create machine-local credential bindings",
+    "migrate fleet.db → local state",
+    "migrate status/users cache as derived state",
+    "verify new Workspace",
+    "atomic commit",
+    "preserve old tree as legacy backup",
+)
+
+
+def _open_db_inspect(path: Path) -> Optional[Any]:
+    """SQLite URI mode=ro inspect only — never open_fleet_db (WAL/migrate/chmod)."""
+    import sqlite3
+
+    if not path.is_file():
+        return None
+    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+
+
+def plan_migrate_dry_run() -> dict[str, Any]:
+    """Plan legacy→workspace migration with zero side effects (AC-4.0-04 / D48)."""
+    _home, reg, dbp = _host.fleet_home(), _host.load_registry(), _host.fleet_db_path()
+    nodes = list(reg.get("nodes") or [])
+    idents = sorted({n["identity_file"] for n in nodes if n.get("identity_file")})
+    gaps: list[dict[str, Any]] = []
+    conn = _open_db_inspect(dbp)
+    try:
+        for n in nodes:
+            rows = (
+                conn.execute(
+                    "SELECT 1 FROM instance_history WHERE node_id=? LIMIT 1",
+                    (n["node_id"],),
+                ).fetchall()
+                if conn
+                else []
+            )
+            if not rows:
+                gaps.append(
+                    {
+                        "name": n["name"],
+                        "node_id": n["node_id"],
+                        "gap": (
+                            "instance_history empty "
+                            "(never synced; node add does not write history)"
+                        ),
+                    }
+                )
+    finally:
+        if conn:
+            conn.close()
+    warns = (
+        ["TRUST_MIGRATION_REQUIRED"]
+        if any(n.get("ssh_host") for n in nodes)
+        else []
+    )
+    return {
+        "dry_run": True,
+        "side_effects": "none",
+        "pipeline": list(MIGRATE_PIPELINE),
+        "counts": {
+            "nodes": len(nodes),
+            "identity_files": len(idents),
+            "history_gaps": len(gaps),
+        },
+        "identity_files": idents,
+        "history_gaps": gaps,
+        "warnings": warns,
+        "note": "D48: migration will NOT SSH to fill history gaps",
+    }

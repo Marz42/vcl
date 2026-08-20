@@ -5262,6 +5262,15 @@ def cmd_ui(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_workspace_migrate(args: argparse.Namespace) -> int:
+    if not getattr(args, "dry_run", False):
+        die("workspace migrate without --dry-run requires 0.4.1", 2)
+    sys.stdout.write(
+        json.dumps(_WS.plan_migrate_dry_run(), indent=2, ensure_ascii=False) + "\n"
+    )
+    return 0
+
+
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -5811,6 +5820,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP port (default: 8765)",
     )
 
+    ws = sub.add_parser(
+        "workspace", help="workspace lifecycle (0.4.0: migrate --dry-run)"
+    )
+    ws_sub = ws.add_subparsers(dest="workspace_command")
+    p_mig = ws_sub.add_parser(
+        "migrate", help="legacy→workspace (0.4.0: --dry-run only)"
+    )
+    p_mig.add_argument(
+        "--dry-run",
+        action="store_true",
+        required=True,
+        help="plan only; no SSH/writes/deletes (AC-4.0-04)",
+    )
+
     sub.add_parser("version", help="print vcl-fleet version")
     sub.add_parser("help", help="show this help")
     return parser
@@ -5900,6 +5923,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         die(f"unknown user command: {sub}", 2)
     if command == "ui":
         return cmd_ui(args)
+    if command == "workspace":
+        sub = getattr(args, "workspace_command", None)
+        if sub is None:
+            parser.parse_args(["workspace", "--help"])
+            return 2
+        if sub == "migrate":
+            return cmd_workspace_migrate(args)
+        die(f"unknown workspace command: {sub}", 2)
     die(f"unknown command: {command}", 2)
     return 2
 
