@@ -317,6 +317,11 @@ def open_cache_for_sync():
     return _WS.open_cache_for_sync()
 
 
+planned_credential_refs = _WS.planned_credential_refs
+node_schema_field_names = _WS.node_schema_field_names
+RESERVED_NODE_CREDENTIAL_KEYS = _WS.RESERVED_NODE_CREDENTIAL_KEYS
+
+
 _AC = _load_controller_sibling("vcl_access", "access.py")
 _AC.bind(_FLEET_HOST)
 
@@ -1696,6 +1701,17 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
     }
     if identity_file:
         record["identity_file"] = identity_file
+    ar, obr = raw.get("admin_credential_ref"), raw.get("observe_credential_ref")
+    if ar is not None and ar != "":
+        if not isinstance(ar, str) or not ar.strip():
+            die(f"nodes[{index}] invalid admin_credential_ref: {ar}")
+        record["admin_credential_ref"] = ar.strip()
+    if obr is not None and obr != "":
+        if not isinstance(obr, str) or not obr.strip():
+            die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
+        record["observe_credential_ref"] = obr.strip()
+    elif record.get("admin_credential_ref"):
+        record["observe_credential_ref"] = record["admin_credential_ref"]  # observe=admin
     return record
 
 

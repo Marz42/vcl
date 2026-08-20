@@ -203,6 +203,16 @@ def plan_migrate_dry_run() -> dict[str, Any]:
         "history_gaps": gaps,
         "warnings": warns,
         "note": "D48: migration will NOT SSH to fill history gaps",
+        "credential_refs_future": [
+            {
+                "name": n["name"],
+                "node_id": n["node_id"],
+                "identity_file": n.get("identity_file"),
+                **planned_credential_refs(n),
+            }
+            for n in nodes
+        ],
+        "d57": "0.4 reserved; runtime observe=admin; SSH still identity_file until 0.5",
     }
 
 
@@ -214,3 +224,22 @@ def open_cache_readonly():
 def open_cache_for_sync():
     """0.4.0 sync/migrate RW seam; same backing until 0.4.2."""
     return _host.open_fleet_db()
+
+
+ADMIN_CREDENTIAL_REF_KEY = "admin_credential_ref"
+OBSERVE_CREDENTIAL_REF_KEY = "observe_credential_ref"
+RESERVED_NODE_CREDENTIAL_KEYS = (ADMIN_CREDENTIAL_REF_KEY, OBSERVE_CREDENTIAL_REF_KEY)
+DEFAULT_ADMIN_CREDENTIAL_REF = "admin-default"
+
+
+def planned_credential_refs(node):
+    admin = node.get(ADMIN_CREDENTIAL_REF_KEY) or DEFAULT_ADMIN_CREDENTIAL_REF
+    observe = node.get(OBSERVE_CREDENTIAL_REF_KEY) or admin  # observe=admin
+    return {
+        ADMIN_CREDENTIAL_REF_KEY: admin,
+        OBSERVE_CREDENTIAL_REF_KEY: observe,
+    }
+
+
+def node_schema_field_names():
+    return tuple(_host.NODE_KEYS) + RESERVED_NODE_CREDENTIAL_KEYS
