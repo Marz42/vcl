@@ -70,4 +70,4 @@ physical replacement onto a runtime-only host (`vincula.sh --runtime-only`,
 then `vcl restore --reissue-output`). `node instances NAME` lists physical
 instances over time. **B14 live replace PASS (2026-08-18)** —
 `docs/live-replace-checklist.md` · `docs/evidence/0.3.1-live/SUMMARY.md`.
-Gate: `docs/release-readiness-0.3.1.md` (remaining: live `0.3.0 → 0.3.1-rc1` upgrade).
+Gate: `docs/release-readiness-0.3.1.md` (remaining: live `0.3.0 → 0.3.1-rc2` upgrade).

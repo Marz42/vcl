@@ -2,23 +2,34 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.3.1-rc1 (2026-08-19)
+## 0.3.1-rc2 (2026-08-20)
 
-**First release candidate** for the 0.3.1 line (SemVer pre-release `0.3.1-rc1`).
+**Second release candidate** (SemVer pre-release `0.3.1-rc2`). **Feature freeze** starts after B18 (only P0/P1, release blockers, tests/evidence, docs, release engineering toward stable `v0.3.2`).
+
+- Stamp living tree at `0.3.1-rc2`. Upgrade allowlist adds **`0.3.1-rc1` → `0.3.1-rc2`** (also `0.3.1-dev` / `0.3.0`; excludes `0.3.0-dev` and self).
+- **B18 / rc1 postmortem:** `0.3.1-rc1` fresh install could fail `wait_for_accountd_healthy` because the installer still required accounting schema **3** while `vincula-accountd` creates schema **4**. Runtime health now requires schema **4**; regression tests pin accountd / installer / audit agreement. **`0.3.1-rc1` is superseded** for fresh install.
+- Docs: gate status unify (B14 PASS) + `docs/legacy/` for freeze records (landed just before this stamp).
+- **Tests:** `bash tests/test.sh` **1280** PASS; standalone `bash tests/test-fleet.sh` **521** PASS.
+- Release recommendation remains **NOT READY** until live `0.3.0 → 0.3.1-rc2` upgrade + Schema 4 live re-sync evidence ([`release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)).
+
+## 0.3.1-rc1 (2026-08-19) — superseded
+
+**First release candidate** for the 0.3.1 line (SemVer pre-release `0.3.1-rc1`). **Superseded by `0.3.1-rc2`** after B18 (installer health / Schema 4 mismatch on fresh install).
 
 - Stamp living tree at `0.3.1-rc1` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests / fixtures).
 - Upgrade allowlist adds **`0.3.1-dev` → `0.3.1-rc1`** (still excludes `0.3.0-dev` and self).
 - **Schema 4 / Export Protocol v2** (from 0.3.1-dev): `export_seq` durable cursor; Fleet `sync --reseed` after upgrade.
 - **Operator manual:** [`docs/manual.md`](docs/manual.md) adds verified dual-VPS + Fleet deploy runbook.
 - **Tests:** `bash tests/test.sh` **1274** PASS (fleet fixtures aligned for Schema 4 + non-TTY host-key).
-- Release recommendation remains **NOT READY** until live `0.3.0 → 0.3.1-rc1` upgrade evidence is recorded ([`release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)).
+- **Known blocker (fixed in rc2 / B18):** installer `wait_for_accountd_healthy` still expected accounting schema 3 → fresh install rolled back.
+- Release recommendation remained **NOT READY** until live upgrade evidence.
 - **Docs status unify (2026-08-20):** README / fleet / backup / known-issues / readiness aligned on **B14 PASS** + Schema 4; historical freeze gates moved to [`docs/legacy/`](docs/legacy/).
 
 ## 0.3.1-dev
 
-Unreleased development line (superseded by **0.3.1-rc1**). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist was `0.1.0–0.1.5` and `0.2.0–0.3.0` (did **not** add `0.3.0-dev` or `0.3.1-dev`).
+Unreleased development line (superseded by **0.3.1-rc1**, then **0.3.1-rc2**). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist was `0.1.0–0.1.5` and `0.2.0–0.3.0` (did **not** add `0.3.0-dev` or `0.3.1-dev`).
 
-**Summary:** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** are on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). Remaining NOT READY gap: live **`0.3.0 → 0.3.1-rc1` upgrade** plus deferred P1-05 branch protection (`docs/release-readiness-0.3.1.md`). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only under `docs/legacy/`.
+**Summary:** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** are on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). Remaining NOT READY gap: live **`0.3.0 → 0.3.1-rc2` upgrade** plus deferred P1-05 branch protection (`docs/release-readiness-0.3.1.md`). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only under `docs/legacy/`.
 
 - **Schema 4 / Export Protocol v2:** Split `event_id` (stable generation identity; sparsity OK) from `export_seq` (Fleet durable cursor, assigned once on close). Accountd UPDATE-first polls no longer burn AUTOINCREMENT. `vcl audit export` is closed-only by `export_seq` with Protocol v2 meta; `CURSOR_EXPIRED` / `CURSOR_AHEAD` use prune/max export_seq watermarks (not contiguous `event_id`). Fleet `fleet.db` schema **3** stores `cursor_kind` / `last_export_seq`, validates monotonic `export_seq` (gaps allowed), UPSERT-imports on `(node_id, event_id)`, and refuses legacy `event_id` cursors with `CURSOR_PROTOCOL_MISMATCH` until `sync --reseed`. After upgrade, run `--reseed` once per node. Live re-sync evidence still required before READY FOR RC.
 - **v0.32 P2:** Per-node `--identity-file` makes SSH/SCP pass `-i KEY -o IdentitiesOnly=yes` (no password-SSH fallback). Local Audit UI caps concurrent workers at 8 with a 30s request timeout (503 when busy). CI `unit` / `concurrency` no longer run `tests/test-fleet.sh` a second time (`tests/test.sh` already sources it). Fixed a `pipefail` + `awk|grep -q` false fail in `tests/test.sh` (`user add dispatch documents --user-id`). Debian container apt install uses dash-safe `set -eu` (no `pipefail`).

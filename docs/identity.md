@@ -28,18 +28,18 @@ accountd 通过 `VCL_STATE_FILE`（默认 `/etc/vincula/state.json`）读 `node.
 
 `ON CONFLICT UPDATE` 不得改已有行的 `instance_id`（继续的 0.2.7 世代保持 NULL）。
 
-## `state.json` schema 1 → 2（0.3.0 保持 2）
+## `state.json` schema 1 → 2（0.3.0 保持 2；0.3.1 accounting → 4）
 
-| | 0.2.7 | 0.2.8 / 0.2.9 | 0.3.0 |
-| --- | --- | --- | --- |
-| `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） | **`2`**（不 bump；strip 只发生在备份归档里） |
-| `users.json.schema_version` | `2` | `2` | **`2`** |
-| accounting `meta.schema_version` | `3` | **`3`**（无 DDL） | **`3`** |
-| `fleet.json.schema_version` | — | 0.2.8 = `1`；**0.2.9 = `2`**（`status`） | **`2`** |
-| `fleet.db` | — | 0.2.9 schema **`1`** | schema **`2`**（`instance_history`） |
-| backup `schema_version` | — | — | **`1`**（新合同） |
+| | 0.2.7 | 0.2.8 / 0.2.9 | 0.3.0 | 0.3.1-rc2 |
+| --- | --- | --- | --- | --- |
+| `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） | **`2`** | **`2`** |
+| `users.json.schema_version` | `2` | `2` | **`2`** | **`2`** |
+| accounting `meta.schema_version` | `3` | **`3`**（无 DDL） | **`3`** | **`4`**（`export_seq`；开库 3→4） |
+| `fleet.json.schema_version` | — | 0.2.8 = `1`；**0.2.9 = `2`**（`status`） | **`2`** | **`2`** |
+| `fleet.db` | — | 0.2.9 schema **`1`** | schema **`2`**（`instance_history`） | schema **`3`**（`export_seq` / `cursor_kind`） |
+| backup `schema_version` | — | — | **`1`**（新合同） | **`1`** |
 
-产品版本 bump **不**自动改 accounting / state / users schema。0.3.0 不提供自动 state 2→1、fleet.json 2→1 或 fleet.db 2→1。节点回滚 = 恢复 `backup_existing_install` 备份 + **0.2.9** 安装器。工作站 schema-2 `fleet.db` 对 0.2.9 控制器不受理。替换旋转密钥 **不**走升级安装器，只走 `vcl restore` / `vcl-fleet node replace`。
+产品版本 bump **不**自动改 state / users schema。0.3.1 在开库时把 accounting **3→4**（不可逆）。0.3.0 不提供自动 state 2→1、fleet.json 2→1 或 fleet.db 2→1。节点回滚 = 恢复 `backup_existing_install` 备份 + 匹配版本安装器。工作站 schema-3 `fleet.db` 对旧控制器不受理。替换旋转密钥 **不**走升级安装器，只走 `vcl restore` / `vcl-fleet node replace`。
 
 ## NULL 含义（D5）
 

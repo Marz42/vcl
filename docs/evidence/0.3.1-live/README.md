@@ -9,7 +9,7 @@
 | Unix controller | WSL2 on Win11 | `vcl-fleet` (tree was `0.3.1-dev` @ `1137423` at run time) |
 | Win11 controller | same workstation | `bin\vcl-fleet.cmd` + system OpenSSH |
 
-Artifacts at run time: `dist/vincula-node-0.3.1-dev.tar.gz` + `dist/vincula-controller-0.3.1-dev.zip`. Living tree is now **`0.3.1-rc1`**; B14 status remains **PASS**.
+Artifacts at run time: `dist/vincula-node-0.3.1-dev.tar.gz` + `dist/vincula-controller-0.3.1-dev.zip`. Living tree is now **`0.3.1-rc2`**; B14 status remains **PASS**.
 
 Operator runbook: [`../../live-replace-checklist.md`](../../live-replace-checklist.md).  
 See [`SUMMARY.md`](SUMMARY.md). Full host logs may live under `/root/vcl-rc-evidence/0.3.1-live/` (not mirrored).  

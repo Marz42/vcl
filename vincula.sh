@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.3.1-rc1
+# vincula v0.3.1-rc2
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.3.1-rc1"
+readonly VINCULA_VERSION="0.3.1-rc2"
 readonly SING_BOX_VERSION="1.13.18"
 readonly SING_BOX_AMD64_SHA256="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
 readonly SING_BOX_ARM64_SHA256="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
@@ -151,7 +151,7 @@ load_vincula_common || true
 
 usage() {
   cat <<'USAGE'
-vincula v0.3.1-rc1
+vincula v0.3.1-rc2
 
 Usage:
   sudo bash vincula.sh
@@ -170,7 +170,7 @@ Python libraries) without writing /etc/vincula/VERSION and without generating
 identity. Finish on that host with:
   sudo vcl restore FILE --reissue-output FILE --server HOST
 
-The normal installation path is non-interactive. Existing vincula v0.3.1-rc1
+The normal installation path is non-interactive. Existing vincula v0.3.1-rc2
 credentials are preserved when the script is run again. Older 0.1.x and
 0.2.0–0.3.0 installations are migrated in place without rotating UUID or REALITY keys.
 Use 'vcl uninstall' to remove a Vincula-managed installation.
@@ -495,7 +495,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1341,7 +1341,7 @@ render_systemd_unit() {
   local output=$1
   cat > "$output" <<'UNIT'
 # Managed-By: vincula
-# Vincula-Version: 0.3.1-rc1
+# Vincula-Version: 0.3.1-rc2
 [Unit]
 Description=sing-box (managed by vincula)
 Documentation=https://sing-box.sagernet.org/

@@ -1,10 +1,10 @@
-# Vincula 0.3.1-rc1 — Known issues / limitations
+# Vincula 0.3.1-rc2 — Known issues / limitations
 
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
-**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-rc1`. Schema 4 / Export Protocol v2 is on the tree (fixture-level). B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-rc1` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md) · [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md). Older gates: [`legacy/`](legacy/).
+**Release recommendation:** **NOT READY** — living-tree gate for `0.3.1-rc2` (**rc1 superseded**). Schema 4 / Export Protocol v2 is on the tree. **B18** closed the rc1 fresh-install Schema 4 health mismatch. B17 closed restore/sync fail-close; **B14 live two-VPS replace is PASS**; **B15 Local Audit UI is implemented**. Remaining blockers: live **`0.3.0 → 0.3.1-rc2` upgrade**, deferred P1-05 branch protection, and live Fleet re-sync after Schema 4 + `--reseed`. Historical freeze text: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md) · [`legacy/known-issues-0.3.0.md`](legacy/known-issues-0.3.0.md). Older gates: [`legacy/`](legacy/).
 
-Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17 contracts).
+Known P0: **0**. Remaining blocker is the live upgrade evidence gap (not B14/B15/B17/B18 contracts).
 
 ## Product limitations
 
@@ -38,14 +38,15 @@ Inherited from 0.3.0 unless noted.
 | Live secretless `node replace` | **PASS (B14).** Evidence [`evidence/0.3.1-live/`](evidence/0.3.1-live/) |
 | Live `age` on a real node | **PASS (B14):** distro `age` 1.2.1 `--include-secrets` create+verify |
 | AC-3.0-11 live handshake | **PASS (B14)** |
-| Live `0.3.0 → 0.3.1-rc1` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
+| Live `0.3.0 → 0.3.1-rc2` upgrade | Allowlist + keep tests PASS in fixtures. No RC-host upgrade this round |
 | Schema 4 live Fleet re-sync | Fixture green; live two-node re-sync after Schema 4 + `--reseed` still required |
 | Live 24h soak | **Not a 0.3.1 gate** |
 
-## Closed on this living tree (B14 / B15 / B17 / Schema 4)
+## Closed on this living tree (B14 / B15 / B17 / B18 / Schema 4)
 
 | Issue | Notes |
 | --- | --- |
+| B18 rc1 Schema 4 health mismatch | **PASS.** Installer `wait_for_accountd_healthy` expects schema 4; `0.3.1-rc1` superseded for fresh install |
 | B14 live two-VPS replace + AC-3.0-11 | **PASS (2026-08-18)** — [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md) |
 | B15 localhost UI | **Implemented** (+ Host/token/CSRF, no UI reseed, GET no SSH; per-thread lock, destination SQL pagination, worker cap + request timeout, optional `--identity-file`). AC-3.1 fixture coverage in `tests/test-fleet.sh`. Not READY FOR RC alone |
 | P0 sync AUTOINCREMENT burn + contiguous `event_id` reject | Schema 4 `export_seq` + UPDATE-first upsert; Fleet validates monotonic `export_seq` (gaps OK). Live re-verify still needed after upgrade/`--reseed` |
@@ -54,7 +55,7 @@ Inherited from 0.3.0 unless noted.
 | Fleet mutate treated non-zero remote exit as SSH OK | Mutate path requires `returncode == 0` and JSON `ok is True` |
 | Rollback swallowed systemctl failures | `rollback_partial` when files/services cannot be fully restored |
 | Sync skipped unlabeled rows and still advanced cursor | Whole batch fails; cursor unchanged. `--reseed` stamps missing identity only |
-| Upgrade allowlist | `0.3.0` and `0.3.1-dev` are allowed → `0.3.1-rc1`; `0.3.0-dev` / `0.3.1-rc1` are not |
+| Upgrade allowlist | `0.3.0`, `0.3.1-dev`, and `0.3.1-rc1` are allowed → `0.3.1-rc2`; `0.3.0-dev` / `0.3.1-rc2` are not |
 | Version-boundary rollback dropped `.runtime-only` | Safety copy + journal `had_runtime_only`; marker restored with VERSION rollback |
 | CI used mutable action tags + unused `actions: write` | Full SHA pins; Dependabot; `actions: write` only on the artifact job |
 
@@ -65,7 +66,7 @@ Earlier closures (P0 replace argv, controller zip modules, mutex, CURSOR_AHEAD, 
 | Item | Notes |
 | --- | --- |
 | P1-05 GitHub branch protection | **Deferred 2026-08-19** (operator paused). Still required for READY FOR RC |
-| P1-06 Live `0.3.0 → 0.3.1-rc1` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
+| P1-06 Live `0.3.0 → 0.3.1-rc2` upgrade | **Deferred 2026-08-19** (operator paused). Still the remaining READY FOR RC evidence gap |
 | Schema 4 live re-sync | After upgrade/`--reseed`, record at least one live two-node sync under Protocol v2 |
 
 ## Ops checklist (not executed in-tree)
@@ -81,7 +82,7 @@ These stay **operator/GitHub-settings** work. P1-05 / P1-06 are **paused this ro
 - Require branches to be up to date before merging
 - Do not allow force-push or deleting `main`
 
-### P1-06 Live `0.3.0 → 0.3.1-rc1` upgrade
+### P1-06 Live `0.3.0 → 0.3.1-rc2` upgrade
 
 **Deferred (operator choice, 2026-08-19):** not running the live upgrade this round. Still the remaining READY FOR RC evidence gap. When resumed, on a real node keep:
 
