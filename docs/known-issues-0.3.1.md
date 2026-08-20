@@ -65,8 +65,8 @@ Companion: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · Evidenc
 | B24 replace smoke | **Deferred** (see above) |
 | B25 docs consistency | **PASS** (this freeze) |
 | B26 branch protection | **PASS** |
-| B27 final artifact black-box | See [`evidence/0.3.1-final/SUMMARY.md`](evidence/0.3.1-final/SUMMARY.md) (**PASS**) |
-| B28 tag `v0.3.1` | After merge of this freeze PR |
+| B27 final artifact black-box | See [`evidence/0.3.1-final/SUMMARY.md`](evidence/0.3.1-final/SUMMARY.md) (**PASS**; CI digests) |
+| B28 tag `v0.3.1` | **PASS** (immutable tag + GitHub Release) |
 
 ## Related
 

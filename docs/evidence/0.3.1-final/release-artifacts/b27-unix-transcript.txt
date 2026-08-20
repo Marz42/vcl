@@ -45,3 +45,9 @@ CTRL_SHA256=166bc7a1db42dd537e92c13414dbbcb888b93b54a169403a9fa27c1bc9c9e6fb
 fleet.db still missing
 
 fleet.db create/open: PASS (open_fleet_db via zip lib)
+
+=== Digests freeze (CI run 32341985689) ===
+NODE_SHA256=9fdf68d5567fe5376bf531d58dd18c46792524c3cc95e7a69366607c031ecd59
+CTRL_SHA256=053712194564f6551918f978ee7f0965c33db1b4eaabd81087f27ed962d70546
+Note: earlier local WSL archive hashes differed; member release.lock verify still PASS.
+Published GitHub Release assets MUST match these CI digests.

@@ -32,8 +32,8 @@ Known P1 release blockers: 0
 | B24 replace regression smoke | **DEFERRED** (Known Issue) |
 | B25 documentation consistency | **PASS** |
 | B26 branch protection | **PASS** |
-| B27 final artifact black-box | **PASS** — [`evidence/0.3.1-final/`](evidence/0.3.1-final/) |
-| B28 tag `v0.3.1` + GitHub Release | Pending merge of this freeze → tag + assets |
+| B27 final artifact black-box | **PASS** — [`evidence/0.3.1-final/`](evidence/0.3.1-final/) (CI digests frozen) |
+| B28 tag `v0.3.1` + GitHub Release | **PASS** — tag + assets match SUMMARY digests |
 
 ## Earlier living-tree closures
 
