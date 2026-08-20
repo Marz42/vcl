@@ -47,6 +47,7 @@ Policy: **do not mutate** the `v0.3.1-rc2` tag or overwrite published `vincula-n
 
 | ID | Contract | Status |
 | --- | --- | --- |
+| **B23** | Schema 4 Fleet reseed / incremental re-sync | **PASS (2026-08-20).** Evidence: [`evidence/0.3.1-rc2/B23-fleet-resync.md`](evidence/0.3.1-rc2/B23-fleet-resync.md) |
 | **B22** | Live upgrade **`0.3.1-rc1 → 0.3.1-rc2`** (surrogate for 0.3.0→rc2) | **PASS (2026-08-20).** Evidence: [`evidence/0.3.1-rc2/B22-upgrade-rc1.md`](evidence/0.3.1-rc2/B22-upgrade-rc1.md). True `0.3.0 → rc2` still open unless waived. |
 | **B21** | Fresh VPS + rc2 artifact: install, schema 4, real client, reboot | **PASS (2026-08-20).** Evidence: [`evidence/0.3.1-rc2/B21-fresh-install.md`](evidence/0.3.1-rc2/B21-fresh-install.md) |
 | **B20** | CI matrix (ubuntu + Debian 12/13) + node/controller artifacts + black-box zip | **PASS** (local equivalent; GitHub Actions on push) |
