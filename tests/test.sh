@@ -1033,6 +1033,9 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",
@@ -1063,6 +1066,9 @@ prefix = f"vincula-controller-{version}"
 need = (
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
 )
 with zipfile.ZipFile(archive) as zf:
     names = set(zf.namelist())
@@ -1097,6 +1103,12 @@ assert_success "controller zip black-box unpack has vincula-audit.py" \
   test -f "${UNPACK}/lib/vincula-audit.py"
 assert_success "controller zip black-box unpack has vincula-backup.py" \
   test -f "${UNPACK}/lib/vincula-backup.py"
+assert_success "controller zip black-box unpack has workspace.py" \
+  test -f "${UNPACK}/lib/workspace.py"
+assert_success "controller zip black-box unpack has access.py" \
+  test -f "${UNPACK}/lib/access.py"
+assert_success "controller zip black-box unpack has trust.py" \
+  test -f "${UNPACK}/lib/trust.py"
 assert_success "controller zip contains controller.lock manifest" \
   test -f "${UNPACK}/controller.lock"
 if ( cd "$UNPACK" && sha256sum --check --status controller.lock ); then
@@ -1110,6 +1122,12 @@ assert_success "controller.lock lists vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists workspace.py" \
+  grep -q 'lib/workspace.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists access.py" \
+  grep -q 'lib/access.py' "${UNPACK}/controller.lock"
+assert_success "controller.lock lists trust.py" \
+  grep -q 'lib/trust.py' "${UNPACK}/controller.lock"
 assert_success "controller.lock lists vincula-ui server" \
   grep -q 'lib/vincula-ui/server.py' "${UNPACK}/controller.lock"
 assert_success "controller zip contains vincula-ui static index" \

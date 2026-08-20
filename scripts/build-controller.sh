@@ -25,6 +25,9 @@ FILES=(
   lib/vincula-fleet.py
   lib/vincula-audit.py
   lib/vincula-backup.py
+  lib/workspace.py
+  lib/access.py
+  lib/trust.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -85,6 +88,9 @@ need = (
     f"{prefix}/lib/vincula-fleet.py",
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
+    f"{prefix}/lib/workspace.py",
+    f"{prefix}/lib/access.py",
+    f"{prefix}/lib/trust.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",
