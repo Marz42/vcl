@@ -30,7 +30,7 @@ accountd 通过 `VCL_STATE_FILE`（默认 `/etc/vincula/state.json`）读 `node.
 
 ## `state.json` schema 1 → 2（0.3.0 保持 2；0.3.1 accounting → 4）
 
-| | 0.2.7 | 0.2.8 / 0.2.9 | 0.3.0 | 0.3.1-rc2 |
+| | 0.2.7 | 0.2.8 / 0.2.9 | 0.3.0 | 0.3.1 |
 | --- | --- | --- | --- | --- |
 | `state.json.schema_version` | `1`（无 `instance_id`） | **`2`**（`node.instance_id` 必填 UUID） | **`2`** | **`2`** |
 | `users.json.schema_version` | `2` | `2` | **`2`** | **`2`** |

@@ -1,4 +1,4 @@
-# Backup, restore, and replace (0.3.1-rc2)
+# Backup, restore, and replace (0.3.1)
 
 Node **identity / audit archives** and physical-instance replacement.
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
