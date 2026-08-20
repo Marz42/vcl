@@ -2,11 +2,26 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.4.1 (unreleased)
+## 0.4.1 (2026-08-21)
+
+**Controller-only** portable workspace milestone. Stamp: CTRL `VCL_FLEET_VERSION=0.4.1`; NODE `VINCULA_VERSION=0.3.1` unchanged (no allowlist / installer / node fixture bumps).
 
 ### Breaking
 
 - Bare `vcl-fleet status` is **cache-only** (no SSH; AC-4.1-S01 / D58). Live health: `vcl-fleet probe` or `status --live`.
+
+### Added
+
+- **Workspace migrate:** real 16-step `vcl-fleet workspace migrate` (atomic commit + `legacy-pre-workspace-*` backup); `--dry-run` kept (D48 / AC-4.0-M06).
+- **Workspace CLI:** `workspace init` / `show` / `verify` / `export` / `import`; `--workspace` / `VCL_FLEET_WORKSPACE`.
+- **Access bindings (D28):** `access list` / `bind` / `verify`; registry holds credential refs only; machine-local `credential-bindings.json`.
+- **Dedicated trust (D27):** workspace `trust/known_hosts` with `StrictHostKeyChecking=yes` (no `/dev/null`).
+- **Portable instance history:** `history/instances.jsonl` as portable SoT (DB may materialize).
+- **fleet_id + D52:** `workspace.json` with revision / write_id / parent_* / state_digest / CAS; conflict codes ROLLBACK / DIVERGED / INCONSISTENT.
+
+### Notes
+
+- Evidence: [`docs/evidence/0.4.1/SUMMARY.md`](docs/evidence/0.4.1/SUMMARY.md). M05 dual-WSL LIVE: [`docs/evidence/0.4.1-m05/`](docs/evidence/0.4.1-m05/) (SKIP / REQUIRES-LIVE offline).
 
 ## 0.3.1 (2026-08-20)
 
