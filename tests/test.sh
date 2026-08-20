@@ -1013,14 +1013,14 @@ assert_success "controller zip exists" \
   test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 assert_success "controller zip sidecar sha256 exists" \
   test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip.sha256"
-if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+if ( cd "${PROJECT_DIR}/dist" && sha256sum --check --status "vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" ); then
   pass "controller zip sha256sum -c verifies"
 else
   fail "controller zip sha256sum -c verifies"
 fi
 controller_zip="${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 controller_zip_rc=0
-python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_zip_rc=$?
+python3 - "$controller_zip" "${VCL_FLEET_VERSION}" <<'PY' || controller_zip_rc=$?
 import sys
 import zipfile
 
@@ -1058,7 +1058,7 @@ else
   fail "AC-2.8-11 controller zip members"
 fi
 controller_runtime_rc=0
-python3 - "$controller_zip" "${VINCULA_VERSION}" <<'PY' || controller_runtime_rc=$?
+python3 - "$controller_zip" "${VCL_FLEET_VERSION}" <<'PY' || controller_runtime_rc=$?
 import sys
 import zipfile
 
@@ -1302,11 +1302,11 @@ assert_success "README mentions vincula-controller artifact" \
 # P2-03 / B13: controller sidecar digest is a real check (tamper → fail).
 TAMPER_DIR="${TEST_TMP}/controller-zip-tamper"
 mkdir -p "$TAMPER_DIR"
-cp -a "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip" \
-  "${PROJECT_DIR}/dist/vincula-controller-${VINCULA_VERSION}.zip.sha256" \
+cp -a "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip" \
+  "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" \
   "$TAMPER_DIR/"
-printf 'x' >> "${TAMPER_DIR}/vincula-controller-${VINCULA_VERSION}.zip"
-if ( cd "$TAMPER_DIR" && sha256sum --check --status "vincula-controller-${VINCULA_VERSION}.zip.sha256" ); then
+printf 'x' >> "${TAMPER_DIR}/vincula-controller-${VCL_FLEET_VERSION}.zip"
+if ( cd "$TAMPER_DIR" && sha256sum --check --status "vincula-controller-${VCL_FLEET_VERSION}.zip.sha256" ); then
   fail "controller zip sha256sum -c rejects a tampered zip"
 else
   pass "controller zip sha256sum -c rejects a tampered zip"
