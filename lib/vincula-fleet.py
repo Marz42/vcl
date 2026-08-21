@@ -43,7 +43,7 @@ from typing import Any, Callable, Optional, Sequence
 VCL_FLEET_VERSION = "0.4.1"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_CACHE_SCHEMA_VERSION = 3
+FLEET_CACHE_SCHEMA_VERSION = 4
 WORKSPACE_SCHEMA_VERSION = 1
 AUDIT_ARCHIVE_SCHEMA_VERSION = 1
 TELEMETRY_SCHEMA_VERSION = 1
@@ -136,6 +136,35 @@ CREATE TABLE daily_usage (
   connection_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (date, node_id, user_id, destination_host)
 );
+
+CREATE TABLE node_snapshot (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  name TEXT,
+  vincula_version TEXT,
+  ssh TEXT,
+  proxy TEXT,
+  accounting TEXT,
+  registry TEXT,
+  clock TEXT,
+  clock_skew_seconds INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL
+);
+
+CREATE TABLE user_snapshot (
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  tag TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  status TEXT,
+  active_credential_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, user_id)
+);
+
+CREATE INDEX idx_user_snapshot_tag ON user_snapshot(tag);
 """ + INSTANCE_HISTORY_DDL
 
 INSERT_AUDIT_EVENT_SQL = """
@@ -743,8 +772,24 @@ def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def open_cache_check(
+    conn: sqlite3.Connection, *, expect_fleet_id: Optional[str] = None
+) -> None:
+    ver = fleet_db_meta_get(conn, "schema_version")
+    if ver != str(FLEET_CACHE_SCHEMA_VERSION):
+        die(f"unsupported fleet-cache schema: {ver}")
+    cached = fleet_db_meta_get(conn, "fleet_id") or ""
+    expected = (
+        expect_fleet_id
+        if expect_fleet_id is not None
+        else _workspace_fleet_id_or_empty()
+    )
+    if expected and cached and cached != expected:
+        die("CACHE_FLEET_MISMATCH: cache fleet_id mismatch")
+
+
 def open_fleet_db() -> sqlite3.Connection:
-    """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 3."""
+    """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 4."""
     _ensure_fleet_home()
     path = fleet_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -764,6 +809,9 @@ def open_fleet_db() -> sqlite3.Connection:
             fleet_db_meta_set(
                 conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION)
             )
+            fleet_db_meta_set(
+                conn, "fleet_id", _workspace_fleet_id_or_empty()
+            )
             conn.commit()
         else:
             ver = fleet_db_meta_get(conn, "schema_version")
@@ -772,7 +820,10 @@ def open_fleet_db() -> sqlite3.Connection:
                 ver = "2"
             if ver == "2":
                 _migrate_fleet_db_2_to_3(conn)
-            elif ver != str(FLEET_DB_SCHEMA_VERSION):
+                ver = "3"
+            if ver == "3":
+                _migrate_fleet_db_3_to_4(conn)
+            elif ver != "4":
                 conn.close()
                 die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
@@ -780,6 +831,7 @@ def open_fleet_db() -> sqlite3.Connection:
             sidecar = Path(str(path) + suffix)
             if sidecar.is_file():
                 _chmod_private(sidecar, 0o600)
+        open_cache_check(conn)
         return conn
     except SystemExit:
         raise
@@ -789,6 +841,15 @@ def open_fleet_db() -> sqlite3.Connection:
         except Exception:
             pass
         die(f"cannot initialize fleet.db: {exc}")
+
+
+def _workspace_fleet_id_or_empty() -> str:
+    try:
+        if _WS.workspace_trust_active():
+            return str(_WS.load_workspace_manifest()["fleet_id"])
+    except Exception:
+        pass
+    return ""
 
 
 def _migrate_fleet_db_1_to_2(conn: sqlite3.Connection) -> None:
@@ -821,7 +882,45 @@ def _migrate_fleet_db_2_to_3(conn: sqlite3.Connection) -> None:
             "ALTER TABLE sync_cursor ADD COLUMN cursor_kind "
             "TEXT NOT NULL DEFAULT 'event_id'"
         )
-    fleet_db_meta_set(conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION))
+    fleet_db_meta_set(conn, "schema_version", "3")
+    conn.commit()
+
+
+def _migrate_fleet_db_3_to_4(conn: sqlite3.Connection) -> None:
+    """Add node_snapshot / user_snapshot and stamp meta.fleet_id."""
+    conn.executescript(
+        """
+CREATE TABLE IF NOT EXISTS node_snapshot (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  name TEXT,
+  vincula_version TEXT,
+  ssh TEXT,
+  proxy TEXT,
+  accounting TEXT,
+  registry TEXT,
+  clock TEXT,
+  clock_skew_seconds INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_snapshot (
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  tag TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  status TEXT,
+  active_credential_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_snapshot_tag ON user_snapshot(tag);
+"""
+    )
+    if fleet_db_meta_get(conn, "fleet_id") is None:
+        fleet_db_meta_set(conn, "fleet_id", _workspace_fleet_id_or_empty())
+    fleet_db_meta_set(conn, "schema_version", "4")
     conn.commit()
 
 def insert_instance(

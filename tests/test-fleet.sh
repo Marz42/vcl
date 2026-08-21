@@ -124,8 +124,8 @@ assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema version is 2" \
   grep -q 'FLEET_REGISTRY_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet.db schema version is 3" \
-  grep -q 'FLEET_CACHE_SCHEMA_VERSION = 3' "${PROJECT_DIR}/lib/vincula-fleet.py"
+assert_success "fleet.db schema version is 4" \
+  grep -q 'FLEET_CACHE_SCHEMA_VERSION = 4' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema aliases retained" \
   grep -q 'FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet.db schema alias retained" \
@@ -3835,7 +3835,7 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.FLEET_DB_SCHEMA_VERSION == 3
+assert mod.FLEET_DB_SCHEMA_VERSION == 4
 assert mod.fleet_db_path() == home / "fleet.db"
 
 conn1 = mod.open_fleet_db()
@@ -3862,10 +3862,11 @@ count = conn2.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 hist_count = conn2.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
 conn2.close()
 
-assert ver1 == "3" and ver2 == "3", (ver1, ver2)
+assert ver1 == "4" and ver2 == "4", (ver1, ver2)
 assert wal1.lower() == "wal" and wal2.lower() == "wal", (wal1, wal2)
 assert tables >= {
-    "meta", "audit_events", "sync_cursor", "daily_usage", "instance_history"
+    "meta", "audit_events", "sync_cursor", "daily_usage", "instance_history",
+    "node_snapshot", "user_snapshot",
 }
 assert set(pk_cols) == {"node_id", "event_id"}, pk_cols
 assert "export_seq" in audit_cols, audit_cols
@@ -3880,9 +3881,9 @@ home_mode = stat.S_IMODE(home.stat().st_mode)
 assert home_mode == 0o700, oct(home_mode)
 PY
 if (( open_twice_rc == 0 )); then
-  pass "open_fleet_db twice keeps schema 3 WAL fleet.db mode 0600"
+  pass "open_fleet_db twice keeps schema 4 WAL fleet.db mode 0600"
 else
-  fail "open_fleet_db twice keeps schema 3 WAL fleet.db mode 0600"
+  fail "open_fleet_db twice keeps schema 4 WAL fleet.db mode 0600"
 fi
 
 migrate_rc=0
@@ -4029,7 +4030,7 @@ raw.close()
 
 conn = mod.open_fleet_db()
 ver = mod.fleet_db_meta_get(conn, "schema_version")
-assert ver == "3", ver
+assert ver == "4", ver
 audit_cols = [r[1] for r in conn.execute("PRAGMA table_info(audit_events)")]
 cursor_cols = [r[1] for r in conn.execute("PRAGMA table_info(sync_cursor)")]
 assert "export_seq" in audit_cols, audit_cols
@@ -4055,7 +4056,7 @@ assert mod.list_instances(conn, other_id) == []
 conn.close()
 
 conn2 = mod.open_fleet_db()
-assert mod.fleet_db_meta_get(conn2, "schema_version") == "3"
+assert mod.fleet_db_meta_get(conn2, "schema_version") == "4"
 assert len(mod.list_instances(conn2, node_id)) == 1
 conn2.close()
 
@@ -4064,7 +4065,7 @@ home2 = Path(tmp) / "fleet-home-db-history"
 home2.mkdir(parents=True)
 os.environ["VCL_FLEET_HOME"] = str(home2)
 conn = mod.open_fleet_db()
-assert mod.fleet_db_meta_get(conn, "schema_version") == "3"
+assert mod.fleet_db_meta_get(conn, "schema_version") == "4"
 old_iid = instance_id
 new_iid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 mod.record_instance(
@@ -4126,10 +4127,42 @@ except SystemExit as exc:
     assert exc.code == 1
 PY
 if (( migrate_rc == 0 )); then
-  pass "fleet.db schema 1→2→3 preserves data and records instance history"
+  pass "fleet.db schema 1→2→3→4 preserves data and records instance history"
 else
-  fail "fleet.db schema 1→2→3 preserves data and records instance history"
+  fail "fleet.db schema 1→2→3→4 preserves data and records instance history"
 fi
+
+assert_success "B3 v3→v4 stamp+mismatch" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP" <<'PY'
+import contextlib,importlib.util,io,os,sqlite3,sys,uuid; from pathlib import Path
+p,tmp=sys.argv[1],Path(sys.argv[2]); home=tmp/"b3-v3"; home.mkdir()
+os.environ["VCL_FLEET_HOME"]=str(home); os.environ.pop("VCL_FLEET_LOCAL_STATE",None)
+spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+# seed legacy v3 WITHOUT snapshot tables
+raw=sqlite3.connect(str(home/"fleet.db"))
+raw.executescript("""CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE audit_events(node_id TEXT NOT NULL,event_id INTEGER NOT NULL,connection_id TEXT NOT NULL,generation INTEGER NOT NULL,user_id TEXT NOT NULL,started_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,upload_bytes INTEGER NOT NULL DEFAULT 0,download_bytes INTEGER NOT NULL DEFAULT 0,imported_at TEXT NOT NULL,PRIMARY KEY(node_id,event_id));
+CREATE TABLE sync_cursor(node_id TEXT PRIMARY KEY,last_event_id INTEGER NOT NULL,last_sync_at TEXT NOT NULL,status TEXT NOT NULL);
+CREATE TABLE daily_usage(date TEXT NOT NULL,node_id TEXT NOT NULL,user_id TEXT NOT NULL,destination_host TEXT NOT NULL,upload_bytes INTEGER NOT NULL DEFAULT 0,download_bytes INTEGER NOT NULL DEFAULT 0,connection_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(date,node_id,user_id,destination_host));""")
+raw.execute("INSERT INTO meta VALUES('schema_version','3')"); raw.commit(); raw.close()
+c=m.open_fleet_db(); assert m.fleet_db_meta_get(c,"schema_version")=="4"
+tabs={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert {"node_snapshot","user_snapshot","audit_events","sync_cursor","daily_usage"}<=tabs
+assert m.fleet_db_meta_get(c,"fleet_id") is not None; c.close()
+# mismatch under workspace
+ws=tmp/"b3-ws"; ws.mkdir(); os.environ["VCL_FLEET_HOME"]=str(ws)
+m.create_workspace_manifest(); m.load_workspace_manifest()["fleet_id"]
+db=m.fleet_db_path(); db.parent.mkdir(parents=True,exist_ok=True)
+raw=sqlite3.connect(str(db)); raw.executescript(m.FLEET_DB_DDL)
+raw.execute("INSERT OR REPLACE INTO meta VALUES('schema_version','4')")
+raw.execute("INSERT OR REPLACE INTO meta VALUES('fleet_id',?)",(str(uuid.uuid4()),)); raw.commit(); raw.close()
+buf=io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf): m.open_fleet_db()
+    raise AssertionError("expected CACHE_FLEET_MISMATCH")
+except SystemExit as e: assert e.code==1
+err=buf.getvalue(); assert "CACHE_FLEET_MISMATCH" in err and "cache fleet_id mismatch" in err
+assert "unsupported fleet-cache schema:" in Path(p).read_text()
+PY
 
 import_batch_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$VCL_FLEET_HOME" \
