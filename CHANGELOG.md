@@ -11,6 +11,19 @@
 - **Enforced RO (D47/C01):** `open_cache_readonly` `mode=ro` + `query_only`; sync via `open_cache_for_sync` RW; cache uses rollback journal (`DELETE`), not WAL (P1-2).
 - **`sync --full` (D25/C04):** identity+health+users+audit→cache; sequential; per-node txn; PARTIAL exit 2; bare sync=legacy audit.
 - **Audit archive (D37/D38):** `audit archive create|verify|inspect|restore`; `.vclaudit`=`audit-archive/v1`; restore never touches `sync_cursor`/`last_export_seq`; optional `--age-recipient`.
+### Fixes (P1)
+- **P1-1** `workspace_mutation` sole portable-write entry (CAS/rev/digest).
+- **P1-2** cache rollback journal; RO `mode=ro` + `query_only`.
+- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write).
+- **P1-4** archive canonical excludes `imported_at`; restore rebuilds daily_usage.
+- **P1-5** local tag→user_id; audit/stats/status/UI Local Read Plane.
+- **P1-6** (also under Added) machine-local → CONFIG/STATE; copyable workspace root.
+### Hardening (F7)
+- **F7-1** `sync --full` defers portable instance history until after DB commit.
+- **F7-2** workspace import verify-in-staging then commit (fail closed; no re-sign).
+- **F7-3** Workspace active: `--identity-file` → machine-local binding only.
+- **F7-4** cached status `ok` from node health (explicit FAIL → non-zero).
+- **F7-5** workspace export refuses inconsistent / conflicted workspace.
 ### Notes
 - Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md). LIVE optional AC-4.1-03/06.
 
