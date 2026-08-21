@@ -1064,6 +1064,8 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             "sh",
             "test",
             "true",
+            "mkdir",
+            "env",
         ):
             sys.stdout.write(f"/usr/bin/{bin_name}\n")
             return 0
@@ -1127,7 +1129,66 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             sys.stdout.write("203.0.113.50\n")
         return 0
 
+    # --- B4: mkdir / sha256sum / tar / env / bash (provision install path) ---
+    if cmd == "mkdir" and "-p" in argv[1:]:
+        return 0
+
+    if cmd == "sha256sum" and "-c" in argv[1:]:
+        if os.environ.get("VCL_FAKE_REMOTE_DIGEST_FAIL", "").strip() == "1":
+            sys.stderr.write("sha256sum: FAILED\n")
+            return 1
+        sys.stdout.write("vincula-node-0.3.1.tar.gz: OK\n")
+        return 0
+
+    if cmd == "sh" and len(argv) >= 3 and argv[1] == "-c":
+        script = argv[2]
+        if "sha256sum" in script and "-c" in script:
+            if os.environ.get("VCL_FAKE_REMOTE_DIGEST_FAIL", "").strip() == "1":
+                sys.stderr.write("sha256sum: FAILED\n")
+                return 1
+            sys.stdout.write("vincula-node-0.3.1.tar.gz: OK\n")
+            return 0
+        if "os-release" in script:
+            os_id = os.environ.get("VCL_FAKE_OS_ID", "debian").strip() or "debian"
+            os_ver = os.environ.get("VCL_FAKE_OS_VERSION", "12").strip() or "12"
+            sys.stdout.write(f"{os_id}:{os_ver}\n")
+            return 0
+        return None
+
+    if cmd == "tar" and "-xzf" in argv[1:]:
+        if os.environ.get("VCL_FAKE_PROVISION", "").strip() != "1":
+            return None
+        return 0
+
+    if cmd == "env" and len(argv) >= 3:
+        # env VCL_SERVER=... bash .../vincula.sh
+        rest = list(argv[1:])
+        while rest and "=" in rest[0] and not rest[0].startswith("-"):
+            rest = rest[1:]
+        if rest and rest[0] == "bash":
+            return _fake_run_vincula_installer(alias, rest)
+        return None
+
+    if cmd == "bash":
+        return _fake_run_vincula_installer(alias, argv)
+
     return None
+
+
+def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
+    """Simulate payload vincula.sh under VCL_FAKE_PROVISION=1."""
+    if os.environ.get("VCL_FAKE_PROVISION", "").strip() != "1":
+        return None
+    joined = " ".join(argv)
+    if "vincula.sh" not in joined:
+        return None
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR required for provision install\n")
+        return 1
+    node_dir = _alias_dir(alias)
+    (node_dir / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+    (node_dir / ".provisioned").write_text("1\n", encoding="utf-8")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

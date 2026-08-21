@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shlex
+import types
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,8 +24,16 @@ NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
 IO_CHUNK = 1024 * 1024
-# Remote staging dir used by verify_remote_payload_digest (B4 uploads here).
+# Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh).
 REMOTE_STAGE = "/tmp/vincula-provision"
+REMOTE_TAR = f"{REMOTE_STAGE}/{NODE_TARBALL_NAME}"
+REMOTE_SUM = f"{REMOTE_STAGE}/{NODE_SHA256_NAME}"
+REMOTE_MAN = f"{REMOTE_STAGE}/{MANIFEST_NAME}"
+REMOTE_UNPACK = f"{REMOTE_STAGE}/vincula-node-{NODE_PAYLOAD_VERSION}"
+
+# Commit-boundary failure: remote install+verify succeeded, local registry
+# write did not. Repair = re-run register/adopt (never re-run installer).
+REMOTE_READY_LOCAL_UNCOMMITTED = "REMOTE_READY_LOCAL_UNCOMMITTED"
 
 DEFAULT_SUPPORTED_OS = (
     "debian12",
@@ -284,6 +293,359 @@ def verify_remote_payload_digest(
     )
     if proc.returncode != 0:
         host.die("payload digest mismatch (remote); refusing install")
+
+
+def _ssh_node_dict(
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str] = None,
+) -> dict[str, Any]:
+    node: dict[str, Any] = {
+        "ssh_host": ssh_host,
+        "ssh_user": ssh_user,
+        "ssh_port": ssh_port,
+    }
+    if identity_file:
+        node["identity_file"] = identity_file
+    return node
+
+
+def upload_and_verify_remote_payload(
+    resolved: dict[str, Path],
+    *,
+    ssh_host: str,
+    ssh_user: str = "root",
+    ssh_port: int = 22,
+    identity_file: Optional[str] = None,
+    extra: Optional[list[str]] = None,
+) -> None:
+    """SCP tarball+sidecar+manifest to REMOTE_STAGE, then remote sha256sum -c.
+
+    Fail-closed: digest mismatch dies before unpack/installer (AC-4.2-04).
+    """
+    host = _require_host()
+    node = _ssh_node_dict(ssh_host, ssh_user, ssh_port, identity_file)
+    mkdir_proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["mkdir", "-p", REMOTE_STAGE],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if mkdir_proc.returncode != 0:
+        detail = (mkdir_proc.stderr or mkdir_proc.stdout or "").strip() or (
+            f"exit {mkdir_proc.returncode}"
+        )
+        host.die(f"remote mkdir {REMOTE_STAGE} failed: {detail}")
+    host.scp_push(node, Path(resolved["tarball"]), REMOTE_TAR, extra=extra)
+    host.scp_push(
+        node, Path(resolved["sha256_sidecar"]), REMOTE_SUM, extra=extra
+    )
+    host.scp_push(
+        node, Path(resolved["manifest_path"]), REMOTE_MAN, extra=extra
+    )
+    verify_remote_payload_digest(
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=identity_file,
+        extra=extra,
+    )
+
+
+def unpack_and_run_installer(
+    *,
+    ssh_host: str,
+    ssh_user: str = "root",
+    ssh_port: int = 22,
+    identity_file: Optional[str] = None,
+    extra: Optional[list[str]] = None,
+    vcl_server: Optional[str] = None,
+) -> None:
+    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.1).
+
+    Host-key policy remains D34 (no StrictHostKeyChecking=no). Installer
+    lands ``/usr/local/bin/vcl`` and ``/etc/vincula`` (not ``/opt``).
+    """
+    host = _require_host()
+    tar_proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["tar", "-xzf", REMOTE_TAR, "-C", REMOTE_STAGE],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if tar_proc.returncode != 0:
+        detail = (tar_proc.stderr or tar_proc.stdout or "").strip() or (
+            f"exit {tar_proc.returncode}"
+        )
+        host.die(f"remote tar unpack failed: {detail}")
+
+    install_argv: list[str] = ["bash", f"{REMOTE_UNPACK}/vincula.sh"]
+    vcl = (vcl_server or "").strip()
+    if vcl:
+        install_argv = ["env", f"VCL_SERVER={vcl}", *install_argv]
+    install_proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        install_argv,
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+        timeout=600.0,
+    )
+    if install_proc.returncode != 0:
+        detail = (install_proc.stderr or install_proc.stdout or "").strip() or (
+            f"exit {install_proc.returncode}"
+        )
+        host.die(f"remote vincula.sh install failed: {detail}")
+
+
+def _arch_from_checks(checks: list[dict[str, Any]]) -> Optional[str]:
+    for row in checks:
+        if row.get("id") == "arch" and row.get("status") == "pass":
+            detail = str(row.get("detail") or "").strip()
+            return detail or None
+    return None
+
+
+def _probe_remote_os_id(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+) -> str:
+    """Read remote ``/etc/os-release`` as ``id:version`` (e.g. ``debian:12``)."""
+    host = _require_host()
+    script = (
+        'test -r /etc/os-release || exit 1; '
+        '. /etc/os-release; '
+        'printf "%s:%s\\n" "${ID}" "${VERSION_ID}"'
+    )
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["sh", "-c", script],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    text = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not text or ":" not in text:
+        detail = (proc.stderr or text or f"exit {proc.returncode}").strip()
+        host.die(f"could not read remote os-release: {detail}")
+    return text.splitlines()[0].strip()
+
+
+def _probe_remote_arch(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+) -> str:
+    host = _require_host()
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["uname", "-m"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    uname_m = (proc.stdout or "").strip()
+    mapped = _normalize_arch(uname_m) if proc.returncode == 0 else None
+    if mapped is None:
+        host.die(f"unsupported remote arch: {uname_m or 'unknown'}")
+    return mapped
+
+
+def _require_verify_ok(stdout: str) -> None:
+    host = _require_host()
+    try:
+        data = json.loads(stdout or "")
+    except json.JSONDecodeError as exc:
+        host.die(f"remote vcl verify is not JSON: {exc}")
+    if not isinstance(data, dict) or not data.get("ok"):
+        host.die("remote vcl verify failed; refusing registry commit")
+
+
+def _preflight_die_if_failed(preflight: dict[str, Any]) -> None:
+    host = _require_host()
+    if preflight.get("ok"):
+        return
+    fails = [c for c in (preflight.get("checks") or []) if c.get("status") == "fail"]
+    if not fails:
+        host.die("provision preflight failed")
+    first = fails[0]
+    remedy = first.get("remedy")
+    detail = first.get("detail") or first.get("id") or "failed"
+    if remedy:
+        host.die(f"provision preflight failed ({first.get('id')}): {detail}; {remedy}")
+    host.die(f"provision preflight failed ({first.get('id')}): {detail}")
+
+
+def run_provision(
+    *,
+    name: str,
+    ssh_host: str,
+    ssh_user: str = "root",
+    ssh_port: int = 22,
+    identity_file: Optional[str] = None,
+    host_key: Optional[str] = None,
+    admin_credential_ref: Optional[str] = None,
+    vcl_server: Optional[str] = None,
+    skip_preflight: bool = False,
+) -> dict[str, Any]:
+    """Fresh VPS: preflight → payload → SCP → install → verify → commit → sync --full.
+
+    On registry commit failure after a successful remote install+verify, returns
+    ``{"ok": False, "error": "REMOTE_READY_LOCAL_UNCOMMITTED", ...}`` without
+    re-running the installer. Repair path: ``node adopt`` / register only.
+    Initial sync is always ``sync --full`` (D25), never bare ``sync``.
+    """
+    host = _require_host()
+    if vcl_server is None:
+        vcl_server = os.environ.get("VCL_SERVER")
+
+    resolved = resolve_node_payload()
+    manifest = verify_local_payload(resolved)
+
+    extra: Optional[list[str]]
+    checks: list[dict[str, Any]] = []
+    if skip_preflight:
+        extra, _batch = host.prepare_ssh_host_key(ssh_host, ssh_port, host_key)
+        arch = _probe_remote_arch(
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            extra=extra,
+        )
+    else:
+        preflight = run_provision_preflight(
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            host_key=host_key,
+            manifest=manifest,
+            vcl_server=vcl_server,
+        )
+        _preflight_die_if_failed(preflight)
+        checks = list(preflight.get("checks") or [])
+        extra, _batch = host.prepare_ssh_host_key(ssh_host, ssh_port, host_key)
+        arch = _arch_from_checks(checks) or _probe_remote_arch(
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            extra=extra,
+        )
+
+    os_id = _probe_remote_os_id(
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=identity_file,
+        extra=extra,
+    )
+    validate_manifest_for_target(manifest, os_id=os_id, arch=arch)
+
+    upload_and_verify_remote_payload(
+        resolved,
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=identity_file,
+        extra=extra,
+    )
+    unpack_and_run_installer(
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=identity_file,
+        extra=extra,
+        vcl_server=vcl_server,
+    )
+
+    verify_proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["vcl", "verify", "--json"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if verify_proc.returncode != 0:
+        detail = (verify_proc.stderr or verify_proc.stdout or "").strip() or (
+            f"exit {verify_proc.returncode}"
+        )
+        host.die(f"remote vcl verify failed: {detail}")
+    _require_verify_ok(verify_proc.stdout or "")
+
+    ident_proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["vcl", "identity", "--json"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if ident_proc.returncode != 0:
+        detail = (ident_proc.stderr or ident_proc.stdout or "").strip() or (
+            f"exit {ident_proc.returncode}"
+        )
+        host.die(f"remote vcl identity failed: {detail}")
+    ident = host.parse_identity_json(ident_proc.stdout or "")
+    node_id = ident["node_id"]
+
+    reg_identity = identity_file
+    admin_ref = admin_credential_ref
+
+    def _commit() -> None:
+        reg = host.load_registry()
+        host.add_node(
+            reg,
+            node_id=node_id,
+            name=name,
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=reg_identity,
+            admin_credential_ref=admin_ref,
+        )
+        host.save_registry(None, reg)
+
+    try:
+        _commit()
+    except Exception as exc:
+        # Remote is installed and verified; do not re-run vincula.sh.
+        return {
+            "ok": False,
+            "error": REMOTE_READY_LOCAL_UNCOMMITTED,
+            "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
+            "node_id": node_id,
+            "detail": str(exc),
+        }
+
+    _code, sync_doc = host.run_sync_full_payload(
+        types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
+    )
+    return {"ok": True, "node_id": node_id, "sync": sync_doc}
 
 
 def _check(
