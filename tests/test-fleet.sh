@@ -11470,3 +11470,62 @@ mod=m.load_provision_module(); assert hasattr(mod,"run_provision_preflight")
 assert "Not air-gapped" in (mod.__doc__ or "")
 PY
 assert_success "B1 packs provision.py" grep -q 'lib/provision.py' "$PROJECT_DIR/scripts/build-controller.sh"
+
+# --- 0.4.3 B2 provision preflight (D35+D34) ---
+B2_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
+assert_success "B2 missing curl fails preflight" \
+  env VCL_FAKE_MISSING_CMDS=curl python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is False, result
+curl_fail = [c for c in result["checks"] if c["id"] == "cmd_curl"]
+assert curl_fail and curl_fail[0]["status"] == "fail", result["checks"]
+PY
+
+assert_success "B2 already_vincula fails with adopt remedy" \
+  env VCL_FAKE_ALREADY_VINCULA=1 python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is False, result
+rows = [c for c in result["checks"] if c["id"] == "already_vincula"]
+assert rows and rows[0]["status"] == "fail", result["checks"]
+assert "use node adopt" in rows[0].get("remedy", ""), rows[0]
+PY
+
+assert_success "B2 non-interactive without host-key dies" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, io, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+fleet.stdin_is_tty = lambda: False
+prov = fleet.load_provision_module()
+raised = False
+buf = io.StringIO()
+old_err = sys.stderr
+sys.stderr = buf
+try:
+    prov.run_provision_preflight(ssh_host="203.0.113.10", host_key=None)
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old_err
+assert raised
+assert "non-interactive add requires --host-key SHA256:" in buf.getvalue()
+PY

@@ -5542,6 +5542,7 @@ def load_provision_module() -> Any:
     if _PROVISION_MOD is not None:
         return _PROVISION_MOD
     _PROVISION_MOD = _load_controller_sibling("vincula_provision", "provision.py")
+    _PROVISION_MOD.bind(_FLEET_HOST)
     return _PROVISION_MOD
 
 

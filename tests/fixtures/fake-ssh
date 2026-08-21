@@ -982,7 +982,7 @@ def _fake_fs_path(alias: str, remote_path: str) -> Path:
 
 
 def _handle_test(alias: str, argv: list[str]) -> int:
-    """Subset of POSIX test(1) for replace preflight."""
+    """Subset of POSIX test(1) for replace/provision preflight."""
     args = list(argv)
     negate = False
     if args and args[0] == "!":
@@ -992,6 +992,20 @@ def _handle_test(alias: str, argv: list[str]) -> int:
         sys.stderr.write("fake-ssh: unsupported test argv\n")
         return 2
     op, remote_path = args
+
+    # Provision preflight: env override works without VCL_FAKE_STATE_DIR.
+    if remote_path == "/etc/vincula/VERSION":
+        if os.environ.get("VCL_FAKE_ALREADY_VINCULA", "").strip() == "1":
+            present = True
+        elif _state_root() is None:
+            present = False
+        else:
+            present = _fake_fs_path(alias, remote_path).is_file()
+        rc = 0 if present else 1
+        if negate:
+            rc = 0 if rc != 0 else 1
+        return rc
+
     target = _fake_fs_path(alias, remote_path)
     node_dir = _alias_dir(alias)
     if op == "-x":
@@ -1005,6 +1019,115 @@ def _handle_test(alias: str, argv: list[str]) -> int:
     if negate:
         rc = 0 if rc != 0 else 1
     return rc
+
+
+_PROVISION_CMDS = frozenset(
+    {
+        "uname",
+        "id",
+        "groups",
+        "sudo",
+        "curl",
+        "tar",
+        "sha256sum",
+        "python3",
+        "apt-get",
+        "systemctl",
+        "ss",
+        "df",
+    }
+)
+
+
+def _missing_cmds() -> set[str]:
+    raw = os.environ.get("VCL_FAKE_MISSING_CMDS", "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
+    """Route provision preflight remotes. Default lax success. None = not ours."""
+    if not argv:
+        return None
+    cmd = argv[0]
+
+    if cmd == "true" and len(argv) == 1:
+        return 0
+
+    if cmd == "command" and len(argv) >= 3 and argv[1] == "-v":
+        bin_name = argv[2]
+        if bin_name in _missing_cmds():
+            return 1
+        if bin_name in _PROVISION_CMDS or bin_name in (
+            "bash",
+            "sh",
+            "test",
+            "true",
+        ):
+            sys.stdout.write(f"/usr/bin/{bin_name}\n")
+            return 0
+        return 1
+
+    if cmd == "uname":
+        if argv[1:] == ["-s"]:
+            sys.stdout.write("Linux\n")
+            return 0
+        if argv[1:] == ["-m"]:
+            arch = os.environ.get("VCL_FAKE_UNAME_M", "x86_64").strip() or "x86_64"
+            sys.stdout.write(f"{arch}\n")
+            return 0
+        return None
+
+    if cmd == "id" and argv[1:] == ["-u"]:
+        uid = os.environ.get("VCL_FAKE_UID", "0").strip() or "0"
+        sys.stdout.write(f"{uid}\n")
+        return 0
+
+    if cmd == "sudo" and argv[1:] == ["-n", "true"]:
+        if os.environ.get("VCL_FAKE_SUDO_FAIL", "").strip() == "1":
+            sys.stderr.write("sudo: a password is required\n")
+            return 1
+        return 0
+
+    if cmd == "df" and argv[1:2] == ["-Pk"]:
+        avail = os.environ.get("VCL_FAKE_DF_AVAIL_KB", "2048000").strip() or "2048000"
+        sys.stdout.write("Filesystem 1024-blocks Used Available Capacity Mounted on\n")
+        sys.stdout.write(f"/dev/vda1 20971520 1048576 {avail} 6% /\n")
+        return 0
+
+    if cmd == "ss" and len(argv) >= 2 and argv[1] == "-lntH":
+        if os.environ.get("VCL_FAKE_PORT_443", "").strip() == "1":
+            sys.stdout.write("LISTEN 0 128 0.0.0.0:443 0.0.0.0:*\n")
+        return 0
+
+    if cmd == "systemctl" and argv[1:3] == ["cat", "sing-box.service"]:
+        if os.environ.get("VCL_FAKE_SING_BOX_UNIT", "").strip() == "1":
+            sys.stdout.write("# /etc/systemd/system/sing-box.service\n[Unit]\n")
+            return 0
+        sys.stderr.write("No files found for sing-box.service.\n")
+        return 1
+
+    if cmd == "curl":
+        # Lax success for HTTPS / ipify / Reality probes unless URL is forced fail.
+        url = ""
+        for i, arg in enumerate(argv):
+            if arg.startswith("https://") or arg.startswith("http://"):
+                url = arg
+                break
+        fail_urls = {
+            part.strip()
+            for part in os.environ.get("VCL_FAKE_CURL_FAIL", "").split(",")
+            if part.strip()
+        }
+        if url and url in fail_urls:
+            sys.stderr.write(f"curl: fake fail for {url}\n")
+            return 22
+        if "api.ipify.org" in url:
+            sys.stdout.write("203.0.113.50\n")
+        return 0
+
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1063,6 +1186,9 @@ def main(argv: list[str] | None = None) -> int:
     if kind == "unknown" and rest and rest[0] == "test":
         return _handle_test(alias, rest[1:])
     if kind == "unknown":
+        handled = _handle_provision_remote(alias, rest)
+        if handled is not None:
+            return handled
         shown = " ".join(remote) or "(empty)"
         sys.stderr.write(f"fake-ssh: unknown vcl command: {shown}\n")
         return 1
