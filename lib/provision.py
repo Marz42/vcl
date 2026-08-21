@@ -8,10 +8,31 @@ and Reality. Host-key policy unchanged (D34). Stdlib only. Python 3.10+.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shlex
+from pathlib import Path
 from typing import Any, Optional
 
 _host: Any = None
+
+# D51: single arch-neutral node payload pinned for 0.4.x provision.
+NODE_PAYLOAD_VERSION = "0.3.1"
+NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
+NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
+MANIFEST_NAME = "payload-manifest.json"
+IO_CHUNK = 1024 * 1024
+# Remote staging dir used by verify_remote_payload_digest (B4 uploads here).
+REMOTE_STAGE = "/tmp/vincula-provision"
+
+DEFAULT_SUPPORTED_OS = (
+    "debian12",
+    "debian13",
+    "ubuntu22.04",
+    "ubuntu24.04",
+    "ubuntu26.04",
+)
 
 REQUIRED_CMDS = (
     "uname",
@@ -63,6 +84,206 @@ def bind(host: Any) -> None:
     """Bind fleet host for ssh_run / prepare_ssh_host_key / die."""
     global _host
     _host = host
+
+
+def sha256_file(path: Path) -> str:
+    """Streaming SHA-256 hex digest (stdlib only; not backup module)."""
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(IO_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _require_host() -> Any:
+    if _host is None:
+        raise RuntimeError("provision.bind(host) required")
+    return _host
+
+
+def _payload_paths(root: Path) -> dict[str, Path]:
+    return {
+        "tarball": root / NODE_TARBALL_NAME,
+        "sha256_sidecar": root / NODE_SHA256_NAME,
+        "manifest_path": root / MANIFEST_NAME,
+        "root": root,
+    }
+
+
+def _die_missing_payload(paths: dict[str, Path]) -> None:
+    missing = [
+        str(paths[k])
+        for k in ("tarball", "sha256_sidecar", "manifest_path")
+        if not paths[k].is_file()
+    ]
+    host = _require_host()
+    host.die("node payload not found: " + ", ".join(missing))
+
+
+def resolve_node_payload() -> dict[str, Path]:
+    """Locate node tarball + sidecar + manifest (D51).
+
+    Order: ``VCL_NODE_ARCHIVE`` → shipped ``payload/`` beside controller root →
+    repo ``dist/``. Dies if any of the three files is missing.
+    """
+    host = _require_host()
+    archive_env = os.environ.get("VCL_NODE_ARCHIVE", "").strip()
+    if archive_env:
+        tarball = Path(archive_env).expanduser().resolve()
+        sidecar = Path(str(tarball) + ".sha256")
+        man_env = os.environ.get("VCL_PAYLOAD_MANIFEST", "").strip()
+        if man_env:
+            manifest_path = Path(man_env).expanduser().resolve()
+        else:
+            manifest_path = tarball.parent / MANIFEST_NAME
+        paths = {
+            "tarball": tarball,
+            "sha256_sidecar": sidecar,
+            "manifest_path": manifest_path,
+            "root": tarball.parent,
+        }
+        if not all(
+            paths[k].is_file()
+            for k in ("tarball", "sha256_sidecar", "manifest_path")
+        ):
+            _die_missing_payload(paths)
+        return paths
+
+    controller_root = Path(__file__).resolve().parent.parent
+    shipped = controller_root / "payload" / NODE_TARBALL_NAME
+    if shipped.is_file():
+        paths = _payload_paths(controller_root / "payload")
+        if not all(
+            paths[k].is_file()
+            for k in ("tarball", "sha256_sidecar", "manifest_path")
+        ):
+            _die_missing_payload(paths)
+        return paths
+
+    for parent in Path(__file__).resolve().parents:
+        dist_tar = parent / "dist" / NODE_TARBALL_NAME
+        if dist_tar.is_file():
+            paths = _payload_paths(parent / "dist")
+            # Manifest is not produced by build-release.sh; require it or die.
+            if not all(
+                paths[k].is_file()
+                for k in ("tarball", "sha256_sidecar", "manifest_path")
+            ):
+                _die_missing_payload(paths)
+            return paths
+
+    host.die(f"node payload not found: {NODE_TARBALL_NAME}")
+
+
+def load_payload_manifest(path: Path) -> dict[str, Any]:
+    """Load and return payload-manifest.json (D51 fields)."""
+    host = _require_host()
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        host.die(f"invalid payload manifest {path}: {exc}")
+    if not isinstance(data, dict):
+        host.die(f"invalid payload manifest {path}: not an object")
+    return data
+
+
+def _read_sidecar_hex(sidecar: Path) -> str:
+    text = Path(sidecar).read_text(encoding="utf-8").strip()
+    if not text:
+        return ""
+    return text.split()[0].strip().lower()
+
+
+def verify_local_payload(resolved: dict[str, Path]) -> dict[str, Any]:
+    """Fail-closed local digest + pinned version check (AC-4.2-04 / AC-4.3-P01).
+
+    Requires file digest, sidecar hex, and ``manifest.sha256`` to match.
+    Returns the loaded manifest on success.
+    """
+    host = _require_host()
+    tarball = Path(resolved["tarball"])
+    sidecar = Path(resolved["sha256_sidecar"])
+    manifest_path = Path(resolved["manifest_path"])
+
+    actual = sha256_file(tarball).lower()
+    sidecar_hex = _read_sidecar_hex(sidecar)
+    manifest = load_payload_manifest(manifest_path)
+    man_hex = str(manifest.get("sha256") or "").strip().lower()
+
+    if not actual or actual != sidecar_hex or actual != man_hex:
+        host.die("payload digest mismatch (local); refusing install")
+
+    npv = str(manifest.get("node_payload_version") or "")
+    if npv != NODE_PAYLOAD_VERSION:
+        host.die(
+            f"node_payload_version {npv!r} != pinned {NODE_PAYLOAD_VERSION!r}; "
+            "refusing install"
+        )
+    return manifest
+
+
+def normalize_os_id(os_id: str) -> str:
+    """Map ``debian:12`` / ``ubuntu:24.04`` / ``debian12`` → manifest form."""
+    s = (os_id or "").strip().lower()
+    if ":" in s:
+        distro, ver = s.split(":", 1)
+        return f"{distro}{ver}"
+    return s
+
+
+def validate_manifest_for_target(
+    manifest: dict[str, Any],
+    *,
+    os_id: str,
+    arch: str,
+) -> None:
+    """Fail-closed OS/arch gate against D51 manifest lists."""
+    host = _require_host()
+    raw_os = manifest.get("supported_os")
+    raw_arch = manifest.get("supported_arch")
+    supported_os = [str(x) for x in raw_os] if isinstance(raw_os, (list, tuple)) else []
+    supported_arch = (
+        [str(x) for x in raw_arch] if isinstance(raw_arch, (list, tuple)) else []
+    )
+    norm_os = normalize_os_id(os_id)
+    if arch not in supported_arch:
+        host.die(
+            f"arch {arch!r} not in supported_arch={supported_arch}; refusing install"
+        )
+    if norm_os not in supported_os:
+        host.die(
+            f"os {norm_os!r} not in supported_os={supported_os}; refusing install"
+        )
+
+
+def verify_remote_payload_digest(
+    *,
+    ssh_host: str,
+    ssh_user: str = "root",
+    ssh_port: int = 22,
+    identity_file: Optional[str] = None,
+    extra: Optional[list[str]] = None,
+    remote_stage: str = REMOTE_STAGE,
+) -> None:
+    """Fail-closed remote sha256sum -c before unpack (AC-4.2-04).
+
+    Assumes tarball + ``.sha256`` already staged under ``remote_stage``.
+    Does not SCP, unpack, or run the installer — B4 calls this after upload.
+    """
+    host = _require_host()
+    stage = shlex.quote(remote_stage)
+    sum_name = shlex.quote(NODE_SHA256_NAME)
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["sh", "-c", f"cd {stage} && sha256sum -c {sum_name}"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if proc.returncode != 0:
+        host.die("payload digest mismatch (remote); refusing install")
 
 
 def _check(

@@ -142,7 +142,7 @@ assert_failure "no bare fleet.json schema die" \
   grep -q 'unsupported fleet.json schema_version:' "${PROJECT_DIR}/lib/vincula-fleet.py" "${PROJECT_DIR}/lib/workspace.py"
 assert_success "build-controller uses VCL_FLEET_VERSION" \
   grep -q 'VCL_FLEET_VERSION' "${PROJECT_DIR}/scripts/build-controller.sh"
-assert_failure "build-controller ignores VINCULA_VERSION" \
+assert_success "build-controller pins node payload via VINCULA_VERSION" \
   grep -q 'VINCULA_VERSION' "${PROJECT_DIR}/scripts/build-controller.sh"
 assert_success "RO seam" \
   grep -q 'def open_cache_readonly' "${PROJECT_DIR}/lib/workspace.py"
@@ -11529,3 +11529,152 @@ finally:
 assert raised
 assert "non-interactive add requires --host-key SHA256:" in buf.getvalue()
 PY
+
+# --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
+B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"
+if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then
+  assert_success "B3 build node release for payload tests" \
+    bash "${PROJECT_DIR}/scripts/build-release.sh"
+fi
+assert_success "B3 digest mismatch refuses install" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$PROJECT_DIR" "$TEST_TMP" <<'PY'
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+fleet_path, project, tmp = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+
+src = Path(project) / "dist" / "vincula-node-0.3.1.tar.gz"
+root = Path(tmp) / "b3-mismatch"
+root.mkdir(parents=True, exist_ok=True)
+tarball = root / "vincula-node-0.3.1.tar.gz"
+shutil.copy2(src, tarball)
+actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
+# Wrong sidecar hex (flip first nibble) — fail-closed local verify.
+bad = ("0" if actual[0] != "0" else "1") + actual[1:]
+(root / "vincula-node-0.3.1.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.3.1.tar.gz\n", encoding="utf-8"
+)
+(root / "payload-manifest.json").write_text(
+    json.dumps(
+        {
+            "controller_version": "0.4.2",
+            "node_payload_version": "0.3.1",
+            "sha256": actual,
+            "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
+            "supported_arch": ["amd64", "arm64"],
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+os.environ["VCL_NODE_ARCHIVE"] = str(tarball)
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    resolved = prov.resolve_node_payload()
+    prov.verify_local_payload(resolved)
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+    os.environ.pop("VCL_NODE_ARCHIVE", None)
+assert raised, "expected die on digest mismatch"
+assert "digest mismatch" in buf.getvalue()
+PY
+
+assert_success "B3 unsupported_arch refuses install" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$PROJECT_DIR" "$TEST_TMP" <<'PY'
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+fleet_path, project, tmp = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+
+src = Path(project) / "dist" / "vincula-node-0.3.1.tar.gz"
+root = Path(tmp) / "b3-arch"
+root.mkdir(parents=True, exist_ok=True)
+tarball = root / "vincula-node-0.3.1.tar.gz"
+shutil.copy2(src, tarball)
+actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
+(root / "vincula-node-0.3.1.tar.gz.sha256").write_text(
+    f"{actual}  vincula-node-0.3.1.tar.gz\n", encoding="utf-8"
+)
+mani = {
+    "controller_version": "0.4.2",
+    "node_payload_version": "0.3.1",
+    "sha256": actual,
+    "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
+    "supported_arch": ["riscv64"],
+}
+(root / "payload-manifest.json").write_text(
+    json.dumps(mani, indent=2) + "\n", encoding="utf-8"
+)
+os.environ["VCL_NODE_ARCHIVE"] = str(tarball)
+try:
+    resolved = prov.resolve_node_payload()
+    loaded = prov.verify_local_payload(resolved)
+finally:
+    os.environ.pop("VCL_NODE_ARCHIVE", None)
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.validate_manifest_for_target(loaded, os_id="debian:12", arch="amd64")
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on unsupported_arch"
+assert "supported_arch" in buf.getvalue()
+PY
+
+assert_success "B3 controller zip embeds payload/" \
+  bash -c '
+set -euo pipefail
+cd "'"$PROJECT_DIR"'"
+bash scripts/build-release.sh >/dev/null
+bash scripts/build-controller.sh >/dev/null
+VER=$(grep -E "^VCL_FLEET_VERSION[[:space:]]*=" lib/vincula-fleet.py | head -1 | sed -E "s/.*=[[:space:]]*\"([^\"]+)\".*/\1/")
+zip="dist/vincula-controller-${VER}.zip"
+test -f "$zip"
+python3 - "$zip" <<'"'"'PY'"'"'
+import re
+import sys
+import zipfile
+
+archive = sys.argv[1]
+names = zipfile.ZipFile(archive).namelist()
+patterns = (
+    r"payload/vincula-node-0\.3\.1\.tar\.gz$",
+    r"payload/vincula-node-0\.3\.1\.tar\.gz\.sha256$",
+    r"payload/payload-manifest\.json$",
+)
+for pat in patterns:
+    if not any(re.search(pat, n) for n in names):
+        raise SystemExit(f"missing zip member matching {pat}: {names}")
+print("ok", archive)
+PY
+'
