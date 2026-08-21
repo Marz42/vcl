@@ -1116,12 +1116,34 @@ def _execute_migrate_locked() -> dict[str, Any]:
 
 
 def open_cache_readonly():
-    """0.4.0 query seam; still open_fleet_db (RW+WAL). True mode=ro ≥0.4.2."""
-    return _host.open_fleet_db()
+    """Query/UI GET: URI mode=ro; never migrate/WAL/chmod/create."""
+    import sqlite3
+
+    path = _host.fleet_db_path()
+    if not path.is_file():
+        _host.die(f"cannot open fleet.db: {path}")
+    try:
+        # immutable=1: mode=ro alone still creates -wal/-shm for WAL DBs (D47/T19).
+        conn = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro&immutable=1",
+            uri=True,
+            timeout=30,
+        )
+    except sqlite3.Error as exc:
+        _host.die(f"cannot open fleet.db: {exc}")
+    conn.row_factory = sqlite3.Row
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        _host.open_cache_check(conn)
+    except SystemExit:
+        conn.close()
+        raise
+    return conn
 
 
 def open_cache_for_sync():
-    """0.4.0 sync/migrate RW seam; same backing until 0.4.2."""
+    """Sole normal writer (D24); RW+WAL+migrate."""
     return _host.open_fleet_db()
 
 

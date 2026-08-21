@@ -389,6 +389,13 @@ def open_cache_for_sync():
     return _WS.open_cache_for_sync()
 
 
+def open_cache_readonly_optional():
+    """Query plane: true RO if fleet.db exists; else None (never create/migrate)."""
+    if not fleet_db_path().is_file():
+        return None
+    return open_cache_readonly()
+
+
 planned_credential_refs = _WS.planned_credential_refs
 node_schema_field_names = _WS.node_schema_field_names
 RESERVED_NODE_CREDENTIAL_KEYS = _WS.RESERVED_NODE_CREDENTIAL_KEYS
@@ -3359,7 +3366,7 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
         for n in (prev.get("nodes") or [])
         if isinstance(n, dict) and n.get("name")
     }
-    conn = open_fleet_db() if fleet_db_path().is_file() else None
+    conn = open_cache_readonly_optional()
     rows: list[dict[str, Any]] = []
     try:
         for node in _selected_nodes(registry, include_all):
@@ -5204,17 +5211,22 @@ def cmd_audit_user(args: argparse.Namespace) -> int:
     if node_name:
         validate_name(node_name)
         node_id = require_node(registry, node_name)["node_id"]
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_fleet_audit(
-            conn,
-            user_id=user_id,
-            query_from=query_from,
-            query_to=query_to,
-            node_id=node_id,
+        raw_rows = (
+            query_fleet_audit(
+                conn,
+                user_id=user_id,
+                query_from=query_from,
+                query_to=query_to,
+                node_id=node_id,
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     rows: list[dict[str, Any]] = []
     for raw in raw_rows:
@@ -5411,18 +5423,23 @@ def cmd_stats_user(args: argparse.Namespace) -> int:
     start, end = stats_date_window(days)
     registry = load_registry()
     user_id = resolve_fleet_user_id(registry, tag)
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("node_id", "user_id"),
-            extra_where=["user_id = ?"],
-            extra_params=[user_id],
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("node_id", "user_id"),
+                extra_where=["user_id = ?"],
+                extra_params=[user_id],
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     rows.sort(key=lambda r: (r["node"], r["node_id"]))
     return _emit_stats(
@@ -5445,16 +5462,21 @@ def cmd_stats_top_users(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("user_id", "node_id"),
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("user_id", "node_id"),
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="top_users",
@@ -5476,16 +5498,21 @@ def cmd_stats_top_hosts(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("destination_host", "node_id"),
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("destination_host", "node_id"),
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="top_hosts",
@@ -5509,18 +5536,23 @@ def cmd_stats_node(args: argparse.Namespace) -> int:
     start, end = stats_date_window(days)
     registry = load_registry()
     node = require_node(registry, name)
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("user_id", "node_id", "destination_host"),
-            extra_where=["node_id = ?"],
-            extra_params=[node["node_id"]],
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("user_id", "node_id", "destination_host"),
+                extra_where=["node_id = ?"],
+                extra_params=[node["node_id"]],
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="node",

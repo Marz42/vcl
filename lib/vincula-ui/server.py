@@ -442,7 +442,7 @@ def api_overview() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     status_doc = load_last_status_doc()
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
         start, end = f.stats_date_window(7)
@@ -518,7 +518,7 @@ def api_health() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     status_doc = load_last_status_doc()
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
     finally:
@@ -545,7 +545,7 @@ def api_node(name: str) -> dict[str, Any]:
         if isinstance(n, dict) and n.get("name") == name:
             probe = n
             break
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         instances = f.list_instances(conn, node["node_id"])
         cursor = f.read_sync_cursor_row(conn, node["node_id"])
@@ -658,7 +658,7 @@ def api_users() -> dict[str, Any]:
                 "No VLESS URI or secrets."
             ),
         }
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         users = _users_from_db(conn, registry)
     finally:
@@ -691,7 +691,7 @@ def api_user(tag: str) -> dict[str, Any]:
         if str(user.get("user_id") or "") == tag:
             match = user
             break
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         uid = None
         if match and match.get("user_id"):
@@ -821,7 +821,7 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     if node_name:
         f.validate_name(node_name)
         node_id = f.require_node(registry, node_name)["node_id"]
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         user_id = resolve_user_id_for_ui(
             conn, registry, user, allow_ssh=False
@@ -922,7 +922,7 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
     group_by = (
         ("user_id", "node_id") if kind == "users" else ("destination_host", "node_id")
     )
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         raw = f.query_daily_grouped(
             conn, start=start, end=end, group_by=group_by

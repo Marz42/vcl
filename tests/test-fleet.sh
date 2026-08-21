@@ -9219,3 +9219,29 @@ pass "B2 dry-run 16-step zero side effects"
 export VCL_FLEET_HOME=$SAVED
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
+
+# --- 0.4.2 B4 (D47 true mode=ro) ---
+assert_success "B4 RO query / RW sync / no wal" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b4" <<'PY'
+import importlib.util,os,sqlite3,sys; from pathlib import Path
+p,home=sys.argv[1],Path(sys.argv[2]); home.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"]=str(home)
+spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+w=m.open_cache_for_sync(); assert m.fleet_db_meta_get(w,"schema_version")=="4"
+w.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('t','1')"); w.commit(); w.close()
+db=m.fleet_db_path()
+for s in ("-wal","-shm"):
+    side=Path(str(db)+s)
+    if side.exists(): side.unlink()
+r=m.open_cache_readonly()
+assert r.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]=="4"
+try:
+    r.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('x','y')"); r.commit()
+    raise AssertionError("RO write must fail")
+except sqlite3.Error as exc:
+    assert "readonly" in str(exc).lower() or "read-only" in str(exc).lower()
+r.close()
+assert not Path(str(db)+"-wal").exists() and not Path(str(db)+"-shm").exists()
+ui=(Path(p).parent/"vincula-ui"/"server.py").read_text()
+assert "open_cache_readonly()" in ui and ui.count("open_fleet_db()")==0
+assert "open_cache_readonly()" in Path(p).read_text()  # status/audit/stats wired
+PY
