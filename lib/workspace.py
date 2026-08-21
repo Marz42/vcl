@@ -1580,17 +1580,20 @@ def export_workspace(dest: Path) -> Path:
     return dest
 
 
-def import_workspace(src: Path) -> dict[str, Any]:
-    """Extract portable snapshot into fleet_home; never import bindings/secrets."""
-    src = Path(src).expanduser()
-    if not src.is_file():
-        _host.die(f"workspace archive not found: {src}")
-    home = _ensure_fleet_home()
-    for dname in ("trust", "history"):
-        d = home / dname
-        d.mkdir(parents=True, exist_ok=True)
-        _chmod_private(d, 0o700)
+def _import_staging_parent() -> Path:
+    """Temp parent for import staging — never inside the live workspace (F7-2)."""
+    home = Path.home()
+    candidate = home / "tmp"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        _chmod_private(candidate, 0o700)
+        return candidate
+    except OSError:
+        return Path(tempfile.gettempdir())
 
+
+def _extract_workspace_archive_to_staging(src: Path, staging: Path) -> set[str]:
+    """Extract allowlisted portable members into staging; no live writes."""
     extracted: set[str] = set()
     try:
         with tarfile.open(src, "r:gz") as tf:
@@ -1606,8 +1609,9 @@ def import_workspace(src: Path) -> dict[str, Any]:
                 if fh is None:
                     _host.die(f"cannot read archive member: {name}")
                 data = fh.read()
-                dest = home / name
+                dest = staging / name
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                _chmod_private(dest.parent, 0o700)
                 fd, tmp = tempfile.mkstemp(
                     prefix=f".{dest.name}.",
                     suffix=".tmp",
@@ -1628,23 +1632,130 @@ def import_workspace(src: Path) -> dict[str, Any]:
                 extracted.add(name)
     except tarfile.TarError as exc:
         _host.die(f"invalid workspace archive: {exc}")
+    return extracted
 
+
+def _validate_staged_workspace(staging: Path, extracted: set[str]) -> dict[str, Any]:
+    """Full import validation inside staging; fail closed on digest mismatch."""
     if "workspace.json" not in extracted:
         _host.die("workspace archive missing workspace.json")
     if "fleet.json" not in extracted:
         _host.die("workspace archive missing fleet.json")
 
-    reg = load_registry()
+    manifest = load_workspace_manifest(staging / WORKSPACE_MANIFEST_NAME)
+    reg = load_registry(staging / "fleet.json")
     _assert_portable_registry(reg)
-    raw = fleet_registry_path().read_text(encoding="utf-8")
-    if '"identity_file"' in raw:
+    raw = (staging / "fleet.json").read_text(encoding="utf-8")
+    if '"identity_file"' in raw or "'identity_file'" in raw:
         _host.die("portable workspace forbids identity_file in fleet.json")
 
+    expected = compute_state_digest(staging, manifest=manifest)
+    if manifest.get("state_digest") != expected:
+        # F7-2: refuse damaged archives — never refresh/re-sign on import.
+        _host.die(
+            "workspace archive state_digest mismatch "
+            "(import refused; no re-sign)"
+        )
+    return manifest
+
+
+def _commit_staged_workspace(staging: Path, home: Path) -> None:
+    """Install validated staging members into live home; roll back on failure."""
+    for dname in ("trust", "history"):
+        d = home / dname
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+
+    backup_root = Path(
+        tempfile.mkdtemp(
+            prefix=".workspace-import-bak.",
+            dir=str(_import_staging_parent()),
+        )
+    )
+    preexisting: set[str] = set()
+    written: list[str] = []
+    try:
+        for name in EXPORT_MEMBERS:
+            live = home / name
+            if live.is_file():
+                preexisting.add(name)
+                bak = backup_root / name
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(live, bak)
+
+        for name in EXPORT_MEMBERS:
+            src_path = staging / name
+            if not src_path.is_file():
+                continue
+            dest = home / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _chmod_private(dest.parent, 0o700)
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{dest.name}.",
+                suffix=".tmp",
+                dir=str(dest.parent),
+            )
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(src_path.read_bytes())
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, dest)
+                os.chmod(dest, 0o600)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            written.append(name)
+    except Exception:
+        for name in written:
+            dest = home / name
+            bak = backup_root / name
+            if name in preexisting and bak.is_file():
+                try:
+                    shutil.copy2(bak, dest)
+                    os.chmod(dest, 0o600)
+                except OSError:
+                    pass
+            elif name not in preexisting and dest.is_file():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+        raise
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def import_workspace(src: Path) -> dict[str, Any]:
+    """Verify archive in staging, then commit into fleet_home (F7-2).
+
+    Never imports bindings/secrets. Digest mismatch fails closed (no re-sign).
+    On validation or commit failure the live workspace is left unchanged.
+    """
+    src = Path(src).expanduser()
+    if not src.is_file():
+        _host.die(f"workspace archive not found: {src}")
+    home = _ensure_fleet_home()
+
+    staging: Path | None = None
+    try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=".workspace-import.",
+                dir=str(_import_staging_parent()),
+            )
+        )
+        _chmod_private(staging, 0o700)
+        extracted = _extract_workspace_archive_to_staging(src, staging)
+        _validate_staged_workspace(staging, extracted)
+        _commit_staged_workspace(staging, home)
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
     manifest = load_workspace_manifest()
-    # Imported archive tip must already digest-match portable members.
-    if manifest.get("state_digest") != compute_state_digest(manifest=manifest):
-        refresh_manifest_digest(manifest)
-        save_workspace_manifest(manifest)
     ensure_controller(manifest["fleet_id"])
     ensure_fleet_local_state(manifest["fleet_id"])
     # Local import is a portable write: bump revision/write_id via single entry.

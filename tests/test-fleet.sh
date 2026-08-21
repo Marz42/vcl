@@ -9991,6 +9991,153 @@ export VCL_FLEET_HOME=$F71_SAVED_HOME
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
 
+# --- 0.4.2 F7-2 / T3: workspace import verify-then-commit (fail closed) ---
+# Tampered/invalid archive → import FAIL; live Workspace SHA256 set unchanged;
+# digest mismatch refuses auto re-sign; valid archive still imports + verifies.
+F72_SAVED_HOME=$VCL_FLEET_HOME
+F72_LIVE=$TEST_TMP/f72-live
+F72_EXP=$TEST_TMP/f72-exp
+F72_IMP=$TEST_TMP/f72-imp
+F72_GOOD=$TEST_TMP/f72-good.tgz
+F72_CORRUPT=$TEST_TMP/f72-corrupt.tgz
+F72_MISMATCH=$TEST_TMP/f72-mismatch.tgz
+rm -rf "$F72_LIVE" "$F72_EXP" "$F72_IMP"
+mkdir -p "$F72_LIVE" "$F72_EXP" "$F72_IMP"
+export VCL_FLEET_HOME=$F72_LIVE
+assert_success "F7-2 T3 live init" fleet workspace init
+assert_success "F7-2 T3 live add" \
+  fleet node add f72n --host 203.0.113.72 --offline \
+  --node-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa72
+assert_success "F7-2 T3 live verify" fleet workspace verify
+F72_SHA_BEFORE=$(find "$F72_LIVE" -type f -print0 | sort -z | xargs -0 sha256sum)
+F72_LIVE_DIGEST=$(python3 -c 'import json; print(json.load(open("'"$F72_LIVE"'/workspace.json"))["state_digest"])')
+F72_LIVE_REV=$(python3 -c 'import json; print(json.load(open("'"$F72_LIVE"'/workspace.json"))["revision"])')
+
+# Build a valid archive from a separate export home
+export VCL_FLEET_HOME=$F72_EXP
+assert_success "F7-2 T3 export-home init" fleet workspace init
+assert_success "F7-2 T3 export-home add" \
+  fleet node add exp72 --host 203.0.113.73 --offline \
+  --node-id bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb72
+assert_success "F7-2 T3 export" fleet workspace export "$F72_GOOD"
+assert_success "F7-2 T3 good archive exists" test -f "$F72_GOOD"
+
+# Tamper: corrupt fleet.json content (digest left stale) + digest-only mismatch
+python3 - "$F72_GOOD" "$F72_CORRUPT" "$F72_MISMATCH" <<'PY'
+import io, json, sys, tarfile
+from pathlib import Path
+
+good, corrupt_out, mismatch_out = map(Path, sys.argv[1:4])
+
+def read_members(path):
+    out = {}
+    with tarfile.open(path, "r:gz") as tf:
+        for m in tf.getmembers():
+            if not m.isfile():
+                continue
+            fh = tf.extractfile(m)
+            out[m.name] = fh.read()
+    return out
+
+def write_tgz(path, members):
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mode = 0o600
+            tf.addfile(info, io.BytesIO(data))
+
+members = read_members(good)
+# Corrupt fleet.json bytes without refreshing workspace.json state_digest
+fleet = json.loads(members["fleet.json"])
+assert fleet.get("nodes"), "precondition: archive has nodes"
+fleet["nodes"][0]["name"] = "tampered-name-f72"
+members_corrupt = dict(members)
+members_corrupt["fleet.json"] = (json.dumps(fleet, indent=2) + "\n").encode()
+write_tgz(corrupt_out, members_corrupt)
+
+# Digest-only mismatch: flip state_digest hex nibble, leave portable files intact
+mani = json.loads(members["workspace.json"])
+digest = mani["state_digest"]
+assert digest.startswith("sha256:") and len(digest) > 10
+hexpart = digest.split(":", 1)[1]
+flipped = ("0" if hexpart[0] != "0" else "1") + hexpart[1:]
+mani["state_digest"] = "sha256:" + flipped
+members_mismatch = dict(members)
+members_mismatch["workspace.json"] = (json.dumps(mani, indent=2) + "\n").encode()
+write_tgz(mismatch_out, members_mismatch)
+print("ok")
+PY
+
+export VCL_FLEET_HOME=$F72_LIVE
+f72_corrupt_rc=0
+f72_corrupt_err=$(fleet workspace import "$F72_CORRUPT" 2>&1) || f72_corrupt_rc=$?
+assert_equal "F7-2 T3 corrupt fleet import fails" "1" "$f72_corrupt_rc"
+F72_SHA_AFTER_CORRUPT=$(find "$F72_LIVE" -type f -print0 | sort -z | xargs -0 sha256sum)
+assert_equal "F7-2 T3 corrupt: live SHA256 set unchanged" \
+  "$F72_SHA_BEFORE" "$F72_SHA_AFTER_CORRUPT"
+assert_success "F7-2 T3 corrupt: live still verifies" fleet workspace verify
+
+f72_mismatch_rc=0
+f72_mismatch_err=$(fleet workspace import "$F72_MISMATCH" 2>&1) || f72_mismatch_rc=$?
+assert_equal "F7-2 T3 digest-mismatch import fails" "1" "$f72_mismatch_rc"
+echo "$f72_mismatch_err" | grep -qi 'state_digest mismatch\|no re-sign' \
+  && pass "F7-2 T3 digest-mismatch error mentions refuse/re-sign" \
+  || fail "F7-2 T3 digest-mismatch error mentions refuse/re-sign (${f72_mismatch_err})"
+F72_SHA_AFTER_MISMATCH=$(find "$F72_LIVE" -type f -print0 | sort -z | xargs -0 sha256sum)
+assert_equal "F7-2 T3 mismatch: live SHA256 set unchanged" \
+  "$F72_SHA_BEFORE" "$F72_SHA_AFTER_MISMATCH"
+F72_DIGEST_AFTER=$(python3 -c 'import json; print(json.load(open("'"$F72_LIVE"'/workspace.json"))["state_digest"])')
+F72_REV_AFTER=$(python3 -c 'import json; print(json.load(open("'"$F72_LIVE"'/workspace.json"))["revision"])')
+assert_equal "F7-2 T3 mismatch: no auto re-sign (digest unchanged)" \
+  "$F72_LIVE_DIGEST" "$F72_DIGEST_AFTER"
+assert_equal "F7-2 T3 mismatch: revision unchanged" "$F72_LIVE_REV" "$F72_REV_AFTER"
+assert_success "F7-2 T3 mismatch: live still verifies" fleet workspace verify
+
+# Positive path: valid archive imports into fresh home and verifies
+export VCL_FLEET_HOME=$F72_IMP
+assert_success "F7-2 T3 valid import" fleet workspace import "$F72_GOOD"
+assert_success "F7-2 T3 valid import verifies" fleet workspace verify
+# Import bumps revision past archive tip (P1-1)
+python3 - "$F72_EXP" "$F72_IMP" <<'PY' || f72_rev_rc=$?
+import json, sys
+exp = json.load(open(sys.argv[1] + "/workspace.json"))
+imp = json.load(open(sys.argv[2] + "/workspace.json"))
+assert imp["fleet_id"] == exp["fleet_id"]
+assert imp["revision"] == exp["revision"] + 1, (exp["revision"], imp["revision"])
+assert imp["parent_revision"] == exp["revision"]
+print("ok")
+PY
+f72_rev_rc=${f72_rev_rc:-0}
+if (( f72_rev_rc == 0 )); then
+  pass "F7-2 T3 valid import bumps revision / parent chain"
+else
+  fail "F7-2 T3 valid import bumps revision / parent chain"
+fi
+# Grep: import path no longer refresh/re-signs on mismatch
+assert_success "F7-2 import_workspace has no refresh-on-mismatch" \
+  python3 - "$PROJECT_DIR/lib/workspace.py" <<'PY'
+import ast, sys
+tree = ast.parse(open(sys.argv[1], encoding="utf-8").read())
+fn = None
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "import_workspace":
+        fn = node
+        break
+assert fn is not None
+# Helpers used by import must not call refresh_manifest_digest either
+names = {"import_workspace", "_validate_staged_workspace",
+         "_extract_workspace_archive_to_staging", "_commit_staged_workspace"}
+funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names}
+src_chunks = []
+for name, node in funcs.items():
+    src_chunks.append(ast.get_source_segment(open(sys.argv[1], encoding="utf-8").read(), node) or "")
+joined = "\n".join(src_chunks)
+assert "refresh_manifest_digest" not in joined, joined
+print("ok")
+PY
+export VCL_FLEET_HOME=$F72_SAVED_HOME
+
 # --- 0.4.2 P1-5: local tag→user_id; audit/stats/status/UI Local Read Plane ---
 P15H=$TEST_TMP/p15-home; P15S=$TEST_TMP/p15-fake; P15X=$TEST_TMP/p15-xdg
 rm -rf "$P15H" "$P15S" "$P15X"
