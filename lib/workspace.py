@@ -894,6 +894,25 @@ def append_instance_history_line(rec: dict[str, Any]) -> None:
     _append_instance_history_line_raw(rec)
 
 
+def append_instance_history_lines(recs: list[dict[str, Any]]) -> None:
+    """Append many instance-history lines in one workspace_mutation when active.
+
+    Used by sync --full to flush deferred portable history after DB commit
+    (F7-1): one CAS/revision bump for the whole batch.
+    """
+    if not recs:
+        return
+    if workspace_trust_active() and not in_workspace_mutation():
+        def _write() -> None:
+            for rec in recs:
+                _append_instance_history_line_raw(rec)
+
+        workspace_mutation(_write)
+        return
+    for rec in recs:
+        _append_instance_history_line_raw(rec)
+
+
 def parse_instance_history_jsonl(path: Path | None = None) -> list[dict[str, Any]]:
     path = instances_history_path() if path is None else Path(path)
     if not path.is_file():

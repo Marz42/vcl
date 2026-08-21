@@ -57,6 +57,8 @@ INSTANCE_STATUS_ACTIVE = "active"
 INSTANCE_STATUS_RETIRED = "retired"
 INSTANCE_STATUSES = (INSTANCE_STATUS_ACTIVE, INSTANCE_STATUS_RETIRED)
 RETIRE_SKIP_SYNC_ENV = "VCL_FLEET_RETIRE_SKIP_SYNC"
+# Test-only: inject failure inside sync --full per-node txn (undocumented).
+SYNC_FULL_FAIL_AFTER_ENV = "VCL_SYNC_FULL_FAIL_AFTER"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
@@ -355,6 +357,7 @@ workspace_trust_active = _WS.workspace_trust_active
 history_dir = _WS.history_dir
 instances_history_path = _WS.instances_history_path
 append_instance_history_line = _WS.append_instance_history_line
+append_instance_history_lines = _WS.append_instance_history_lines
 parse_instance_history_jsonl = _WS.parse_instance_history_jsonl
 export_instance_history_from_db = _WS.export_instance_history_from_db
 mint_fleet_id = _WS.mint_fleet_id
@@ -1098,6 +1101,94 @@ def record_instance(
             "reason": "sync-first-sight",
         }
     )
+
+
+def _record_instance_db_pending(
+    conn: sqlite3.Connection,
+    node_id: str,
+    instance_id: str,
+    endpoint: Optional[str] = None,
+    ssh_host: Optional[str] = None,
+    *,
+    now_iso: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """DB-only first-sight; return portable history events for post-commit flush.
+
+    Used by sync --full so portable history is not written inside the SQLite
+    txn (F7-1 half-commit fix). Legacy sync_one_node keeps record_instance.
+    """
+    iid = _optional_text(instance_id)
+    if iid is None:
+        return []
+    if not UUID_RE.fullmatch(iid):
+        return []
+    if iid == node_id:
+        die("instance_id must not equal node_id")
+    existing = conn.execute(
+        """
+        SELECT 1 FROM instance_history
+        WHERE node_id = ? AND instance_id = ?
+        """,
+        (node_id, iid),
+    ).fetchone()
+    if existing is not None:
+        return []
+    ts = now_iso or format_utc(datetime.now(timezone.utc))
+    pending: list[dict[str, Any]] = []
+    validate_node_id(node_id)
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND status = ?
+        """,
+        (node_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchall()
+    conn.execute(
+        """
+        UPDATE instance_history
+        SET status = ?, retired_at = ?
+        WHERE node_id = ? AND status = ?
+        """,
+        (INSTANCE_STATUS_RETIRED, ts, node_id, INSTANCE_STATUS_ACTIVE),
+    )
+    for row in rows:
+        pending.append(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
+    insert_instance(
+        conn,
+        node_id=node_id,
+        instance_id=iid,
+        started_at=ts,
+        endpoint=endpoint,
+        ssh_host=ssh_host,
+        status=INSTANCE_STATUS_ACTIVE,
+    )
+    pending.append(
+        {
+            "node_id": node_id,
+            "instance_id": iid,
+            "started_at": ts,
+            "retired_at": None,
+            "endpoint": _optional_text(endpoint) or _optional_text(ssh_host),
+            "reason": "sync-first-sight",
+        }
+    )
+    return pending
+
+
+def _sync_full_fail_after(step: str) -> None:
+    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER)."""
+    if os.environ.get(SYNC_FULL_FAIL_AFTER_ENV) == step:
+        raise RuntimeError(f"injected sync --full failure at {step}")
 
 
 def list_instances(
@@ -5073,7 +5164,8 @@ def sync_full_one_node(
         ensure_ascii=False,
         sort_keys=True,
     )
-    # 2) single per-node txn
+    # 2) single per-node txn (DB only; portable history flushed after commit)
+    pending_history_events: list[dict[str, Any]] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -5115,7 +5207,7 @@ def sync_full_one_node(
                 ),
             )
         if remote_iid:
-            record_instance(
+            pending_history_events = _record_instance_db_pending(
                 conn,
                 node_id,
                 remote_iid,
@@ -5123,6 +5215,7 @@ def sync_full_one_node(
                 ssh_host=_optional_text(node.get("ssh_host")),
                 now_iso=now_iso,
             )
+        _sync_full_fail_after("audit-import")
         imported = import_audit_batch(
             node_id,
             remote_iid,
@@ -5146,6 +5239,29 @@ def sync_full_one_node(
             last_export_seq=after,
             error=f"full sync txn failed: {exc}",
         )
+    # 3) portable history after successful DB commit (F7-1); not pseudo-atomic
+    if pending_history_events:
+        try:
+            append_instance_history_lines(pending_history_events)
+        except BaseException as exc:
+            detail = (
+                f"exit {exc.code}"
+                if isinstance(exc, SystemExit)
+                else (str(exc) or repr(exc))
+            )
+            return _sync_result(
+                node,
+                status=SYNC_STATUS_ERROR,
+                after=after,
+                last_event_id=int(imported["last_event_id"]),
+                last_export_seq=int(imported["last_export_seq"]),
+                inserted=int(imported["inserted"]),
+                updated=int(imported.get("updated", 0)),
+                ignored=int(imported["ignored"]),
+                skipped_unlabeled=int(imported["skipped_unlabeled"]),
+                instance_id=remote_iid,
+                error=f"history flush failed: {detail}",
+            )
     return _sync_result(
         node,
         status=SYNC_STATUS_OK,

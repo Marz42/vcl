@@ -9838,6 +9838,159 @@ export VCL_FLEET_HOME=$B5_SAVED_HOME
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
 
+# --- 0.4.2 F7-1 / T2: sync --full defers portable history past DB commit ---
+# First-seen instance + inject failure at audit-import → DB rollback AND
+# history/instances.jsonl must NOT half-commit; workspace digests stay consistent.
+F71_SAVED_HOME=$VCL_FLEET_HOME
+F71H=$TEST_TMP/f71-home; F71S=$TEST_TMP/f71-fake; F71X=$TEST_TMP/f71-xdg
+rm -rf "$F71H" "$F71S" "$F71X"
+mkdir -p "$F71S/lax"
+export VCL_FLEET_HOME=$F71H VCL_FAKE_STATE_DIR=$F71S VCL_FLEET_LOCAL_STATE=$F71X
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+assert_success "F7-1 T2 init" fleet init
+assert_success "F7-1 T2 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "F7-1 T2 migrate" fleet workspace migrate
+assert_success "F7-1 T2 verify before" fleet workspace verify
+F71_IID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+# Snapshot portable history + digest before injected-failure sync
+F71_PRE=$(python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$F71_IID" <<'PY'
+import importlib.util, hashlib, json, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+iid = sys.argv[2]
+hist = m.instances_history_path()
+hist_text = hist.read_text(encoding="utf-8") if hist.is_file() else ""
+assert iid not in hist_text, "precondition: first-sight instance absent from history"
+mani = m.load_workspace_manifest()
+digest = mani.get("state_digest")
+rev = mani.get("revision")
+# Post-migrate cache may not exist until first RW open; treat missing as empty.
+c = m.open_cache_readonly_optional()
+n = 0
+if c is not None:
+    n = c.execute(
+        "SELECT COUNT(*) FROM instance_history WHERE instance_id=?", (iid,)
+    ).fetchone()[0]
+    c.close()
+assert n == 0, "precondition: no DB instance_history for first-sight"
+print(json.dumps({
+    "hist_sha": hashlib.sha256(hist_text.encode()).hexdigest(),
+    "hist_exists": hist.is_file(),
+    "hist_text": hist_text,
+    "digest": digest,
+    "revision": rev,
+}))
+PY
+)
+# Minimal remote audit so pull/validate succeed; fail inject mid-txn after DB record
+assert_success "F7-1 T2 seed empty audit meta" python3 - \
+  "$PROJECT_DIR/lib/vincula-accountd.py" "$F71S" "$PROJECT_DIR/tests/fixtures/nodes" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+acct_py, state, nodes = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("a", acct_py)
+a = importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+ident = json.loads((nodes / "lax" / "identity.json").read_text())
+db = state / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+c = a.open_db(str(db))
+a.meta_set(c, "audit_export_seq", "0")
+a.meta_set(c, "audit_pruned_max_export_seq", "0")
+c.commit(); c.close()
+print(ident["instance_id"])
+PY
+f71_rc=0
+f71_out=$(VCL_SYNC_FULL_FAIL_AFTER=audit-import fleet sync --full --json 2>/dev/null) || f71_rc=$?
+assert_equal "F7-1 T2 sync --full injected failure exit 2" "2" "$f71_rc"
+python3 - "$f71_out" "$F71_PRE" "$PROJECT_DIR/lib/vincula-fleet.py" "$F71_IID" <<'PY' || f71_assert_rc=$?
+import hashlib, importlib.util, json, sys
+doc = json.loads(sys.argv[1])
+pre = json.loads(sys.argv[2])
+spec = importlib.util.spec_from_file_location("vf", sys.argv[3])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+iid = sys.argv[4]
+assert doc["state"] == "PARTIAL", doc
+assert doc["operation"] == "sync_full"
+by = {n["name"]: n for n in doc["nodes"]}
+assert by["lax"]["status"] == "error", by["lax"]
+assert "full sync txn failed" in (by["lax"].get("error") or ""), by["lax"]
+# DB rolled back: no instance_history, cursor untouched
+c = m.open_cache_readonly()
+n = c.execute(
+    "SELECT COUNT(*) FROM instance_history WHERE instance_id=?", (iid,)
+).fetchone()[0]
+assert n == 0, "DB must roll back instance_history on txn failure"
+cur = c.execute(
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?",
+    ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",),
+).fetchone()
+assert cur is None or int(cur[0]) == 0
+snap = c.execute(
+    "SELECT COUNT(*) FROM node_snapshot WHERE node_id=?",
+    ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",),
+).fetchone()[0]
+assert snap == 0, "node_snapshot must roll back with txn"
+c.close()
+# Portable history must NOT half-commit
+hist = m.instances_history_path()
+hist_text = hist.read_text(encoding="utf-8") if hist.is_file() else ""
+assert iid not in hist_text, "history/instances.jsonl must not half-commit"
+assert hashlib.sha256(hist_text.encode()).hexdigest() == pre["hist_sha"]
+assert hist.is_file() == pre["hist_exists"]
+mani = m.load_workspace_manifest()
+assert mani.get("state_digest") == pre["digest"], "digest must stay consistent"
+assert mani.get("revision") == pre["revision"], "revision must not advance on rollback"
+print("ok")
+PY
+f71_assert_rc=${f71_assert_rc:-0}
+if (( f71_assert_rc == 0 )); then
+  pass "F7-1 T2 no half-commit: DB rollback + history/digest unchanged"
+else
+  fail "F7-1 T2 no half-commit: DB rollback + history/digest unchanged"
+fi
+assert_success "F7-1 T2 workspace verify after rollback" fleet workspace verify
+# Positive path: successful sync --full writes history after commit (one mutation)
+unset VCL_SYNC_FULL_FAIL_AFTER
+f71_ok_rc=0
+f71_ok_out=$(fleet sync --full --json 2>/dev/null) || f71_ok_rc=$?
+assert_equal "F7-1 T2 sync --full success exit 0" "0" "$f71_ok_rc"
+python3 - "$f71_ok_out" "$PROJECT_DIR/lib/vincula-fleet.py" "$F71_IID" <<'PY' || f71_ok_assert=$?
+import importlib.util, json, sys
+doc = json.loads(sys.argv[1])
+assert doc["state"] == "SUCCESS"
+spec = importlib.util.spec_from_file_location("vf", sys.argv[2])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+iid = sys.argv[3]
+hist = m.parse_instance_history_jsonl()
+assert any(r.get("instance_id") == iid and r.get("reason") == "sync-first-sight" for r in hist), hist
+c = m.open_cache_readonly()
+n = c.execute(
+    "SELECT COUNT(*) FROM instance_history WHERE instance_id=? AND status='active'",
+    (iid,),
+).fetchone()[0]
+c.close()
+assert n == 1
+print("ok")
+PY
+f71_ok_assert=${f71_ok_assert:-0}
+if (( f71_ok_assert == 0 )); then
+  pass "F7-1 T2 success path flushes history after DB commit"
+else
+  fail "F7-1 T2 success path flushes history after DB commit"
+fi
+assert_success "F7-1 T2 verify after success" fleet workspace verify
+# Grep: sync_full uses deferred path, not mid-txn record_instance
+assert_success "F7-1 sync_full uses _record_instance_db_pending" \
+  grep -q '_record_instance_db_pending' "$PROJECT_DIR/lib/vincula-fleet.py"
+assert_success "F7-1 sync_full flushes via append_instance_history_lines" \
+  grep -q 'append_instance_history_lines(pending_history_events)' \
+  "$PROJECT_DIR/lib/vincula-fleet.py"
+export VCL_FLEET_HOME=$F71_SAVED_HOME
+unset VCL_FLEET_LOCAL_STATE
+unset VCL_FAKE_STATE_DIR
+
 # --- 0.4.2 P1-5: local tag→user_id; audit/stats/status/UI Local Read Plane ---
 P15H=$TEST_TMP/p15-home; P15S=$TEST_TMP/p15-fake; P15X=$TEST_TMP/p15-xdg
 rm -rf "$P15H" "$P15S" "$P15X"
