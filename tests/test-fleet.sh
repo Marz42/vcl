@@ -9376,3 +9376,57 @@ PY
 else
   pass "B6 age encrypt SKIP (age binary absent)"
 fi
+
+# --- 0.4.2 B7 ---
+B7H=$TEST_TMP/b7-a; B7L=$TEST_TMP/b7-xdg-a; B7B=$TEST_TMP/b7-b; B7LB=$TEST_TMP/b7-xdg-b
+B7FAKE=$TEST_TMP/b7-fake
+rm -rf "$B7H" "$B7L" "$B7B" "$B7LB" "$B7FAKE"
+mkdir -p "$B7FAKE"
+export VCL_FLEET_HOME=$B7H VCL_FLEET_LOCAL_STATE=$B7L VCL_FAKE_STATE_DIR=$B7FAKE
+export -f fleet
+B7_ALICE_UID=11111111-1111-4111-8111-111111111111
+B7_NID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+assert_success "B7 ws+seed" bash -c 'fleet workspace init >/dev/null && fleet init'
+assert_success "B7 add node" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$B7_NID"
+assert_success "B7 add alice" \
+  fleet user add alice --nodes lax --user-id "$B7_ALICE_UID"
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B7_ALICE_UID" <<'PY'
+import importlib.util,sys
+s=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+c=m.open_cache_for_sync(); nid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; iid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"; uid=sys.argv[2]
+for eid,up in ((1,10),(2,20)):
+  c.execute("INSERT INTO audit_events(node_id,instance_id,event_id,export_seq,connection_id,generation,user_id,user_tag,started_at,last_seen_at,closed_at,destination_host,upload_bytes,download_bytes,imported_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+   (nid,iid,eid,eid,f"c{eid}",0,uid,"alice",f"2026-08-0{eid}T00:00:00Z",f"2026-08-0{eid}T01:00:00Z",f"2026-08-0{eid}T01:00:00Z","h",up,up*2,"2026-08-10T00:00:00Z"))
+c.execute("INSERT INTO sync_cursor(node_id,instance_id,last_event_id,last_export_seq,cursor_kind,last_sync_at,status) VALUES(?,?,?,?,?,?,?)",(nid,iid,2,9,"export_seq","2026-08-10T00:00:00Z","ok")); c.commit(); c.close()
+PY
+ARCH=$TEST_TMP/b7.vclaudit
+create_out=$(fleet audit archive create --from 2026-08-01T00:00:00Z --to 2026-08-21T00:00:00Z --output "$ARCH")
+assert_success "B7 create report" bash -c 'grep -q "^events: 2$" <<<"$0" && grep -q "^range: 2026-08-01T00:00:00Z → 2026-08-21T00:00:00Z$" <<<"$0" && grep -Eq "^sha256: [0-9a-f]{64}$" <<<"$0"' "$create_out"
+verify_out=$(fleet audit archive verify "$ARCH")
+assert_equal "B7 verify ok" "ok audit-archive/v1" "$(printf '%s\n' "$verify_out"|head -1)"
+assert_success "B7 verify tables" grep -q 'tables: meta,audit_events,node_attribution,user_attribution,instance_attribution' <<<"$verify_out"
+assert_success "B7 inspect" bash -c 'o=$(fleet audit archive inspect "'"$ARCH"'"); grep -q "^fleet_id=" <<<"$o" && grep -q "^events=2$" <<<"$o" && grep -q "^time_from=2026-08-01T00:00:00Z$" <<<"$o"'
+assert_equal "B7 restore dedupe" $'imported: 0\nduplicates_skipped: 2' "$(fleet audit archive restore "$ARCH")"
+_pycur(){ python3 -c "import importlib.util,os; p=os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py'; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=m.open_cache_readonly(); print(c.execute(\"$1\").fetchone()[0]); c.close()"; }
+assert_equal "B7 cursor unchanged" "9" "$(_pycur "SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")"
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b7-conflict.vclaudit" "$B7_ALICE_UID" <<'PY'
+import importlib.util,sys; from pathlib import Path
+s=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+aa=m.load_audit_archive_module(); nid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; uid=sys.argv[3]
+ev={"node_id":nid,"instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","event_id":1,"export_seq":1,"connection_id":"c1","generation":0,"user_id":uid,"user_tag":"alice","started_at":"2026-08-01T00:00:00Z","last_seen_at":"2026-08-01T01:00:00Z","closed_at":"2026-08-01T01:00:00Z","destination_host":"h","destination_ip":None,"destination_port":None,"network":None,"upload_bytes":999,"download_bytes":20,"imported_at":"2026-08-10T00:00:00Z"}
+aa.create_archive(fleet_id="x",created_at="2026-08-21T00:00:00Z",time_from="2026-08-01T00:00:00Z",time_to="2026-08-21T00:00:00Z",events=[ev],nodes=[],users=[],instances=[],dest=Path(sys.argv[2]))
+PY
+assert_failure "B7 ARCHIVE_CONFLICT" fleet audit archive restore "$TEST_TMP/b7-conflict.vclaudit"
+assert_equal "B7 conflict rollback" "10" "$(_pycur "SELECT upload_bytes FROM audit_events WHERE event_id=1")"
+fleet workspace export "$TEST_TMP/b7-ws.tgz" >/dev/null; export VCL_FLEET_HOME=$B7B VCL_FLEET_LOCAL_STATE=$B7LB
+assert_success "B7 fresh import" fleet workspace import "$TEST_TMP/b7-ws.tgz"
+python3 -c "import importlib.util,os; p=os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py'; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=m.open_cache_for_sync(); assert c.execute('SELECT COUNT(*) FROM audit_events').fetchone()[0]==0; assert c.execute('SELECT COUNT(*) FROM sync_cursor').fetchone()[0]==0; c.close()"
+assert_equal "B7 fresh imported" $'imported: 2\nduplicates_skipped: 0' "$(fleet audit archive restore "$ARCH")"
+assert_equal "B7 fresh no cursor" "0" "$(_pycur "SELECT COUNT(*) FROM sync_cursor")"
+assert_success "B7 historical query" python3 -c "import json,os,subprocess; o=subprocess.check_output(['python3',os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py','audit','user','alice','--from','2026-08-01T00:00:00Z','--to','2026-08-21T00:00:00Z','--json']); d=json.loads(o); rows=d['rows'] if isinstance(d,dict) and 'rows' in d else d; assert len(rows)>=2"
+if command -v age >/dev/null 2>&1 || [[ -x $PROJECT_DIR/tests/fixtures/fake-age ]]; then
+  export VCL_AGE_BIN="${VCL_AGE_BIN:-$PROJECT_DIR/tests/fixtures/fake-age}"; printf 'age1fake\n' >"$TEST_TMP/b7-recip.txt"
+  age_out=$(fleet audit archive create --from 2026-08-01T00:00:00Z --to 2026-08-21T00:00:00Z --output "$TEST_TMP/b7-age.vclaudit" --age-recipient "$TEST_TMP/b7-recip.txt")
+  assert_success "B7 age file" test -f "$TEST_TMP/b7-age.vclaudit.age"; assert_success "B7 age report" grep -q '\.vclaudit\.age$' <<<"$age_out"
+else pass "B7 age encrypt (age binary absent)"; fi

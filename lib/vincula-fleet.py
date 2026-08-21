@@ -5465,6 +5465,124 @@ def format_audit_table(
     return "\n".join(lines) + "\n"
 
 
+def cmd_audit_archive_create(args: argparse.Namespace) -> int:
+    audit, aa, bak = (
+        load_audit_module(),
+        load_audit_archive_module(),
+        load_backup_module(),
+    )
+    q_from, q_to = (
+        audit.parse_rfc3339(args.query_from),
+        audit.parse_rfc3339(args.query_to),
+    )
+    if q_from > q_to:
+        die("--from must not be after --to")
+    dest = Path(args.output).expanduser().resolve()
+    conn = open_cache_readonly()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                f"SELECT * FROM audit_events WHERE {audit.interval_overlap_sql()} "
+                "ORDER BY started_at,event_id,node_id",
+                (q_to, q_from),
+            )
+        ]
+        fid = fleet_db_meta_get(conn, "fleet_id") or ""
+        nodes, users, instances = aa.attribution_from_events(
+            rows, registry=load_registry()
+        )
+    finally:
+        conn.close()
+    aa.create_archive(
+        fleet_id=fid,
+        created_at=format_utc(datetime.now(timezone.utc)),
+        time_from=q_from,
+        time_to=q_to,
+        events=rows,
+        nodes=nodes,
+        users=users,
+        instances=instances,
+        dest=dest,
+    )
+    sys.stdout.write(
+        f"created {dest}\n"
+        f"events: {len(rows)}\n"
+        f"range: {q_from} → {q_to}\n"
+        f"sha256: {bak.sha256_file(dest)}\n"
+    )
+    if getattr(args, "age_recipient", None):
+        age_out = Path(str(dest) + ".age")
+        bak.age_encrypt(
+            dest, age_out, Path(args.age_recipient).expanduser().resolve()
+        )
+        sys.stdout.write(f"age: {age_out}\n")
+    return 0
+
+
+def cmd_audit_archive_verify(args: argparse.Namespace) -> int:
+    info = load_audit_archive_module().verify_archive(
+        Path(args.file).expanduser().resolve()
+    )
+    if not info.get("ok"):
+        die(info.get("error") or "verify failed")
+    sys.stdout.write(
+        f"ok {info['schema_version']}\n"
+        f"tables: {','.join(info['tables'])}\n"
+    )
+    return 0
+
+
+def cmd_audit_archive_inspect(args: argparse.Namespace) -> int:
+    m = load_audit_archive_module().inspect_archive(
+        Path(args.file).expanduser().resolve()
+    )
+    sys.stdout.write(
+        f"fleet_id={m['fleet_id']}\n"
+        f"created_at={m['created_at']}\n"
+        f"time_from={m['time_from']}\n"
+        f"time_to={m['time_to']}\n"
+        f"events={m['event_count']}\n"
+        f"nodes={m['node_count']} users={m['user_count']} "
+        f"instances={m['instance_count']}\n"
+    )
+    return 0
+
+
+def cmd_audit_archive_restore(args: argparse.Namespace) -> int:
+    aa = load_audit_archive_module()
+    conn = open_cache_for_sync()
+    try:
+        before = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT node_id,last_export_seq FROM sync_cursor")
+        }
+        try:
+            res = aa.restore_archive_into_cache(
+                Path(args.file).expanduser().resolve(), conn
+            )
+        except aa.ArchiveConflict as e:
+            die(
+                str(e)
+                if "ARCHIVE_CONFLICT" in str(e)
+                else f"ARCHIVE_CONFLICT: {e}"
+            )
+        after = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT node_id,last_export_seq FROM sync_cursor")
+        }
+        if after != before:
+            die("ARCHIVE_CURSOR_TOUCHED: restore must not change sync_cursor")
+    finally:
+        conn.close()
+    sys.stdout.write(
+        f"imported: {res['inserted']}\n"
+        f"duplicates_skipped: {res['deduped']}\n"
+    )
+    return 0
+
+
 def cmd_audit_user(args: argparse.Namespace) -> int:
     tag = args.tag
     validate_name(tag)
@@ -6515,6 +6633,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_flag(p_audit_user)
 
+    p_arch = audit_sub.add_parser(
+        "archive",
+        help="audit-archive/v1 .vclaudit (D37/D38; no cursor)",
+    )
+    arch_sub = p_arch.add_subparsers(dest="archive_command")
+    p_ac = arch_sub.add_parser("create", help="cache audit_events → FILE.vclaudit")
+    p_ac.add_argument("--from", dest="query_from", required=True, metavar="RFC3339")
+    p_ac.add_argument("--to", dest="query_to", required=True, metavar="RFC3339")
+    p_ac.add_argument("--output", required=True, metavar="FILE.vclaudit")
+    p_ac.add_argument(
+        "--age-recipient",
+        dest="age_recipient",
+        metavar="FILE",
+        help="also FILE.vclaudit.age via age",
+    )
+    for n, h in (
+        ("verify", "schema+tables"),
+        ("inspect", "meta"),
+        ("restore", "import events; never touch sync_cursor"),
+    ):
+        p = arch_sub.add_parser(n, help=h)
+        p.add_argument("file", metavar="FILE.vclaudit")
+
     p_stats = sub.add_parser(
         "stats",
         help="node-tagged daily_usage totals from fleet.db",
@@ -6672,6 +6813,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         if sub == "user":
             return cmd_audit_user(args)
+        if sub == "archive":
+            a = getattr(args, "archive_command", None)
+            if a is None:
+                parser.parse_args(["audit", "archive", "--help"])
+                return 2
+            return {
+                "create": cmd_audit_archive_create,
+                "verify": cmd_audit_archive_verify,
+                "inspect": cmd_audit_archive_inspect,
+                "restore": cmd_audit_archive_restore,
+            }.get(
+                a, lambda _a: die(f"unknown audit archive command: {a}", 2)
+            )(args)
         die(f"unknown audit command: {sub}", 2)
     if command == "stats":
         sub = getattr(args, "stats_command", None)
