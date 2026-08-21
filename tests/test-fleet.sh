@@ -11460,3 +11460,13 @@ export HOME=$P16R_SAVED_USER_HOME
 export VCL_FLEET_HOME=$P16R_SAVED_HOME
 if [[ -n "$P16R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P16R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
 if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+
+# --- 0.4.3 B1 provision skeleton ---
+assert_success "B1 load_provision_module" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util,sys
+p=sys.argv[1]; s=importlib.util.spec_from_file_location("vf",p)
+m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+mod=m.load_provision_module(); assert hasattr(mod,"run_provision_preflight")
+assert "Not air-gapped" in (mod.__doc__ or "")
+PY
+assert_success "B1 packs provision.py" grep -q 'lib/provision.py' "$PROJECT_DIR/scripts/build-controller.sh"

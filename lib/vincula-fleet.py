@@ -5504,6 +5504,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
 _AUDIT_ARCHIVE_MOD: Optional[Any] = None
+_PROVISION_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -5533,6 +5534,15 @@ def load_audit_archive_module() -> Any:
         "vincula_audit_archive", "vincula-audit-archive.py"
     )
     return _AUDIT_ARCHIVE_MOD
+
+
+def load_provision_module() -> Any:
+    """Load lib/provision.py for Adopt/Provision (D33/D35/D51)."""
+    global _PROVISION_MOD
+    if _PROVISION_MOD is not None:
+        return _PROVISION_MOD
+    _PROVISION_MOD = _load_controller_sibling("vincula_provision", "provision.py")
+    return _PROVISION_MOD
 
 
 def fleet_utc_today() -> date:

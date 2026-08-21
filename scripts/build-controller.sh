@@ -26,6 +26,7 @@ FILES=(
   lib/vincula-audit.py
   lib/vincula-backup.py
   lib/vincula-audit-archive.py
+  lib/provision.py
   lib/workspace.py
   lib/access.py
   lib/trust.py
@@ -91,6 +92,7 @@ need = (
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
     f"{prefix}/lib/vincula-audit-archive.py",
+    f"{prefix}/lib/provision.py",
     f"{prefix}/lib/workspace.py",
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
