@@ -11886,3 +11886,188 @@ assert getattr(seen[0], "full", False) is True
 assert getattr(seen[0], "node", None) == "lax"
 assert (doc.get("sync") or {}).get("operation") == "sync_full", doc
 PY
+
+# --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
+B6_SAVED_HOME=$HOME
+B6_SAVED_FLEET_HOME=$VCL_FLEET_HOME
+B6_SAVED_FAKE_STATE=${VCL_FAKE_STATE_DIR:-}
+B6_SAVED_ARGV_LOG=${VCL_FAKE_SSH_ARGV_LOG:-}
+B6_SAVED_NODE_ARCHIVE=${VCL_NODE_ARCHIVE:-}
+B6_SAVED_FAKE_PROVISION=${VCL_FAKE_PROVISION:-}
+B6_SAVED_MISSING=${VCL_FAKE_MISSING_CMDS:-}
+B6_SAVED_ALREADY=${VCL_FAKE_ALREADY_VINCULA:-}
+
+HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
+
+B6_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"
+if [[ ! -f "$B6_PAYLOAD_SRC" ]]; then
+  assert_success "B6 build node release for offline suite" \
+    bash "${PROJECT_DIR}/scripts/build-release.sh"
+fi
+
+b6_stage_payload() {
+  local root=$1
+  mkdir -p "$root"
+  cp -f "$B6_PAYLOAD_SRC" "$root/vincula-node-0.3.1.tar.gz"
+  python3 - "$root" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+tar = root / "vincula-node-0.3.1.tar.gz"
+digest = hashlib.sha256(tar.read_bytes()).hexdigest()
+(root / "vincula-node-0.3.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.3.1.tar.gz\n", encoding="utf-8"
+)
+(root / "payload-manifest.json").write_text(
+    json.dumps(
+        {
+            "controller_version": "0.4.2",
+            "node_payload_version": "0.3.1",
+            "sha256": digest,
+            "supported_os": [
+                "debian12",
+                "debian13",
+                "ubuntu22.04",
+                "ubuntu24.04",
+                "ubuntu26.04",
+            ],
+            "supported_arch": ["amd64", "arm64"],
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+b6_stage_payload "${TEST_TMP}/b6-good-payload"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.3.1.tar.gz"
+
+# B6-T1: add≡adopt; add --offline≡register (SSH counter zero)
+B6A=$TEST_TMP/b6-alias
+mkdir -p "$B6A"
+export HOME=$B6A VCL_FLEET_HOME=$B6A
+assert_success "B6 alias home init" fleet init
+assert_success "B6 add -h adopt alias" \
+  grep -qE 'adopt alias|legacy alias' <<< "$(fleet node add -h 2>&1 || true)"
+assert_success "B6 adopt -h --host-key" \
+  grep -q -- '--host-key' <<< "$(fleet node adopt -h 2>&1 || true)"
+: >"$TEST_TMP/b6-a.argv"
+export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-a.argv
+assert_success "B6 adopt" \
+  fleet node adopt lax --host 203.0.113.10 --host-key "$HK"
+assert_success "B6 adopt list" grep -q '^lax ' <<< "$(fleet node list)"
+assert_success "B6 adopt identity" grep -q 'vcl identity' "$VCL_FAKE_SSH_ARGV_LOG"
+N0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+assert_success "B6 add --offline" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+if [[ $(wc -l <"$VCL_FAKE_SSH_ARGV_LOG") == "$N0" ]]; then
+  pass "B6 offline SSH=0"
+else
+  fail "B6 offline SSH=0"
+fi
+
+# B6-T2: register + show + workspace verify (digest consistent)
+B6R=$TEST_TMP/b6-reg
+mkdir -p "$B6R"
+export HOME=$B6R VCL_FLEET_HOME=$B6R
+assert_success "B6 reg ws init" fleet workspace init
+: >"$TEST_TMP/b6-r.argv"
+export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-r.argv
+assert_success "B6 register" \
+  fleet node register regn --host 203.0.113.20 --node-id "$TEST_SG_NODE_ID"
+assert_success "B6 show" grep -q 'name=regn' <<< "$(fleet node show regn)"
+assert_success "B6 reg no SSH" test ! -s "$TEST_TMP/b6-r.argv"
+assert_success "B6 ws verify" fleet workspace verify
+
+# B6-T3: digest mismatch refuses install (AC-4.2-04)
+b6_stage_payload "${TEST_TMP}/b6-dig-payload"
+python3 - "${TEST_TMP}/b6-dig-payload" <<'PY'
+import hashlib, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+tar = root / "vincula-node-0.3.1.tar.gz"
+actual = hashlib.sha256(tar.read_bytes()).hexdigest()
+bad = ("0" if actual[0] != "0" else "1") + actual[1:]
+(root / "vincula-node-0.3.1.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.3.1.tar.gz\n", encoding="utf-8"
+)
+PY
+B6D=$TEST_TMP/b6-dig-home
+mkdir -p "$B6D" "${TEST_TMP}/b6-dig-state"
+export HOME=$B6D VCL_FLEET_HOME=$B6D
+assert_success "B6 dig home init" fleet init
+: >"$TEST_TMP/b6-d.argv"
+export VCL_FAKE_PROVISION=1
+export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-d.argv
+export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-dig-state"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-dig-payload/vincula-node-0.3.1.tar.gz"
+b6_dig_rc=0
+b6_dig_err=$(fleet node provision dig --host 203.0.113.10 --host-key "$HK" 2>&1) || b6_dig_rc=$?
+if (( b6_dig_rc != 0 )); then
+  pass "B6 dig non-zero"
+else
+  fail "B6 dig non-zero"
+fi
+assert_success "B6 dig msg" grep -qi 'digest mismatch' <<<"$b6_dig_err"
+assert_failure "B6 no install" grep -q 'vincula.sh' "$TEST_TMP/b6-d.argv"
+
+# B6-T4: preflight failure modes + AC-4.2-03
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.3.1.tar.gz"
+unset VCL_FAKE_PROVISION
+unset VCL_FAKE_STATE_DIR
+B6PF=$TEST_TMP/b6-preflight
+mkdir -p "$B6PF"
+export HOME=$B6PF VCL_FLEET_HOME=$B6PF
+assert_success "B6 preflight home init" fleet init
+VCL_FAKE_MISSING_CMDS=curl fleet node provision m1 --host 203.0.113.10 --host-key "$HK" \
+  2>&1 | tee "$TEST_TMP/b6-m1.err" >/dev/null || true
+assert_success "B6 miss curl" grep -qE 'cmd_curl|curl' "$TEST_TMP/b6-m1.err"
+VCL_FAKE_ALREADY_VINCULA=1 fleet node provision m2 --host 203.0.113.10 --host-key "$HK" \
+  2>&1 | tee "$TEST_TMP/b6-m2.err" >/dev/null || true
+assert_success "B6 use adopt" grep -q 'use node adopt' "$TEST_TMP/b6-m2.err"
+b6_ni=$(fleet node provision m3 --host 203.0.113.40 2>&1 </dev/null) || true
+assert_success "B6 AC-4.2-03 prov" \
+  grep -q 'non-interactive add requires --host-key SHA256:' <<<"$b6_ni"
+b6_ni2=$(fleet node adopt m4 --host 203.0.113.40 2>&1 </dev/null) || true
+assert_success "B6 AC-4.2-03 adopt" \
+  grep -q 'non-interactive add requires --host-key SHA256:' <<<"$b6_ni2"
+assert_failure "B6 no password flag" \
+  grep -qiE 'password|sudo-password' <<< "$(fleet node provision -h 2>&1 || true)"
+
+# B6-T5: provision happy path → registered + sync --full
+B6OK=$TEST_TMP/b6-ok-home
+mkdir -p "$B6OK" "${TEST_TMP}/b6-ok-state"
+export HOME=$B6OK VCL_FLEET_HOME=$B6OK
+assert_success "B6 ok home init" fleet init
+: >"$TEST_TMP/b6-ok.argv"
+export VCL_FAKE_PROVISION=1
+export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-ok.argv
+export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-ok-state"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.3.1.tar.gz"
+assert_success "B6 prov ok" \
+  fleet node provision provn --host 203.0.113.10 --host-key "$HK" --server 203.0.113.10
+assert_success "B6 prov list" grep -q '^provn ' <<< "$(fleet node list)"
+assert_success "B6 sha256 -c" grep -q 'sha256sum' "$TEST_TMP/b6-ok.argv"
+assert_success "B6 installer" grep -q 'vincula.sh' "$TEST_TMP/b6-ok.argv"
+assert_success "B6 sync/--no-sync" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+p = sys.argv[1]
+s = importlib.util.spec_from_file_location("vf", p)
+m = importlib.util.module_from_spec(s)
+s.loader.exec_module(m)
+mod = m.load_provision_module()
+assert mod.run_provision.__defaults__ is not None or "skip_sync" in mod.run_provision.__code__.co_varnames
+assert "skip_sync" in mod.run_provision.__code__.co_varnames
+PY
+
+# Restore env so later sourcing (if any) is not polluted
+export HOME=$B6_SAVED_HOME
+export VCL_FLEET_HOME=$B6_SAVED_FLEET_HOME
+if [[ -n "$B6_SAVED_FAKE_STATE" ]]; then export VCL_FAKE_STATE_DIR=$B6_SAVED_FAKE_STATE; else unset VCL_FAKE_STATE_DIR; fi
+if [[ -n "$B6_SAVED_ARGV_LOG" ]]; then export VCL_FAKE_SSH_ARGV_LOG=$B6_SAVED_ARGV_LOG; else unset VCL_FAKE_SSH_ARGV_LOG; fi
+if [[ -n "$B6_SAVED_NODE_ARCHIVE" ]]; then export VCL_NODE_ARCHIVE=$B6_SAVED_NODE_ARCHIVE; else unset VCL_NODE_ARCHIVE; fi
+if [[ -n "$B6_SAVED_FAKE_PROVISION" ]]; then export VCL_FAKE_PROVISION=$B6_SAVED_FAKE_PROVISION; else unset VCL_FAKE_PROVISION; fi
+if [[ -n "$B6_SAVED_MISSING" ]]; then export VCL_FAKE_MISSING_CMDS=$B6_SAVED_MISSING; else unset VCL_FAKE_MISSING_CMDS; fi
+if [[ -n "$B6_SAVED_ALREADY" ]]; then export VCL_FAKE_ALREADY_VINCULA=$B6_SAVED_ALREADY; else unset VCL_FAKE_ALREADY_VINCULA; fi
