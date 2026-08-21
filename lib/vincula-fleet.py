@@ -1637,6 +1637,19 @@ def read_sync_cursor_row(
     ).fetchone()
 
 
+def read_node_snapshot_row(
+    conn: sqlite3.Connection, node_id: str
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT node_id, instance_id, name, vincula_version, ssh, proxy,
+               accounting, registry, clock, clock_skew_seconds, synced_at
+        FROM node_snapshot WHERE node_id = ?
+        """,
+        (node_id,),
+    ).fetchone()
+
+
 def write_sync_cursor(
     conn: sqlite3.Connection,
     *,
@@ -3348,7 +3361,7 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
 
 
 def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Live probe; write last-status.json."""
+    """Live probe only; does not write last-status.json (P1-3 / D58)."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
@@ -3361,32 +3374,44 @@ def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
         "controller_utc": format_utc(controller_utc),
         "nodes": [_status_json_node(row) for row in rows],
     }
-    write_last_status(payload)
     payload["_rows"] = rows  # CLI table only; strip before JSON emit
     return payload
 
 
+def _load_legacy_last_status_nodes() -> dict[str, dict[str, Any]]:
+    """0.4.1 compat: index last-status.json nodes by name (read-only)."""
+    path = last_status_path()
+    if not path.is_file():
+        return {}
+    try:
+        prev = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for n in prev.get("nodes") or []:
+        if isinstance(n, dict) and n.get("name"):
+            out[str(n["name"])] = n
+    return out
+
+
 def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Cache-only: last-status.json + sync_cursor. No SSH. Does not write."""
+    """Cache-only: node_snapshot (+ last-status 0.4.1 fallback) + sync_cursor.
+
+    No SSH. Does not write. Primary health source is sync --full → node_snapshot.
+    """
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
-    prev: dict[str, Any] = {}
-    path = last_status_path()
-    if path.is_file():
-        try:
-            prev = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prev = {}
-    by = {
-        n["name"]: n
-        for n in (prev.get("nodes") or [])
-        if isinstance(n, dict) and n.get("name")
-    }
+    legacy_by_name = _load_legacy_last_status_nodes()
     conn = open_cache_readonly_optional()
     rows: list[dict[str, Any]] = []
     try:
         for node in _selected_nodes(registry, include_all):
-            sl = by.get(node["name"]) or {}
+            snap = (
+                read_node_snapshot_row(conn, node["node_id"])
+                if conn is not None
+                else None
+            )
+            leg = legacy_by_name.get(node["name"]) or {}
             cur = (
                 read_sync_cursor_row(conn, node["node_id"]) if conn is not None else None
             )
@@ -3402,22 +3427,57 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
             life = node_lifecycle_status(node)
             if life == NODE_STATUS_DISABLED:
                 st = "DISABLED"
+                proxy = "UNKNOWN"
+                accounting = "UNKNOWN"
             elif life == NODE_STATUS_RETIRED:
                 st = "-"
+                proxy = "UNKNOWN"
+                accounting = "UNKNOWN"
+            elif snap is not None:
+                st = snap["ssh"] or "UNKNOWN"
+                proxy = snap["proxy"] or "UNKNOWN"
+                accounting = snap["accounting"] or "UNKNOWN"
             else:
-                st = sl.get("ssh") or "UNKNOWN"
-            instance_id = sl.get("instance_id")
+                st = leg.get("ssh") or "UNKNOWN"
+                proxy = leg.get("proxy") or "UNKNOWN"
+                accounting = leg.get("accounting") or "UNKNOWN"
+            instance_id = None
+            if snap is not None:
+                instance_id = snap["instance_id"]
+            if instance_id is None:
+                instance_id = leg.get("instance_id")
             if instance_id is None and cur is not None:
                 instance_id = cur["instance_id"]
             cursor_status = cur["status"] if cur is not None else None
+            vincula_version = None
+            registry_state = None
+            clock = None
+            clock_skew = None
+            synced_at = None
+            if snap is not None:
+                vincula_version = snap["vincula_version"]
+                registry_state = snap["registry"]
+                clock = snap["clock"]
+                clock_skew = snap["clock_skew_seconds"]
+                synced_at = snap["synced_at"]
+            else:
+                vincula_version = leg.get("vincula_version")
+                registry_state = leg.get("registry")
+                clock = leg.get("clock")
+                clock_skew = leg.get("clock_skew_seconds")
             rows.append(
                 {
                     "name": node["name"],
                     "node_id": node["node_id"],
                     "instance_id": instance_id,
                     "ssh": st,
-                    "proxy": sl.get("proxy") or "UNKNOWN",
-                    "accounting": sl.get("accounting") or "UNKNOWN",
+                    "proxy": proxy,
+                    "accounting": accounting,
+                    "vincula_version": vincula_version,
+                    "registry": registry_state,
+                    "clock": clock,
+                    "clock_skew_seconds": clock_skew,
+                    "synced_at": synced_at,
                     "last_sync_at": ls or "-",
                     "data_age": age,
                     "cursor_status": cursor_status or "-",
@@ -3430,6 +3490,11 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
     nodes = [
         {
             **_status_json_node(r),
+            "vincula_version": r.get("vincula_version"),
+            "registry": r.get("registry"),
+            "clock": r.get("clock"),
+            "clock_skew_seconds": r.get("clock_skew_seconds"),
+            "synced_at": r.get("synced_at"),
             "last_sync_at": r["last_sync_at"],
             "data_age": r["data_age"],
             "cursor_status": r["cursor_status"],
@@ -6301,10 +6366,11 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="cache-only (D58); use probe or --live for SSH",
         description=(
-            "Cache-only (D58): last observation from last-status.json + "
-            "fleet.db sync_cursor. No SSH. Table columns: NAME NODE_ID "
-            "LAST_SYNC DATA_AGE NODE_STATUS CURSOR. Use `probe` or "
-            "`status --live` for live SSH health (writes last-status.json)."
+            "Cache-only (D58): health from node_snapshot (sync --full) with "
+            "last-status.json as 0.4.1 migration fallback, plus fleet.db "
+            "sync_cursor. No SSH. Table columns: NAME NODE_ID LAST_SYNC "
+            "DATA_AGE NODE_STATUS CURSOR. Use `probe` or `status --live` "
+            "for live SSH health (live result only; does not write cache)."
         ),
     )
     p_status.add_argument(
@@ -6325,14 +6391,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_probe = sub.add_parser(
         "probe",
-        help="live SSH health (writes last-status.json)",
+        help="live SSH health (does not write status cache)",
         description=(
             "Probe enabled nodes over SSH (vcl identity --json and "
-            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
-            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
-            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
-            "Writes last-status.json. Exit 1 if any node is "
-            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+            "vcl status --json). Live result only — does not write "
+            "node_snapshot or last-status.json. Table columns: NAME "
+            "NODE_ID INSTANCE SSH PROXY ACCOUNTING. States: OK / STALE / "
+            "FAIL / UNKNOWN. SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, "
+            "ACCOUNTING=UNKNOWN. Exit 1 if any node is "
+            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL. Persistent "
+            "health cache: sync --full → node_snapshot → status."
         ),
     )
     p_probe.add_argument(

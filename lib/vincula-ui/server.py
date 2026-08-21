@@ -93,14 +93,41 @@ def users_cache_path() -> Path:
 
 
 def load_last_status_doc() -> Optional[dict[str, Any]]:
-    path = fleet().last_status_path()
-    if not path.is_file():
+    """UI GET status plane: same cached payload as `fleet status` (P1-3).
+
+    Primary source is node_snapshot; last-status.json is 0.4.1 fallback only
+    (handled inside run_cached_status_payload). Returns None when no useful
+    observation exists yet (pre-sync / empty fallback).
+    """
+    f = fleet()
+    payload = f.run_cached_status_payload(include_all=True)
+    payload = dict(payload)
+    payload.pop("_rows", None)
+    if _status_cache_empty(payload):
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    return payload
+
+
+def _status_cache_empty(doc: Optional[dict[str, Any]]) -> bool:
+    """True when cache has no snapshot/legacy health observation."""
+    if not doc:
+        return True
+    for node in doc.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        synced = node.get("synced_at")
+        if isinstance(synced, str) and synced and synced != "-":
+            return False
+        ssh = str(node.get("ssh") or "")
+        if ssh and ssh not in ("UNKNOWN", "-", "DISABLED"):
+            return False
+        if node.get("vincula_version"):
+            return False
+        proxy = str(node.get("proxy") or "")
+        accounting = str(node.get("accounting") or "")
+        if proxy not in ("", "UNKNOWN") or accounting not in ("", "UNKNOWN"):
+            return False
+    return True
 
 
 def load_users_cache() -> Optional[dict[str, Any]]:
@@ -326,7 +353,10 @@ def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]
             {
                 "level": "amber",
                 "code": "no-status-cache",
-                "message": "No last-status.json yet. Use Refresh status or Verify.",
+                "message": (
+                    "No cached node health yet. Run sync --full "
+                    "(or Refresh / Verify for a live check)."
+                ),
             }
         )
         return warnings

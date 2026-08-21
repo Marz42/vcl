@@ -9711,6 +9711,125 @@ rm -f "$TEST_TMP"/fake-ssh-argv* 2>/dev/null || true
 fleet status --json >/dev/null
 assert_success "B5 status cache-only" \
   grep -q '"mode": "cache"' <<<"$(fleet status --json)"
+# --- 0.4.2 P1-3: cached status ← node_snapshot; probe live-only ---
+# After sync --full with no prior probe / no last-status: health from snapshot
+rm -f "${VCL_FLEET_HOME}/last-status.json"
+# also clear machine-local ui-runtime last-status if present
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util,sys
+spec=importlib.util.spec_from_file_location("vf",sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p=m.last_status_path()
+if p.is_file():
+    p.unlink()
+print(p)
+PY
+p13_status=$(fleet status --json 2>/dev/null) || true
+p13_snap_rc=0
+python3 - "$p13_status" <<'PY' || p13_snap_rc=$?
+import json,sys
+doc=json.loads(sys.argv[1])
+assert doc.get("mode")=="cache"
+by={n["name"]:n for n in doc["nodes"]}
+# tokyo may be error from PARTIAL retarget; lax must be from node_snapshot
+lax=by["lax"]
+assert lax["ssh"]=="OK", lax
+assert lax["proxy"] in ("OK","STALE"), lax
+assert lax["accounting"] in ("OK","STALE"), lax
+assert lax.get("vincula_version"), lax
+assert lax.get("synced_at"), lax
+assert lax["ssh"]!="UNKNOWN" and lax["proxy"]!="UNKNOWN"
+PY
+if (( p13_snap_rc == 0 )); then
+  pass "P1-3 status after sync --full reads node_snapshot (no last-status)"
+else
+  fail "P1-3 status after sync --full reads node_snapshot (no last-status)"
+fi
+# probe SSHes and does NOT write last-status
+export VCL_FAKE_SSH_ARGV_LOG="${B5S}/p13-probe-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+LS_PATH=$(python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util,sys
+spec=importlib.util.spec_from_file_location("vf",sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.last_status_path())
+PY
+)
+rm -f "$LS_PATH"
+L_BEFORE=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet probe >/dev/null 2>&1 || true
+L_AFTER=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+if (( L_AFTER > L_BEFORE )); then
+  pass "P1-3 probe makes SSH"
+else
+  fail "P1-3 probe makes SSH (before=${L_BEFORE} after=${L_AFTER})"
+fi
+if [[ ! -f "$LS_PATH" ]]; then
+  pass "P1-3 probe does not write last-status.json"
+else
+  fail "P1-3 probe does not write last-status.json (path exists: ${LS_PATH})"
+fi
+# zero-SSH status assert (D58) still holds
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet status >/dev/null
+assert_equal "P1-3 status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+unset VCL_FAKE_SSH_ARGV_LOG
+# legacy last-status fallback when node_snapshot empty for a node
+P13_FB=$TEST_TMP/p13-fallback; P13_FB_XDG=$TEST_TMP/p13-fallback-xdg; P13_FB_FAKE=$TEST_TMP/p13-fallback-fake
+rm -rf "$P13_FB" "$P13_FB_XDG" "$P13_FB_FAKE"
+mkdir -p "$P13_FB_FAKE"
+P13_SAVED_HOME=$VCL_FLEET_HOME
+P13_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P13_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+export VCL_FLEET_HOME=$P13_FB VCL_FLEET_LOCAL_STATE=$P13_FB_XDG VCL_FAKE_STATE_DIR=$P13_FB_FAKE
+assert_success "P1-3 fallback init" fleet init
+assert_success "P1-3 fallback add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LAX_REMOTE_NODE_ID" <<'PY'
+import importlib.util,sys
+spec=importlib.util.spec_from_file_location("vf",sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+nid=sys.argv[2]
+m.write_last_status({
+    "schema_version": 1,
+    "ok": True,
+    "controller_utc": "2026-08-20T00:00:00Z",
+    "nodes": [{
+        "name": "lax",
+        "node_id": nid,
+        "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "enabled": True,
+        "ssh": "OK",
+        "proxy": "STALE",
+        "accounting": "OK",
+        "vincula_version": "0.4.1-legacy",
+    }],
+})
+# confirm no node_snapshot row
+c=m.open_cache_readonly_optional()
+assert c is None or c.execute("SELECT COUNT(*) FROM node_snapshot").fetchone()[0]==0
+if c is not None:
+    c.close()
+PY
+fb_json=$(fleet status --json 2>/dev/null) || true
+fb_rc=0
+python3 - "$fb_json" <<'PY' || fb_rc=$?
+import json,sys
+doc=json.loads(sys.argv[1])
+assert doc["mode"]=="cache"
+lax=doc["nodes"][0]
+assert lax["ssh"]=="OK" and lax["proxy"]=="STALE" and lax["accounting"]=="OK"
+assert lax.get("vincula_version")=="0.4.1-legacy"
+PY
+if (( fb_rc == 0 )); then
+  pass "P1-3 legacy last-status honored when node_snapshot empty"
+else
+  fail "P1-3 legacy last-status honored when node_snapshot empty"
+fi
+export VCL_FLEET_HOME=$P13_SAVED_HOME
+if [[ -n "$P13_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P13_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P13_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$P13_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
 assert_failure "B5 stub gone" \
   grep -q 'sync --full requires 0.4.2' "$PROJECT_DIR/lib/vincula-fleet.py"
 export VCL_FLEET_HOME=$B5_SAVED_HOME
