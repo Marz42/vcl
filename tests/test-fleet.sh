@@ -9322,3 +9322,57 @@ assert_failure "B5 stub gone" \
 export VCL_FLEET_HOME=$B5_SAVED_HOME
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
+
+# --- 0.4.2 B6 ---
+assert_success "B6 create/verify/restore/dedupe/conflict/no-cursor" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b6" <<'PY'
+import importlib.util,os,sqlite3,sys,tempfile; from pathlib import Path
+p,tmp=sys.argv[1],Path(sys.argv[2]); tmp.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"]=str(tmp/"home"); (tmp/"home").mkdir()
+spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+aa=m.load_audit_archive_module()  # add loader in T25
+c=m.open_cache_for_sync(); nid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+c.execute("INSERT INTO audit_events(node_id,instance_id,event_id,export_seq,connection_id,generation,user_id,started_at,last_seen_at,closed_at,destination_host,upload_bytes,download_bytes,imported_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+ (nid,"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",1,1,"c1",0,"u1","2026-08-01T00:00:00Z","2026-08-01T01:00:00Z","2026-08-01T01:00:00Z","h",1,2,"2026-08-01T02:00:00Z"))
+c.execute("INSERT INTO sync_cursor(node_id,instance_id,last_event_id,last_export_seq,cursor_kind,last_sync_at,status) VALUES(?,?,?,?,?,?,?)",
+ (nid,"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",1,1,"export_seq","2026-08-01T02:00:00Z","ok")); c.commit()
+cur0=c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?",(nid,)).fetchone()[0]
+ev=[{k:c.execute("SELECT * FROM audit_events").fetchone()[i] for i,k in enumerate([d[0] for d in c.execute("SELECT * FROM audit_events").description])}]
+# simpler: fetch via row_factory
+c.row_factory=sqlite3.Row; row=dict(c.execute("SELECT * FROM audit_events").fetchone())
+arch=tmp/"t.vclaudit"
+aa.create_archive(fleet_id="fleet-b6", created_at="2026-08-21T00:00:00Z", time_from="2026-08-01T00:00:00Z", time_to="2026-08-21T00:00:00Z",
+  events=[row], nodes=[{"node_id":nid,"name":"lax","instance_id":row["instance_id"],"payload_json":"{}"}],
+  users=[{"node_id":nid,"user_id":"u1","tag":"alice","payload_json":"{}"}],
+  instances=[{"node_id":nid,"instance_id":row["instance_id"],"first_seen_at":row["started_at"],"last_seen_at":row["last_seen_at"],"payload_json":"{}"}], dest=arch)
+info=aa.verify_archive(arch); assert info["ok"] and info["schema_version"]=="audit-archive/v1"
+# schema grep: no forbidden
+schema="\n".join(r[0] for r in sqlite3.connect(str(arch)).execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"))
+assert "sync_cursor" not in schema and "last_export_seq" not in schema and "credential" not in schema.lower() and "ssh_" not in schema
+r1=aa.restore_archive_into_cache(arch, c); assert r1["deduped"]==1 and r1["inserted"]==0
+assert c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?",(nid,)).fetchone()[0]==cur0  # AC-4.1-05
+# conflict: same key different payload
+bad=tmp/"bad.vclaudit"; row2=dict(row); row2["upload_bytes"]=999
+aa.create_archive(fleet_id="fleet-b6", created_at="2026-08-21T00:00:00Z", time_from="2026-08-01T00:00:00Z", time_to="2026-08-21T00:00:00Z",
+  events=[row2], nodes=[], users=[], instances=[], dest=bad)
+try:
+  aa.restore_archive_into_cache(bad, c); raise AssertionError("expected ARCHIVE_CONFLICT")
+except aa.ArchiveConflict as e: assert "ARCHIVE_CONFLICT" in str(e)
+assert c.execute("SELECT upload_bytes FROM audit_events WHERE node_id=? AND event_id=1",(nid,)).fetchone()[0]==1
+assert c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?",(nid,)).fetchone()[0]==cur0
+c.close()
+PY
+# age path (SKIP if neither real age nor fake-age usable)
+if command -v age >/dev/null 2>&1 || [[ -x "$PROJECT_DIR/tests/fixtures/fake-age" ]]; then
+  export VCL_AGE_BIN="${VCL_AGE_BIN:-$PROJECT_DIR/tests/fixtures/fake-age}"
+  assert_success "B6 age encrypt" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b6-age" <<'PY'
+import importlib.util,os,sys; from pathlib import Path
+p,tmp=sys.argv[1],Path(sys.argv[2]); tmp.mkdir(parents=True)
+spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+aa=m.load_audit_archive_module(); bak=m.load_backup_module()
+recip=tmp/"r.txt"; recip.write_text("age1fake\n"); # fake-age accepts any recipient file
+arch=tmp/"x.vclaudit"; aa.create_archive(fleet_id="f",created_at="2026-08-21T00:00:00Z",time_from="2026-08-01T00:00:00Z",time_to="2026-08-21T00:00:00Z",events=[],nodes=[],users=[],instances=[],dest=arch)
+out=Path(str(arch)+".age"); bak.age_encrypt(arch,out,recip); assert out.is_file() and out.stat().st_size>0
+PY
+else
+  pass "B6 age encrypt SKIP (age binary absent)"
+fi

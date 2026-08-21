@@ -5250,6 +5250,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
+_AUDIT_ARCHIVE_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -5268,6 +5269,17 @@ def load_backup_module() -> Any:
         return _BACKUP_MOD
     _BACKUP_MOD = _load_controller_sibling("vincula_backup", "vincula-backup.py")
     return _BACKUP_MOD
+
+
+def load_audit_archive_module() -> Any:
+    """Load lib/vincula-audit-archive.py for audit-archive/v1 .vclaudit (D37/D38)."""
+    global _AUDIT_ARCHIVE_MOD
+    if _AUDIT_ARCHIVE_MOD is not None:
+        return _AUDIT_ARCHIVE_MOD
+    _AUDIT_ARCHIVE_MOD = _load_controller_sibling(
+        "vincula_audit_archive", "vincula-audit-archive.py"
+    )
+    return _AUDIT_ARCHIVE_MOD
 
 
 def fleet_utc_today() -> date:
