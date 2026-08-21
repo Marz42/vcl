@@ -6,6 +6,7 @@
 **Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added
 - **Machine-local cache (D23):** `local-state/<fleet_id>/fleet.db` (+archives/ui-runtime); Workspace portable without cache.
+- **Purely copyable workspace root (P1-6/D22/D28):** root holds only `workspace.json` / `fleet.json` / `trust/` / `history/`. Bindings + `controller.json` under `XDG_CONFIG_HOME/vincula/controllers/<fleet_id>/`; `workspace-view.json` under STATE with fleet.db/ui-runtime. One-time migrate from legacy `machine-local/`.
 - **fleet-cache/v4:** 3→4; `meta.fleet_id`; `CACHE_FLEET_MISMATCH`; D45 namespace.
 - **Enforced RO (D47/C01):** `open_cache_readonly` `mode=ro` + `query_only`; sync via `open_cache_for_sync` RW; cache uses rollback journal (`DELETE`), not WAL (P1-2).
 - **`sync --full` (D25/C04):** identity+health+users+audit→cache; sequential; per-node txn; PARTIAL exit 2; bare sync=legacy audit.

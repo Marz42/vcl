@@ -8,6 +8,7 @@ normalize_node resolve from the fleet host module.
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -24,9 +25,16 @@ from typing import Any, Callable, Optional
 _host: Any = None
 
 WORKSPACE_MANIFEST_NAME = "workspace.json"
-MACHINE_LOCAL_DIRNAME = "machine-local"
+MACHINE_LOCAL_DIRNAME = "machine-local"  # legacy only; never write new data here
 WORKSPACE_VIEW_NAME = "workspace-view.json"
 WORKSPACE_VIEW_SCHEMA_VERSION = 1
+CONTROLLER_FILE_NAME = "controller.json"
+CONTROLLER_SCHEMA_VERSION = 1
+BINDINGS_FILE_NAME = "credential-bindings.json"
+# Portable workspace root entries (D22/D28/P1-6): every file under root is copyable.
+PORTABLE_WORKSPACE_ROOT_NAMES = frozenset(
+    {"workspace.json", "fleet.json", "trust", "history"}
+)
 PORTABLE_DIGEST_NAMES = (
     "fleet.json",
     "workspace.json",
@@ -120,6 +128,188 @@ def ensure_fleet_local_state(fleet_id: str) -> Path:
     return root
 
 
+def fleet_controller_config_root() -> Path:
+    """Machine-local controller config root (not under workspace / VCL_FLEET_HOME)."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "vincula" / "controllers"
+        return Path.home() / "AppData" / "Roaming" / "vincula" / "controllers"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "vincula" / "controllers"
+    return Path.home() / ".config" / "vincula" / "controllers"
+
+
+def fleet_controller_config_dir(fleet_id: str) -> Path:
+    return fleet_controller_config_root() / fleet_id
+
+
+def ensure_fleet_controller_config(fleet_id: str) -> Path:
+    root = fleet_controller_config_dir(fleet_id)
+    root.mkdir(parents=True, exist_ok=True)
+    _chmod_private(root, 0o700)
+    return root
+
+
+def fleet_controller_bindings_path(fleet_id: str) -> Path:
+    return fleet_controller_config_dir(fleet_id) / BINDINGS_FILE_NAME
+
+
+def fleet_controller_file(fleet_id: str) -> Path:
+    return fleet_controller_config_dir(fleet_id) / CONTROLLER_FILE_NAME
+
+
+def legacy_machine_local_dir() -> Path:
+    """Legacy path only; used for one-time migration reads."""
+    return fleet_home() / MACHINE_LOCAL_DIRNAME
+
+
+def machine_local_dir() -> Path:
+    """Deprecated alias of legacy_machine_local_dir (no new writes)."""
+    return legacy_machine_local_dir()
+
+
+def empty_controller(
+    *,
+    controller_id: str | None = None,
+    name: str = "",
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "schema_version": CONTROLLER_SCHEMA_VERSION,
+        "controller_id": controller_id or str(uuid.uuid4()),
+        "created_at": now,
+        "name": name,
+    }
+
+
+def validate_controller(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        _host.die("controller.json must be a JSON object")
+    ver = data.get("schema_version")
+    if ver != CONTROLLER_SCHEMA_VERSION:
+        _host.die(f"unsupported controller schema: {ver}")
+    cid = data.get("controller_id")
+    if not isinstance(cid, str) or not _host.UUID_RE.fullmatch(cid):
+        _host.die("controller.json controller_id must be a UUID")
+    created = data.get("created_at")
+    if not isinstance(created, str) or not created:
+        _host.die("controller.json created_at must be a non-empty string")
+    name = data.get("name", "")
+    if name is None:
+        name = ""
+    if not isinstance(name, str):
+        _host.die("controller.json name must be a string")
+    return {
+        "schema_version": CONTROLLER_SCHEMA_VERSION,
+        "controller_id": cid,
+        "created_at": created,
+        "name": name,
+    }
+
+
+def load_controller(path: Optional[Path] = None) -> dict[str, Any]:
+    if path is None:
+        _host.die("load_controller requires path or ensure_controller")
+    path = Path(path)
+    if not path.is_file():
+        _host.die(f"controller.json not found: {path}")
+    try:
+        with path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        _host.die(f"invalid controller.json: {exc}")
+    except OSError as exc:
+        _host.die(f"cannot read {path}: {exc}")
+    return validate_controller(data)
+
+
+def save_controller(data: dict[str, Any], path: Path) -> None:
+    payload = validate_controller(data)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    _chmod_private(parent, 0o700)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".controller.json.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def ensure_controller(
+    fleet_id: str, *, controller_id: str | None = None, name: str = ""
+) -> dict[str, Any]:
+    """Load or create machine-local controller.json for fleet_id."""
+    ensure_fleet_controller_config(fleet_id)
+    path = fleet_controller_file(fleet_id)
+    if path.is_file():
+        return load_controller(path)
+    data = empty_controller(controller_id=controller_id, name=name)
+    save_controller(data, path)
+    return data
+
+
+def _atomic_move(src: Path, dest: Path) -> None:
+    """Move src→dest; fall back to copy+unlink across devices (EXDEV)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest.parent, 0o700)
+    except OSError:
+        pass
+    try:
+        os.replace(src, dest)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(src, dest)
+        try:
+            src.unlink()
+        except OSError:
+            pass
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+
+
+def migrate_legacy_bindings_if_needed(fleet_id: str) -> Path:
+    """One-time: move legacy machine-local bindings into CONFIG controllers/."""
+    new_path = fleet_controller_bindings_path(fleet_id)
+    if new_path.is_file():
+        return new_path
+    legacy = legacy_machine_local_dir() / BINDINGS_FILE_NAME
+    if not legacy.is_file():
+        return new_path
+    ensure_fleet_controller_config(fleet_id)
+    _atomic_move(legacy, new_path)
+    return new_path
+
+
+def migrate_legacy_workspace_view_if_needed(fleet_id: str) -> Path:
+    """One-time: move legacy machine-local workspace-view into STATE."""
+    ensure_fleet_local_state(fleet_id)
+    new_path = fleet_local_state_dir(fleet_id) / WORKSPACE_VIEW_NAME
+    if new_path.is_file():
+        return new_path
+    legacy = legacy_machine_local_dir() / WORKSPACE_VIEW_NAME
+    if not legacy.is_file():
+        return new_path
+    _atomic_move(legacy, new_path)
+    return new_path
+
+
 def fleet_registry_path() -> Path:
     return fleet_home() / "fleet.json"
 
@@ -146,12 +336,10 @@ def workspace_manifest_path() -> Path:
     return fleet_home() / WORKSPACE_MANIFEST_NAME
 
 
-def machine_local_dir() -> Path:
-    return fleet_home() / MACHINE_LOCAL_DIRNAME
-
-
 def workspace_view_path() -> Path:
-    return machine_local_dir() / WORKSPACE_VIEW_NAME
+    """Machine-local view under XDG_STATE / VCL_FLEET_LOCAL_STATE (P1-6)."""
+    fid = load_workspace_manifest()["fleet_id"]
+    return migrate_legacy_workspace_view_if_needed(fid)
 
 
 def trust_dir() -> Path:
@@ -427,12 +615,17 @@ def create_workspace_manifest(
     if path.is_file():
         _host.die(f"workspace manifest already exists: {path}")
     _ensure_fleet_home()
+    fid = fleet_id or mint_fleet_id()
+    ctrl = ensure_controller(fid, controller_id=controller_id)
+    cid = controller_id or ctrl["controller_id"]
     manifest = empty_workspace_manifest(
-        name=name, fleet_id=fleet_id, controller_id=controller_id
+        name=name, fleet_id=fid, controller_id=cid
     )
     save_workspace_manifest(manifest, path)
     refresh_manifest_digest(manifest)
     save_workspace_manifest(manifest, path)
+    ensure_fleet_local_state(fid)
+    remember_workspace_view(manifest)
     return manifest
 
 
@@ -672,7 +865,7 @@ MIGRATE_PIPELINE = (
     "migrate identity_file → credential refs",
     "extract Fleet-only host trust",
     "export instance_history",
-    "create machine-local credential bindings",
+    "create controller credential bindings",
     "migrate fleet.db → local state",
     "migrate status/users cache as derived state",
     "verify new Workspace",
@@ -905,12 +1098,12 @@ def _execute_migrate_locked() -> dict[str, Any]:
         fleet_id = mint_fleet_id()
         _migrate_fail_after("mint fleet_id")
 
-        # 6. create temporary Workspace
+        # 6. create temporary Workspace (portable members only)
         staging = home / _MIGRATE_STAGING_NAME
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(mode=0o700, parents=True)
         _chmod_private(staging, 0o700)
-        for sub in ("trust", "history", "machine-local"):
+        for sub in ("trust", "history"):
             d = staging / sub
             d.mkdir(mode=0o700, parents=True)
             _chmod_private(d, 0o700)
@@ -968,7 +1161,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 src_conn.close()
         _migrate_fail_after("export instance_history")
 
-        # 11. create machine-local credential bindings
+        # 11. create controller credential bindings (CONFIG; not in workspace)
         bindings = _host.empty_bindings()
         for path, ref in mapping.items():
             resolved = _host.validate_identity_file(path, must_exist=True)
@@ -977,10 +1170,10 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 "path": resolved,
             }
         _host.save_bindings(
-            bindings, staging / "machine-local" / "credential-bindings.json"
+            bindings, staging / BINDINGS_FILE_NAME
         )
         ref_map = {ref: path for path, ref in mapping.items()}
-        _migrate_fail_after("create machine-local credential bindings")
+        _migrate_fail_after("create controller credential bindings")
 
         # 12. migrate fleet.db → local state (source untouched until commit)
         if dbp.is_file():
@@ -1010,7 +1203,10 @@ def _execute_migrate_locked() -> dict[str, Any]:
         _migrate_fail_after("migrate status/users cache as derived state")
 
         # 14. verify new Workspace
-        manifest = empty_workspace_manifest(fleet_id=fleet_id)
+        ctrl = ensure_controller(fleet_id)
+        manifest = empty_workspace_manifest(
+            fleet_id=fleet_id, controller_id=ctrl["controller_id"]
+        )
         save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
         refresh_manifest_digest(manifest, home=staging)
         save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
@@ -1043,7 +1239,21 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 os.chmod(dest.parent, 0o700)
             except OSError:
                 pass
-            os.replace(src, dest)
+            try:
+                os.replace(src, dest)
+            except OSError as exc:
+                # EXDEV: staging on tmpfs, CONFIG/STATE on another mount.
+                if exc.errno != errno.EXDEV:
+                    raise
+                shutil.copy2(src, dest)
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
+                try:
+                    os.chmod(dest, 0o600)
+                except OSError:
+                    pass
 
         _replace_into(staging / "fleet.json", home / "fleet.json")
         _replace_into(
@@ -1083,12 +1293,14 @@ def _execute_migrate_locked() -> dict[str, Any]:
             staging / "history" / "instances.jsonl",
             home / "history" / "instances.jsonl",
         )
-        bind_src = staging / "machine-local" / "credential-bindings.json"
+        bind_src = staging / BINDINGS_FILE_NAME
         if bind_src.is_file():
+            ensure_fleet_controller_config(fleet_id)
             _replace_into(
                 bind_src,
-                home / MACHINE_LOCAL_DIRNAME / "credential-bindings.json",
+                fleet_controller_bindings_path(fleet_id),
             )
+        ensure_controller(fleet_id, controller_id=ctrl["controller_id"])
 
         committed = True
         remember_workspace_view(load_workspace_manifest())
@@ -1236,7 +1448,7 @@ def import_workspace(src: Path) -> dict[str, Any]:
     if not src.is_file():
         _host.die(f"workspace archive not found: {src}")
     home = _ensure_fleet_home()
-    for dname in ("trust", "history", MACHINE_LOCAL_DIRNAME):
+    for dname in ("trust", "history"):
         d = home / dname
         d.mkdir(parents=True, exist_ok=True)
         _chmod_private(d, 0o700)
@@ -1293,6 +1505,8 @@ def import_workspace(src: Path) -> dict[str, Any]:
     manifest = load_workspace_manifest()
     refresh_manifest_digest(manifest)
     save_workspace_manifest(manifest)
+    ensure_controller(manifest["fleet_id"])
+    ensure_fleet_local_state(manifest["fleet_id"])
     remember_workspace_view(manifest)
     return manifest
 

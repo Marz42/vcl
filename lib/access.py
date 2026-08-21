@@ -43,7 +43,18 @@ def bind(host: Any) -> None:
 
 
 def credential_bindings_path() -> Path:
-    return _host.fleet_home() / "machine-local" / BINDINGS_FILE_NAME
+    """CONFIG controllers/<fleet_id>/credential-bindings.json (P1-6).
+
+    Requires an active workspace. One-time migrates legacy
+    ``$FLEET_HOME/machine-local/credential-bindings.json`` if present.
+    """
+    if not _host.workspace_trust_active():
+        _host.die(
+            "workspace required for credential bindings "
+            "(run workspace init or migrate)"
+        )
+    fid = _host.load_workspace_manifest()["fleet_id"]
+    return _host.migrate_legacy_bindings_if_needed(fid)
 
 
 def empty_bindings() -> dict[str, Any]:

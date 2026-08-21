@@ -335,9 +335,19 @@ LOCAL_STATE_UI_RUNTIME = _WS.LOCAL_STATE_UI_RUNTIME
 fleet_local_state_root = _WS.fleet_local_state_root
 fleet_local_state_dir = _WS.fleet_local_state_dir
 ensure_fleet_local_state = _WS.ensure_fleet_local_state
+fleet_controller_config_root = _WS.fleet_controller_config_root
+fleet_controller_config_dir = _WS.fleet_controller_config_dir
+ensure_fleet_controller_config = _WS.ensure_fleet_controller_config
+fleet_controller_bindings_path = _WS.fleet_controller_bindings_path
+fleet_controller_file = _WS.fleet_controller_file
+ensure_controller = _WS.ensure_controller
+migrate_legacy_bindings_if_needed = _WS.migrate_legacy_bindings_if_needed
+migrate_legacy_workspace_view_if_needed = _WS.migrate_legacy_workspace_view_if_needed
+PORTABLE_WORKSPACE_ROOT_NAMES = _WS.PORTABLE_WORKSPACE_ROOT_NAMES
 
 workspace_manifest_path = _WS.workspace_manifest_path
 machine_local_dir = _WS.machine_local_dir
+legacy_machine_local_dir = _WS.legacy_machine_local_dir
 workspace_view_path = _WS.workspace_view_path
 trust_dir = _WS.trust_dir
 known_hosts_path = _WS.known_hosts_path
@@ -6030,14 +6040,13 @@ def cmd_workspace_migrate(args: argparse.Namespace) -> int:
 
 def cmd_workspace_init(_args: argparse.Namespace) -> int:
     home = _ensure_fleet_home()
-    for dname in ("trust", "history", "machine-local"):
+    for dname in ("trust", "history"):
         d = home / dname
         d.mkdir(parents=True, exist_ok=True)
         _chmod_private(d, 0o700)
     if not fleet_registry_path().is_file():
         _WS._save_registry_unlocked(None, empty_registry())
     create_workspace_manifest()
-    ensure_fleet_local_state(load_workspace_manifest()["fleet_id"])
     return 0
 
 

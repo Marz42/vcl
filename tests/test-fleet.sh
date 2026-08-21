@@ -214,10 +214,16 @@ fleet_path.write_bytes(fleet_bytes + b"\n")
 assert mod.compute_state_digest() != d0
 fleet_path.write_bytes(fleet_bytes)
 assert mod.compute_state_digest() == d0
-ml = Path(os.environ["VCL_FLEET_HOME"]) / "machine-local"
-ml.mkdir(parents=True, exist_ok=True)
-(ml / "noise.txt").write_text("x\n", encoding="utf-8")
+# Non-portable noise must not affect digest (machine-local leftovers or scratch)
+noise = Path(os.environ["VCL_FLEET_HOME"]) / "scratch-noise.txt"
+noise.write_text("x\n", encoding="utf-8")
 assert mod.compute_state_digest() == d0
+noise.unlink()
+# View lives under STATE, not workspace root
+view_p = mod.workspace_view_path()
+assert view_p.is_file()
+assert "machine-local" not in str(view_p)
+assert view_p == mod.fleet_local_state_dir(m["fleet_id"]) / "workspace-view.json"
 
 m = mod.load_workspace_manifest()
 mod.refresh_manifest_digest(m)
@@ -287,7 +293,8 @@ export VCL_FLEET_HOME="${SAVED_WS_B1_HOME}"
 # --- 0.4.1 B2: D28 credential bindings + access CLI + SSH resolve (T11) ---
 SAVED_WS_B2_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/ws-b2"
-assert_success "B2 access fleet init" fleet init
+assert_success "B2 access workspace init" fleet workspace init
+B2_FID=$(python3 -c 'import json; print(json.load(open("'"${VCL_FLEET_HOME}/workspace.json"'"))["fleet_id"])')
 B2_KEY="${TEST_TMP}/ws-b2-id_ed25519"
 printf 'test-only-not-a-real-key\n' > "$B2_KEY"
 assert_success "B2 access bind identity-file" \
@@ -315,8 +322,13 @@ else
 fi
 assert_success "B2 bindings stay machine-local (not in fleet.json)" \
   bash -c '! grep -q credential-bindings "${VCL_FLEET_HOME}/fleet.json"'
-assert_success "B2 bindings file under machine-local" \
+B2_BIND_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B2_FID}/credential-bindings.json"
+assert_success "B2 bindings file under CONFIG controllers" \
+  test -f "$B2_BIND_PATH"
+assert_failure "B2 no bindings under workspace machine-local" \
   test -f "${VCL_FLEET_HOME}/machine-local/credential-bindings.json"
+assert_success "B2 controller.json under CONFIG" \
+  test -f "${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B2_FID}/controller.json"
 
 ws_b2_rc=0
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$B2_KEY" "$FAKE_SSH" <<'PY' || ws_b2_rc=$?
@@ -1819,11 +1831,45 @@ assert "identity_file" not in n, n
 assert n.get("admin_credential_ref") == "migrated-key-1"
 assert n.get("observe_credential_ref") == "migrated-key-1"
 binds = json.loads(
-    (home / "machine-local" / "credential-bindings.json").read_text(encoding="utf-8")
+    (
+        Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        / "vincula"
+        / "controllers"
+        / result["fleet_id"]
+        / "credential-bindings.json"
+    ).read_text(encoding="utf-8")
 )
 b = binds["bindings"]["migrated-key-1"]
 assert b["type"] == "identity_file"
 assert Path(b["path"]).resolve() == key
+ctrl = json.loads(
+    (
+        Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        / "vincula"
+        / "controllers"
+        / result["fleet_id"]
+        / "controller.json"
+    ).read_text(encoding="utf-8")
+)
+assert ctrl["controller_id"]
+assert not (home / "machine-local").exists(), "workspace must not create machine-local"
+# Portable root: only the 4 entries (+ optional legacy backup / .lock)
+allowed = {"workspace.json", "fleet.json", "trust", "history", ".lock"}
+names = {p.name for p in home.iterdir()}
+extra = {
+    n
+    for n in names
+    if n not in allowed and not n.startswith("legacy-pre-workspace-")
+}
+assert not extra, extra
+assert {"workspace.json", "fleet.json", "trust", "history"} <= names
+ls_root = (
+    Path(os.environ["VCL_FLEET_LOCAL_STATE"])
+    if os.environ.get("VCL_FLEET_LOCAL_STATE")
+    else Path.home() / ".local" / "state" / "vincula"
+)
+view_path = ls_root / result["fleet_id"] / "workspace-view.json"
+assert view_path.is_file(), view_path
 assert (home / "trust" / "known_hosts").is_file()
 hist = home / "history" / "instances.jsonl"
 assert hist.is_file()
@@ -1834,11 +1880,6 @@ assert legacies, "missing legacy backup"
 assert (legacies[0] / "fleet.db").is_file()
 assert (legacies[0] / "fleet.json").is_file()
 assert not (home / "fleet.db").is_file(), "live home/fleet.db must not remain"
-ls_root = (
-    Path(os.environ["VCL_FLEET_LOCAL_STATE"])
-    if os.environ.get("VCL_FLEET_LOCAL_STATE")
-    else Path.home() / ".local" / "state" / "vincula"
-)
 db_path = ls_root / result["fleet_id"] / "fleet.db"
 assert db_path.is_file(), db_path
 if result.get("fleet_db"):
@@ -1894,8 +1935,33 @@ assert_success "B6 workspace init via --workspace" \
 assert_success "B6 workspace.json exists" test -f "${B6_HOME}/workspace.json"
 assert_success "B6 trust dir" test -d "${B6_HOME}/trust"
 assert_success "B6 history dir" test -d "${B6_HOME}/history"
-assert_success "B6 machine-local dir" test -d "${B6_HOME}/machine-local"
+assert_failure "B6 no machine-local dir" test -d "${B6_HOME}/machine-local"
 assert_success "B6 fleet.json exists after init" test -f "${B6_HOME}/fleet.json"
+B6_FID_EARLY=$(python3 -c 'import json; print(json.load(open("'"${B6_HOME}/workspace.json"'"))["fleet_id"])')
+assert_success "B6 controller.json under CONFIG" \
+  test -f "${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B6_FID_EARLY}/controller.json"
+B6_VIEW="${XDG_STATE_HOME:-$HOME/.local/state}/vincula/${B6_FID_EARLY}/workspace-view.json"
+if [[ -n "${VCL_FLEET_LOCAL_STATE:-}" ]]; then
+  B6_VIEW="${VCL_FLEET_LOCAL_STATE}/${B6_FID_EARLY}/workspace-view.json"
+fi
+assert_success "B6 workspace-view under STATE" test -f "$B6_VIEW"
+python3 - "$B6_HOME" <<'PY' || b6_root_rc=$?
+from pathlib import Path
+import sys
+home = Path(sys.argv[1])
+allowed = {"workspace.json", "fleet.json", "trust", "history", ".lock"}
+names = {p.name for p in home.iterdir()}
+extra = names - allowed
+assert not extra, extra
+assert {"workspace.json", "fleet.json", "trust", "history"} <= names
+print("portable-root-ok")
+PY
+b6_root_rc=${b6_root_rc:-0}
+if (( b6_root_rc == 0 )); then
+  pass "B6 workspace root only portable entries"
+else
+  fail "B6 workspace root only portable entries"
+fi
 
 show_out=$(fleet --workspace "$B6_HOME" workspace show) || show_rc=$?
 show_rc=${show_rc:-0}
@@ -2058,7 +2124,20 @@ mod._WS._save_registry_unlocked(None, reg)
     % (reg["nodes"][0]["node_id"], str(uuid.uuid4())),
     encoding="utf-8",
 )
-# machine-local must NOT be exported
+# machine-local / CONFIG bindings must NOT be exported
+cfg = (
+    Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    / "vincula"
+    / "controllers"
+    / mod.load_workspace_manifest()["fleet_id"]
+)
+cfg.mkdir(parents=True, exist_ok=True)
+(cfg / "credential-bindings.json").write_text(
+    '{"schema_version":1,"bindings":{"admin-default":'
+    '{"type":"identity_file","path":"/home/secret/id_ed25519"}}}\n',
+    encoding="utf-8",
+)
+# stray leftover under workspace also must not be exported
 (home / "machine-local").mkdir(parents=True, exist_ok=True)
 (home / "machine-local" / "credential-bindings.json").write_text(
     '{"schema_version":1,"bindings":{"admin-default":'
@@ -2143,6 +2222,8 @@ fi
 B6_IMP_HOME="${TEST_TMP}/ws-b6-import"
 rm -rf "$B6_IMP_HOME"
 mkdir -p "$B6_IMP_HOME"
+# Clear CONFIG bindings for this fleet_id so import cannot "inherit" them
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B6_EXP_FID}/credential-bindings.json"
 assert_success "B6 import into new home" \
   fleet --workspace "$B6_IMP_HOME" workspace import "$B6_TGZ"
 imp_show=$(fleet --workspace "$B6_IMP_HOME" workspace show)
@@ -2151,6 +2232,11 @@ assert_equal "B6 import preserves fleet_id" "$B6_EXP_FID" "$imp_fid"
 assert_success "B6 import verify OK" fleet --workspace "$B6_IMP_HOME" workspace verify
 assert_failure "B6 import did not copy machine-local bindings" \
   test -f "${B6_IMP_HOME}/machine-local/credential-bindings.json"
+# Import creates controller.json but must not invent credential-bindings
+IMP_BIND="${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${imp_fid}/credential-bindings.json"
+assert_failure "B6 import did not create CONFIG bindings" test -f "$IMP_BIND"
+assert_success "B6 import created controller.json" \
+  test -f "${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${imp_fid}/controller.json"
 assert_failure "B6 import did not copy fleet.db" \
   test -f "${B6_IMP_HOME}/fleet.db"
 
@@ -8929,12 +9015,15 @@ HB="${TEST_TMP}/m05-b"
 M05_FAKE="${TEST_TMP}/m05-fake-state"
 M05_A_LS="${TEST_TMP}/m05-a-local-state"
 M05_B_LS="${TEST_TMP}/m05-b-local-state"
-rm -rf "$HA" "$HB" "$M05_FAKE" "$M05_A_LS" "$M05_B_LS"
-mkdir -p "${HA}/keys" "$M05_FAKE/lax"
+M05_A_CFG="${TEST_TMP}/m05-a-config"
+M05_B_CFG="${TEST_TMP}/m05-b-config"
+rm -rf "$HA" "$HB" "$M05_FAKE" "$M05_A_LS" "$M05_B_LS" "$M05_A_CFG" "$M05_B_CFG"
+mkdir -p "${HA}/keys" "$M05_FAKE/lax" "$M05_A_CFG" "$M05_B_CFG"
 printf 'test-only-not-a-real-m05-key\n' > "${HA}/keys/id"
 chmod 600 "${HA}/keys/id"
 export VCL_FLEET_HOME="$HA"
 export VCL_FLEET_LOCAL_STATE="$M05_A_LS"
+export XDG_CONFIG_HOME="$M05_A_CFG"
 export VCL_FLEET_SSH=/bin/false
 export VCL_FLEET_SSH_KEYSCAN=/bin/false
 unset VCL_FAKE_STATE_DIR
@@ -8943,7 +9032,7 @@ assert_success "AC-4.0-M05-A offline add" \
   fleet node add lax --host 203.0.113.10 --offline \
     --node-id "$LAX_REMOTE_NODE_ID" \
     --identity-file "${HA}/keys/id"
-# Ensure machine-local cache exists so migrate copies fleet.db onto A
+# Ensure cache exists so migrate copies fleet.db onto A
 python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vincula_fleet", sys.argv[1])
@@ -8959,36 +9048,65 @@ M05_FID=$(python3 -c "import json;print(json.load(open('${HA}/workspace.json'))[
 M05_A_DB="${M05_A_LS}/${M05_FID}/fleet.db"
 assert_success "AC-4.0-M05-A cache fleet.db" test -f "$M05_A_DB"
 assert_failure "AC-4.0-M05-A no home fleet.db after migrate" test -f "${HA}/fleet.db"
-# Copy portable workspace to B (exclude machine-local + fleet.db + last-status)
+assert_success "AC-4.0-M05-A bindings under CONFIG" \
+  test -f "${M05_A_CFG}/vincula/controllers/${M05_FID}/credential-bindings.json"
+assert_failure "AC-4.0-M05-A no machine-local under workspace" \
+  test -d "${HA}/machine-local"
+# Copy portable workspace to B (root is purely copyable; no machine-local to exclude)
 mkdir -p "$HB"
-# Prefer rsync-like selective copy via tar
 (
   cd "$HA"
   tar -cf - \
-    --exclude='./machine-local' \
     --exclude='./fleet.db' \
     --exclude='./fleet.db-wal' \
     --exclude='./fleet.db-shm' \
     --exclude='./last-status.json' \
     --exclude='./.migrate-staging' \
+    --exclude='./legacy-pre-workspace-*' \
     .
 ) | ( cd "$HB" && tar -xf - )
-# Ensure exclusions took effect
+# Ensure no machine-local / cache leaked into B
 rm -rf "${HB}/machine-local"
 rm -f "${HB}/fleet.db" "${HB}/fleet.db-wal" "${HB}/fleet.db-shm" "${HB}/last-status.json"
 assert_failure "AC-4.0-M05-B has no machine-local before bind" \
   test -d "${HB}/machine-local"
 assert_failure "AC-4.0-M05-B has no fleet.db before bind/sync" \
   test -f "${HB}/fleet.db"
+python3 - "$HB" <<'PY' || m05_port_rc=$?
+from pathlib import Path
+import sys
+home = Path(sys.argv[1])
+allowed = {"workspace.json", "fleet.json", "trust", "history", ".lock", "keys"}
+names = {p.name for p in home.iterdir()}
+extra = {
+    n for n in names
+    if n not in allowed and not n.startswith("legacy-pre-workspace-")
+}
+assert not extra, extra
+print("portable-ok")
+PY
+m05_port_rc=${m05_port_rc:-0}
+if (( m05_port_rc == 0 )); then
+  pass "AC-4.0-M05-B portable workspace root only"
+else
+  fail "AC-4.0-M05-B portable workspace root only"
+fi
 
 export VCL_FLEET_HOME="$HB"
 export VCL_FLEET_LOCAL_STATE="$M05_B_LS"
+export XDG_CONFIG_HOME="$M05_B_CFG"
 export VCL_FLEET_SSH="${FAKE_SSH}"
 export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
 export VCL_FAKE_STATE_DIR="$M05_FAKE"
 M05_REF=$(python3 -c 'import json; print(json.load(open("'"${HB}/fleet.json"'"))["nodes"][0]["admin_credential_ref"])')
+assert_failure "AC-4.0-M05-B has no CONFIG bindings before bind" \
+  test -f "${M05_B_CFG}/vincula/controllers/${M05_FID}/credential-bindings.json"
 assert_success "AC-4.0-M05-B access bind credential" \
   fleet access bind "$M05_REF" --identity-file "${HB}/keys/id"
+assert_success "AC-4.0-M05-B bindings under own CONFIG" \
+  test -f "${M05_B_CFG}/vincula/controllers/${M05_FID}/credential-bindings.json"
+assert_success "AC-4.0-M05-A bindings still under A CONFIG" \
+  test -f "${M05_A_CFG}/vincula/controllers/${M05_FID}/credential-bindings.json"
 
 # Seed accounting + sync so B gets an independent fleet.db (structural smoke)
 python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$M05_FAKE" \
@@ -9096,6 +9214,9 @@ export VCL_FLEET_HOME="${SAVED_AC041_HOME}"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 unset VCL_FLEET_LOCAL_STATE
+# Keep controller CONFIG under the test tree (not the operator's real ~/.config).
+export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+mkdir -p "$XDG_CONFIG_HOME"
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then
   export HOME="${FLEET_SAVED_HOME}"
 else
@@ -9115,12 +9236,17 @@ spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_fro
 assert m.fleet_db_path()==root/fid/"fleet.db"
 assert m.last_status_path()==root/fid/"ui-runtime"/"last-status.json"
 assert (root/fid/"archives").is_dir() and (root/fid/"ui-runtime").is_dir()
+assert m.workspace_view_path()==root/fid/"workspace-view.json"
+assert m.fleet_controller_bindings_path(fid)==(
+    Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home()/".config"))
+    /"vincula"/"controllers"/fid/"credential-bindings.json"
+)
 d0=m.compute_state_digest(); m.open_fleet_db().close()
 assert m.fleet_db_path().is_file() and d0==m.compute_state_digest()
 assert "fleet.db" not in m.PORTABLE_DIGEST_NAMES
 m.export_workspace(tgz)
 names=tarfile.open(tgz).getnames()
-assert not any(("fleet.db" in x or "ui-runtime" in x or "local-state" in x) for x in names), names
+assert not any(("fleet.db" in x or "ui-runtime" in x or "local-state" in x or "controllers" in x) for x in names), names
 PY
 LEG=$TEST_TMP/leg-b1; rm -rf "$LEG"; mkdir -p "$LEG"
 assert_success "B1 legacy home db" env -u VCL_FLEET_LOCAL_STATE VCL_FLEET_HOME="$LEG" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LEG" <<'PY'
