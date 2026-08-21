@@ -2,6 +2,17 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.2 (2026-08-21)
+**Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+### Added
+- **Machine-local cache (D23):** `local-state/<fleet_id>/fleet.db` (+archives/ui-runtime); Workspace portable without cache.
+- **fleet-cache/v4:** 3→4; `meta.fleet_id`; `CACHE_FLEET_MISMATCH`; D45 namespace.
+- **Enforced RO (D47/C01):** `open_cache_readonly` true `mode=ro`; sync/archive-restore via `open_cache_for_sync` RW.
+- **`sync --full` (D25/C04):** identity+health+users+audit→cache; sequential; per-node txn; PARTIAL exit 2; bare sync=legacy audit.
+- **Audit archive (D37/D38):** `audit archive create|verify|inspect|restore`; `.vclaudit`=`audit-archive/v1`; restore never touches `sync_cursor`/`last_export_seq`; optional `--age-recipient`.
+### Notes
+- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md). LIVE optional AC-4.1-03/06.
+
 ## 0.4.1 (2026-08-21)
 
 **Controller-only** portable workspace milestone. Stamp: CTRL `VCL_FLEET_VERSION=0.4.1`; NODE `VINCULA_VERSION=0.3.1` unchanged (no allowlist / installer / node fixture bumps).
