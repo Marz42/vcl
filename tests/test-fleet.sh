@@ -7,7 +7,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -Eeuo pipefail
   IFS=$'\n\t'
   TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  PROJECT_DIR=$(cd -- "${TEST_DIR}/.." && pwd)
+  export PROJECT_DIR=$(cd -- "${TEST_DIR}/.." && pwd)
   PASS_COUNT=0
   FAIL_COUNT=0
   pass() {
@@ -60,6 +60,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   }
   trap finish_fleet EXIT
 fi
+
+# PROJECT_DIR is set by the standalone branch or by tests/test.sh (readonly,
+# not exported). Child bash -c / python os.environ need it in the environment.
+export PROJECT_DIR
 
 readonly TEST_TOKYO_NODE_ID="8bb18c32-3333-4333-8333-333333333333"
 readonly TEST_SG_NODE_ID="9cc29d43-4444-4444-8444-444444444444"
@@ -9408,7 +9412,7 @@ assert_equal "B7 verify ok" "ok audit-archive/v1" "$(printf '%s\n' "$verify_out"
 assert_success "B7 verify tables" grep -q 'tables: meta,audit_events,node_attribution,user_attribution,instance_attribution' <<<"$verify_out"
 assert_success "B7 inspect" bash -c 'o=$(fleet audit archive inspect "'"$ARCH"'"); grep -q "^fleet_id=" <<<"$o" && grep -q "^events=2$" <<<"$o" && grep -q "^time_from=2026-08-01T00:00:00Z$" <<<"$o"'
 assert_equal "B7 restore dedupe" $'imported: 0\nduplicates_skipped: 2' "$(fleet audit archive restore "$ARCH")"
-_pycur(){ python3 -c "import importlib.util,os; p=os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py'; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=m.open_cache_readonly(); print(c.execute(\"$1\").fetchone()[0]); c.close()"; }
+_pycur(){ python3 -c "import importlib.util,sys; p=sys.argv[1]; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=m.open_cache_readonly(); print(c.execute(sys.argv[2]).fetchone()[0]); c.close()" "${PROJECT_DIR}/lib/vincula-fleet.py" "$1"; }
 assert_equal "B7 cursor unchanged" "9" "$(_pycur "SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")"
 python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b7-conflict.vclaudit" "$B7_ALICE_UID" <<'PY'
 import importlib.util,sys; from pathlib import Path
@@ -9421,10 +9425,18 @@ assert_failure "B7 ARCHIVE_CONFLICT" fleet audit archive restore "$TEST_TMP/b7-c
 assert_equal "B7 conflict rollback" "10" "$(_pycur "SELECT upload_bytes FROM audit_events WHERE event_id=1")"
 fleet workspace export "$TEST_TMP/b7-ws.tgz" >/dev/null; export VCL_FLEET_HOME=$B7B VCL_FLEET_LOCAL_STATE=$B7LB
 assert_success "B7 fresh import" fleet workspace import "$TEST_TMP/b7-ws.tgz"
-python3 -c "import importlib.util,os; p=os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py'; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=m.open_cache_for_sync(); assert c.execute('SELECT COUNT(*) FROM audit_events').fetchone()[0]==0; assert c.execute('SELECT COUNT(*) FROM sync_cursor').fetchone()[0]==0; c.close()"
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util,sys
+s=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+c=m.open_cache_for_sync(); assert c.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]==0; assert c.execute("SELECT COUNT(*) FROM sync_cursor").fetchone()[0]==0; c.close()
+PY
 assert_equal "B7 fresh imported" $'imported: 2\nduplicates_skipped: 0' "$(fleet audit archive restore "$ARCH")"
 assert_equal "B7 fresh no cursor" "0" "$(_pycur "SELECT COUNT(*) FROM sync_cursor")"
-assert_success "B7 historical query" python3 -c "import json,os,subprocess; o=subprocess.check_output(['python3',os.environ['PROJECT_DIR']+'/lib/vincula-fleet.py','audit','user','alice','--from','2026-08-01T00:00:00Z','--to','2026-08-21T00:00:00Z','--json']); d=json.loads(o); rows=d['rows'] if isinstance(d,dict) and 'rows' in d else d; assert len(rows)>=2"
+assert_success "B7 historical query" python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import json,sys,subprocess
+o=subprocess.check_output([sys.executable,sys.argv[1],"audit","user","alice","--from","2026-08-01T00:00:00Z","--to","2026-08-21T00:00:00Z","--json"])
+d=json.loads(o); rows=d["rows"] if isinstance(d,dict) and "rows" in d else d; assert len(rows)>=2
+PY
 if command -v age >/dev/null 2>&1 || [[ -x $PROJECT_DIR/tests/fixtures/fake-age ]]; then
   export VCL_AGE_BIN="${VCL_AGE_BIN:-$PROJECT_DIR/tests/fixtures/fake-age}"; printf 'age1fake\n' >"$TEST_TMP/b7-recip.txt"
   age_out=$(fleet audit archive create --from 2026-08-01T00:00:00Z --to 2026-08-21T00:00:00Z --output "$TEST_TMP/b7-age.vclaudit" --age-recipient "$TEST_TMP/b7-recip.txt")
