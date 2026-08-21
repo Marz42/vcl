@@ -9245,3 +9245,80 @@ ui=(Path(p).parent/"vincula-ui"/"server.py").read_text()
 assert "open_cache_readonly()" in ui and ui.count("open_fleet_db()")==0
 assert "open_cache_readonly()" in Path(p).read_text()  # status/audit/stats wired
 PY
+
+# --- 0.4.2 B5 ---
+B5_SAVED_HOME=$VCL_FLEET_HOME
+B5H=$TEST_TMP/b5-full; B5S=$TEST_TMP/b5-fake; rm -rf "$B5H" "$B5S" "$TEST_TMP/b5-xdg"
+mkdir -p "$B5S/lax" "$B5S/tokyo"
+export VCL_FLEET_HOME=$B5H VCL_FAKE_STATE_DIR=$B5S VCL_FLEET_LOCAL_STATE=$TEST_TMP/b5-xdg
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+assert_success "B5 init" fleet init
+assert_success "B5 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "B5 add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+# seed both accounting.db like sync-test (export_seq 1..3) + users via fake-ssh user add
+assert_success "B5 seed users" fleet user add alice --nodes lax,tokyo
+# seed audit DBs (reuse sync-test python seed for lax+tokyo identities)
+assert_success "B5 seed audit DBs" python3 - "$PROJECT_DIR/lib/vincula-accountd.py" "$B5S" "$PROJECT_DIR/tests/fixtures/nodes" <<'PY'
+import importlib.util,json,sys; from pathlib import Path
+acct_py,state,nodes=sys.argv[1],Path(sys.argv[2]),Path(sys.argv[3])
+spec=importlib.util.spec_from_file_location("a",acct_py); a=importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+for name in ("lax","tokyo"):
+  ident=json.loads((nodes/name/"identity.json").read_text()); db=state/name/"accounting.db"; db.parent.mkdir(parents=True,exist_ok=True)
+  c=a.open_db(str(db))
+  for i in range(1,4):
+    c.execute("INSERT INTO connections(connection_id,generation,user_id,node_id,instance_id,user_tag,started_at,last_seen_at,closed_at,destination_host,destination_ip,destination_port,network,upload_bytes,download_bytes,export_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      (f"{name}-{i}",0,"u-alice",ident["node_id"],ident["instance_id"],"alice","2026-08-10T08:00:00Z","2026-08-10T09:00:00Z","2026-08-10T09:00:00Z","example.com","203.0.113.10",443,"tcp",i,i*2,i))
+  a.meta_set(c,"audit_export_seq","3"); a.meta_set(c,"audit_pruned_max_export_seq","0"); c.commit(); c.close()
+PY
+full_rc=0; full_out=$(fleet sync --full --json) || full_rc=$?
+assert_equal "B5 sync --full exits 0" "0" "$full_rc"
+python3 - "$full_out" <<'PY'
+import json,sys
+doc=json.loads(sys.argv[1]); assert doc["state"]=="SUCCESS" and doc["operation"]=="sync_full"
+PY
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util,os,sys; from pathlib import Path
+spec=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+c=m.open_cache_readonly(); tabs={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert {"node_snapshot","user_snapshot","audit_events","sync_cursor"}<=tabs
+assert c.execute("SELECT COUNT(*) FROM node_snapshot").fetchone()[0]==2
+assert c.execute("SELECT COUNT(*) FROM user_snapshot").fetchone()[0]>=1
+assert c.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]==6
+lax_c=c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id=?",("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",)).fetchone()[0]
+assert int(lax_c)==3; c.close()
+PY
+# PARTIAL: retarget tokyo → sg (203.0.113.12) unreachable
+python3 -c "import json,os; p=os.environ['VCL_FLEET_HOME']+'/fleet.json'; d=json.load(open(p));
+[n.__setitem__('ssh_host','203.0.113.12') for n in d['nodes'] if n['name']=='tokyo']; json.dump(d,open(p,'w'),indent=2)"
+pre=$(python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util,sys; spec=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+c=m.open_cache_readonly(); print(c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'").fetchone()[0]); c.close()
+PY
+)
+part_rc=0; part_out=$(fleet sync --full --json) || part_rc=$?
+assert_equal "B5 PARTIAL exit 2" "2" "$part_rc"
+python3 - "$part_out" "$pre" "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import json,importlib.util,sys
+doc=json.loads(sys.argv[1]); assert doc["state"]=="PARTIAL"
+by={n["name"]:n for n in doc["nodes"]}; assert by["lax"]["status"]=="ok" and by["tokyo"]["status"]=="error"
+spec=importlib.util.spec_from_file_location("vf",sys.argv[3]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+c=m.open_cache_readonly(); assert str(c.execute("SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'").fetchone()[0])==sys.argv[2]
+assert c.execute("SELECT COUNT(*) FROM node_snapshot WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'").fetchone()[0]==1; c.close()
+PY
+# default sync still legacy (audit-only path)
+leg_rc=0; leg=$(fleet sync --node lax --json) || leg_rc=$?
+assert_equal "B5 legacy sync ok" "0" "$leg_rc"
+# status no SSH: clear fake-ssh argv log then status
+: > "$B5S/ssh-argv.log" 2>/dev/null || true
+rm -f "$TEST_TMP"/fake-ssh-argv* 2>/dev/null || true
+fleet status --json >/dev/null
+assert_success "B5 status cache-only" \
+  grep -q '"mode": "cache"' <<<"$(fleet status --json)"
+assert_failure "B5 stub gone" \
+  grep -q 'sync --full requires 0.4.2' "$PROJECT_DIR/lib/vincula-fleet.py"
+export VCL_FLEET_HOME=$B5_SAVED_HOME
+unset VCL_FLEET_LOCAL_STATE
+unset VCL_FAKE_STATE_DIR

@@ -1299,6 +1299,8 @@ def import_audit_batch(
     now_iso: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
     next_cursor: Optional[int] = None,
+    *,
+    manage_txn: bool = True,
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. UPSERT on (node_id, event_id).
 
@@ -1306,6 +1308,8 @@ def import_audit_batch(
     rows fail the whole import and leave the cursor unchanged. A labeled
     row whose node_id does not match also fails closed. When next_cursor is
     set (sync path), last_export_seq is written to that remote-declared value.
+    When manage_txn is False and conn is given, the caller owns BEGIN/COMMIT/
+    ROLLBACK (used by sync --full per-node txn).
     """
     validate_node_id(node_id)
     inst = _optional_text(instance_id)
@@ -1361,7 +1365,8 @@ def import_audit_batch(
         ):
             die("invalid next_cursor")
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            if manage_txn:
+                conn.execute("BEGIN IMMEDIATE")
             if params:
                 conn.executemany(INSERT_AUDIT_EVENT_SQL, params)
             rebuild_daily_usage_for_node(conn, node_id)
@@ -1401,12 +1406,14 @@ def import_audit_batch(
                     SYNC_STATUS_OK,
                 ),
             )
-            conn.commit()
+            if manage_txn:
+                conn.commit()
         except BaseException:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if manage_txn:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         inserted = 0
         updated = 0
@@ -4859,6 +4866,226 @@ def sync_one_node(
     )
 
 
+UPSERT_NODE_SNAPSHOT_SQL = """INSERT INTO node_snapshot(
+  node_id,instance_id,name,vincula_version,ssh,proxy,accounting,registry,clock,
+  clock_skew_seconds,payload_json,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(node_id) DO UPDATE SET instance_id=excluded.instance_id,name=excluded.name,
+  vincula_version=excluded.vincula_version,ssh=excluded.ssh,proxy=excluded.proxy,
+  accounting=excluded.accounting,registry=excluded.registry,clock=excluded.clock,
+  clock_skew_seconds=excluded.clock_skew_seconds,payload_json=excluded.payload_json,
+  synced_at=excluded.synced_at"""
+
+
+def sync_full_one_node(
+    conn: sqlite3.Connection,
+    node: dict[str, Any],
+    *,
+    now_iso: str,
+    controller_utc: datetime,
+) -> dict[str, Any]:
+    """Pull identity/status/users/audit → one DB txn; fail-closed; no cursor advance on error."""
+    node_id = node["node_id"]
+    after = _cursor_last_export_seq(conn, node_id)
+    life = node_lifecycle_status(node)
+    if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
+        return _sync_result(
+            node,
+            status="DISABLED" if life != NODE_STATUS_RETIRED else "RETIRED",
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+        )
+    # 1) pull (no writes)
+    st, ident, detail = ssh_remote_json(node, ["vcl", "identity", "--json"])
+    if st != "OK" or not isinstance(ident, dict):
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=detail or "identity unreachable",
+        )
+    if ident.get("node_id") != node_id:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error="registry node_id mismatch",
+        )
+    remote_iid = _optional_text(ident.get("instance_id"))
+    st2, status_doc, sdetail = ssh_remote_json(node, ["vcl", "status", "--json"])
+    if st2 != "OK" or not isinstance(status_doc, dict):
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=sdetail or "status unreachable",
+        )
+    users, uerr = _list_users_on_node(node)
+    if uerr is not None:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=uerr,
+        )
+    proc = ssh_audit_export(node, after)
+    meta = parse_export_meta(proc.stderr or "")
+    if proc.returncode == 255:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=_ssh_failure_detail(proc) or "ssh unreachable",
+        )
+    if isinstance(meta, dict) and meta.get("error") in (
+        "CURSOR_AHEAD",
+        "CURSOR_EXPIRED",
+    ):
+        return _sync_result(
+            node,
+            status=(
+                SYNC_STATUS_EXPIRED
+                if meta["error"] == "CURSOR_EXPIRED"
+                else SYNC_STATUS_ERROR
+            ),
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=str(meta["error"]),
+        )
+    if proc.returncode != 0:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=(
+                _ssh_failure_detail(proc)
+                or f"audit export exit {proc.returncode}"
+            ),
+        )
+    try:
+        rows = parse_export_jsonl(proc.stdout or "")
+        next_cursor = validate_export_batch(
+            meta,
+            rows,
+            expected_after=after,
+            expected_node_id=node_id,
+            expected_instance_id=remote_iid,
+        )
+    except ValueError as exc:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=str(exc),
+        )
+    clock_state, _, skew = clock_skew_from_identity(controller_utc, ident)
+    payload = json.dumps(
+        {"identity": ident, "status": status_doc},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    # 2) single per-node txn
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            UPSERT_NODE_SNAPSHOT_SQL,
+            (
+                node_id,
+                remote_iid,
+                node["name"],
+                _optional_text(ident.get("vincula_version")),
+                "OK",
+                classify_proxy(status_doc),
+                classify_accounting(status_doc),
+                "OK",
+                clock_state,
+                skew,
+                payload,
+                now_iso,
+            ),
+        )
+        conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
+        for u in users or []:
+            uid = str(u.get("user_id") or "")
+            if not uid:
+                continue
+            conn.execute(
+                """INSERT INTO user_snapshot(
+                     node_id,user_id,tag,enabled,status,active_credential_id,
+                     payload_json,synced_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    node_id,
+                    uid,
+                    str(u.get("tag") or ""),
+                    1 if u.get("enabled") else 0,
+                    "active" if u.get("enabled") else "disabled",
+                    _optional_text(u.get("active_credential_id")),
+                    json.dumps(u, ensure_ascii=False, sort_keys=True),
+                    now_iso,
+                ),
+            )
+        if remote_iid:
+            record_instance(
+                conn,
+                node_id,
+                remote_iid,
+                endpoint=None,
+                ssh_host=_optional_text(node.get("ssh_host")),
+                now_iso=now_iso,
+            )
+        imported = import_audit_batch(
+            node_id,
+            remote_iid,
+            rows,
+            now_iso,
+            conn=conn,
+            next_cursor=next_cursor,
+            manage_txn=False,
+        )
+        conn.commit()
+    except BaseException as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=f"full sync txn failed: {exc}",
+        )
+    return _sync_result(
+        node,
+        status=SYNC_STATUS_OK,
+        after=after,
+        last_event_id=int(imported["last_event_id"]),
+        last_export_seq=int(imported["last_export_seq"]),
+        inserted=int(imported["inserted"]),
+        updated=int(imported.get("updated", 0)),
+        ignored=int(imported["ignored"]),
+        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        instance_id=remote_iid,
+    )
+
+
 def format_sync_table(rows: list[dict[str, Any]]) -> str:
     lines = [
         f"{'NAME':<8} {'STATUS':<8} {'AFTER':<8} {'CURSOR':<8} "
@@ -4978,12 +5205,42 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return code, doc
 
 
+def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Additive sync --full: identity/health/users/audit → cache (D25)."""
+    registry = load_registry()
+    now_iso = format_utc(datetime.now(timezone.utc))
+    controller_utc = datetime.now(timezone.utc)
+    targets = sync_target_nodes(
+        registry,
+        node_name=(getattr(args, "node", None) or "").strip() or None,
+        include_all=bool(getattr(args, "all", False)),
+        reseed_name=None,
+    )
+    conn = open_cache_for_sync()
+    try:
+        rows = [
+            sync_full_one_node(
+                conn, n, now_iso=now_iso, controller_utc=controller_utc
+            )
+            for n in targets
+        ]  # sequential; no --jobs
+    finally:
+        conn.close()
+    doc = sync_report(rows)
+    doc["operation"] = "sync_full"
+    return (
+        (0 if doc["state"] == OP_SUCCESS else MUTATION_EXIT_PARTIAL),
+        doc,
+    )
+
+
 @with_fleet_op_lock
 def cmd_sync(args: argparse.Namespace) -> int:
-    if getattr(args, "full", False):
-        die("sync --full requires 0.4.2", 2)
     as_json = bool(getattr(args, "as_json", False))
-    code, doc = run_sync_payload(args)
+    if getattr(args, "full", False):
+        code, doc = run_sync_full_payload(args)
+    else:
+        code, doc = run_sync_payload(args)
     if as_json:
         sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     else:
@@ -6199,7 +6456,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument(
         "--full",
         action="store_true",
-        help="full re-sync (requires 0.4.2)",
+        help=(
+            "identity+health+users+audit delta → cache "
+            "(0.4.2; default sync stays legacy)"
+        ),
     )
 
     p_audit = sub.add_parser(
