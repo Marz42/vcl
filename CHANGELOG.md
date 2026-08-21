@@ -2,11 +2,16 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.4.3
-
-### In progress
-
-- Docs drift fix (task-1): README / operator docs aligned to CTRL `0.4.2` + NODE `0.3.1`; `vcl-fleet` naming; D45 schema namespaces. **Stamp unchanged** until 0.4.3 closes (`VCL_FLEET_VERSION` remains `0.4.2`).
+## 0.4.3 (2026-08-21)
+**Controller-only** Adopt & Provision. Stamp: CTRL `0.4.3`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+### Added
+- **`node adopt` / `provision` / `register`（D33/D49）：** adopt=已装+SSH identity+register；provision=fresh install+verify+register+`sync --full`；register=registry-only。`node add`≡adopt；`node add --offline --node-id`≡register（0.4.x 无 warning）。
+- **非 air-gap D35 payload：** controller zip `payload/vincula-node-0.3.1.tar.gz`+.sha256+`payload-manifest.json`；本地+远端 digest fail-closed。
+- **Provision preflight（D35/D34）：** SSH/host-key/OS/arch/sudo/disk/冲突/端口/cmds/apt/HTTPS/sing-box/公网/Reality；`VCL_SERVER`/`--server` 跳过 ipify。
+- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）。
+### Notes
+- Evidence: [`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。LIVE AC-4.2-01/02/05/06 可选。
+- Schema namespaces (D45) 未变。业务在 `lib/provision.py`；`VCL_FLEET_VERSION=0.4.3`。
 
 ## 0.4.2 (2026-08-21)
 **Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
