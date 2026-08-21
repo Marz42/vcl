@@ -2,6 +2,12 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.3
+
+### In progress
+
+- Docs drift fix (task-1): README / operator docs aligned to CTRL `0.4.2` + NODE `0.3.1`; `vcl-fleet` naming; D45 schema namespaces. **Stamp unchanged** until 0.4.3 closes (`VCL_FLEET_VERSION` remains `0.4.2`).
+
 ## 0.4.2 (2026-08-21)
 **Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added
@@ -14,7 +20,7 @@
 ### Fixes (P1)
 - **P1-1** `workspace_mutation` sole portable-write entry (CAS/rev/digest).
 - **P1-2** cache rollback journal; RO `mode=ro` + `query_only`.
-- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write).
+- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write); `status --live` remains a **deprecated** alias for `probe`.
 - **P1-4** archive canonical excludes `imported_at`; restore rebuilds daily_usage.
 - **P1-5** local tag→user_id; audit/stats/status/UI Local Read Plane.
 - **P1-6** (also under Added) machine-local → CONFIG/STATE; copyable workspace root.
@@ -25,7 +31,8 @@
 - **F7-4** cached status `ok` from node health (explicit FAIL → non-zero).
 - **F7-5** workspace export refuses inconsistent / conflicted workspace.
 ### Notes
-- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md). LIVE optional AC-4.1-03/06.
+- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md) (offline gate **1652** / **884** PASS after F7). LIVE optional AC-4.1-03/06.
+- Schema namespaces (D45): accounting-db/v4 · fleet-registry/v2 · fleet-cache/v4 · workspace/v1 · audit-archive/v1.
 
 ## 0.4.1 (2026-08-21)
 

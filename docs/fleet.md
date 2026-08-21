@@ -1,23 +1,27 @@
-# Fleet operator guide (0.3.1)
+# Fleet operator guide（控制器 0.4.2 · 节点 0.3.1）
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
-the same logical user on many nodes, incrementally syncs audit into a local
+the same logical user on many nodes, syncs audit into a local **fleet-cache/v4**
 `fleet.db`, retires nodes after a final sync, and records physical instances
 (`node instances`). **`node replace`** is physical instance replacement onto a
 **runtime-only** new host (see below). Transport is
 **system OpenSSH**. It does not listen on a port, does not run as root, and
 does not use `/etc/vincula`.
 
-SPEC `vcl fleet <sub>` **≡** this binary: `vcl-fleet <sub>`. The node helper
-`vcl` / `vincula` has **no** `fleet` subcommand.
+入口二进制是 **`vcl-fleet`**（Unix `bin/vcl-fleet`；Windows `bin/vcl-fleet.cmd` →
+`lib/vincula-fleet.py`）。SPEC `vcl fleet <sub>` **≡** `vcl-fleet <sub>`。节点
+helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
+
+**版本：** CTRL `VCL_FLEET_VERSION=0.4.2`；NODE `VINCULA_VERSION=0.3.1`（解耦）。
+**0.4.3** 文档对齐进行中；戳暂不 bump。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
-[`known-issues-0.3.1.md`](known-issues-0.3.1.md)
-(0.3.0 freeze record: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md)).
+0.4.2 evidence: [`evidence/0.4.2/SUMMARY.md`](evidence/0.4.2/SUMMARY.md).
+Node-line gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
+[`known-issues-0.3.1.md`](known-issues-0.3.1.md).
 B14 live two-VPS replace: **PASS (2026-08-18)** —
 [`live-replace-checklist.md`](live-replace-checklist.md) ·
 [`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
@@ -39,25 +43,22 @@ reissue CSV is allowed. Do **not** routinely `scp` live `accounting.db`.
 
 | | |
 | --- | --- |
-| `VCL_FLEET_HOME` | If set, this directory (required in tests) |
-| Windows | `%APPDATA%\vincula\` (usually `C:\Users\<user>\AppData\Roaming\vincula`) |
-| Linux / macOS | `${XDG_CONFIG_HOME:-~/.config}/vincula/` |
-| Registry | `$FLEET_HOME/fleet.json` (schema **2**; **does not store** `instance_id` or passwords) |
-| Audit cache + instance history | `$FLEET_HOME/fleet.db` (schema **3**; controller-local, not node SoT) |
-| Last probe | `$FLEET_HOME/last-status.json` (health summary, not source of truth) |
-| Retired snapshot | `$FLEET_HOME/retired/<name>/` (identity / cursor / last-status; not a 0.3.0 backup) |
-| Replace backups | `$FLEET_HOME/backups/` (**0700**; pulled secretless `.tar`, files **0600**) |
-| Reissue CSV | `$FLEET_HOME/reissue-<name>-<UTC>.csv` (**0600**) unless `--output` |
-| Host keys | user default `known_hosts` (`%USERPROFILE%\.ssh\known_hosts` / `~/.ssh/known_hosts`) |
+| Portable workspace root | `VCL_FLEET_HOME` / `--workspace` / `VCL_FLEET_WORKSPACE`；缺省 Windows `%APPDATA%\vincula\`，Unix `${XDG_CONFIG_HOME:-~/.config}/vincula/` |
+| Workspace 根内容（可拷贝） | **仅** `workspace.json`（workspace/v1）· `fleet.json`（fleet-registry/v2）· `trust/` · `history/` |
+| CONFIG（机器本地） | `…/vincula/controllers/<fleet_id>/`：`controller.json` + `credential-bindings.json`（`access bind`） |
+| STATE（机器本地缓存） | `…/vincula/<fleet_id>/`（Unix：`${XDG_STATE_HOME:-~/.local/state}/vincula/<fleet_id>/`；Windows：`%LOCALAPPDATA%\vincula\<fleet_id>\`；可 `VCL_FLEET_LOCAL_STATE`）：**fleet-cache/v4** `fleet.db`、`archives/`、`ui-runtime/`、`workspace-view.json` |
+| Legacy | 旧 `$FLEET_HOME/machine-local/`、根下 `fleet.db` / `last-status.json` → 一次性 migrate；**不再**写入 |
+| Retired snapshot | `$FLEET_HOME/retired/<name>/` |
+| Replace backups | `$FLEET_HOME/backups/`（**0700**；secretless `.tar` **0600**） |
+| Host keys | workspace 激活时：`trust/known_hosts`（`StrictHostKeyChecking=yes`）；否则用户默认 `known_hosts` |
 
-`fleet.json` schema 1 is read and rewritten as schema 2 (`status` =
-`active` \| `disabled` \| `retired`). There is **no** automatic schema 2→1.
+`fleet.json` schema 1 读入并重写为 fleet-registry/v2（`status` =
+`active` \| `disabled` \| `retired`）。无自动 v2→v1。
 
-`fleet.db` schema **1 → 2** adds `instance_history` (explicit migrate +
-backfill from `sync_cursor`). Schema **2 → 3** adds `audit_events.export_seq`,
-`sync_cursor.last_export_seq`, and `sync_cursor.cursor_kind` (legacy cursors
-stay `event_id` until `--reseed`). There is no automatic downgrade. A
-schema-2 `fleet.db` is not understood by a 0.2.9 controller without migrate.
+`fleet.db`：**fleet-cache/v4**（`meta.fleet_id`；rollback journal `DELETE`，非 WAL）。
+历史路径：v1→v2（`instance_history`）→v3（`export_seq` / `cursor_kind`）→v4。
+错误文案命名空间：`unsupported fleet-cache schema:` / `unsupported fleet-registry schema:`（D45）。
+`instance_history` 的可移植 SoT 是 **`history/instances.jsonl`**；DB 可物化。
 
 ## Windows 11
 
@@ -110,13 +111,17 @@ python3 bin/vcl-fleet init
 | `vcl-fleet user enable\|disable\|rotate TAG --node N` | Single-node mutation; **`--node` required** |
 | `vcl-fleet user import FILE` | CSV `tag,display_name,department,nodes`; validate all rows before SSH |
 | `vcl-fleet user export [--credentials] --output FILE` | Merged CSV; credentials require `--output`, mode **0600** |
-| `vcl-fleet sync [--node NAME] [--reseed NAME]` | Incremental `audit export --after`; cursor in `fleet.db` |
-| `vcl-fleet audit user TAG --from RFC3339 --to RFC3339` | Synced connections, tagged with **node** |
+| `vcl-fleet sync [--node NAME] [--reseed NAME] [--full]` | 裸 sync=legacy 审计增量；`--full`（0.4.2）= identity+health+users+audit → cache |
+| `vcl-fleet audit user TAG --from RFC3339 --to RFC3339` | Local Read Plane：已 sync 的 connections，带 **node** |
+| `vcl-fleet audit archive create\|verify\|inspect\|restore` | **audit-archive/v1** `.vclaudit`；restore **不**动 `sync_cursor` |
 | `vcl-fleet stats user\|top users\|top hosts\|node NAME --days N` | `daily_usage` with **node** attribution |
-| `vcl-fleet status` | Probe table (see below) |
-| `vcl-fleet verify` | Aggregate identity / health / clock |
-| `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only read-only Local Audit UI (Overview / Audit / Health) |
-| `vcl-fleet version` | `vcl-fleet 0.3.1` |
+| `vcl-fleet status` | **Cache-only**（D58）：无 SSH；列 NAME NODE_ID LAST_SYNC DATA_AGE NODE_STATUS CURSOR |
+| `vcl-fleet probe` | Live SSH 探活（**无**位置参数节点名）；不写 cache；`status --live` = 已弃用别名 |
+| `vcl-fleet verify` | Aggregate identity / health / clock（SSH） |
+| `vcl-fleet workspace init\|show\|verify\|export\|import\|migrate` | portable workspace/v1 生命周期 |
+| `vcl-fleet access bind\|list\|verify` | 机器本地 credential bindings（D28） |
+| `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only 只读 Local Audit UI |
+| `vcl-fleet version` | `vcl-fleet 0.4.2` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`.
@@ -132,7 +137,9 @@ NEW_HOST must already have runtime (`sudo bash vincula.sh --runtime-only`)
 and **must not** have `$STATE_DIR/VERSION`. A fully bootstrapped host is
 refused.
 
-Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1** (`vcl-fleet ui`).
+Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
+(`vcl-fleet ui`). **0.4.1+** adds workspace / access / cache-only status；
+**0.4.2** adds `sync --full` / audit archive / fleet-cache/v4.
 
 ## Local Audit UI (0.3.1 / B15)
 
@@ -155,10 +162,10 @@ drill-downs**, not admin editors. There are **no** UI identity mutations
 (missing Origin is allowed for same-machine tools). Default views never show Reality keys,
 Clash secret, or VLESS URI.
 
-**Data:** `$FLEET_HOME` cache (`fleet.json`, `fleet.db`, `last-status.json`,
-optional `users-cache.json`). Buttons **Refresh status** / **Verify** /
-**Sync** call the same controller paths as the CLI (SSH-backed cache
-writes). GET audit is local cache only (no implicit SSH). Audit uses the
+**Data:** Local Read Plane from STATE cache（fleet-cache/v4 `fleet.db`、
+registry、`node_snapshot` / 可选 `users-cache`）。Buttons **Refresh status** /
+**Verify** / **Sync** call the same controller paths as the CLI（含 SSH 写入
+cache）。GET audit is local cache only (no implicit SSH). Audit uses the
 same interval-overlap query layer as `vcl-fleet audit user`, with a 31-day
 window cap and a 500-row default page. The HTTP server caps concurrent
 workers (503 when busy) and applies a per-request socket timeout.
@@ -502,9 +509,24 @@ rows for that `node_id`.
 Retire abandons the **logical** node. Keeping `node_id` on new hardware is
 the intended `node replace`.
 
-## `status` / `verify`
+## `status` / `probe` / `verify`
 
-`vcl-fleet status` columns:
+### `vcl-fleet status`（cache-only · D58）
+
+**无 SSH。** 健康主源是 `sync --full` 写入的 `node_snapshot`（legacy
+`last-status.json` 仅作 0.4.1 迁移回退）。列：
+
+```text
+NAME      NODE_ID     LAST_SYNC     DATA_AGE     NODE_STATUS     CURSOR
+```
+
+任一节点显式 FAIL → `ok=false`、非零退出。先跑 `sync --full` 再 `status`
+才能看到新鲜健康。
+
+### `vcl-fleet probe`（live SSH）
+
+**无位置参数节点名**（可选 `--json` / `--all`）。SSH `vcl identity --json` +
+`vcl status --json`。**不**写 `node_snapshot` / `last-status.json`。列：
 
 ```text
 NAME      NODE_ID     INSTANCE     SSH      PROXY      ACCOUNTING
@@ -517,13 +539,16 @@ sg        <uuid>      <uuid>       FAIL     UNKNOWN    UNKNOWN
 | --- | --- |
 | SSH `FAIL`, PROXY/ACCOUNTING `UNKNOWN`, INSTANCE `-` | SSH unreachable (connection refused, host-key failure, timeout) |
 | SSH `OK`, PROXY `FAIL` | SSH worked; remote proxy unhealthy |
-| SSH `OK`, ACCOUNTING `STALE` | Heartbeat stale (not an SSH failure; status exit 0 if nothing else FAILs) |
+| SSH `OK`, ACCOUNTING `STALE` | Heartbeat stale (not an SSH failure; probe exit 0 if nothing else FAILs) |
 | SSH `OK`, ACCOUNTING `FAIL` | Accounting unhealthy, not merely stale |
 | all `OK` | Identity + proxy + accounting healthy |
 
 Disabled and retired nodes are omitted unless `--all` (then `DISABLED` /
 `RETIRED`, retired `SSH=-`). Exit 1 if any enabled node is
 SSH/PROXY/ACCOUNTING `FAIL`. `--json` is schema 1.
+`status --live` is a **deprecated** alias for `probe`.
+
+### `vcl-fleet verify`
 
 `vcl-fleet verify` adds version, registry `node_id` match, and clock skew.
 A new `instance_id` with the same `node_id` (reinstall / replace) prints

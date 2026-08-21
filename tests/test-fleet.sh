@@ -126,9 +126,9 @@ assert_success "clock skew fail is 300s" \
   grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "clock skew fail check is audit-clock-health" \
   grep -q 'CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet schema version is 2" \
+assert_success "fleet-registry/v2 constant" \
   grep -q 'FLEET_REGISTRY_SCHEMA_VERSION = 2' "${PROJECT_DIR}/lib/vincula-fleet.py"
-assert_success "fleet.db schema version is 4" \
+assert_success "fleet-cache/v4 constant" \
   grep -q 'FLEET_CACHE_SCHEMA_VERSION = 4' "${PROJECT_DIR}/lib/vincula-fleet.py"
 assert_success "fleet schema aliases retained" \
   grep -q 'FLEET_SCHEMA_VERSION = FLEET_REGISTRY_SCHEMA_VERSION' "${PROJECT_DIR}/lib/vincula-fleet.py"
@@ -4211,9 +4211,9 @@ home_mode = stat.S_IMODE(home.stat().st_mode)
 assert home_mode == 0o700, oct(home_mode)
 PY
 if (( open_twice_rc == 0 )); then
-  pass "open_fleet_db twice keeps schema 4 DELETE journal fleet.db mode 0600"
+  pass "open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600"
 else
-  fail "open_fleet_db twice keeps schema 4 DELETE journal fleet.db mode 0600"
+  fail "open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600"
 fi
 
 migrate_rc=0
@@ -6702,9 +6702,9 @@ except SystemExit:
 raise SystemExit(1)
 PY
 if (( bad_schema_rc == 0 )); then
-  pass "unsupported fleet.json schema 3 is rejected"
+  pass "unsupported fleet-registry schema 3 is rejected"
 else
-  fail "unsupported fleet.json schema 3 is rejected"
+  fail "unsupported fleet-registry schema 3 is rejected"
 fi
 
 RETIRE_FLEET_HOME="${TEST_TMP}/fleet-home-retire"

@@ -1,5 +1,7 @@
 # Vincula 0.2.5 Release Readiness
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Tree version:** 0.2.5  
 **Date:** 2026-08-15  
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** (User Provisioning API freeze candidate)

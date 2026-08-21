@@ -4,6 +4,9 @@
 Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
 Fixture-green `node replace` (B10) alone is **not** that evidence.
 
+**命令名：** 下文在 VPS 上的 `vcl …` 是**节点** helper（仍为 `vcl`）；工作站
+操作为 `vcl-fleet …`。历史快照里若见裸 `vcl` 控制器写法，已迁移为 `vcl-fleet`。
+
 B14 live replace is **executed** (**PASS 2026-08-18**). B15 (localhost UI) is
 **implemented** (`vcl-fleet ui`). Tree recommendation is **READY** for `0.3.1`
 (see readiness); this file remains the historical B14 runbook. **B24**

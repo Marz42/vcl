@@ -1,12 +1,12 @@
-# Vincula 命令手册（0.3.1）
+# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.2）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
 从零装两台节点并接入 Fleet 的逐步命令见
 [已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
 
-合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
+合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.2：[`evidence/0.4.2/SUMMARY.md`](evidence/0.4.2/SUMMARY.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
 
-记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`。
+记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.2`；**0.4.3** 文档对齐进行中，戳暂不 bump）。
 
 ---
 
@@ -874,20 +874,44 @@ python3 bin/vcl-fleet node instances lax --json
 
 ---
 
-### `vcl-fleet status [--json] [--all]`
+### `vcl-fleet status [--json] [--all] [--live]`
 
-探活表：NAME、NODE_ID、INSTANCE、SSH、PROXY、ACCOUNTING。默认只探 `active`。
+**Cache-only（D58）：无 SSH。** 健康来自 `sync --full` → `node_snapshot`
+（legacy `last-status.json` 仅迁移回退）+ `fleet.db` `sync_cursor`。
+列：NAME、NODE_ID、LAST_SYNC、DATA_AGE、NODE_STATUS、CURSOR。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `--json` | 否 | |
+| `--all` | 否 | 含 disabled / retired（retired NODE_STATUS=`-`，不 SSH） |
+| `--live` | 否 | **已弃用**别名，等同 `probe` |
+
+先 `sync --full` 再 `status` 才能看到新鲜健康。实时探活请用 `probe`。
+
+```bash
+python3 bin/vcl-fleet status
+python3 bin/vcl-fleet status --json --all
+```
+
+---
+
+### `vcl-fleet probe [--json] [--all]`
+
+Live SSH 探活：**无位置参数节点名**。SSH `vcl identity --json` +
+`vcl status --json`。**不**写 `node_snapshot` / `last-status.json`。
+列：NAME、NODE_ID、INSTANCE、SSH、PROXY、ACCOUNTING。默认只探 `active`。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `--json` | 否 | |
 | `--all` | 否 | 含 disabled / retired。retired 的 SSH=`-`，不 SSH |
 
-时钟：skew `>30s` WARN，`>300s` FAIL（`audit-clock-health`）。不可调。
+时钟：skew `>30s` WARN，`>300s` FAIL（`audit-clock-health`）——见 `verify`。
+任一 SSH/PROXY/ACCOUNTING `FAIL` → exit 1；`STALE` 不算 FAIL。
 
 ```bash
-python3 bin/vcl-fleet status
-python3 bin/vcl-fleet status --json --all
+python3 bin/vcl-fleet probe
+python3 bin/vcl-fleet probe --json --all
 ```
 
 ---
@@ -1022,25 +1046,86 @@ python3 bin/vcl-fleet user export --credentials --output creds.csv
 
 ### `vcl-fleet sync [选项]`
 
-对 enabled 节点：读 `sync_cursor`（无则 `after=0`）→ SSH `vcl audit export --after CUR --jsonl` → 校验 meta/JSONL → 一事务 import → 成功才推进 cursor。
+**裸 `sync`（legacy）：** 对 enabled 节点读 `sync_cursor`（无则 `after=0`）→
+SSH `vcl audit export --after CUR --jsonl` → 校验 meta/JSONL → 一事务 import →
+成功才推进 cursor。
 
-**普通 sync 不 stamp。** 缺 `node_id`、错身份、meta 缺身份 → 整批失败，**cursor 不变**，stderr 指向 `--reseed`。
+**`sync --full`（0.4.2）：** 顺序拉取 identity + health + users + 审计增量写入
+fleet-cache；每节点一事务；PARTIAL → exit **2**。健康快照供后续 cache-only
+`status` 使用。
+
+**普通 sync / `--full` 都不 stamp。** 缺 `node_id`、错身份、meta 缺身份 → 整批失败，
+**cursor 不变**，stderr 指向 `--reseed`。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `--node NAME` | 否 | 只同步这一台（与 `--all` 互斥） |
 | `--all` | 否 | 把 disabled 列入结果（标 DISABLED、不 SSH）。retired 仍跳过 |
 | `--reseed NAME` | 否 | 删该节点本地 `audit_events` + `daily_usage`，cursor=0，再 `--after 0`，远端带 `--stamp-identity`。不删 `instance_history`。**不是** backup |
+| `--full` | 否 | identity+health+users+audit → cache（0.4.2）；省略则 legacy 审计 |
 | `--json` | 否 | |
 
 `CURSOR_EXPIRED` / `CURSOR_AHEAD` / 身份错误 → 该节点不 import，总体常为 exit **2**。`--reseed` 不是换机，也不是 snapshot。
 
 ```bash
 python3 bin/vcl-fleet sync
+python3 bin/vcl-fleet sync --full
 python3 bin/vcl-fleet sync --node lax
 python3 bin/vcl-fleet sync --all
 python3 bin/vcl-fleet sync --reseed lax
 python3 bin/vcl-fleet sync --json
+```
+
+---
+
+### `vcl-fleet workspace …`
+
+可移植 workspace/v1 生命周期（`--workspace` / `VCL_FLEET_WORKSPACE` 可指向根目录）：
+
+| 子命令 | 说明 |
+| --- | --- |
+| `init` | 创建 `workspace.json` + 目录 |
+| `show` | 打印 manifest |
+| `verify` | 校验 digest / conflict（D52） |
+| `export` | 可移植快照（无 secrets / machine-local） |
+| `import` | 导入快照（staging 校验后 commit；失败关闭） |
+| `migrate` | legacy → workspace（0.4.1；16 步原子 + `legacy-pre-workspace-*`） |
+
+```bash
+python3 bin/vcl-fleet workspace init
+python3 bin/vcl-fleet workspace show
+python3 bin/vcl-fleet workspace verify
+python3 bin/vcl-fleet workspace export --output ws.tgz
+python3 bin/vcl-fleet workspace import ws.tgz
+python3 bin/vcl-fleet workspace migrate
+```
+
+---
+
+### `vcl-fleet access bind|list|verify`
+
+机器本地 credential bindings（D28）。registry 只存 ref；私钥路径在
+CONFIG `controllers/<fleet_id>/`。
+
+```bash
+python3 bin/vcl-fleet access list
+python3 bin/vcl-fleet access bind admin --identity-file ~/.ssh/id_ed25519
+python3 bin/vcl-fleet access verify
+```
+
+---
+
+### `vcl-fleet audit archive create|verify|inspect|restore`
+
+**audit-archive/v1** `.vclaudit`（可选 `--age-recipient`）。`restore` **永不**
+改写 `sync_cursor` / `last_export_seq`。
+
+```bash
+python3 bin/vcl-fleet audit archive create --from 2026-08-01T00:00:00Z \
+  --to 2026-08-21T00:00:00Z --output out.vclaudit
+python3 bin/vcl-fleet audit archive verify out.vclaudit
+python3 bin/vcl-fleet audit archive inspect out.vclaudit
+python3 bin/vcl-fleet audit archive restore out.vclaudit
 ```
 
 ---
@@ -1052,8 +1137,8 @@ Users / Nodes 只作 drill-down，不是独立管理台。默认监听
 `http://127.0.0.1:8765`。仅允许 loopback（`127.0.0.1` / `::1`）；`0.0.0.0` /
 公网绑定会 **立即失败退出**（exit **2**）。关闭 UI 进程 **不影响** VPS 节点。
 
-**数据源：** `$FLEET_HOME` 本地缓存（`fleet.json` / `fleet.db` /
-`last-status.json` / 可选 `users-cache.json`）。页面按钮
+**数据源：** STATE 本地缓存（fleet-cache/v4 `fleet.db` / registry /
+`node_snapshot` / 可选 users cache）。页面按钮
 **Refresh status** / **Verify** / **Sync**（及 Overview 上的 **Refresh users**）
 走与 CLI 相同的控制器路径（含 SSH）。审计检索与
 `vcl-fleet audit user` 同一 interval-overlap 谓词；Top-N 与
@@ -1205,7 +1290,9 @@ python3 bin/vcl-fleet stats node lax --days 30
 | `RELEASE_URL` / `RELEASE_SHA256` | bootstrap | 生产 pin |
 | `VCL_ALLOW_INSECURE_SIBLING_DIGEST` | bootstrap | 非生产 |
 | `VCL_AGE_BIN` | 节点 backup | age 二进制路径 |
-| `VCL_FLEET_HOME` | 控制器 | 覆盖数据目录 |
+| `VCL_FLEET_HOME` | 控制器 | 可移植 workspace 根（或 legacy home） |
+| `VCL_FLEET_WORKSPACE` | 控制器 | 未设 `VCL_FLEET_HOME` 时别名到 workspace 根 |
+| `VCL_FLEET_LOCAL_STATE` | 控制器 | 覆盖 STATE 根（fleet.db / ui-runtime） |
 | `VCL_LOCK_TIMEOUT` | 节点 | flock 秒，默认 30 |
 | `VCL_FLEET_LOCK_TIMEOUT` | 控制器 | flock 秒，默认 30 |
 
@@ -1250,8 +1337,9 @@ python3 bin/vcl-fleet init
 python3 bin/vcl-fleet node add node-a --host "$VPS1" --host-key SHA256:…
 python3 bin/vcl-fleet node add node-b --host "$VPS2" --host-key SHA256:…
 python3 bin/vcl-fleet user add alice --nodes node-a,node-b --output alice.csv
-python3 bin/vcl-fleet sync
+python3 bin/vcl-fleet sync --full
 python3 bin/vcl-fleet status
+python3 bin/vcl-fleet probe
 python3 bin/vcl-fleet audit user alice \
   --from 2026-08-01T00:00:00Z --to 2026-08-20T00:00:00Z
 python3 bin/vcl-fleet stats node node-a --days 30
@@ -1284,11 +1372,11 @@ sudo vcl backup verify /var/backups/vincula/node-….tar
 ## 已验证部署：双 VPS + Fleet（全新） {#deploy-verified}
 
 面向操作员的 **端到端全新部署**：开发机打包 → 两台 Debian/Ubuntu VPS
-安装 Schema 4 节点 → 工作站 Fleet 注册 → 开通用户 → sync / audit / stats
+安装 **accounting-db/v4** 节点 → 工作站 Fleet 注册 → 开通用户 → sync / audit / stats
 抽查。占位符可换成你的主机与节点名；命令路径以 Linux/WSL 工作站为准
 （Windows 11 把 `python3 bin/vcl-fleet` 换成 `bin\vcl-fleet.cmd`）。
 
-**范围：** 全新安装（节点此前无 Vincula）。从旧版升级到 Schema 4 /
+**范围：** 全新安装（节点此前无 Vincula）。从旧版升级到 accounting-db/v4 /
 Protocol v2 时，注册后还须对每个节点跑一次
 `vcl-fleet sync --reseed NAME`；本节 fresh 路径 **不需要** 首次 reseed。
 
@@ -1322,7 +1410,7 @@ bash scripts/build-release.sh
 bash scripts/build-controller.sh   # 可选；工作站也可直接用源树 bin/vcl-fleet
 
 ls -l dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256
-python3 bin/vcl-fleet version      # 期望含 0.3.1
+python3 bin/vcl-fleet version      # 期望含 0.4.2（控制器）；节点仍为 0.3.1
 ```
 
 把 **每个 VPS** 各拷一份节点包（示例用 scp）：
@@ -1364,7 +1452,7 @@ sudo systemctl is-active sing-box vincula-accountd
 | --- | --- |
 | `vcl version` | 与打包版本一致（如 `0.3.1`） |
 | `vcl status` | proxy / accounting 可用（非 FAIL） |
-| `vcl accounting check` | Schema **4** 平面通过 |
+| `vcl accounting check` | accounting-db/v4 平面通过 |
 | 两服务 | `active` |
 
 **同版本重装注意：** `vincula.sh` 对 **已是同一版本** 的安装往往只做校验、
@@ -1412,15 +1500,18 @@ python3 bin/vcl-fleet node add "$NAME1" --host "$VPS1" --host-key SHA256:…
 python3 bin/vcl-fleet node add "$NAME2" --host "$VPS2" --host-key SHA256:…
 
 python3 bin/vcl-fleet node list
+python3 bin/vcl-fleet sync --full
 python3 bin/vcl-fleet status
+python3 bin/vcl-fleet probe
 python3 bin/vcl-fleet verify
 ```
 
 非交互环境 **必须** 带 `--host-key`；仅有 keyscan、无 pin 时 add 会失败
 （文案含 `non-interactive add requires --host-key`）。
 
-**验收：** `node list` 两行 `enabled` / `active`；`status` / `verify` 对两节点
-SSH 与身份一致（允许 ACCOUNTING `STALE` 警告，视流量而定）。
+**验收：** `node list` 两行 `enabled` / `active`；`sync --full` 后 `status` 为
+cache 健康；`probe` / `verify` 对两节点 live SSH 与身份一致（允许 ACCOUNTING
+`STALE`，视流量而定）。
 
 ### 5. 首次 sync
 
@@ -1517,10 +1608,10 @@ python3 bin/vcl-fleet ui
 
 | # | 项 | 通过标准 |
 | --- | --- | --- |
-| 1 | 两台 VPS `vcl accounting check` | Schema 4 平面 OK |
+| 1 | 两台 VPS `vcl accounting check` | accounting-db/v4 平面 OK |
 | 2 | 两台 `audit export` meta | `protocol_version=2`，`cursor_kind=export_seq` |
 | 3 | `vcl-fleet node list` | `$NAME1` / `$NAME2` active |
-| 4 | `vcl-fleet status` / `verify` | 无 SSH FAIL；身份匹配 |
+| 4 | `vcl-fleet sync --full` 后 `status`；`probe` / `verify` | cache 健康 + live 无 SSH FAIL；身份匹配 |
 | 5 | `vcl-fleet sync --json` | 成功；cursor 合理 |
 | 6 | `user add` / `user import` | SUCCESS 或已 PARTIAL 补齐 |
 | 7 | `audit user` / `stats node` | 语法正确；有流量时有行 |
@@ -1613,7 +1704,7 @@ bin\vcl-fleet.cmd ui
 
 | 检查 | 期望 |
 | --- | --- |
-| Overview KPI | 节点数、healthy/unhealthy、上次 probe 时间 |
+| Overview KPI | 节点数、healthy/unhealthy、上次 sync/status 缓存时间 |
 | approximate 徽标 | 可见；文案强调非计费 |
 | Top users / destinations | 有 sync 数据时非空；声明 7d / approximate |
 | 顶栏警告 | ACCOUNTING `STALE`/`FAIL`、时钟、无 status 等优先于图表 |

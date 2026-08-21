@@ -1,5 +1,7 @@
 # Vincula 0.2.9 Release Readiness
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Tree version:** 0.2.9  
 **Date:** 2026-08-16  
 **Focus:** Fleet Users & Audit (`--user-id`, PARTIAL multi-node provision, `audit export --after` / `CURSOR_EXPIRED`, `vcl-fleet sync` / `fleet.db`, fleet audit/stats with node tags, `node retire`, `fleet.json` schema 2)  

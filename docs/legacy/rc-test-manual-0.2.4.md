@@ -1,5 +1,7 @@
 # Vincula 0.2.4 — READY FOR RC 测试手册
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 面向把当前结论（`READY WITH DOCUMENTED LIMITATIONS`）推进到 **`READY FOR RC`** 的实机验收。  
 配套：[`release-readiness-0.2.4.md`](release-readiness-0.2.4.md) · [`known-issues-0.2.4.md`](known-issues-0.2.4.md)。  
 自动化基线：`bash tests/test.sh`（须全绿）。

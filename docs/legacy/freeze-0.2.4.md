@@ -1,5 +1,7 @@
 # Vincula 0.2.4 Freeze Record
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Freeze date:** 2026-08-15  
 **Policy:** After this freeze, **0.2.4 only accepts P0/P1 regression fixes** (install/migrate/rollback/data correctness). No new features / stats / Reliable Accounting in 0.2.4.
 
