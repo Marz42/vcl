@@ -99,6 +99,11 @@ def candidate_host_keys(host: str, port: int) -> list[str]:
 
 
 def append_known_hosts(line: str) -> None:
+    """Append a known_hosts line.
+
+    Workspace trust active → write only via workspace_mutation (P1-1).
+    Legacy (no workspace.json) → append to ~/.ssh/known_hosts, no CAS.
+    """
     path = default_known_hosts_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -111,11 +116,24 @@ def append_known_hosts(line: str) -> None:
         present = {row.strip() for row in existing.splitlines() if row.strip()}
         if line.strip() in present:
             return
-    with path.open("a", encoding="utf-8") as fh:
-        if existing and not existing.endswith("\n"):
-            fh.write("\n")
-        fh.write(line.rstrip("\n") + "\n")
-    os.chmod(path, 0o600)
+
+    def _write() -> None:
+        cur = ""
+        if path.is_file():
+            cur = path.read_text(encoding="utf-8")
+            present_now = {row.strip() for row in cur.splitlines() if row.strip()}
+            if line.strip() in present_now:
+                return
+        with path.open("a", encoding="utf-8") as fh:
+            if cur and not cur.endswith("\n"):
+                fh.write("\n")
+            fh.write(line.rstrip("\n") + "\n")
+        os.chmod(path, 0o600)
+
+    if _host.workspace_trust_active() and not _host.in_workspace_mutation():
+        _host.workspace_mutation(_write)
+        return
+    _write()
 
 
 def pin_host_key(host: str, port: int, host_key: str) -> None:

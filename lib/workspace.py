@@ -57,6 +57,8 @@ WS_ERR_ROLLBACK, WS_ERR_DIVERGED, WS_ERR_INCONSISTENT = (
     "WORKSPACE_INCONSISTENT",
 )
 WS_ERR_CAS = "WORKSPACE_CAS_REJECTED"
+# Reentrancy for workspace_mutation: inner portable writers write raw only.
+_mutation_depth = 0
 # Portable snapshot members only (D22/D28): never machine-local/, fleet.db, keys.
 EXPORT_MEMBERS = (
     "workspace.json",
@@ -426,8 +428,22 @@ def load_registry(path: Optional[Path] = None) -> dict[str, Any]:
         _host.die(f"cannot read {path}: {exc}")
     return validate_registry(data)
 
-def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> None:
-    path = fleet_registry_path() if path is None else Path(path)
+def in_workspace_mutation() -> bool:
+    return _mutation_depth > 0
+
+
+def _is_live_registry_path(path: Optional[Path]) -> bool:
+    """True when path is the active workspace fleet.json (or default None)."""
+    if path is None:
+        return True
+    try:
+        return Path(path).resolve() == fleet_registry_path().resolve()
+    except OSError:
+        return False
+
+
+def _write_registry_file(path: Path, registry: dict[str, Any]) -> None:
+    """Raw fleet.json write — no CAS. Call only from workspace_mutation or legacy."""
     payload = validate_registry(registry)
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -449,6 +465,33 @@ def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> N
         except OSError:
             pass
         raise
+
+
+def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> None:
+    """Save fleet.json.
+
+    When workspace.json is active and path is the live registry, ALL writes go
+    through workspace_mutation (P1-1). Staging paths and legacy homes (no
+    workspace.json) write directly without CAS/revision bump.
+    """
+    path = fleet_registry_path() if path is None else Path(path)
+    payload = validate_registry(registry)
+    new_text = json.dumps(payload, indent=2) + "\n"
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == new_text:
+                return
+        except OSError:
+            pass
+
+    if (
+        workspace_trust_active()
+        and _is_live_registry_path(path)
+        and not in_workspace_mutation()
+    ):
+        workspace_mutation(lambda: _write_registry_file(path, payload))
+        return
+    _write_registry_file(path, payload)
 
 
 def mint_fleet_id() -> str:
@@ -611,6 +654,7 @@ def create_workspace_manifest(
     fleet_id: str | None = None,
     controller_id: str | None = None,
 ) -> dict[str, Any]:
+    """Genesis workspace.json: revision 1, write_id minted, parent=null (P1-1)."""
     path = workspace_manifest_path()
     if path.is_file():
         _host.die(f"workspace manifest already exists: {path}")
@@ -621,6 +665,9 @@ def create_workspace_manifest(
     manifest = empty_workspace_manifest(
         name=name, fleet_id=fid, controller_id=cid
     )
+    # empty_workspace_manifest starts at revision 0 (migrate bootstrap);
+    # init establishes the first committed tip at revision 1.
+    manifest["revision"] = 1
     save_workspace_manifest(manifest, path)
     refresh_manifest_digest(manifest)
     save_workspace_manifest(manifest, path)
@@ -733,9 +780,67 @@ def detect_workspace_conflict(
     return None
 
 
+def workspace_mutation(mutator: Callable[[], None]) -> dict[str, Any]:
+    """Single entry for ALL portable writes when workspace is active (D52/P1-1).
+
+    Flow:
+      validate current digest/view
+      record revision/write_id
+      mutate portable state (mutator)
+      re-read / CAS check (rev/write_id unchanged)
+      revision += 1; new write_id; parent = (old revision, old write_id)
+      recompute state_digest; atomic workspace.json commit; remember view
+
+    Rule: fleet.json / trust/known_hosts / history/* may only change through
+    this entry while workspace.json exists. Legacy homes without workspace.json
+    keep prior direct-write paths (no CAS).
+    """
+    global _mutation_depth
+    if not workspace_trust_active():
+        _host.die("workspace_mutation requires an active workspace")
+
+    manifest = load_workspace_manifest()
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        _host.die(conflict)
+
+    old_rev = int(manifest["revision"])
+    old_wid = str(manifest["write_id"])
+    remember_workspace_view(manifest)
+
+    _mutation_depth += 1
+    try:
+        mutator()
+    finally:
+        _mutation_depth -= 1
+
+    reread = load_workspace_manifest()
+    if (reread["revision"], reread["write_id"]) != (old_rev, old_wid):
+        _host.die(WS_ERR_CAS)
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    updated = dict(reread)
+    updated["parent_revision"] = old_rev
+    updated["parent_write_id"] = old_wid
+    updated["revision"] = old_rev + 1
+    updated["write_id"] = str(uuid.uuid4())
+    updated["updated_at"] = now
+    ctrl = ensure_controller(updated["fleet_id"])
+    updated["last_writer_controller_id"] = ctrl["controller_id"]
+    refresh_manifest_digest(updated)
+    save_workspace_manifest(updated)
+    remember_workspace_view(updated)
+    return updated
+
+
 def cas_mutate_workspace(
     mutator: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
+    """Low-level CAS helper: mutator(manifest)->manifest.
+
+    Prefer workspace_mutation for portable fleet/trust/history writes (P1-1).
+    Retained for callers that only rewrite workspace.json under CAS.
+    """
     manifest = load_workspace_manifest()
     conflict = detect_workspace_conflict(manifest)
     if conflict is not None:
@@ -753,8 +858,8 @@ def cas_mutate_workspace(
     return mutated
 
 
-def append_instance_history_line(rec: dict[str, Any]) -> None:
-    """Atomic append one portable instance-history/v1 JSONL record (no secrets)."""
+def _append_instance_history_line_raw(rec: dict[str, Any]) -> None:
+    """Raw history append — no CAS. Call from workspace_mutation or legacy."""
     if not isinstance(rec, dict):
         _host.die("instance-history/v1 record must be an object")
     for k in rec:
@@ -775,6 +880,18 @@ def append_instance_history_line(rec: dict[str, Any]) -> None:
     finally:
         os.close(fd)
     _chmod_private(path, 0o600)
+
+
+def append_instance_history_line(rec: dict[str, Any]) -> None:
+    """Append one portable instance-history/v1 JSONL record (no secrets).
+
+    Workspace active → must go through workspace_mutation (P1-1).
+    Legacy (no workspace.json) → direct append, no CAS.
+    """
+    if workspace_trust_active() and not in_workspace_mutation():
+        workspace_mutation(lambda: _append_instance_history_line_raw(rec))
+        return
+    _append_instance_history_line_raw(rec)
 
 
 def parse_instance_history_jsonl(path: Path | None = None) -> list[dict[str, Any]]:
@@ -1303,7 +1420,9 @@ def _execute_migrate_locked() -> dict[str, Any]:
         ensure_controller(fleet_id, controller_id=ctrl["controller_id"])
 
         committed = True
-        remember_workspace_view(load_workspace_manifest())
+        # Portable files + bootstrap workspace.json (revision 0) are in place.
+        # Advance tip through the single mutation entry (P1-1): rev 0 → 1.
+        workspace_mutation(lambda: None)
         _migrate_fail_after("atomic commit")
         _migrate_fail_after("preserve old tree as legacy backup")
 
@@ -1503,12 +1622,14 @@ def import_workspace(src: Path) -> dict[str, Any]:
         _host.die("portable workspace forbids identity_file in fleet.json")
 
     manifest = load_workspace_manifest()
-    refresh_manifest_digest(manifest)
-    save_workspace_manifest(manifest)
+    # Imported archive tip must already digest-match portable members.
+    if manifest.get("state_digest") != compute_state_digest(manifest=manifest):
+        refresh_manifest_digest(manifest)
+        save_workspace_manifest(manifest)
     ensure_controller(manifest["fleet_id"])
     ensure_fleet_local_state(manifest["fleet_id"])
-    remember_workspace_view(manifest)
-    return manifest
+    # Local import is a portable write: bump revision/write_id via single entry.
+    return workspace_mutation(lambda: None)
 
 
 ADMIN_CREDENTIAL_REF_KEY = "admin_credential_ref"

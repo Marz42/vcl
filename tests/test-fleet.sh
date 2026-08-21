@@ -188,6 +188,9 @@ for key in (
     assert key in loaded, key
 assert loaded["state_digest"] == mod.compute_state_digest()
 assert loaded["state_digest"].startswith("sha256:")
+assert loaded["revision"] == 1, loaded["revision"]
+assert loaded["parent_revision"] is None and loaded["parent_write_id"] is None
+assert mod.UUID_RE.fullmatch(loaded["write_id"])
 
 bad = dict(loaded)
 bad["schema_version"] = 99
@@ -282,6 +285,65 @@ except SystemExit:
     pass
 mod.die = orig_die
 assert mod.WS_ERR_CAS in msgs, msgs
+
+# Heal tip after cas_mutate reject left diverged write_id on disk
+view = mod.load_workspace_view()
+m = mod.load_workspace_manifest()
+m["revision"] = view["last_seen_revision"]
+m["write_id"] = view["last_seen_write_id"]
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+
+# P1-1: workspace_mutation CAS reject (external fork of write_id)
+msgs = []
+mod.die = _capture_die
+
+def _stale_portable():
+    stolen = mod.load_workspace_manifest()
+    stolen["write_id"] = str(uuid.uuid4())
+    mod.save_workspace_manifest(stolen)
+
+try:
+    mod.workspace_mutation(_stale_portable)
+    raise AssertionError("expected WORKSPACE_CAS_REJECTED via workspace_mutation")
+except SystemExit:
+    pass
+mod.die = orig_die
+assert mod.WS_ERR_CAS in msgs, msgs
+
+# Restore tip: CAS rejectors may leave a diverged write_id on disk
+view = mod.load_workspace_view()
+m = mod.load_workspace_manifest()
+m["revision"] = view["last_seen_revision"]
+m["write_id"] = view["last_seen_write_id"]
+mod.refresh_manifest_digest(m)
+mod.save_workspace_manifest(m)
+mod.remember_workspace_view(m)
+assert mod.detect_workspace_conflict(m) is None
+
+# P1-1: history append bumps revision/write_id/parent; digest stays consistent
+before = mod.load_workspace_manifest()
+mod.append_instance_history_line({
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "started_at": "2026-08-21T00:00:00Z",
+    "retired_at": None,
+    "endpoint": "203.0.113.10:443",
+    "reason": "sync-first-sight",
+})
+after = mod.load_workspace_manifest()
+assert after["revision"] == before["revision"] + 1, (before, after)
+assert after["write_id"] != before["write_id"]
+assert after["parent_revision"] == before["revision"]
+assert after["parent_write_id"] == before["write_id"]
+assert after["state_digest"] == mod.compute_state_digest()
+assert mod.detect_workspace_conflict(after) is None
+
+# Simulated external fork: same rev, different write_id in view → DIVERGED
+view_div = dict(mod.load_workspace_view())
+view_div["last_seen_write_id"] = str(uuid.uuid4())
+assert mod.detect_workspace_conflict(after, view_div) == mod.WS_ERR_DIVERGED
 PY
 if (( ws_b1_rc == 0 )); then
   pass "B1 workspace manifest mint/digest/detect/CAS"
@@ -289,6 +351,183 @@ else
   fail "B1 workspace manifest mint/digest/CAS"
 fi
 export VCL_FLEET_HOME="${SAVED_WS_B1_HOME}"
+
+# --- 0.4.2 P1-1: workspace_mutation single entry for portable writes ---
+SAVED_P11_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="${TEST_TMP}/ws-p1-1"
+rm -rf "${VCL_FLEET_HOME}"
+mkdir -p "${VCL_FLEET_HOME}"
+assert_success "P1-1 workspace init" fleet workspace init
+P11_REV0=$(python3 -c 'import json;print(json.load(open("'"${VCL_FLEET_HOME}/workspace.json"'"))["revision"])')
+assert_equal "P1-1 init revision is 1" "1" "$P11_REV0"
+assert_success "P1-1 verify after init" fleet workspace verify
+
+# Registry change via public save_registry / node add
+assert_success "P1-1 offline node add" \
+  fleet node add p11node --host 203.0.113.50 --offline \
+    --node-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || p11_reg_rc=$?
+import importlib.util, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_p11", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+assert m["revision"] >= 2, m["revision"]
+assert m["parent_revision"] == m["revision"] - 1
+assert m["parent_write_id"]
+assert m["state_digest"] == mod.compute_state_digest()
+assert mod.detect_workspace_conflict(m) is None
+PY
+p11_reg_rc=${p11_reg_rc:-0}
+if (( p11_reg_rc == 0 )); then
+  pass "P1-1 registry save bumps revision/parent"
+else
+  fail "P1-1 registry save bumps revision/parent"
+fi
+assert_success "P1-1 verify after registry" fleet workspace verify
+
+# Trust append
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || p11_trust_rc=$?
+import importlib.util, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_p11t", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+before = mod.load_workspace_manifest()
+line = "203.0.113.50 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP11trustprobekeymaterial0000001"
+mod.append_known_hosts(line)
+after = mod.load_workspace_manifest()
+assert after["revision"] == before["revision"] + 1
+assert after["write_id"] != before["write_id"]
+assert after["parent_revision"] == before["revision"]
+assert after["parent_write_id"] == before["write_id"]
+kh = (mod.fleet_home() / "trust" / "known_hosts").read_text(encoding="utf-8")
+assert "203.0.113.50" in kh
+assert after["state_digest"] == mod.compute_state_digest()
+assert mod.detect_workspace_conflict(after) is None
+mod.append_known_hosts(line)
+after2 = mod.load_workspace_manifest()
+assert after2["revision"] == after["revision"]
+assert after2["write_id"] == after["write_id"]
+PY
+p11_trust_rc=${p11_trust_rc:-0}
+if (( p11_trust_rc == 0 )); then
+  pass "P1-1 trust append bumps revision/parent"
+else
+  fail "P1-1 trust append bumps revision/parent"
+fi
+assert_success "P1-1 verify after trust" fleet workspace verify
+
+# History append
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || p11_hist_rc=$?
+import importlib.util, sys
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_p11h", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+before = mod.load_workspace_manifest()
+mod.append_instance_history_line({
+    "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "instance_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "started_at": "2026-08-21T01:00:00Z",
+    "retired_at": None,
+    "endpoint": "203.0.113.50:443",
+    "reason": "sync-first-sight",
+})
+after = mod.load_workspace_manifest()
+assert after["revision"] == before["revision"] + 1
+assert after["parent_revision"] == before["revision"]
+assert after["parent_write_id"] == before["write_id"]
+assert after["state_digest"] == mod.compute_state_digest()
+PY
+p11_hist_rc=${p11_hist_rc:-0}
+if (( p11_hist_rc == 0 )); then
+  pass "P1-1 history append bumps revision/parent"
+else
+  fail "P1-1 history append bumps revision/parent"
+fi
+assert_success "P1-1 verify after history" fleet workspace verify
+
+# Simulated external fork detected
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY' || p11_fork_rc=$?
+import importlib.util, sys, uuid
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet_p11f", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+m = mod.load_workspace_manifest()
+view = dict(mod.load_workspace_view())
+view["last_seen_write_id"] = str(uuid.uuid4())
+assert mod.detect_workspace_conflict(m, view) == mod.WS_ERR_DIVERGED
+PY
+p11_fork_rc=${p11_fork_rc:-0}
+if (( p11_fork_rc == 0 )); then
+  pass "P1-1 external fork (same rev diff write_id) detected"
+else
+  fail "P1-1 external fork (same rev diff write_id) detected"
+fi
+
+# Grep: live portable writers go through workspace_mutation / guarded entry
+python3 - "${PROJECT_DIR}" <<'PY' || p11_grep_rc=$?
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+ws = (root / "lib" / "workspace.py").read_text(encoding="utf-8")
+tr = (root / "lib" / "trust.py").read_text(encoding="utf-8")
+assert "def workspace_mutation(" in ws
+assert "workspace_mutation(lambda: _write_registry_file(path, payload))" in ws
+assert "workspace_mutation(lambda: _append_instance_history_line_raw(rec))" in ws
+assert ws.count("workspace_mutation(lambda: None)") >= 2  # migrate + import
+assert "_host.workspace_mutation(_write)" in tr
+assert "workspace_trust_active()" in tr and "in_workspace_mutation()" in tr
+print("ok")
+PY
+p11_grep_rc=${p11_grep_rc:-0}
+if (( p11_grep_rc == 0 )); then
+  pass "P1-1 portable writers gated by workspace_mutation"
+else
+  fail "P1-1 portable writers gated by workspace_mutation"
+fi
+
+# Migrate: revision advances to 1 via workspace_mutation
+P11_MIG="${TEST_TMP}/ws-p1-1-mig"
+rm -rf "$P11_MIG"
+mkdir -p "$P11_MIG"
+SAVED_P11_MIG_HOME="${VCL_FLEET_HOME}"
+export VCL_FLEET_HOME="$P11_MIG"
+fleet init >/dev/null
+fleet node add mig1 --host 203.0.113.60 --offline \
+  --node-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11 >/dev/null
+assert_success "P1-1 migrate" fleet workspace migrate
+P11_MIG_REV=$(python3 -c 'import json;print(json.load(open("'"${P11_MIG}/workspace.json"'"))["revision"])')
+assert_equal "P1-1 migrate revision is 1" "1" "$P11_MIG_REV"
+P11_MIG_PARENT=$(python3 -c 'import json;print(json.load(open("'"${P11_MIG}/workspace.json"'"))["parent_revision"])')
+assert_equal "P1-1 migrate parent_revision is 0" "0" "$P11_MIG_PARENT"
+assert_success "P1-1 verify after migrate" fleet workspace verify
+export VCL_FLEET_HOME="${SAVED_P11_MIG_HOME}"
+
+# Import: bumps revision past archive tip
+P11_EXP="${TEST_TMP}/ws-p1-1-exp"
+P11_IMP="${TEST_TMP}/ws-p1-1-imp"
+P11_TGZ="${TEST_TMP}/ws-p1-1.tgz"
+rm -rf "$P11_EXP" "$P11_IMP"
+mkdir -p "$P11_EXP"
+export VCL_FLEET_HOME="$P11_EXP"
+assert_success "P1-1 export-home init" fleet workspace init
+P11_EXP_REV=$(python3 -c 'import json;print(json.load(open("'"${P11_EXP}/workspace.json"'"))["revision"])')
+assert_success "P1-1 export" fleet workspace export "$P11_TGZ"
+rm -rf "$P11_IMP"
+mkdir -p "$P11_IMP"
+export VCL_FLEET_HOME="$P11_IMP"
+assert_success "P1-1 import" fleet workspace import "$P11_TGZ"
+P11_IMP_REV=$(python3 -c 'import json;print(json.load(open("'"${P11_IMP}/workspace.json"'"))["revision"])')
+python3 -c "
+exp, imp = int('${P11_EXP_REV}'), int('${P11_IMP_REV}')
+assert imp == exp + 1, (exp, imp)
+" && pass "P1-1 import bumped revision" || fail "P1-1 import bumped revision"
+assert_success "P1-1 verify after import" fleet workspace verify
+export VCL_FLEET_HOME="${SAVED_P11_HOME}"
 
 # --- 0.4.1 B2: D28 credential bindings + access CLI + SSH resolve (T11) ---
 SAVED_WS_B2_HOME="${VCL_FLEET_HOME}"
@@ -2007,7 +2246,8 @@ spec = importlib.util.spec_from_file_location("vcl_fleet_b6", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 reg = {"schema_version": 2, "nodes": []}
-mod._WS._save_registry_unlocked(None, reg)
+# Digest already INCONSISTENT after tamper — use raw write then refresh tip.
+mod._WS._write_registry_file(mod.fleet_registry_path(), reg)
 m = mod.load_workspace_manifest()
 mod.refresh_manifest_digest(m)
 mod.save_workspace_manifest(m)
