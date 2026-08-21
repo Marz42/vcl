@@ -1,4 +1,4 @@
-# Fleet operator guide（控制器 0.4.2 · 节点 0.3.1）
+# Fleet operator guide（控制器 0.4.3 · 节点 0.3.1）
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, syncs audit into a local **fleet-cache/v4**
@@ -12,14 +12,13 @@ does not use `/etc/vincula`.
 `lib/vincula-fleet.py`）。SPEC `vcl fleet <sub>` **≡** `vcl-fleet <sub>`。节点
 helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
 
-**版本：** CTRL `VCL_FLEET_VERSION=0.4.2`；NODE `VINCULA_VERSION=0.3.1`（解耦）。
-**0.4.3** 文档对齐进行中；戳暂不 bump。
+**版本：** CTRL `VCL_FLEET_VERSION=0.4.3`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-0.4.2 evidence: [`evidence/0.4.2/SUMMARY.md`](evidence/0.4.2/SUMMARY.md).
+0.4.3 evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
 Node-line gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md).
 B14 live two-VPS replace: **PASS (2026-08-18)** —
@@ -98,7 +97,10 @@ python3 bin/vcl-fleet init
 | Command | Purpose |
 | --- | --- |
 | `vcl-fleet init` | Create empty `fleet.json` (refuses to overwrite a non-empty registry) |
-| `vcl-fleet node add NAME --host HOST` | SSH `vcl identity --json` and register |
+| `vcl-fleet node adopt NAME --host HOST` | SSH `vcl identity --json` and register (已装节点) |
+| `vcl-fleet node provision NAME --host HOST` | Fresh VPS：install+verify+register+`sync --full`（钉 Node 0.3.1） |
+| `vcl-fleet node register NAME --node-id UUID --host HOST` | Registry-only；无 SSH |
+| `vcl-fleet node add NAME --host HOST` | **Legacy alias** ≡ `adopt`；`--offline --node-id` ≡ `register` |
 | `vcl-fleet node list` | `NAME NODE_ID SSH_HOST USER ENABLED STATUS` |
 | `vcl-fleet node show NAME` | One record |
 | `vcl-fleet node set NAME --host NEW_HOST` | **Endpoint rebind.** Change `ssh_host` only; **`node_id` stays**; credentials stay |
@@ -121,10 +123,10 @@ python3 bin/vcl-fleet init
 | `vcl-fleet workspace init\|show\|verify\|export\|import\|migrate` | portable workspace/v1 生命周期 |
 | `vcl-fleet access bind\|list\|verify` | 机器本地 credential bindings（D28） |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only 只读 Local Audit UI |
-| `vcl-fleet version` | `vcl-fleet 0.4.2` |
+| `vcl-fleet version` | `vcl-fleet 0.4.3` |
 | `vcl-fleet help` | Help |
 
-`node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`.
+`node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`（legacy；优先 `adopt` / `register`）。
 `--instance-id` is accepted and **ignored** (not stored).
 `--identity-file` is a **local** private-key path (not the key bytes). SSH/SCP then pass `-i PATH -o IdentitiesOnly=yes`. Unset keeps the OpenSSH default (agent / default keys). There is no password-SSH fallback; use the cloud console / serial, or a non-root account with sudo.
 
@@ -139,7 +141,22 @@ refused.
 
 Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 (`vcl-fleet ui`). **0.4.1+** adds workspace / access / cache-only status；
-**0.4.2** adds `sync --full` / audit archive / fleet-cache/v4.
+**0.4.2** adds `sync --full` / audit archive / fleet-cache/v4；
+**0.4.3** adds `node adopt` / `provision` / `register`（`add` alias retained）.
+
+## Adopt / Provision / Register（0.4.3）
+
+| Command | Role | Alias |
+| --- | --- | --- |
+| `node adopt` | 已装 + SSH `vcl identity --json` + register | `node add`（在线） |
+| `node provision` | fresh install + verify + register + `sync --full` | （无） |
+| `node register` | registry-only；无 SSH | `node add --offline --node-id` |
+
+- **D34 `--host-key`：** non-interactive（无 TTY）必须 `--host-key SHA256:…`；禁 `StrictHostKeyChecking=no`。
+- **D35 非 air-gap：** controller zip 内嵌 digest-verified first-party payload（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。远端仍可需 apt / HTTPS / sing-box release / 公网 IP / Reality。**不要**称 provision 为 air-gap。`VCL_SERVER` / `--server` 跳过 ipify 并传给安装器。
+- **`REMOTE_READY_LOCAL_UNCOMMITTED`：** 远端已装好、本地 registry 提交失败 → **只** `node adopt` 修复，**禁止**重跑 installer。
+- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）；Controller 戳 `0.4.3`。
+- Evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。
 
 ## Local Audit UI (0.3.1 / B15)
 
@@ -200,18 +217,22 @@ Replace **never** sends `--include-secrets`. Key reuse is node-side
 
 ## First node add (`--host-key`)
 
-Non-interactive add (CI, scripts, no TTY) **requires** `--host-key SHA256:...`.
+Prefer **`node adopt`**（已装）或 **`node provision`**（fresh VPS）；`node add` 仍可用（legacy ≡ adopt）。
+
+Non-interactive add / adopt / provision (CI, scripts, no TTY) **requires** `--host-key SHA256:...`.
 On a TTY, OpenSSH may prompt to confirm the host key.
 
 ```bat
-bin\vcl-fleet.cmd node add lax --host 203.0.113.10 --host-key SHA256:BASE64FINGERPRINT
+bin\vcl-fleet.cmd node adopt lax --host 203.0.113.10 --host-key SHA256:BASE64FINGERPRINT
 ```
 
 ```bash
-python3 bin/vcl-fleet node add lax --host root@203.0.113.10 --host-key SHA256:BASE64FINGERPRINT
+python3 bin/vcl-fleet node adopt lax --host root@203.0.113.10 --host-key SHA256:BASE64FINGERPRINT
+# fresh VPS:
+python3 bin/vcl-fleet node provision lax --host 203.0.113.10 --host-key SHA256:BASE64FINGERPRINT
 ```
 
-Flow:
+Flow (adopt / online add):
 
 ```text
 resolve SSH target
@@ -228,6 +249,8 @@ and writes nothing.
 Offline register (mock / unreachable host, still listed):
 
 ```bash
+python3 bin/vcl-fleet node register sg --host 203.0.113.12 --node-id <uuid>
+# legacy alias:
 python3 bin/vcl-fleet node add sg --host 203.0.113.12 --offline --node-id <uuid>
 ```
 

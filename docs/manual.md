@@ -1,12 +1,12 @@
-# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.2）
+# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.3）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
 从零装两台节点并接入 Fleet 的逐步命令见
 [已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
 
-合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.2：[`evidence/0.4.2/SUMMARY.md`](evidence/0.4.2/SUMMARY.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
+合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.3：[`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
 
-记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.2`；**0.4.3** 文档对齐进行中，戳暂不 bump）。
+记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.3`）。**0.4.x** Node 仍钉 **0.3.1**；Controller 为 **0.4.3**（Adopt & Provision）。
 
 ---
 
@@ -744,9 +744,9 @@ python3 bin/vcl-fleet init
 
 ---
 
-### `vcl-fleet node add NAME --host HOST [选项]`
+### `vcl-fleet node adopt NAME --host HOST [选项]`
 
-SSH `vcl identity --json`（除非 `--offline`）并写入 registry。
+已装节点：SSH `vcl identity --json` 校验后写入 registry（D33/D49）。旗同在线 `node add`（无 `--offline`）。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -754,9 +754,76 @@ SSH `vcl identity --json`（除非 `--offline`）并写入 registry。
 | `--host HOST` | 是 | SSH 主机 |
 | `--user USER` | 否 | SSH 用户，默认 `root`（也可用 `user@host` 形式由实现解析） |
 | `--port N` | 否 | 默认 22 |
-| `--host-key SHA256:…` | 建议 | 钉指纹，写入用户 `known_hosts` |
+| `--host-key SHA256:…` | 建议；non-TTY 必填（D34） | 钉指纹，写入用户 / workspace `known_hosts`；禁 `StrictHostKeyChecking=no` |
+| `--node-id UUID` | 否 | 逻辑节点 ID；通常以远端 identity 为准 |
+| `--identity-file PATH` | 否 | 本机私钥路径；SSH/SCP 传 `-i` + `IdentitiesOnly=yes` |
+
+```bash
+python3 bin/vcl-fleet node adopt lax --host 203.0.113.10 --host-key SHA256:abcd…
+```
+
+---
+
+### `vcl-fleet node provision NAME --host HOST [选项]`
+
+Fresh VPS：preflight → 推送 controller-carried node payload → 远端 `vincula.sh` 安装（钉 Node **0.3.1**）→ `vcl verify` / `identity` → 注册 → 默认 `sync --full`（D33/D35）。
+
+**非 air-gap（D35）：** payload 是 controller 携带、两端 digest 校验的 first-party 包（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。**不是** air-gap：远端仍可需 apt、HTTPS、sing-box release、公网 IP、Reality。勿用「air-gap」描述 provision。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `NAME` | 是 | 短名 |
+| `--host HOST` | 是 | SSH 主机 |
+| `--user USER` | 否 | 默认 `root` |
+| `--port N` | 否 | 默认 22 |
+| `--host-key SHA256:…` | 建议；non-TTY 必填（D34） | 同 adopt；禁降低 SSH 校验 |
+| `--identity-file PATH` | 否 | 本机私钥路径 |
+| `--server ADDR` | 否 | 设 `VCL_SERVER`（传给安装器；preflight 跳过 ipify）。也可用环境变量 `VCL_SERVER` |
+| `--no-sync` | 否 | 跳过成功后的 `sync --full` |
+| `--json` | 否 | stdout JSON |
+
+已有 Vincula（远端 `/etc/vincula/VERSION`）→ 拒绝并提示 `use node adopt`。失败态 **`REMOTE_READY_LOCAL_UNCOMMITTED`**（远端已装好、本地 registry 未提交）→ **只**用 `node adopt` 修复，**禁止**重跑 installer。
+
+```bash
+python3 bin/vcl-fleet node provision lax --host 203.0.113.10 \
+  --host-key SHA256:abcd… --server 203.0.113.10
+```
+
+---
+
+### `vcl-fleet node register NAME --node-id UUID --host HOST [选项]`
+
+Registry-only：写入 `fleet.json`，**不** SSH（D49）。`--node-id` 与 `--host` 必填。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `NAME` | 是 | 短名 |
+| `--node-id UUID` | 是 | 逻辑节点 ID |
+| `--host HOST` | 是 | 写入 registry 的 SSH 主机（本命令不连） |
+| `--user USER` | 否 | 默认 `root` |
+| `--port N` | 否 | 默认 22 |
+| `--identity-file PATH` | 否 | 本机私钥路径（workspace 下可绑 credential） |
+
+```bash
+python3 bin/vcl-fleet node register lab --host 192.0.2.8 \
+  --node-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+```
+
+---
+
+### `vcl-fleet node add NAME --host HOST [选项]`
+
+**Legacy alias（D49）：** 在线 `add` ≡ `adopt`；`add --offline --node-id` ≡ `register`。0.4.x **无** runtime deprecation warning（最早 0.5 才谈提示）。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `NAME` | 是 | 短名（与 tag 同字符集） |
+| `--host HOST` | 是 | SSH 主机 |
+| `--user USER` | 否 | SSH 用户，默认 `root`（也可用 `user@host` 形式由实现解析） |
+| `--port N` | 否 | 默认 22 |
+| `--host-key SHA256:…` | 建议；non-TTY 必填 | 钉指纹（在线 / adopt 路径） |
 | `--node-id UUID` | `--offline` 时必填 | 逻辑节点 ID；在线时通常以远端 identity 为准 |
-| `--offline` | 否 | 不 SSH，必须 `--node-id` |
+| `--offline` | 否 | 不 SSH，必须 `--node-id`（≡ `register`） |
 | `--identity-file PATH` | 否 | 本机私钥路径；SSH/SCP 传 `-i` + `IdentitiesOnly=yes` |
 | `--instance-id UUID` | 否 | **接受并忽略**（不写入 `fleet.json`） |
 
@@ -1410,7 +1477,7 @@ bash scripts/build-release.sh
 bash scripts/build-controller.sh   # 可选；工作站也可直接用源树 bin/vcl-fleet
 
 ls -l dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256
-python3 bin/vcl-fleet version      # 期望含 0.4.2（控制器）；节点仍为 0.3.1
+python3 bin/vcl-fleet version      # 期望含 0.4.3（控制器）；节点仍为 0.3.1
 ```
 
 把 **每个 VPS** 各拷一份节点包（示例用 scp）：
