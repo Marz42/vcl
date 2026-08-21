@@ -10266,6 +10266,163 @@ export VCL_FLEET_HOME=$F73_SAVED_HOME
 if [[ -n "$F73_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F73_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
 if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
 
+# --- 0.4.2 F7-4 / T4: cached status ok derived from node_snapshot health ---
+F74_SAVED_HOME=$VCL_FLEET_HOME
+F74_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+F74_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+F74H=$TEST_TMP/f74-home; F74S=$TEST_TMP/f74-fake; F74X=$TEST_TMP/f74-xdg
+rm -rf "$F74H" "$F74S" "$F74X"
+mkdir -p "$F74S/lax"
+export VCL_FLEET_HOME=$F74H VCL_FLEET_LOCAL_STATE=$F74X VCL_FAKE_STATE_DIR=$F74S
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+assert_success "F7-4 T4 init" fleet init
+assert_success "F7-4 T4 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+# Seed proxy=FAIL + accounting=FAIL → ok=false, CLI non-zero
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LAX_REMOTE_NODE_ID" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+nid = sys.argv[2]
+conn = m.open_cache_for_sync()
+conn.execute(
+    m.UPSERT_NODE_SNAPSHOT_SQL,
+    (
+        nid, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "lax", "0.4.2",
+        "OK", "FAIL", "FAIL", "OK", "OK", 0, "{}", "2026-08-21T00:00:00Z",
+    ),
+)
+conn.commit()
+conn.close()
+print("seeded-fail")
+PY
+f74_fail_rc=0
+f74_fail_json=$(fleet status --json 2>/dev/null) || f74_fail_rc=$?
+f74_fail_assert=0
+python3 - "$f74_fail_json" <<'PY' || f74_fail_assert=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("mode") == "cache"
+assert doc.get("ok") is False, doc
+by = {n["name"]: n for n in doc["nodes"]}
+assert by["lax"]["proxy"] == "FAIL" and by["lax"]["accounting"] == "FAIL"
+print("ok")
+PY
+if (( f74_fail_rc != 0 )) && (( f74_fail_assert == 0 )); then
+  pass "F7-4 T4 FAIL snapshot → status --json ok=false exit non-zero"
+else
+  fail "F7-4 T4 FAIL snapshot → status --json ok=false exit non-zero (rc=${f74_fail_rc} assert=${f74_fail_assert})"
+fi
+# Healthy snapshot → ok=true exit 0
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LAX_REMOTE_NODE_ID" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+nid = sys.argv[2]
+conn = m.open_cache_for_sync()
+conn.execute(
+    m.UPSERT_NODE_SNAPSHOT_SQL,
+    (
+        nid, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "lax", "0.4.2",
+        "OK", "OK", "OK", "OK", "OK", 0, "{}", "2026-08-21T00:00:00Z",
+    ),
+)
+conn.commit()
+conn.close()
+print("seeded-ok")
+PY
+f74_ok_rc=0
+f74_ok_json=$(fleet status --json 2>/dev/null) || f74_ok_rc=$?
+f74_ok_assert=0
+python3 - "$f74_ok_json" <<'PY' || f74_ok_assert=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("mode") == "cache"
+assert doc.get("ok") is True, doc
+print("ok")
+PY
+if (( f74_ok_rc == 0 )) && (( f74_ok_assert == 0 )); then
+  pass "F7-4 T4 healthy snapshot → status --json ok=true exit 0"
+else
+  fail "F7-4 T4 healthy snapshot → status --json ok=true exit 0 (rc=${f74_ok_rc} assert=${f74_ok_assert})"
+fi
+# UNKNOWN/STALE keep existing contract (do not flip ok)
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LAX_REMOTE_NODE_ID" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+nid = sys.argv[2]
+conn = m.open_cache_for_sync()
+conn.execute(
+    m.UPSERT_NODE_SNAPSHOT_SQL,
+    (
+        nid, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "lax", "0.4.2",
+        "OK", "UNKNOWN", "STALE", "OK", "OK", 0, "{}", "2026-08-21T00:00:00Z",
+    ),
+)
+conn.commit()
+conn.close()
+print("seeded-stale")
+PY
+f74_stale_rc=0
+f74_stale_json=$(fleet status --json 2>/dev/null) || f74_stale_rc=$?
+f74_stale_assert=0
+python3 - "$f74_stale_json" <<'PY' || f74_stale_assert=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("ok") is True, doc
+by = {n["name"]: n for n in doc["nodes"]}
+assert by["lax"]["proxy"] == "UNKNOWN" and by["lax"]["accounting"] == "STALE"
+print("ok")
+PY
+if (( f74_stale_rc == 0 )) && (( f74_stale_assert == 0 )); then
+  pass "F7-4 T4 UNKNOWN/STALE keep ok=true (existing contract)"
+else
+  fail "F7-4 T4 UNKNOWN/STALE keep ok=true (existing contract) (rc=${f74_stale_rc} assert=${f74_stale_assert})"
+fi
+export VCL_FLEET_HOME=$F74_SAVED_HOME
+if [[ -n "$F74_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F74_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$F74_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$F74_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
+
+# --- 0.4.2 F7-5 / T5: workspace export refuses inconsistent workspace ---
+F75_SAVED_HOME=$VCL_FLEET_HOME
+F75_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+F75H=$TEST_TMP/f75-home; F75X=$TEST_TMP/f75-xdg
+rm -rf "$F75H" "$F75X"
+export VCL_FLEET_HOME=$F75H VCL_FLEET_LOCAL_STATE=$F75X
+assert_success "F7-5 T5 workspace init" fleet workspace init
+assert_success "F7-5 T5 verify clean" fleet workspace verify
+F75_TGZ=$TEST_TMP/f75-export.tgz
+rm -f "$F75_TGZ"
+assert_success "F7-5 T5 export clean OK" fleet workspace export "$F75_TGZ"
+assert_success "F7-5 T5 export archive exists" test -f "$F75_TGZ"
+# Tamper portable fleet.json → stale digest: verify FAIL and export FAIL (no tgz)
+python3 - "$F75H" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]) / "fleet.json"
+p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+PY
+f75_ver_rc=0
+f75_ver_err=$(fleet workspace verify 2>&1) || f75_ver_rc=$?
+if (( f75_ver_rc != 0 )) && [[ "$f75_ver_err" == *WORKSPACE_INCONSISTENT* ]]; then
+  pass "F7-5 T5 verify FAIL on stale digest"
+else
+  fail "F7-5 T5 verify FAIL on stale digest (rc=${f75_ver_rc} err=${f75_ver_err})"
+fi
+F75_BAD=$TEST_TMP/f75-export-bad.tgz
+rm -f "$F75_BAD"
+f75_exp_rc=0
+f75_exp_err=$(fleet workspace export "$F75_BAD" 2>&1) || f75_exp_rc=$?
+if (( f75_exp_rc != 0 )) && [[ "$f75_exp_err" == *WORKSPACE_INCONSISTENT* ]] && [[ ! -f "$F75_BAD" ]]; then
+  pass "F7-5 T5 export FAIL on inconsistent (no tgz)"
+else
+  fail "F7-5 T5 export FAIL on inconsistent (no tgz) (rc=${f75_exp_rc} err=${f75_exp_err} exists=$([[ -f $F75_BAD ]] && echo y || echo n))"
+fi
+export VCL_FLEET_HOME=$F75_SAVED_HOME
+if [[ -n "$F75_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F75_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+
 # --- 0.4.2 P1-5: local tag→user_id; audit/stats/status/UI Local Read Plane ---
 P15H=$TEST_TMP/p15-home; P15S=$TEST_TMP/p15-fake; P15X=$TEST_TMP/p15-xdg
 rm -rf "$P15H" "$P15S" "$P15X"

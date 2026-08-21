@@ -3653,9 +3653,11 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
         }
         for r in rows
     ]
+    # F7-4: overall ok from cached health; only hard SSH/PROXY/ACCOUNTING
+    # FAIL flips ok (UNKNOWN/STALE keep existing contract via status_is_fail).
     payload: dict[str, Any] = {
         "schema_version": STATUS_JSON_SCHEMA_VERSION,
-        "ok": True,
+        "ok": not any(status_is_fail(r) for r in rows),
         "mode": "cache",
         "controller_utc": format_utc(controller_utc),
         "nodes": nodes,

@@ -1549,6 +1549,10 @@ def export_workspace(dest: Path) -> Path:
     home = fleet_home()
     manifest = load_workspace_manifest()
     validate_workspace_manifest(manifest)
+    # F7-5: refuse export when workspace is not clean (same as verify).
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        _host.die(conflict)
     reg = load_registry()
     _assert_portable_registry(reg)
     # Re-check raw fleet.json bytes for residual identity_file / passwords.
