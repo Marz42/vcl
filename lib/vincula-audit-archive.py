@@ -6,15 +6,17 @@ Workspace; never carries sync_cursor, last_export_seq, credentials, or SSH
 state. Restore into fleet-cache is additive with (node_id, event_id) dedupe
 and ARCHIVE_CONFLICT rollback; it must not touch sync cursors (AC-4.1-05).
 
-Stdlib only. Targets Python 3.10+.
+Canonical event equality uses remote event fields only — never imported_at
+(P1-4). Stdlib only. Targets Python 3.10+.
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 ARCHIVE_NAMESPACE, ARCHIVE_SCHEMA_VERSION = "audit-archive", "1"  # D45 → audit-archive/v1
 ARCHIVE_SCHEMA_LABEL = f"{ARCHIVE_NAMESPACE}/v{ARCHIVE_SCHEMA_VERSION}"
@@ -27,13 +29,14 @@ CREATE TABLE audit_events(
   started_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, closed_at TEXT,
   destination_host TEXT, destination_ip TEXT, destination_port INTEGER, network TEXT,
   upload_bytes INTEGER NOT NULL DEFAULT 0, download_bytes INTEGER NOT NULL DEFAULT 0,
-  imported_at TEXT NOT NULL, PRIMARY KEY(node_id, event_id));
+  PRIMARY KEY(node_id, event_id));
 CREATE TABLE node_attribution(node_id TEXT PRIMARY KEY, name TEXT, instance_id TEXT, payload_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE user_attribution(node_id TEXT NOT NULL, user_id TEXT NOT NULL, tag TEXT, payload_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(node_id,user_id));
 CREATE TABLE instance_attribution(node_id TEXT NOT NULL, instance_id TEXT NOT NULL, first_seen_at TEXT, last_seen_at TEXT, payload_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(node_id,instance_id));
 """
 
 # FORBIDDEN tables/cols: sync_cursor, last_export_seq (as table), ssh_*, credential*, secret*
+# imported_at is cache-local only — never a canonical archive event field (P1-4).
 
 _ARCHIVE_TABLES = (
     "meta",
@@ -43,6 +46,7 @@ _ARCHIVE_TABLES = (
     "instance_attribution",
 )
 
+# Canonical remote event fields (excludes cache-local imported_at).
 _EVENT_COLS = (
     "node_id",
     "instance_id",
@@ -61,7 +65,6 @@ _EVENT_COLS = (
     "network",
     "upload_bytes",
     "download_bytes",
-    "imported_at",
 )
 
 _INSERT_EVENT_SQL = (
@@ -69,6 +72,15 @@ _INSERT_EVENT_SQL = (
     + ", ".join(_EVENT_COLS)
     + ") VALUES ("
     + ", ".join("?" * len(_EVENT_COLS))
+    + ")"
+)
+
+# Cache audit_events still requires imported_at (fleet-cache local stamp).
+_INSERT_CACHE_EVENT_SQL = (
+    "INSERT INTO audit_events ("
+    + ", ".join(_EVENT_COLS)
+    + ", imported_at) VALUES ("
+    + ", ".join("?" * (len(_EVENT_COLS) + 1))
     + ")"
 )
 
@@ -91,6 +103,7 @@ def _event_values(row: Mapping[str, Any] | Any) -> tuple[Any, ...]:
 
 
 def _payload_equal(existing: Any, incoming: Any) -> bool:
+    """Canonical equality: remote event fields only (excludes imported_at)."""
     for col in _EVENT_COLS:
         if _row_get(existing, col) != _row_get(incoming, col):
             return False
@@ -113,6 +126,25 @@ def _open_archive_ro(path: Path) -> sqlite3.Connection:
 
 def _count(conn: sqlite3.Connection, table: str) -> int:
     return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _sync_cursor_snapshot(conn: sqlite3.Connection) -> dict[str, int]:
+    try:
+        rows = conn.execute(
+            "SELECT node_id, last_export_seq FROM sync_cursor"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    out: dict[str, int] = {}
+    for row in rows:
+        nid = row[0] if not isinstance(row, sqlite3.Row) else row["node_id"]
+        seq = row[1] if not isinstance(row, sqlite3.Row) else row["last_export_seq"]
+        out[str(nid)] = int(seq)
+    return out
+
+
+def _format_imported_at() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def attribution_from_events(
@@ -330,25 +362,49 @@ def inspect_archive(path: Path) -> dict:
 
 
 def restore_archive_into_cache(
-    archive: Path, cache_conn: sqlite3.Connection
+    archive: Path,
+    cache_conn: sqlite3.Connection,
+    *,
+    rebuild_daily_usage_for_node: Optional[
+        Callable[[sqlite3.Connection, str], None]
+    ] = None,
 ) -> dict:
     """Import archive audit_events into cache with (node_id, event_id) dedupe.
 
-    BEGIN IMMEDIATE; equal payload → dedupe; same key different payload →
-    ArchiveConflict("ARCHIVE_CONFLICT") + full rollback. Never reads or writes
-    sync_cursor / last_export_seq (AC-4.1-05 / D37/D38).
+    verify schema → verify fleet_id (if known) → BEGIN IMMEDIATE →
+    import/dedupe → rebuild daily_usage for touched nodes → assert sync_cursor
+    unchanged → COMMIT. Equal canonical payload → dedupe; same key different
+    payload → ArchiveConflict("ARCHIVE_CONFLICT") + full rollback. Never reads
+    or writes sync_cursor / last_export_seq (AC-4.1-05 / D37/D38).
     """
     archive = Path(archive)
     info = verify_archive(archive)
     if not info.get("ok"):
         raise SystemExit(info.get("error") or "archive verify failed")
 
+    arch_fid = str(info.get("fleet_id") or "")
+    cache_fid_row = cache_conn.execute(
+        "SELECT value FROM meta WHERE key='fleet_id'"
+    ).fetchone()
+    cache_fid = (
+        str(cache_fid_row[0])
+        if cache_fid_row is not None and cache_fid_row[0] is not None
+        else ""
+    )
+    if arch_fid and cache_fid and arch_fid != cache_fid:
+        raise SystemExit(
+            "ARCHIVE_FLEET_MISMATCH: archive fleet_id mismatch"
+        )
+
     arch = _open_archive_ro(archive)
     inserted = 0
     deduped = 0
+    touched: set[str] = set()
     try:
+        before_cursor = _sync_cursor_snapshot(cache_conn)
         cache_conn.execute("BEGIN IMMEDIATE")
         try:
+            imported_at = _format_imported_at()
             for row in arch.execute("SELECT * FROM audit_events"):
                 nid = row["node_id"]
                 eid = int(row["event_id"])
@@ -361,8 +417,21 @@ def restore_archive_into_cache(
                         deduped += 1
                         continue
                     raise ArchiveConflict("ARCHIVE_CONFLICT")
-                cache_conn.execute(_INSERT_EVENT_SQL, _event_values(row))
+                cache_conn.execute(
+                    _INSERT_CACHE_EVENT_SQL,
+                    _event_values(row) + (imported_at,),
+                )
                 inserted += 1
+                if isinstance(nid, str) and nid:
+                    touched.add(nid)
+            if rebuild_daily_usage_for_node is not None:
+                for node_id in sorted(touched):
+                    rebuild_daily_usage_for_node(cache_conn, node_id)
+            after_cursor = _sync_cursor_snapshot(cache_conn)
+            if after_cursor != before_cursor:
+                raise SystemExit(
+                    "ARCHIVE_CURSOR_TOUCHED: restore must not change sync_cursor"
+                )
             cache_conn.commit()
         except BaseException:
             try:
@@ -372,4 +441,8 @@ def restore_archive_into_cache(
             raise
     finally:
         arch.close()
-    return {"inserted": inserted, "deduped": deduped}
+    return {
+        "inserted": inserted,
+        "deduped": deduped,
+        "aggregated": len(touched),
+    }

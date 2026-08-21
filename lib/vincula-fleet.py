@@ -5672,7 +5672,9 @@ def cmd_audit_archive_restore(args: argparse.Namespace) -> int:
         }
         try:
             res = aa.restore_archive_into_cache(
-                Path(args.file).expanduser().resolve(), conn
+                Path(args.file).expanduser().resolve(),
+                conn,
+                rebuild_daily_usage_for_node=rebuild_daily_usage_for_node,
             )
         except aa.ArchiveConflict as e:
             die(
@@ -5691,6 +5693,7 @@ def cmd_audit_archive_restore(args: argparse.Namespace) -> int:
     sys.stdout.write(
         f"imported: {res['inserted']}\n"
         f"duplicates_skipped: {res['deduped']}\n"
+        f"aggregated: {res['aggregated']}\n"
     )
     return 0
 
