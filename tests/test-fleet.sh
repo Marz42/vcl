@@ -10194,3 +10194,684 @@ if command -v age >/dev/null 2>&1 || [[ -x $PROJECT_DIR/tests/fixtures/fake-age 
   age_out=$(fleet audit archive create --from 2026-08-01T00:00:00Z --to 2026-08-21T00:00:00Z --output "$TEST_TMP/b7-age.vclaudit" --age-recipient "$TEST_TMP/b7-recip.txt")
   assert_success "B7 age file" test -f "$TEST_TMP/b7-age.vclaudit.age"; assert_success "B7 age report" grep -q '\.vclaudit\.age$' <<<"$age_out"
 else pass "B7 age encrypt (age binary absent)"; fi
+
+# =============================================================================
+# 0.4.2 P1-1..6 regression suite (locks each P1 fix; keep earlier blocks)
+# =============================================================================
+
+# --- 0.4.2 P1-1 regression ---
+# Registry + trust + history via single entry → verify OK; bypass breaks digest.
+P11R_SAVED_HOME=${VCL_FLEET_HOME:-}
+P11R_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P11R_SAVED_CFG=${XDG_CONFIG_HOME:-}
+P11R_HOME=$TEST_TMP/p11r-home
+P11R_LS=$TEST_TMP/p11r-ls
+P11R_CFG=$TEST_TMP/p11r-cfg
+rm -rf "$P11R_HOME" "$P11R_LS" "$P11R_CFG"
+mkdir -p "$P11R_HOME" "$P11R_CFG"
+export VCL_FLEET_HOME=$P11R_HOME VCL_FLEET_LOCAL_STATE=$P11R_LS XDG_CONFIG_HOME=$P11R_CFG
+assert_success "P1-1r workspace init" fleet workspace init
+P11R_REV0=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["revision"])')
+P11R_WID0=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["write_id"])')
+assert_success "P1-1r offline node add" \
+  fleet node add p11r --host 203.0.113.91 --offline \
+    --node-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa091
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$P11R_REV0" "$P11R_WID0" <<'PY' || p11r_reg_rc=$?
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+before_rev, before_wid = int(sys.argv[2]), sys.argv[3]
+after = m.load_workspace_manifest()
+assert after["revision"] == before_rev + 1, after
+assert after["write_id"] != before_wid
+assert after["parent_revision"] == before_rev
+assert after["parent_write_id"] == before_wid
+assert after["state_digest"] == m.compute_state_digest()
+assert m.detect_workspace_conflict(after) is None
+PY
+p11r_reg_rc=${p11r_reg_rc:-0}
+if (( p11r_reg_rc == 0 )); then pass "P1-1r registry save bumps revision/write_id/parent"
+else fail "P1-1r registry save bumps revision/write_id/parent"; fi
+assert_success "P1-1r verify after registry" fleet workspace verify
+P11R_REV1=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["revision"])')
+P11R_WID1=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["write_id"])')
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$P11R_REV1" "$P11R_WID1" <<'PY' || p11r_trust_rc=$?
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+before_rev, before_wid = int(sys.argv[2]), sys.argv[3]
+line = "203.0.113.91 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP11rTrustProbeKeyMaterial000001"
+m.append_known_hosts(line)
+after = m.load_workspace_manifest()
+assert after["revision"] == before_rev + 1
+assert after["write_id"] != before_wid
+assert after["parent_revision"] == before_rev
+assert after["parent_write_id"] == before_wid
+assert after["state_digest"] == m.compute_state_digest()
+assert m.detect_workspace_conflict(after) is None
+PY
+p11r_trust_rc=${p11r_trust_rc:-0}
+if (( p11r_trust_rc == 0 )); then pass "P1-1r trust append bumps revision/write_id/parent"
+else fail "P1-1r trust append bumps revision/write_id/parent"; fi
+assert_success "P1-1r verify after trust" fleet workspace verify
+P11R_REV2=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["revision"])')
+P11R_WID2=$(python3 -c 'import json;print(json.load(open("'"$P11R_HOME"'/workspace.json"))["write_id"])')
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$P11R_REV2" "$P11R_WID2" <<'PY' || p11r_hist_rc=$?
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+before_rev, before_wid = int(sys.argv[2]), sys.argv[3]
+m.append_instance_history_line({
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa091",
+    "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb091",
+    "started_at": "2026-08-21T02:00:00Z",
+    "retired_at": None,
+    "endpoint": "203.0.113.91:443",
+    "reason": "sync-first-sight",
+})
+after = m.load_workspace_manifest()
+assert after["revision"] == before_rev + 1
+assert after["write_id"] != before_wid
+assert after["parent_revision"] == before_rev
+assert after["parent_write_id"] == before_wid
+assert after["state_digest"] == m.compute_state_digest()
+assert m.detect_workspace_conflict(after) is None
+PY
+p11r_hist_rc=${p11r_hist_rc:-0}
+if (( p11r_hist_rc == 0 )); then pass "P1-1r history append bumps revision/write_id/parent"
+else fail "P1-1r history append bumps revision/write_id/parent"; fi
+assert_success "P1-1r verify after history" fleet workspace verify
+# Bypass: mutate fleet.json on disk outside workspace_mutation → INCONSISTENT
+python3 - "$P11R_HOME" <<'PY'
+from pathlib import Path
+import json, sys
+p = Path(sys.argv[1]) / "fleet.json"
+reg = json.loads(p.read_text(encoding="utf-8"))
+reg["nodes"][0]["ssh_host"] = "198.51.100.91"
+p.write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
+PY
+p11r_bypass_rc=0
+p11r_bypass_err=$(fleet workspace verify 2>&1) || p11r_bypass_rc=$?
+if (( p11r_bypass_rc != 0 )) && [[ "$p11r_bypass_err" == *WORKSPACE_INCONSISTENT* || "$p11r_bypass_err" == *INCONSISTENT* ]]; then
+  pass "P1-1r fleet.json bypass → verify INCONSISTENT"
+else
+  fail "P1-1r fleet.json bypass → verify INCONSISTENT (rc=${p11r_bypass_rc} err=${p11r_bypass_err})"
+fi
+export VCL_FLEET_HOME=$P11R_SAVED_HOME
+if [[ -n "$P11R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P11R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P11R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P11R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+
+# --- 0.4.2 P1-2 regression ---
+assert_success "P1-2r rollback journal / RO / legacy WAL" python3 - \
+  "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/p12r" <<'PY'
+import importlib.util, os, sqlite3, sys
+from pathlib import Path
+p, home = sys.argv[1], Path(sys.argv[2])
+home.mkdir(parents=True)
+os.environ["VCL_FLEET_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("vf", p)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+w = m.open_cache_for_sync()
+jm = w.execute("PRAGMA journal_mode").fetchone()[0]
+assert jm.lower() == "delete", jm
+w.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('p12r','1')")
+w.commit(); w.close()
+db = m.fleet_db_path()
+assert not Path(str(db) + "-wal").exists()
+assert not Path(str(db) + "-shm").exists()
+r = m.open_cache_readonly()
+assert r.execute("SELECT value FROM meta WHERE key='p12r'").fetchone()[0] == "1"
+qo = r.execute("PRAGMA query_only").fetchone()[0]
+assert int(qo) == 1, qo
+try:
+    r.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('x','y')")
+    r.commit()
+    raise AssertionError("RO write must fail")
+except sqlite3.Error as exc:
+    msg = str(exc).lower()
+    assert "readonly" in msg or "read-only" in msg or "query" in msg, exc
+r.close()
+assert not Path(str(db) + "-wal").exists()
+assert not Path(str(db) + "-shm").exists()
+# Legacy WAL-created cache opens and switches to DELETE
+wal_home = home / "wal-legacy"
+wal_home.mkdir()
+os.environ["VCL_FLEET_HOME"] = str(wal_home)
+wc = sqlite3.connect(str(wal_home / "fleet.db"))
+wc.execute("PRAGMA journal_mode=WAL")
+wc.executescript(m.FLEET_DB_DDL)
+m.fleet_db_meta_set(wc, "schema_version", "4")
+m.fleet_db_meta_set(wc, "fleet_id", "")
+wc.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('wal_mark','1')")
+wc.commit(); wc.close()
+assert Path(str(wal_home / "fleet.db") + "-wal").exists() or True  # may flush
+w2 = m.open_cache_for_sync()
+assert w2.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+assert w2.execute("SELECT value FROM meta WHERE key='wal_mark'").fetchone()[0] == "1"
+w2.close()
+r2 = m.open_cache_readonly()
+assert r2.execute("SELECT value FROM meta WHERE key='wal_mark'").fetchone()[0] == "1"
+r2.close()
+assert not Path(str(m.fleet_db_path()) + "-wal").exists()
+assert not Path(str(m.fleet_db_path()) + "-shm").exists()
+ws = (Path(p).parent / "workspace.py").read_text(encoding="utf-8")
+assert "mode=ro&immutable" not in ws and "immutable=1" not in ws
+assert "PRAGMA query_only=ON" in ws
+assert "PRAGMA journal_mode=DELETE" in ws
+print("ok")
+PY
+
+# --- 0.4.2 P1-3 regression ---
+P13R_SAVED_HOME=${VCL_FLEET_HOME:-}
+P13R_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P13R_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+P13R_H=$TEST_TMP/p13r-home
+P13R_S=$TEST_TMP/p13r-fake
+P13R_X=$TEST_TMP/p13r-xdg
+rm -rf "$P13R_H" "$P13R_S" "$P13R_X"
+mkdir -p "$P13R_S/lax"
+export VCL_FLEET_HOME=$P13R_H VCL_FLEET_LOCAL_STATE=$P13R_X VCL_FAKE_STATE_DIR=$P13R_S
+export VCL_FLEET_SSH="${FAKE_SSH}" VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+assert_success "P1-3r init" fleet init
+assert_success "P1-3r add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "P1-3r seed audit" python3 - "$PROJECT_DIR/lib/vincula-accountd.py" \
+  "$P13R_S" "$PROJECT_DIR/tests/fixtures/nodes" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+acct_py, state, nodes = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("a", acct_py)
+a = importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+ident = json.loads((nodes / "lax" / "identity.json").read_text())
+db = state / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+c = a.open_db(str(db))
+c.execute(
+    "INSERT INTO connections(connection_id,generation,user_id,node_id,instance_id,user_tag,"
+    "started_at,last_seen_at,closed_at,destination_host,destination_ip,destination_port,"
+    "network,upload_bytes,download_bytes,export_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ("lax-p13r", 0, "u-alice", ident["node_id"], ident["instance_id"], "alice",
+     "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+     "example.com", "203.0.113.10", 443, "tcp", 1, 2, 1),
+)
+a.meta_set(c, "audit_export_seq", "1")
+a.meta_set(c, "audit_pruned_max_export_seq", "0")
+c.commit(); c.close()
+PY
+assert_success "P1-3r sync --full" fleet sync --full
+# Ensure no last-status anywhere (workspace or STATE)
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+for p in (m.last_status_path(), m.fleet_home() / "last-status.json"):
+    if p.is_file():
+        p.unlink()
+print(m.last_status_path())
+PY
+p13r_status=$(fleet status --json 2>/dev/null) || true
+p13r_snap_rc=0
+python3 - "$p13r_status" <<'PY' || p13r_snap_rc=$?
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("mode") == "cache"
+lax = {n["name"]: n for n in doc["nodes"]}["lax"]
+assert lax["ssh"] == "OK", lax
+assert lax["proxy"] in ("OK", "STALE"), lax
+assert lax["accounting"] in ("OK", "STALE"), lax
+assert lax.get("vincula_version"), lax
+assert lax["ssh"] != "UNKNOWN" and lax["proxy"] != "UNKNOWN"
+PY
+if (( p13r_snap_rc == 0 )); then
+  pass "P1-3r status after sync --full reads node_snapshot (no probe)"
+else
+  fail "P1-3r status after sync --full reads node_snapshot (no probe)"
+fi
+export VCL_FAKE_SSH_ARGV_LOG="${P13R_S}/p13r-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+LS_PATH=$(python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.last_status_path())
+PY
+)
+rm -f "$LS_PATH"
+# Also clear any STATE ui-runtime path sibling
+python3 - "$LS_PATH" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+if p.is_file():
+    p.unlink()
+print(p)
+PY
+L_BEFORE=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet probe >/dev/null 2>&1 || true
+L_AFTER=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+if (( L_AFTER > L_BEFORE )); then pass "P1-3r probe makes SSH"
+else fail "P1-3r probe makes SSH (before=${L_BEFORE} after=${L_AFTER})"; fi
+if [[ ! -f "$LS_PATH" ]]; then
+  pass "P1-3r probe does not write last-status.json"
+else
+  fail "P1-3r probe does not write last-status.json (path=${LS_PATH})"
+fi
+# workspace root / STATE must not gain last-status from probe
+assert_failure "P1-3r no last-status under FLEET_HOME" \
+  test -f "${P13R_H}/last-status.json"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet status >/dev/null
+assert_equal "P1-3r status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+unset VCL_FAKE_SSH_ARGV_LOG
+export VCL_FLEET_HOME=$P13R_SAVED_HOME
+if [[ -n "$P13R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P13R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P13R_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$P13R_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
+
+# --- 0.4.2 P1-4 regression ---
+P14R_SAVED_HOME=${VCL_FLEET_HOME:-}
+P14R_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P14R_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+P14R_A=$TEST_TMP/p14r-a
+P14R_AL=$TEST_TMP/p14r-a-ls
+P14R_B=$TEST_TMP/p14r-b
+P14R_BL=$TEST_TMP/p14r-b-ls
+P14R_FAKE=$TEST_TMP/p14r-fake
+rm -rf "$P14R_A" "$P14R_AL" "$P14R_B" "$P14R_BL" "$P14R_FAKE"
+mkdir -p "$P14R_A" "$P14R_FAKE"
+export VCL_FLEET_HOME=$P14R_A VCL_FLEET_LOCAL_STATE=$P14R_AL VCL_FAKE_STATE_DIR=$P14R_FAKE
+export VCL_FLEET_SSH="${FAKE_SSH}" VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+P14R_UID=11111111-1111-4111-8111-111111111111
+P14R_NID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+assert_success "P1-4r ws init" fleet workspace init
+assert_success "P1-4r add node" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$P14R_NID"
+assert_success "P1-4r add alice" \
+  fleet user add alice --nodes lax --user-id "$P14R_UID"
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$P14R_UID" <<'PY'
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+c = m.open_cache_for_sync()
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+uid = sys.argv[2]
+for eid, up in ((1, 10), (2, 20)):
+    c.execute(
+        "INSERT INTO audit_events(node_id,instance_id,event_id,export_seq,connection_id,"
+        "generation,user_id,user_tag,started_at,last_seen_at,closed_at,destination_host,"
+        "upload_bytes,download_bytes,imported_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (nid, iid, eid, eid, f"c{eid}", 0, uid, "alice",
+         f"2026-08-0{eid}T00:00:00Z", f"2026-08-0{eid}T01:00:00Z",
+         f"2026-08-0{eid}T01:00:00Z", "h", up, up * 2, "2026-08-10T00:00:00Z"),
+    )
+c.execute(
+    "INSERT INTO sync_cursor(node_id,instance_id,last_event_id,last_export_seq,"
+    "cursor_kind,last_sync_at,status) VALUES(?,?,?,?,?,?,?)",
+    (nid, iid, 2, 7, "export_seq", "2026-08-10T00:00:00Z", "ok"),
+)
+c.commit(); c.close()
+PY
+P14R_ARCH=$TEST_TMP/p14r.vclaudit
+assert_success "P1-4r archive create" \
+  fleet audit archive create --from 2026-08-01T00:00:00Z --to 2026-08-21T00:00:00Z \
+    --output "$P14R_ARCH"
+assert_success "P1-4r archive schema no imported_at" python3 - "$P14R_ARCH" <<'PY'
+import sqlite3, sys
+cols = {r[1] for r in sqlite3.connect(sys.argv[1]).execute("PRAGMA table_info(audit_events)")}
+assert "imported_at" not in cols, cols
+PY
+# imported_at-only difference → dedupe (not conflict)
+assert_success "P1-4r imported_at-only dedupes" python3 - \
+  "$PROJECT_DIR/lib/vincula-fleet.py" "$P14R_ARCH" <<'PY'
+import importlib.util, sqlite3, sys
+from pathlib import Path
+s = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+aa = m.load_audit_archive_module()
+c = m.open_cache_for_sync()
+c.row_factory = sqlite3.Row
+row = dict(c.execute("SELECT * FROM audit_events WHERE event_id=1").fetchone())
+only_imp = dict(row); only_imp["imported_at"] = "2099-01-01T00:00:00Z"
+arch = Path(sys.argv[2]).with_name("p14r-imp-only.vclaudit")
+aa.create_archive(
+    fleet_id=m.load_workspace_manifest()["fleet_id"],
+    created_at="2026-08-21T00:00:00Z",
+    time_from="2026-08-01T00:00:00Z",
+    time_to="2026-08-21T00:00:00Z",
+    events=[only_imp], nodes=[], users=[], instances=[], dest=arch,
+)
+r = aa.restore_archive_into_cache(arch, c, rebuild_daily_usage_for_node=m.rebuild_daily_usage_for_node)
+assert r["deduped"] == 1 and r["inserted"] == 0, r
+cur = c.execute(
+    "SELECT last_export_seq FROM sync_cursor WHERE node_id=?",
+    ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",),
+).fetchone()[0]
+assert int(cur) == 7, cur
+c.close()
+print("ok")
+PY
+_p14r_cur() {
+  python3 -c "
+import importlib.util, sys
+p=sys.argv[1]; s=importlib.util.spec_from_file_location('vf',p)
+m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+c=m.open_cache_readonly(); print(c.execute(sys.argv[2]).fetchone()[0]); c.close()
+" "${PROJECT_DIR}/lib/vincula-fleet.py" "$1"
+}
+assert_equal "P1-4r cursor untouched after dedupe restore" "7" \
+  "$(_p14r_cur "SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")"
+# fleet_id mismatch fail-closed
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/p14r-bad-fleet.vclaudit" "$P14R_UID" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+s = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+aa = m.load_audit_archive_module()
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+uid = sys.argv[3]
+ev = {
+    "node_id": nid, "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "event_id": 1, "export_seq": 1, "connection_id": "c1", "generation": 0,
+    "user_id": uid, "user_tag": "alice",
+    "started_at": "2026-08-01T00:00:00Z", "last_seen_at": "2026-08-01T01:00:00Z",
+    "closed_at": "2026-08-01T01:00:00Z", "destination_host": "h",
+    "destination_ip": None, "destination_port": None, "network": None,
+    "upload_bytes": 10, "download_bytes": 20,
+}
+aa.create_archive(
+    fleet_id="00000000-0000-4000-8000-000000000099",
+    created_at="2026-08-21T00:00:00Z",
+    time_from="2026-08-01T00:00:00Z", time_to="2026-08-21T00:00:00Z",
+    events=[ev], nodes=[], users=[], instances=[], dest=Path(sys.argv[2]),
+)
+PY
+p14r_mm_err=$(fleet audit archive restore "$TEST_TMP/p14r-bad-fleet.vclaudit" 2>&1) || p14r_mm_rc=$?
+assert_equal "P1-4r fleet mismatch rc" "1" "${p14r_mm_rc:-0}"
+assert_success "P1-4r ARCHIVE_FLEET_MISMATCH" \
+  bash -c 'grep -q ARCHIVE_FLEET_MISMATCH <<<"$0"' "$p14r_mm_err"
+assert_equal "P1-4r cursor untouched after mismatch" "7" \
+  "$(_p14r_cur "SELECT last_export_seq FROM sync_cursor WHERE node_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")"
+# A export workspace → B fresh cache (same fleet_id, isolated local-state) restore
+fleet workspace export "$TEST_TMP/p14r-ws.tgz" >/dev/null
+export VCL_FLEET_HOME=$P14R_B VCL_FLEET_LOCAL_STATE=$P14R_BL
+assert_success "P1-4r B import workspace" fleet workspace import "$TEST_TMP/p14r-ws.tgz"
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+c = m.open_cache_for_sync()
+assert c.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+assert c.execute("SELECT COUNT(*) FROM sync_cursor").fetchone()[0] == 0
+c.close()
+PY
+assert_equal "P1-4r B restore imported" \
+  $'imported: 2\nduplicates_skipped: 0\naggregated: 1' \
+  "$(fleet audit archive restore "$P14R_ARCH")"
+assert_equal "P1-4r B no cursor from archive" "0" \
+  "$(_p14r_cur "SELECT COUNT(*) FROM sync_cursor")"
+export VCL_FLEET_STATS_NOW="2026-08-16"
+p14r_stats=$(fleet stats top users --days 30 --json)
+unset VCL_FLEET_STATS_NOW
+assert_success "P1-4r B stats after restore (daily_usage rebuilt)" python3 - \
+  "$p14r_stats" "$P14R_UID" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1]); uid = sys.argv[2]
+assert doc["mode"] == "top_users"
+rows = [r for r in doc["rows"] if r.get("user_id") == uid]
+assert rows, doc
+assert sum(int(r.get("bytes") or 0) for r in rows) == 90
+PY
+export VCL_FLEET_HOME=$P14R_SAVED_HOME
+if [[ -n "$P14R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P14R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P14R_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$P14R_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
+
+# --- 0.4.2 P1-5 regression ---
+P15R_SAVED_HOME=${VCL_FLEET_HOME:-}
+P15R_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P15R_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+P15R_H=$TEST_TMP/p15r-home
+P15R_S=$TEST_TMP/p15r-fake
+P15R_X=$TEST_TMP/p15r-xdg
+rm -rf "$P15R_H" "$P15R_S" "$P15R_X"
+mkdir -p "$P15R_S/lax" "$P15R_S/tokyo"
+export VCL_FLEET_HOME=$P15R_H VCL_FLEET_LOCAL_STATE=$P15R_X VCL_FAKE_STATE_DIR=$P15R_S
+export VCL_FLEET_SSH="${FAKE_SSH}" VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+P15R_ALICE=11111111-1111-4111-8111-111111111111
+P15R_EVE_A=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1
+P15R_EVE_B=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2
+assert_success "P1-5r init" fleet init
+assert_success "P1-5r add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "P1-5r user add alice" \
+  fleet user add alice --nodes lax --user-id "$P15R_ALICE"
+assert_success "P1-5r seed audit" python3 - "$PROJECT_DIR/lib/vincula-accountd.py" \
+  "$P15R_S" "$PROJECT_DIR/tests/fixtures/nodes" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+acct_py, state, nodes = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("a", acct_py)
+a = importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+ident = json.loads((nodes / "lax" / "identity.json").read_text())
+db = state / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+c = a.open_db(str(db))
+c.execute(
+    "INSERT INTO connections(connection_id,generation,user_id,node_id,instance_id,user_tag,"
+    "started_at,last_seen_at,closed_at,destination_host,destination_ip,destination_port,"
+    "network,upload_bytes,download_bytes,export_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ("lax-p15r", 0, "11111111-1111-4111-8111-111111111111",
+     ident["node_id"], ident["instance_id"], "alice",
+     "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+     "example.com", "203.0.113.10", 443, "tcp", 100, 200, 1),
+)
+a.meta_set(c, "audit_export_seq", "1")
+a.meta_set(c, "audit_pruned_max_export_seq", "0")
+c.commit(); c.close()
+PY
+assert_success "P1-5r sync --full" fleet sync --full
+# Second node only for LOCAL_USER_ID_CONFLICT (no sync required)
+assert_success "P1-5r add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+# Seed ambiguous eve in user_snapshot (same tag, two user_ids)
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" \
+  "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" "$P15R_EVE_A" "$P15R_EVE_B" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+lax, tokyo, eve_a, eve_b = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+now = "2026-08-16T07:00:00Z"
+conn = m.open_cache_for_sync()
+for nid, uid in ((lax, eve_a), (tokyo, eve_b)):
+    conn.execute(
+        "INSERT OR REPLACE INTO user_snapshot("
+        "node_id,user_id,tag,enabled,status,active_credential_id,payload_json,synced_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (nid, uid, "eve", 1, "active", None, "{}", now),
+    )
+conn.commit(); conn.close()
+PY
+export VCL_FAKE_SSH_ARGV_LOG="${P15R_S}/p15r-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z --json >/dev/null
+export VCL_FLEET_STATS_NOW="2026-08-16"
+fleet stats user alice --days 30 --json >/dev/null
+unset VCL_FLEET_STATS_NOW
+fleet status --json >/dev/null
+assert_equal "P1-5r audit/stats/status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# UI JSON GET zero SSH
+p15r_ui_rc=0
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" \
+  "$PROJECT_DIR/lib/vincula-ui/server.py" \
+  "$PROJECT_DIR/lib/vincula-ui/static" \
+  "$VCL_FAKE_SSH_ARGV_LOG" <<'PY' || p15r_ui_rc=$?
+import importlib.util, json, os, sys, urllib.request
+from pathlib import Path
+fleet_path, server_path, static_dir, ssh_log = sys.argv[1:5]
+os.environ["VCL_FLEET_STATS_NOW"] = "2026-08-16"
+before = Path(ssh_log).read_text(encoding="utf-8") if Path(ssh_log).is_file() else ""
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+sys.modules["vincula_fleet"] = fleet
+spec.loader.exec_module(fleet)
+sspec = importlib.util.spec_from_file_location("vincula_ui_server", server_path)
+ui = importlib.util.module_from_spec(sspec)
+sspec.loader.exec_module(ui)
+ui.set_fleet_module(fleet)
+httpd, thread, token = ui.serve_in_thread(
+    "127.0.0.1", 0, fleet_mod=fleet, static_dir=Path(static_dir)
+)
+port = httpd.server_address[1]
+base = f"http://127.0.0.1:{port}"
+hdr = {"X-Vincula-UI-Token": token}
+
+def get(path):
+    r = urllib.request.Request(base + path, headers=hdr)
+    with urllib.request.urlopen(r, timeout=8) as resp:
+        return resp.status, json.loads(resp.read().decode("utf-8"))
+
+st, overview = get("/api/overview")
+assert st == 200 and isinstance(overview, dict), overview
+st, users = get("/api/users")
+assert st == 200, users
+st, audit = get("/api/audit?user=alice&from=2026-08-10T00:00:00Z&to=2026-08-11T00:00:00Z")
+assert st == 200, audit
+st, stats = get("/api/stats/top?kind=users&days=30")
+assert st == 200, stats
+httpd.shutdown()
+after = Path(ssh_log).read_text(encoding="utf-8") if Path(ssh_log).is_file() else ""
+assert after == before, (len(before), len(after))
+print("ok")
+PY
+if (( p15r_ui_rc == 0 )); then pass "P1-5r UI JSON GET zero SSH"
+else fail "P1-5r UI JSON GET zero SSH"; fi
+assert_equal "P1-5r post-UI SSH still zero" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# unknown tag → unknown local user, no SSH
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15r_miss_err=$(fleet audit user missing --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || p15r_miss_rc=$?
+p15r_miss_rc=${p15r_miss_rc:-0}
+if (( p15r_miss_rc != 0 )) && [[ "$p15r_miss_err" == *"unknown local user"* ]]; then
+  pass "P1-5r unknown tag → unknown local user"
+else
+  fail "P1-5r unknown tag → unknown local user (rc=${p15r_miss_rc} err=${p15r_miss_err})"
+fi
+assert_equal "P1-5r unknown zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# LOCAL_USER_ID_CONFLICT
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15r_eve_err=$(fleet audit user eve --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || p15r_eve_rc=$?
+p15r_eve_rc=${p15r_eve_rc:-0}
+if (( p15r_eve_rc != 0 )) && [[ "$p15r_eve_err" == *"LOCAL_USER_ID_CONFLICT"* ]]; then
+  pass "P1-5r ambiguous tag → LOCAL_USER_ID_CONFLICT"
+else
+  fail "P1-5r ambiguous tag → LOCAL_USER_ID_CONFLICT (rc=${p15r_eve_rc} err=${p15r_eve_err})"
+fi
+assert_equal "P1-5r conflict zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# user list/show still SSH (live observation preserved)
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L_BEFORE=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet user list >/dev/null 2>&1 || true
+fleet user show alice >/dev/null 2>&1 || true
+L_AFTER=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+if (( L_AFTER > L_BEFORE )); then
+  pass "P1-5r user list/show still SSH"
+else
+  fail "P1-5r user list/show still SSH (before=${L_BEFORE} after=${L_AFTER})"
+fi
+unset VCL_FAKE_SSH_ARGV_LOG
+export VCL_FLEET_HOME=$P15R_SAVED_HOME
+if [[ -n "$P15R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P15R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P15R_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$P15R_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
+
+# --- 0.4.2 P1-6 regression ---
+P16R_SAVED_HOME=${VCL_FLEET_HOME:-}
+P16R_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P16R_SAVED_CFG=${XDG_CONFIG_HOME:-}
+P16R_SAVED_USER_HOME=${HOME:-}
+P16R_A=$TEST_TMP/p16r-a
+P16R_B=$TEST_TMP/p16r-b
+P16R_A_LS=$TEST_TMP/p16r-a-ls
+P16R_B_LS=$TEST_TMP/p16r-b-ls
+P16R_A_CFG=$TEST_TMP/p16r-a-cfg
+P16R_B_CFG=$TEST_TMP/p16r-b-cfg
+P16R_A_USER=$TEST_TMP/p16r-a-user
+P16R_B_USER=$TEST_TMP/p16r-b-user
+rm -rf "$P16R_A" "$P16R_B" "$P16R_A_LS" "$P16R_B_LS" "$P16R_A_CFG" "$P16R_B_CFG" \
+  "$P16R_A_USER" "$P16R_B_USER"
+mkdir -p "$P16R_A" "$P16R_A_CFG" "$P16R_A_USER" "$P16R_B_CFG" "$P16R_B_USER"
+P16R_KEY=$TEST_TMP/p16r-id_ed25519
+printf 'test-only-not-a-real-p16r-key\n' >"$P16R_KEY"
+chmod 600 "$P16R_KEY"
+export HOME=$P16R_A_USER
+export VCL_FLEET_HOME=$P16R_A
+export VCL_FLEET_LOCAL_STATE=$P16R_A_LS
+export XDG_CONFIG_HOME=$P16R_A_CFG
+assert_success "P1-6r workspace init" fleet workspace init
+assert_success "P1-6r offline add" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "P1-6r access bind" \
+  fleet access bind admin-default --identity-file "$P16R_KEY"
+P16R_FID=$(python3 -c 'import json;print(json.load(open("'"$P16R_A"'/workspace.json"))["fleet_id"])')
+python3 - "$P16R_A" <<'PY' || p16r_root_rc=$?
+from pathlib import Path
+import sys
+home = Path(sys.argv[1])
+allowed = {"workspace.json", "fleet.json", "trust", "history", ".lock"}
+names = {p.name for p in home.iterdir()}
+extra = names - allowed
+assert not extra, extra
+assert {"workspace.json", "fleet.json", "trust", "history"} <= names
+assert not (home / "machine-local").exists()
+print("ok")
+PY
+p16r_root_rc=${p16r_root_rc:-0}
+if (( p16r_root_rc == 0 )); then pass "P1-6r FLEET_HOME only portable entries"
+else fail "P1-6r FLEET_HOME only portable entries"; fi
+assert_failure "P1-6r no machine-local under workspace" \
+  test -d "${P16R_A}/machine-local"
+assert_success "P1-6r bindings under CONFIG" \
+  test -f "${P16R_A_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
+assert_success "P1-6r view under STATE" \
+  test -f "${P16R_A_LS}/${P16R_FID}/workspace-view.json"
+P16R_LIST_A=$(fleet access list)
+if [[ "$P16R_LIST_A" == *"admin-default"* ]]; then
+  pass "P1-6r access list sees bind on A"
+else
+  fail "P1-6r access list sees bind on A (${P16R_LIST_A})"
+fi
+assert_success "P1-6r verify on A" fleet workspace verify
+# Wholesale cp -r to B with fresh HOME + local-state + XDG_CONFIG
+cp -a "$P16R_A" "$P16R_B"
+export HOME=$P16R_B_USER
+export VCL_FLEET_HOME=$P16R_B
+export VCL_FLEET_LOCAL_STATE=$P16R_B_LS
+export XDG_CONFIG_HOME=$P16R_B_CFG
+assert_success "P1-6r verify after cp -r (fresh machine)" fleet workspace verify
+assert_failure "P1-6r B has no CONFIG bindings before re-bind" \
+  test -f "${P16R_B_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
+P16R_LIST_B0=$(fleet access list || true)
+if [[ -z "${P16R_LIST_B0//[$'\t\r\n']/}" || "$P16R_LIST_B0" != *"admin-default"* ]]; then
+  pass "P1-6r access list empty on B before re-bind"
+else
+  fail "P1-6r access list empty on B before re-bind (${P16R_LIST_B0})"
+fi
+assert_success "P1-6r re-bind on B" \
+  fleet access bind admin-default --identity-file "$P16R_KEY"
+P16R_LIST_B1=$(fleet access list)
+if [[ "$P16R_LIST_B1" == *"admin-default"* ]]; then
+  pass "P1-6r access list sees bind after re-bind on B"
+else
+  fail "P1-6r access list sees bind after re-bind on B (${P16R_LIST_B1})"
+fi
+assert_success "P1-6r B bindings under own CONFIG" \
+  test -f "${P16R_B_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
+assert_success "P1-6r A bindings still under A CONFIG" \
+  test -f "${P16R_A_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
+assert_failure "P1-6r B still no machine-local" test -d "${P16R_B}/machine-local"
+export HOME=$P16R_SAVED_USER_HOME
+export VCL_FLEET_HOME=$P16R_SAVED_HOME
+if [[ -n "$P16R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P16R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
