@@ -681,22 +681,17 @@ MIGRATE_PIPELINE = (
 )
 
 
-def _open_db_inspect(
-    path: Path, *, immutable: bool = True
-) -> Optional[Any]:
-    """SQLite URI mode=ro inspect — never open_fleet_db (WAL/migrate/chmod).
+def _open_db_inspect(path: Path) -> Optional[Any]:
+    """SQLite URI mode=ro inspect — never open_fleet_db (migrate/chmod/create).
 
-    Default immutable=1 avoids creating -wal/-shm (AC-4.0-M06 dry-run).
-    Pass immutable=False when migrate must observe latest WAL pages.
+    With rollback journal (DELETE), plain mode=ro reflects committed state (P1-2).
+    Never returns a writer.
     """
     import sqlite3
 
     if not path.is_file():
         return None
-    uri = f"file:{path.resolve()}?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    return sqlite3.connect(uri, uri=True)
+    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
 
 
 def plan_migrate_dry_run() -> dict[str, Any]:
@@ -799,11 +794,23 @@ def _table_count(conn: Any, table: str) -> int:
 
 
 def _copy_fleet_db_to_staging(src: Path, dest: Path) -> None:
+    """Copy fleet.db into staging; checkpoint leftover WAL into main first (P1-2)."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(src), timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+            conn.close()
+        except sqlite3.Error:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise
+    except sqlite3.Error as exc:
+        _host.die(f"cannot prepare fleet.db for staging copy: {exc}")
     shutil.copy2(src, dest)
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(src) + suffix)
-        if side.is_file():
-            shutil.copy2(side, Path(str(dest) + suffix))
 
 
 def _open_staging_fleet_db(path: Path) -> Any:
@@ -818,7 +825,7 @@ def _open_staging_fleet_db(path: Path) -> Any:
     conn.isolation_level = None
     try:
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
         if not _host._has_meta_table(conn):
             conn.executescript(_host.FLEET_DB_DDL)
@@ -870,7 +877,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
         dbp = _host.fleet_db_path()
         src_counts: dict[str, int] = {t: 0 for t in _COUNT_TABLES}
         if dbp.is_file():
-            conn = _open_db_inspect(dbp, immutable=False)
+            conn = _open_db_inspect(dbp)
             if conn is None:
                 _host.die("cannot inspect fleet.db")
             try:
@@ -946,9 +953,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
 
         # 10. export instance_history (gaps stay gaps; D48)
         hist_dest = staging / "history" / "instances.jsonl"
-        src_conn = (
-            _open_db_inspect(dbp, immutable=False) if dbp.is_file() else None
-        )
+        src_conn = _open_db_inspect(dbp) if dbp.is_file() else None
         try:
             if src_conn is not None:
                 history_exported = export_instance_history_from_db(
@@ -1031,12 +1036,6 @@ def _execute_migrate_locked() -> dict[str, Any]:
             src = home / name
             if src.is_file():
                 shutil.copy2(src, bak / name)
-            for suffix in ("-wal", "-shm"):
-                if name != "fleet.db":
-                    break
-                side = Path(str(src) + suffix)
-                if side.is_file():
-                    shutil.copy2(side, bak / side.name)
 
         def _replace_into(src: Path, dest: Path) -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1057,10 +1056,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
             ensure_fleet_local_state(fleet_id)
             fleet_db_dest = fleet_local_state_dir(fleet_id) / "fleet.db"
             _replace_into(staging / "fleet.db", fleet_db_dest)
-            for suffix in ("-wal", "-shm"):
-                side = Path(str(staging / "fleet.db") + suffix)
-                if side.is_file():
-                    _replace_into(side, Path(str(fleet_db_dest) + suffix))
+            # Drop legacy home cache + any leftover WAL-era sidecars.
             for leftover in (
                 home / "fleet.db",
                 Path(str(home / "fleet.db") + "-wal"),
@@ -1116,16 +1112,15 @@ def _execute_migrate_locked() -> dict[str, Any]:
 
 
 def open_cache_readonly():
-    """Query/UI GET: URI mode=ro; never migrate/WAL/chmod/create."""
+    """Query/UI GET: mode=ro + query_only; never migrate/chmod/create (D47/P1-2)."""
     import sqlite3
 
     path = _host.fleet_db_path()
     if not path.is_file():
         _host.die(f"cannot open fleet.db: {path}")
     try:
-        # immutable=1: mode=ro alone still creates -wal/-shm for WAL DBs (D47/T19).
         conn = sqlite3.connect(
-            f"file:{path.resolve()}?mode=ro&immutable=1",
+            f"file:{path.resolve()}?mode=ro",
             uri=True,
             timeout=30,
         )
@@ -1134,6 +1129,7 @@ def open_cache_readonly():
     conn.row_factory = sqlite3.Row
     conn.isolation_level = None
     try:
+        conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         _host.open_cache_check(conn)
     except SystemExit:
@@ -1143,7 +1139,7 @@ def open_cache_readonly():
 
 
 def open_cache_for_sync():
-    """Sole normal writer (D24); RW+WAL+migrate."""
+    """Sole normal writer (D24); RW + rollback journal + migrate."""
     return _host.open_fleet_db()
 
 

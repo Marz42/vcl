@@ -809,7 +809,8 @@ def open_fleet_db() -> sqlite3.Connection:
     conn.isolation_level = None
     try:
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        # Rollback journal (DELETE): 1 low-frequency writer + short RO readers (P1-2).
+        conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
         if not _has_meta_table(conn):
             conn.executescript(FLEET_DB_DDL)
@@ -834,10 +835,6 @@ def open_fleet_db() -> sqlite3.Connection:
                 conn.close()
                 die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(path) + suffix)
-            if sidecar.is_file():
-                _chmod_private(sidecar, 0o600)
         open_cache_check(conn)
         return conn
     except SystemExit:

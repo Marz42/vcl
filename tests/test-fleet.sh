@@ -3844,7 +3844,7 @@ assert mod.fleet_db_path() == home / "fleet.db"
 
 conn1 = mod.open_fleet_db()
 ver1 = mod.fleet_db_meta_get(conn1, "schema_version")
-wal1 = conn1.execute("PRAGMA journal_mode").fetchone()[0]
+jm1 = conn1.execute("PRAGMA journal_mode").fetchone()[0]
 tables = {
     row[0]
     for row in conn1.execute(
@@ -3861,13 +3861,13 @@ conn1.close()
 
 conn2 = mod.open_fleet_db()
 ver2 = mod.fleet_db_meta_get(conn2, "schema_version")
-wal2 = conn2.execute("PRAGMA journal_mode").fetchone()[0]
+jm2 = conn2.execute("PRAGMA journal_mode").fetchone()[0]
 count = conn2.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
 hist_count = conn2.execute("SELECT COUNT(*) FROM instance_history").fetchone()[0]
 conn2.close()
 
 assert ver1 == "4" and ver2 == "4", (ver1, ver2)
-assert wal1.lower() == "wal" and wal2.lower() == "wal", (wal1, wal2)
+assert jm1.lower() == "delete" and jm2.lower() == "delete", (jm1, jm2)
 assert tables >= {
     "meta", "audit_events", "sync_cursor", "daily_usage", "instance_history",
     "node_snapshot", "user_snapshot",
@@ -3885,9 +3885,9 @@ home_mode = stat.S_IMODE(home.stat().st_mode)
 assert home_mode == 0o700, oct(home_mode)
 PY
 if (( open_twice_rc == 0 )); then
-  pass "open_fleet_db twice keeps schema 4 WAL fleet.db mode 0600"
+  pass "open_fleet_db twice keeps schema 4 DELETE journal fleet.db mode 0600"
 else
-  fail "open_fleet_db twice keeps schema 4 WAL fleet.db mode 0600"
+  fail "open_fleet_db twice keeps schema 4 DELETE journal fleet.db mode 0600"
 fi
 
 migrate_rc=0
@@ -9224,18 +9224,18 @@ export VCL_FLEET_HOME=$SAVED
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
 
-# --- 0.4.2 B4 (D47 true mode=ro) ---
-assert_success "B4 RO query / RW sync / no wal" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b4" <<'PY'
+# --- 0.4.2 B4 (D47 true mode=ro + P1-2 rollback journal) ---
+assert_success "B4 RO query / RW sync / delete journal" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b4" <<'PY'
 import importlib.util,os,sqlite3,sys; from pathlib import Path
 p,home=sys.argv[1],Path(sys.argv[2]); home.mkdir(parents=True)
 os.environ["VCL_FLEET_HOME"]=str(home)
 spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 w=m.open_cache_for_sync(); assert m.fleet_db_meta_get(w,"schema_version")=="4"
+jm=w.execute("PRAGMA journal_mode").fetchone()[0]
+assert jm.lower()=="delete", jm
 w.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('t','1')"); w.commit(); w.close()
 db=m.fleet_db_path()
-for s in ("-wal","-shm"):
-    side=Path(str(db)+s)
-    if side.exists(): side.unlink()
+assert not Path(str(db)+"-wal").exists() and not Path(str(db)+"-shm").exists()
 r=m.open_cache_readonly()
 assert r.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]=="4"
 try:
@@ -9245,9 +9245,33 @@ except sqlite3.Error as exc:
     assert "readonly" in str(exc).lower() or "read-only" in str(exc).lower()
 r.close()
 assert not Path(str(db)+"-wal").exists() and not Path(str(db)+"-shm").exists()
+# Legacy WAL-mode cache must open and switch to DELETE
+wal_home=home/"wal-legacy"; wal_home.mkdir()
+os.environ["VCL_FLEET_HOME"]=str(wal_home)
+wc=sqlite3.connect(str(wal_home/"fleet.db"))
+wc.execute("PRAGMA journal_mode=WAL")
+wc.executescript(m.FLEET_DB_DDL)
+m.fleet_db_meta_set(wc,"schema_version","4")
+m.fleet_db_meta_set(wc,"fleet_id","")
+wc.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('wal_mark','1')")
+wc.commit(); wc.close()
+w2=m.open_cache_for_sync()
+assert w2.execute("PRAGMA journal_mode").fetchone()[0].lower()=="delete"
+assert w2.execute("SELECT value FROM meta WHERE key='wal_mark'").fetchone()[0]=="1"
+w2.close()
+r2=m.open_cache_readonly()
+assert r2.execute("SELECT value FROM meta WHERE key='wal_mark'").fetchone()[0]=="1"
+r2.close()
+assert not Path(str(m.fleet_db_path())+"-wal").exists()
+assert not Path(str(m.fleet_db_path())+"-shm").exists()
+os.environ["VCL_FLEET_HOME"]=str(home)
 ui=(Path(p).parent/"vincula-ui"/"server.py").read_text()
 assert "open_cache_readonly()" in ui and ui.count("open_fleet_db()")==0
 assert "open_cache_readonly()" in Path(p).read_text()  # status/audit/stats wired
+ws=(Path(p).parent/"workspace.py").read_text()
+assert "mode=ro&immutable" not in ws and "immutable=1" not in ws
+assert "PRAGMA query_only=ON" in ws
+assert "PRAGMA journal_mode=DELETE" in ws
 PY
 
 # --- 0.4.2 B5 ---

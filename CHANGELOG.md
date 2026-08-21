@@ -7,7 +7,7 @@
 ### Added
 - **Machine-local cache (D23):** `local-state/<fleet_id>/fleet.db` (+archives/ui-runtime); Workspace portable without cache.
 - **fleet-cache/v4:** 3→4; `meta.fleet_id`; `CACHE_FLEET_MISMATCH`; D45 namespace.
-- **Enforced RO (D47/C01):** `open_cache_readonly` true `mode=ro`; sync/archive-restore via `open_cache_for_sync` RW.
+- **Enforced RO (D47/C01):** `open_cache_readonly` `mode=ro` + `query_only`; sync via `open_cache_for_sync` RW; cache uses rollback journal (`DELETE`), not WAL (P1-2).
 - **`sync --full` (D25/C04):** identity+health+users+audit→cache; sequential; per-node txn; PARTIAL exit 2; bare sync=legacy audit.
 - **Audit archive (D37/D38):** `audit archive create|verify|inspect|restore`; `.vclaudit`=`audit-archive/v1`; restore never touches `sync_cursor`/`last_export_seq`; optional `--age-recipient`.
 ### Notes
