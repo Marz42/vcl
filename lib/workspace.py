@@ -8,6 +8,7 @@ normalize_node resolve from the fleet host module.
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -24,9 +25,16 @@ from typing import Any, Callable, Optional
 _host: Any = None
 
 WORKSPACE_MANIFEST_NAME = "workspace.json"
-MACHINE_LOCAL_DIRNAME = "machine-local"
+MACHINE_LOCAL_DIRNAME = "machine-local"  # legacy only; never write new data here
 WORKSPACE_VIEW_NAME = "workspace-view.json"
 WORKSPACE_VIEW_SCHEMA_VERSION = 1
+CONTROLLER_FILE_NAME = "controller.json"
+CONTROLLER_SCHEMA_VERSION = 1
+BINDINGS_FILE_NAME = "credential-bindings.json"
+# Portable workspace root entries (D22/D28/P1-6): every file under root is copyable.
+PORTABLE_WORKSPACE_ROOT_NAMES = frozenset(
+    {"workspace.json", "fleet.json", "trust", "history"}
+)
 PORTABLE_DIGEST_NAMES = (
     "fleet.json",
     "workspace.json",
@@ -49,6 +57,8 @@ WS_ERR_ROLLBACK, WS_ERR_DIVERGED, WS_ERR_INCONSISTENT = (
     "WORKSPACE_INCONSISTENT",
 )
 WS_ERR_CAS = "WORKSPACE_CAS_REJECTED"
+# Reentrancy for workspace_mutation: inner portable writers write raw only.
+_mutation_depth = 0
 # Portable snapshot members only (D22/D28): never machine-local/, fleet.db, keys.
 EXPORT_MEMBERS = (
     "workspace.json",
@@ -91,13 +101,236 @@ def fleet_home() -> Path:
         return Path(xdg) / "vincula"
     return Path.home() / ".config" / "vincula"
 
+
+LOCAL_STATE_ARCHIVES, LOCAL_STATE_UI_RUNTIME = "archives", "ui-runtime"
+
+
+def fleet_local_state_root() -> Path:
+    o = os.environ.get("VCL_FLEET_LOCAL_STATE")
+    if o:
+        return Path(o)
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "vincula"
+    return Path(
+        os.environ["XDG_STATE_HOME"]
+        if os.environ.get("XDG_STATE_HOME")
+        else Path.home() / ".local" / "state"
+    ) / "vincula"
+
+
+def fleet_local_state_dir(fleet_id: str) -> Path:
+    return fleet_local_state_root() / fleet_id
+
+
+def ensure_fleet_local_state(fleet_id: str) -> Path:
+    root = fleet_local_state_dir(fleet_id)
+    for d in (root, root / LOCAL_STATE_ARCHIVES, root / LOCAL_STATE_UI_RUNTIME):
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+    return root
+
+
+def fleet_controller_config_root() -> Path:
+    """Machine-local controller config root (not under workspace / VCL_FLEET_HOME)."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "vincula" / "controllers"
+        return Path.home() / "AppData" / "Roaming" / "vincula" / "controllers"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "vincula" / "controllers"
+    return Path.home() / ".config" / "vincula" / "controllers"
+
+
+def fleet_controller_config_dir(fleet_id: str) -> Path:
+    return fleet_controller_config_root() / fleet_id
+
+
+def ensure_fleet_controller_config(fleet_id: str) -> Path:
+    root = fleet_controller_config_dir(fleet_id)
+    root.mkdir(parents=True, exist_ok=True)
+    _chmod_private(root, 0o700)
+    return root
+
+
+def fleet_controller_bindings_path(fleet_id: str) -> Path:
+    return fleet_controller_config_dir(fleet_id) / BINDINGS_FILE_NAME
+
+
+def fleet_controller_file(fleet_id: str) -> Path:
+    return fleet_controller_config_dir(fleet_id) / CONTROLLER_FILE_NAME
+
+
+def legacy_machine_local_dir() -> Path:
+    """Legacy path only; used for one-time migration reads."""
+    return fleet_home() / MACHINE_LOCAL_DIRNAME
+
+
+def machine_local_dir() -> Path:
+    """Deprecated alias of legacy_machine_local_dir (no new writes)."""
+    return legacy_machine_local_dir()
+
+
+def empty_controller(
+    *,
+    controller_id: str | None = None,
+    name: str = "",
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "schema_version": CONTROLLER_SCHEMA_VERSION,
+        "controller_id": controller_id or str(uuid.uuid4()),
+        "created_at": now,
+        "name": name,
+    }
+
+
+def validate_controller(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        _host.die("controller.json must be a JSON object")
+    ver = data.get("schema_version")
+    if ver != CONTROLLER_SCHEMA_VERSION:
+        _host.die(f"unsupported controller schema: {ver}")
+    cid = data.get("controller_id")
+    if not isinstance(cid, str) or not _host.UUID_RE.fullmatch(cid):
+        _host.die("controller.json controller_id must be a UUID")
+    created = data.get("created_at")
+    if not isinstance(created, str) or not created:
+        _host.die("controller.json created_at must be a non-empty string")
+    name = data.get("name", "")
+    if name is None:
+        name = ""
+    if not isinstance(name, str):
+        _host.die("controller.json name must be a string")
+    return {
+        "schema_version": CONTROLLER_SCHEMA_VERSION,
+        "controller_id": cid,
+        "created_at": created,
+        "name": name,
+    }
+
+
+def load_controller(path: Optional[Path] = None) -> dict[str, Any]:
+    if path is None:
+        _host.die("load_controller requires path or ensure_controller")
+    path = Path(path)
+    if not path.is_file():
+        _host.die(f"controller.json not found: {path}")
+    try:
+        with path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        _host.die(f"invalid controller.json: {exc}")
+    except OSError as exc:
+        _host.die(f"cannot read {path}: {exc}")
+    return validate_controller(data)
+
+
+def save_controller(data: dict[str, Any], path: Path) -> None:
+    payload = validate_controller(data)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    _chmod_private(parent, 0o700)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".controller.json.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def ensure_controller(
+    fleet_id: str, *, controller_id: str | None = None, name: str = ""
+) -> dict[str, Any]:
+    """Load or create machine-local controller.json for fleet_id."""
+    ensure_fleet_controller_config(fleet_id)
+    path = fleet_controller_file(fleet_id)
+    if path.is_file():
+        return load_controller(path)
+    data = empty_controller(controller_id=controller_id, name=name)
+    save_controller(data, path)
+    return data
+
+
+def _atomic_move(src: Path, dest: Path) -> None:
+    """Move src→dest; fall back to copy+unlink across devices (EXDEV)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest.parent, 0o700)
+    except OSError:
+        pass
+    try:
+        os.replace(src, dest)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(src, dest)
+        try:
+            src.unlink()
+        except OSError:
+            pass
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+
+
+def migrate_legacy_bindings_if_needed(fleet_id: str) -> Path:
+    """One-time: move legacy machine-local bindings into CONFIG controllers/."""
+    new_path = fleet_controller_bindings_path(fleet_id)
+    if new_path.is_file():
+        return new_path
+    legacy = legacy_machine_local_dir() / BINDINGS_FILE_NAME
+    if not legacy.is_file():
+        return new_path
+    ensure_fleet_controller_config(fleet_id)
+    _atomic_move(legacy, new_path)
+    return new_path
+
+
+def migrate_legacy_workspace_view_if_needed(fleet_id: str) -> Path:
+    """One-time: move legacy machine-local workspace-view into STATE."""
+    ensure_fleet_local_state(fleet_id)
+    new_path = fleet_local_state_dir(fleet_id) / WORKSPACE_VIEW_NAME
+    if new_path.is_file():
+        return new_path
+    legacy = legacy_machine_local_dir() / WORKSPACE_VIEW_NAME
+    if not legacy.is_file():
+        return new_path
+    _atomic_move(legacy, new_path)
+    return new_path
+
+
 def fleet_registry_path() -> Path:
     return fleet_home() / "fleet.json"
 
+
 def last_status_path() -> Path:
+    if workspace_trust_active():
+        fid = load_workspace_manifest()["fleet_id"]
+        return (
+            fleet_local_state_dir(fid)
+            / LOCAL_STATE_UI_RUNTIME
+            / "last-status.json"
+        )
     return fleet_home() / "last-status.json"
 
+
 def fleet_db_path() -> Path:
+    if workspace_trust_active():
+        fid = load_workspace_manifest()["fleet_id"]
+        return fleet_local_state_dir(fid) / "fleet.db"
     return fleet_home() / "fleet.db"
 
 
@@ -105,12 +338,10 @@ def workspace_manifest_path() -> Path:
     return fleet_home() / WORKSPACE_MANIFEST_NAME
 
 
-def machine_local_dir() -> Path:
-    return fleet_home() / MACHINE_LOCAL_DIRNAME
-
-
 def workspace_view_path() -> Path:
-    return machine_local_dir() / WORKSPACE_VIEW_NAME
+    """Machine-local view under XDG_STATE / VCL_FLEET_LOCAL_STATE (P1-6)."""
+    fid = load_workspace_manifest()["fleet_id"]
+    return migrate_legacy_workspace_view_if_needed(fid)
 
 
 def trust_dir() -> Path:
@@ -197,8 +428,35 @@ def load_registry(path: Optional[Path] = None) -> dict[str, Any]:
         _host.die(f"cannot read {path}: {exc}")
     return validate_registry(data)
 
-def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> None:
-    path = fleet_registry_path() if path is None else Path(path)
+def in_workspace_mutation() -> bool:
+    return _mutation_depth > 0
+
+
+def _is_live_registry_path(path: Optional[Path]) -> bool:
+    """True when path is the active workspace fleet.json (or default None)."""
+    if path is None:
+        return True
+    try:
+        return Path(path).resolve() == fleet_registry_path().resolve()
+    except OSError:
+        return False
+
+
+def _refuse_identity_file_in_workspace_registry(registry: dict[str, Any]) -> None:
+    """F7-3: Workspace-active registry must never persist identity_file (D22/D28)."""
+    if not workspace_trust_active():
+        return
+    for i, node in enumerate(registry.get("nodes") or []):
+        if isinstance(node, dict) and node.get("identity_file"):
+            _host.die(
+                "workspace active: refusing to write identity_file into "
+                f"fleet.json (nodes[{i}]); use credential bindings "
+                "(access bind / admin_credential_ref)"
+            )
+
+
+def _write_registry_file(path: Path, registry: dict[str, Any]) -> None:
+    """Raw fleet.json write — no CAS. Call only from workspace_mutation or legacy."""
     payload = validate_registry(registry)
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +478,37 @@ def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> N
         except OSError:
             pass
         raise
+
+
+def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> None:
+    """Save fleet.json.
+
+    When workspace.json is active and path is the live registry, ALL writes go
+    through workspace_mutation (P1-1). Staging paths and legacy homes (no
+    workspace.json) write directly without CAS/revision bump.
+
+    F7-3: when Workspace is active, refuse any registry payload that still
+    carries identity_file (portable must use credential refs only).
+    """
+    path = fleet_registry_path() if path is None else Path(path)
+    payload = validate_registry(registry)
+    _refuse_identity_file_in_workspace_registry(payload)
+    new_text = json.dumps(payload, indent=2) + "\n"
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == new_text:
+                return
+        except OSError:
+            pass
+
+    if (
+        workspace_trust_active()
+        and _is_live_registry_path(path)
+        and not in_workspace_mutation()
+    ):
+        workspace_mutation(lambda: _write_registry_file(path, payload))
+        return
+    _write_registry_file(path, payload)
 
 
 def mint_fleet_id() -> str:
@@ -382,16 +671,25 @@ def create_workspace_manifest(
     fleet_id: str | None = None,
     controller_id: str | None = None,
 ) -> dict[str, Any]:
+    """Genesis workspace.json: revision 1, write_id minted, parent=null (P1-1)."""
     path = workspace_manifest_path()
     if path.is_file():
         _host.die(f"workspace manifest already exists: {path}")
     _ensure_fleet_home()
+    fid = fleet_id or mint_fleet_id()
+    ctrl = ensure_controller(fid, controller_id=controller_id)
+    cid = controller_id or ctrl["controller_id"]
     manifest = empty_workspace_manifest(
-        name=name, fleet_id=fleet_id, controller_id=controller_id
+        name=name, fleet_id=fid, controller_id=cid
     )
+    # empty_workspace_manifest starts at revision 0 (migrate bootstrap);
+    # init establishes the first committed tip at revision 1.
+    manifest["revision"] = 1
     save_workspace_manifest(manifest, path)
     refresh_manifest_digest(manifest)
     save_workspace_manifest(manifest, path)
+    ensure_fleet_local_state(fid)
+    remember_workspace_view(manifest)
     return manifest
 
 
@@ -499,9 +797,67 @@ def detect_workspace_conflict(
     return None
 
 
+def workspace_mutation(mutator: Callable[[], None]) -> dict[str, Any]:
+    """Single entry for ALL portable writes when workspace is active (D52/P1-1).
+
+    Flow:
+      validate current digest/view
+      record revision/write_id
+      mutate portable state (mutator)
+      re-read / CAS check (rev/write_id unchanged)
+      revision += 1; new write_id; parent = (old revision, old write_id)
+      recompute state_digest; atomic workspace.json commit; remember view
+
+    Rule: fleet.json / trust/known_hosts / history/* may only change through
+    this entry while workspace.json exists. Legacy homes without workspace.json
+    keep prior direct-write paths (no CAS).
+    """
+    global _mutation_depth
+    if not workspace_trust_active():
+        _host.die("workspace_mutation requires an active workspace")
+
+    manifest = load_workspace_manifest()
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        _host.die(conflict)
+
+    old_rev = int(manifest["revision"])
+    old_wid = str(manifest["write_id"])
+    remember_workspace_view(manifest)
+
+    _mutation_depth += 1
+    try:
+        mutator()
+    finally:
+        _mutation_depth -= 1
+
+    reread = load_workspace_manifest()
+    if (reread["revision"], reread["write_id"]) != (old_rev, old_wid):
+        _host.die(WS_ERR_CAS)
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    updated = dict(reread)
+    updated["parent_revision"] = old_rev
+    updated["parent_write_id"] = old_wid
+    updated["revision"] = old_rev + 1
+    updated["write_id"] = str(uuid.uuid4())
+    updated["updated_at"] = now
+    ctrl = ensure_controller(updated["fleet_id"])
+    updated["last_writer_controller_id"] = ctrl["controller_id"]
+    refresh_manifest_digest(updated)
+    save_workspace_manifest(updated)
+    remember_workspace_view(updated)
+    return updated
+
+
 def cas_mutate_workspace(
     mutator: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
+    """Low-level CAS helper: mutator(manifest)->manifest.
+
+    Prefer workspace_mutation for portable fleet/trust/history writes (P1-1).
+    Retained for callers that only rewrite workspace.json under CAS.
+    """
     manifest = load_workspace_manifest()
     conflict = detect_workspace_conflict(manifest)
     if conflict is not None:
@@ -519,8 +875,8 @@ def cas_mutate_workspace(
     return mutated
 
 
-def append_instance_history_line(rec: dict[str, Any]) -> None:
-    """Atomic append one portable instance-history/v1 JSONL record (no secrets)."""
+def _append_instance_history_line_raw(rec: dict[str, Any]) -> None:
+    """Raw history append — no CAS. Call from workspace_mutation or legacy."""
     if not isinstance(rec, dict):
         _host.die("instance-history/v1 record must be an object")
     for k in rec:
@@ -541,6 +897,37 @@ def append_instance_history_line(rec: dict[str, Any]) -> None:
     finally:
         os.close(fd)
     _chmod_private(path, 0o600)
+
+
+def append_instance_history_line(rec: dict[str, Any]) -> None:
+    """Append one portable instance-history/v1 JSONL record (no secrets).
+
+    Workspace active → must go through workspace_mutation (P1-1).
+    Legacy (no workspace.json) → direct append, no CAS.
+    """
+    if workspace_trust_active() and not in_workspace_mutation():
+        workspace_mutation(lambda: _append_instance_history_line_raw(rec))
+        return
+    _append_instance_history_line_raw(rec)
+
+
+def append_instance_history_lines(recs: list[dict[str, Any]]) -> None:
+    """Append many instance-history lines in one workspace_mutation when active.
+
+    Used by sync --full to flush deferred portable history after DB commit
+    (F7-1): one CAS/revision bump for the whole batch.
+    """
+    if not recs:
+        return
+    if workspace_trust_active() and not in_workspace_mutation():
+        def _write() -> None:
+            for rec in recs:
+                _append_instance_history_line_raw(rec)
+
+        workspace_mutation(_write)
+        return
+    for rec in recs:
+        _append_instance_history_line_raw(rec)
 
 
 def parse_instance_history_jsonl(path: Path | None = None) -> list[dict[str, Any]]:
@@ -631,7 +1018,7 @@ MIGRATE_PIPELINE = (
     "migrate identity_file → credential refs",
     "extract Fleet-only host trust",
     "export instance_history",
-    "create machine-local credential bindings",
+    "create controller credential bindings",
     "migrate fleet.db → local state",
     "migrate status/users cache as derived state",
     "verify new Workspace",
@@ -640,22 +1027,17 @@ MIGRATE_PIPELINE = (
 )
 
 
-def _open_db_inspect(
-    path: Path, *, immutable: bool = True
-) -> Optional[Any]:
-    """SQLite URI mode=ro inspect — never open_fleet_db (WAL/migrate/chmod).
+def _open_db_inspect(path: Path) -> Optional[Any]:
+    """SQLite URI mode=ro inspect — never open_fleet_db (migrate/chmod/create).
 
-    Default immutable=1 avoids creating -wal/-shm (AC-4.0-M06 dry-run).
-    Pass immutable=False when migrate must observe latest WAL pages.
+    With rollback journal (DELETE), plain mode=ro reflects committed state (P1-2).
+    Never returns a writer.
     """
     import sqlite3
 
     if not path.is_file():
         return None
-    uri = f"file:{path.resolve()}?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    return sqlite3.connect(uri, uri=True)
+    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
 
 
 def plan_migrate_dry_run() -> dict[str, Any]:
@@ -758,11 +1140,23 @@ def _table_count(conn: Any, table: str) -> int:
 
 
 def _copy_fleet_db_to_staging(src: Path, dest: Path) -> None:
+    """Copy fleet.db into staging; checkpoint leftover WAL into main first (P1-2)."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(src), timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+            conn.close()
+        except sqlite3.Error:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise
+    except sqlite3.Error as exc:
+        _host.die(f"cannot prepare fleet.db for staging copy: {exc}")
     shutil.copy2(src, dest)
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(src) + suffix)
-        if side.is_file():
-            shutil.copy2(side, Path(str(dest) + suffix))
 
 
 def _open_staging_fleet_db(path: Path) -> Any:
@@ -777,7 +1171,7 @@ def _open_staging_fleet_db(path: Path) -> Any:
     conn.isolation_level = None
     try:
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
         if not _host._has_meta_table(conn):
             conn.executescript(_host.FLEET_DB_DDL)
@@ -829,7 +1223,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
         dbp = _host.fleet_db_path()
         src_counts: dict[str, int] = {t: 0 for t in _COUNT_TABLES}
         if dbp.is_file():
-            conn = _open_db_inspect(dbp, immutable=False)
+            conn = _open_db_inspect(dbp)
             if conn is None:
                 _host.die("cannot inspect fleet.db")
             try:
@@ -857,12 +1251,12 @@ def _execute_migrate_locked() -> dict[str, Any]:
         fleet_id = mint_fleet_id()
         _migrate_fail_after("mint fleet_id")
 
-        # 6. create temporary Workspace
+        # 6. create temporary Workspace (portable members only)
         staging = home / _MIGRATE_STAGING_NAME
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(mode=0o700, parents=True)
         _chmod_private(staging, 0o700)
-        for sub in ("trust", "history", "machine-local"):
+        for sub in ("trust", "history"):
             d = staging / sub
             d.mkdir(mode=0o700, parents=True)
             _chmod_private(d, 0o700)
@@ -905,9 +1299,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
 
         # 10. export instance_history (gaps stay gaps; D48)
         hist_dest = staging / "history" / "instances.jsonl"
-        src_conn = (
-            _open_db_inspect(dbp, immutable=False) if dbp.is_file() else None
-        )
+        src_conn = _open_db_inspect(dbp) if dbp.is_file() else None
         try:
             if src_conn is not None:
                 history_exported = export_instance_history_from_db(
@@ -922,7 +1314,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 src_conn.close()
         _migrate_fail_after("export instance_history")
 
-        # 11. create machine-local credential bindings
+        # 11. create controller credential bindings (CONFIG; not in workspace)
         bindings = _host.empty_bindings()
         for path, ref in mapping.items():
             resolved = _host.validate_identity_file(path, must_exist=True)
@@ -931,10 +1323,10 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 "path": resolved,
             }
         _host.save_bindings(
-            bindings, staging / "machine-local" / "credential-bindings.json"
+            bindings, staging / BINDINGS_FILE_NAME
         )
         ref_map = {ref: path for path, ref in mapping.items()}
-        _migrate_fail_after("create machine-local credential bindings")
+        _migrate_fail_after("create controller credential bindings")
 
         # 12. migrate fleet.db → local state (source untouched until commit)
         if dbp.is_file():
@@ -964,7 +1356,10 @@ def _execute_migrate_locked() -> dict[str, Any]:
         _migrate_fail_after("migrate status/users cache as derived state")
 
         # 14. verify new Workspace
-        manifest = empty_workspace_manifest(fleet_id=fleet_id)
+        ctrl = ensure_controller(fleet_id)
+        manifest = empty_workspace_manifest(
+            fleet_id=fleet_id, controller_id=ctrl["controller_id"]
+        )
         save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
         refresh_manifest_digest(manifest, home=staging)
         save_workspace_manifest(manifest, staging / WORKSPACE_MANIFEST_NAME)
@@ -990,12 +1385,6 @@ def _execute_migrate_locked() -> dict[str, Any]:
             src = home / name
             if src.is_file():
                 shutil.copy2(src, bak / name)
-            for suffix in ("-wal", "-shm"):
-                if name != "fleet.db":
-                    break
-                side = Path(str(src) + suffix)
-                if side.is_file():
-                    shutil.copy2(side, bak / side.name)
 
         def _replace_into(src: Path, dest: Path) -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1003,22 +1392,52 @@ def _execute_migrate_locked() -> dict[str, Any]:
                 os.chmod(dest.parent, 0o700)
             except OSError:
                 pass
-            os.replace(src, dest)
+            try:
+                os.replace(src, dest)
+            except OSError as exc:
+                # EXDEV: staging on tmpfs, CONFIG/STATE on another mount.
+                if exc.errno != errno.EXDEV:
+                    raise
+                shutil.copy2(src, dest)
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
+                try:
+                    os.chmod(dest, 0o600)
+                except OSError:
+                    pass
 
         _replace_into(staging / "fleet.json", home / "fleet.json")
         _replace_into(
             staging / WORKSPACE_MANIFEST_NAME, home / WORKSPACE_MANIFEST_NAME
         )
+        fleet_db_dest: Path | None = None
         if (staging / "fleet.db").is_file():
-            _replace_into(staging / "fleet.db", home / "fleet.db")
-            for suffix in ("-wal", "-shm"):
-                side = Path(str(staging / "fleet.db") + suffix)
-                if side.is_file():
-                    _replace_into(side, Path(str(home / "fleet.db") + suffix))
+            # Commit cache to local-state/<fleet_id>/ (D23); do not write
+            # live home/fleet.db (legacy bak already copied above).
+            ensure_fleet_local_state(fleet_id)
+            fleet_db_dest = fleet_local_state_dir(fleet_id) / "fleet.db"
+            _replace_into(staging / "fleet.db", fleet_db_dest)
+            # Drop legacy home cache + any leftover WAL-era sidecars.
+            for leftover in (
+                home / "fleet.db",
+                Path(str(home / "fleet.db") + "-wal"),
+                Path(str(home / "fleet.db") + "-shm"),
+            ):
+                if leftover.is_file():
+                    leftover.unlink()
         if (staging / "last-status.json").is_file():
+            ensure_fleet_local_state(fleet_id)
             _replace_into(
-                staging / "last-status.json", home / "last-status.json"
+                staging / "last-status.json",
+                fleet_local_state_dir(fleet_id)
+                / LOCAL_STATE_UI_RUNTIME
+                / "last-status.json",
             )
+            leg_status = home / "last-status.json"
+            if leg_status.is_file():
+                leg_status.unlink()
         _replace_into(
             staging / "trust" / "known_hosts",
             home / "trust" / "known_hosts",
@@ -1027,19 +1446,23 @@ def _execute_migrate_locked() -> dict[str, Any]:
             staging / "history" / "instances.jsonl",
             home / "history" / "instances.jsonl",
         )
-        bind_src = staging / "machine-local" / "credential-bindings.json"
+        bind_src = staging / BINDINGS_FILE_NAME
         if bind_src.is_file():
+            ensure_fleet_controller_config(fleet_id)
             _replace_into(
                 bind_src,
-                home / MACHINE_LOCAL_DIRNAME / "credential-bindings.json",
+                fleet_controller_bindings_path(fleet_id),
             )
+        ensure_controller(fleet_id, controller_id=ctrl["controller_id"])
 
         committed = True
-        remember_workspace_view(load_workspace_manifest())
+        # Portable files + bootstrap workspace.json (revision 0) are in place.
+        # Advance tip through the single mutation entry (P1-1): rev 0 → 1.
+        workspace_mutation(lambda: None)
         _migrate_fail_after("atomic commit")
         _migrate_fail_after("preserve old tree as legacy backup")
 
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "fleet_id": fleet_id,
             "ref_map": ref_map,
@@ -1047,18 +1470,43 @@ def _execute_migrate_locked() -> dict[str, Any]:
             "legacy_backup": str(bak),
             "history_exported": history_exported,
         }
+        if fleet_db_dest is not None:
+            result["fleet_db"] = str(fleet_db_dest)
+        return result
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
 
 
 def open_cache_readonly():
-    """0.4.0 query seam; still open_fleet_db (RW+WAL). True mode=ro ≥0.4.2."""
-    return _host.open_fleet_db()
+    """Query/UI GET: mode=ro + query_only; never migrate/chmod/create (D47/P1-2)."""
+    import sqlite3
+
+    path = _host.fleet_db_path()
+    if not path.is_file():
+        _host.die(f"cannot open fleet.db: {path}")
+    try:
+        conn = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+    except sqlite3.Error as exc:
+        _host.die(f"cannot open fleet.db: {exc}")
+    conn.row_factory = sqlite3.Row
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _host.open_cache_check(conn)
+    except SystemExit:
+        conn.close()
+        raise
+    return conn
 
 
 def open_cache_for_sync():
-    """0.4.0 sync/migrate RW seam; same backing until 0.4.2."""
+    """Sole normal writer (D24); RW + rollback journal + migrate."""
     return _host.open_fleet_db()
 
 
@@ -1101,6 +1549,10 @@ def export_workspace(dest: Path) -> Path:
     home = fleet_home()
     manifest = load_workspace_manifest()
     validate_workspace_manifest(manifest)
+    # F7-5: refuse export when workspace is not clean (same as verify).
+    conflict = detect_workspace_conflict(manifest)
+    if conflict is not None:
+        _host.die(conflict)
     reg = load_registry()
     _assert_portable_registry(reg)
     # Re-check raw fleet.json bytes for residual identity_file / passwords.
@@ -1149,17 +1601,20 @@ def export_workspace(dest: Path) -> Path:
     return dest
 
 
-def import_workspace(src: Path) -> dict[str, Any]:
-    """Extract portable snapshot into fleet_home; never import bindings/secrets."""
-    src = Path(src).expanduser()
-    if not src.is_file():
-        _host.die(f"workspace archive not found: {src}")
-    home = _ensure_fleet_home()
-    for dname in ("trust", "history", MACHINE_LOCAL_DIRNAME):
-        d = home / dname
-        d.mkdir(parents=True, exist_ok=True)
-        _chmod_private(d, 0o700)
+def _import_staging_parent() -> Path:
+    """Temp parent for import staging — never inside the live workspace (F7-2)."""
+    home = Path.home()
+    candidate = home / "tmp"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        _chmod_private(candidate, 0o700)
+        return candidate
+    except OSError:
+        return Path(tempfile.gettempdir())
 
+
+def _extract_workspace_archive_to_staging(src: Path, staging: Path) -> set[str]:
+    """Extract allowlisted portable members into staging; no live writes."""
     extracted: set[str] = set()
     try:
         with tarfile.open(src, "r:gz") as tf:
@@ -1175,8 +1630,9 @@ def import_workspace(src: Path) -> dict[str, Any]:
                 if fh is None:
                     _host.die(f"cannot read archive member: {name}")
                 data = fh.read()
-                dest = home / name
+                dest = staging / name
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                _chmod_private(dest.parent, 0o700)
                 fd, tmp = tempfile.mkstemp(
                     prefix=f".{dest.name}.",
                     suffix=".tmp",
@@ -1197,23 +1653,134 @@ def import_workspace(src: Path) -> dict[str, Any]:
                 extracted.add(name)
     except tarfile.TarError as exc:
         _host.die(f"invalid workspace archive: {exc}")
+    return extracted
 
+
+def _validate_staged_workspace(staging: Path, extracted: set[str]) -> dict[str, Any]:
+    """Full import validation inside staging; fail closed on digest mismatch."""
     if "workspace.json" not in extracted:
         _host.die("workspace archive missing workspace.json")
     if "fleet.json" not in extracted:
         _host.die("workspace archive missing fleet.json")
 
-    reg = load_registry()
+    manifest = load_workspace_manifest(staging / WORKSPACE_MANIFEST_NAME)
+    reg = load_registry(staging / "fleet.json")
     _assert_portable_registry(reg)
-    raw = fleet_registry_path().read_text(encoding="utf-8")
-    if '"identity_file"' in raw:
+    raw = (staging / "fleet.json").read_text(encoding="utf-8")
+    if '"identity_file"' in raw or "'identity_file'" in raw:
         _host.die("portable workspace forbids identity_file in fleet.json")
 
-    manifest = load_workspace_manifest()
-    refresh_manifest_digest(manifest)
-    save_workspace_manifest(manifest)
-    remember_workspace_view(manifest)
+    expected = compute_state_digest(staging, manifest=manifest)
+    if manifest.get("state_digest") != expected:
+        # F7-2: refuse damaged archives — never refresh/re-sign on import.
+        _host.die(
+            "workspace archive state_digest mismatch "
+            "(import refused; no re-sign)"
+        )
     return manifest
+
+
+def _commit_staged_workspace(staging: Path, home: Path) -> None:
+    """Install validated staging members into live home; roll back on failure."""
+    for dname in ("trust", "history"):
+        d = home / dname
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+
+    backup_root = Path(
+        tempfile.mkdtemp(
+            prefix=".workspace-import-bak.",
+            dir=str(_import_staging_parent()),
+        )
+    )
+    preexisting: set[str] = set()
+    written: list[str] = []
+    try:
+        for name in EXPORT_MEMBERS:
+            live = home / name
+            if live.is_file():
+                preexisting.add(name)
+                bak = backup_root / name
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(live, bak)
+
+        for name in EXPORT_MEMBERS:
+            src_path = staging / name
+            if not src_path.is_file():
+                continue
+            dest = home / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _chmod_private(dest.parent, 0o700)
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{dest.name}.",
+                suffix=".tmp",
+                dir=str(dest.parent),
+            )
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(src_path.read_bytes())
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, dest)
+                os.chmod(dest, 0o600)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            written.append(name)
+    except Exception:
+        for name in written:
+            dest = home / name
+            bak = backup_root / name
+            if name in preexisting and bak.is_file():
+                try:
+                    shutil.copy2(bak, dest)
+                    os.chmod(dest, 0o600)
+                except OSError:
+                    pass
+            elif name not in preexisting and dest.is_file():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+        raise
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def import_workspace(src: Path) -> dict[str, Any]:
+    """Verify archive in staging, then commit into fleet_home (F7-2).
+
+    Never imports bindings/secrets. Digest mismatch fails closed (no re-sign).
+    On validation or commit failure the live workspace is left unchanged.
+    """
+    src = Path(src).expanduser()
+    if not src.is_file():
+        _host.die(f"workspace archive not found: {src}")
+    home = _ensure_fleet_home()
+
+    staging: Path | None = None
+    try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=".workspace-import.",
+                dir=str(_import_staging_parent()),
+            )
+        )
+        _chmod_private(staging, 0o700)
+        extracted = _extract_workspace_archive_to_staging(src, staging)
+        _validate_staged_workspace(staging, extracted)
+        _commit_staged_workspace(staging, home)
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    manifest = load_workspace_manifest()
+    ensure_controller(manifest["fleet_id"])
+    ensure_fleet_local_state(manifest["fleet_id"])
+    # Local import is a portable write: bump revision/write_id via single entry.
+    return workspace_mutation(lambda: None)
 
 
 ADMIN_CREDENTIAL_REF_KEY = "admin_credential_ref"

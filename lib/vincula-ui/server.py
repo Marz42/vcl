@@ -93,14 +93,41 @@ def users_cache_path() -> Path:
 
 
 def load_last_status_doc() -> Optional[dict[str, Any]]:
-    path = fleet().last_status_path()
-    if not path.is_file():
+    """UI GET status plane: same cached payload as `fleet status` (P1-3).
+
+    Primary source is node_snapshot; last-status.json is 0.4.1 fallback only
+    (handled inside run_cached_status_payload). Returns None when no useful
+    observation exists yet (pre-sync / empty fallback).
+    """
+    f = fleet()
+    payload = f.run_cached_status_payload(include_all=True)
+    payload = dict(payload)
+    payload.pop("_rows", None)
+    if _status_cache_empty(payload):
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    return payload
+
+
+def _status_cache_empty(doc: Optional[dict[str, Any]]) -> bool:
+    """True when cache has no snapshot/legacy health observation."""
+    if not doc:
+        return True
+    for node in doc.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        synced = node.get("synced_at")
+        if isinstance(synced, str) and synced and synced != "-":
+            return False
+        ssh = str(node.get("ssh") or "")
+        if ssh and ssh not in ("UNKNOWN", "-", "DISABLED"):
+            return False
+        if node.get("vincula_version"):
+            return False
+        proxy = str(node.get("proxy") or "")
+        accounting = str(node.get("accounting") or "")
+        if proxy not in ("", "UNKNOWN") or accounting not in ("", "UNKNOWN"):
+            return False
+    return True
 
 
 def load_users_cache() -> Optional[dict[str, Any]]:
@@ -326,7 +353,10 @@ def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]
             {
                 "level": "amber",
                 "code": "no-status-cache",
-                "message": "No last-status.json yet. Use Refresh status or Verify.",
+                "message": (
+                    "No cached node health yet. Run sync --full "
+                    "(or Refresh / Verify for a live check)."
+                ),
             }
         )
         return warnings
@@ -442,7 +472,7 @@ def api_overview() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     status_doc = load_last_status_doc()
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
         start, end = f.stats_date_window(7)
@@ -518,7 +548,7 @@ def api_health() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     status_doc = load_last_status_doc()
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
     finally:
@@ -545,7 +575,7 @@ def api_node(name: str) -> dict[str, Any]:
         if isinstance(n, dict) and n.get("name") == name:
             probe = n
             break
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         instances = f.list_instances(conn, node["node_id"])
         cursor = f.read_sync_cursor_row(conn, node["node_id"])
@@ -658,7 +688,7 @@ def api_users() -> dict[str, Any]:
                 "No VLESS URI or secrets."
             ),
         }
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         users = _users_from_db(conn, registry)
     finally:
@@ -691,7 +721,7 @@ def api_user(tag: str) -> dict[str, Any]:
         if str(user.get("user_id") or "") == tag:
             match = user
             break
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         uid = None
         if match and match.get("user_id"):
@@ -738,8 +768,10 @@ def resolve_user_id_for_ui(
     registry: dict[str, Any],
     tag_or_id: str,
     *,
-    allow_ssh: bool,
+    allow_ssh: bool = False,
 ) -> Optional[str]:
+    """Local Read Plane tag→user_id (user_snapshot → events/usage). Never SSH."""
+    del registry, allow_ssh  # UI GET is cache-only; keep kwargs for callers.
     f = fleet()
     text = (tag_or_id or "").strip()
     if not text:
@@ -747,28 +779,15 @@ def resolve_user_id_for_ui(
     if UUID_RE.fullmatch(text):
         return text
     f.validate_name(text)
-    rows = conn.execute(
-        """
-        SELECT DISTINCT user_id FROM audit_events
-        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
-        UNION
-        SELECT DISTINCT user_id FROM daily_usage
-        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
-        """,
-        (text, text),
-    ).fetchall()
-    ids = {str(r[0]) for r in rows if r[0]}
+    ids = f.local_user_ids_for_tag(conn, text)
+    if len(ids) > 1:
+        detail = ", ".join(sorted(ids))
+        raise ValueError(
+            f"LOCAL_USER_ID_CONFLICT: tag {text} maps to multiple user_ids: "
+            f"{detail}"
+        )
     if len(ids) == 1:
         return next(iter(ids))
-    if len(ids) > 1:
-        raise ValueError(f"tag {text} has conflicting user_id in local cache")
-    cache = load_users_cache()
-    if cache:
-        for user in cache.get("users") or []:
-            if str(user.get("tag") or "") == text and user.get("user_id"):
-                return str(user["user_id"])
-    if allow_ssh:
-        return f.resolve_fleet_user_id(registry, text)
     return None
 
 
@@ -821,7 +840,7 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     if node_name:
         f.validate_name(node_name)
         node_id = f.require_node(registry, node_name)["node_id"]
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         user_id = resolve_user_id_for_ui(
             conn, registry, user, allow_ssh=False
@@ -922,7 +941,7 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
     group_by = (
         ("user_id", "node_id") if kind == "users" else ("destination_host", "node_id")
     )
-    conn = f.open_fleet_db()
+    conn = f.open_cache_readonly()
     try:
         raw = f.query_daily_grouped(
             conn, start=start, end=end, group_by=group_by

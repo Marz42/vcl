@@ -2,6 +2,31 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.2 (2026-08-21)
+**Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+### Added
+- **Machine-local cache (D23):** `local-state/<fleet_id>/fleet.db` (+archives/ui-runtime); Workspace portable without cache.
+- **Purely copyable workspace root (P1-6/D22/D28):** root holds only `workspace.json` / `fleet.json` / `trust/` / `history/`. Bindings + `controller.json` under `XDG_CONFIG_HOME/vincula/controllers/<fleet_id>/`; `workspace-view.json` under STATE with fleet.db/ui-runtime. One-time migrate from legacy `machine-local/`.
+- **fleet-cache/v4:** 3→4; `meta.fleet_id`; `CACHE_FLEET_MISMATCH`; D45 namespace.
+- **Enforced RO (D47/C01):** `open_cache_readonly` `mode=ro` + `query_only`; sync via `open_cache_for_sync` RW; cache uses rollback journal (`DELETE`), not WAL (P1-2).
+- **`sync --full` (D25/C04):** identity+health+users+audit→cache; sequential; per-node txn; PARTIAL exit 2; bare sync=legacy audit.
+- **Audit archive (D37/D38):** `audit archive create|verify|inspect|restore`; `.vclaudit`=`audit-archive/v1`; restore never touches `sync_cursor`/`last_export_seq`; optional `--age-recipient`.
+### Fixes (P1)
+- **P1-1** `workspace_mutation` sole portable-write entry (CAS/rev/digest).
+- **P1-2** cache rollback journal; RO `mode=ro` + `query_only`.
+- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write).
+- **P1-4** archive canonical excludes `imported_at`; restore rebuilds daily_usage.
+- **P1-5** local tag→user_id; audit/stats/status/UI Local Read Plane.
+- **P1-6** (also under Added) machine-local → CONFIG/STATE; copyable workspace root.
+### Hardening (F7)
+- **F7-1** `sync --full` defers portable instance history until after DB commit.
+- **F7-2** workspace import verify-in-staging then commit (fail closed; no re-sign).
+- **F7-3** Workspace active: `--identity-file` → machine-local binding only.
+- **F7-4** cached status `ok` from node health (explicit FAIL → non-zero).
+- **F7-5** workspace export refuses inconsistent / conflicted workspace.
+### Notes
+- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md). LIVE optional AC-4.1-03/06.
+
 ## 0.4.1 (2026-08-21)
 
 **Controller-only** portable workspace milestone. Stamp: CTRL `VCL_FLEET_VERSION=0.4.1`; NODE `VINCULA_VERSION=0.3.1` unchanged (no allowlist / installer / node fixture bumps).

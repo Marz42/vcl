@@ -144,6 +144,7 @@ jobs:
             --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || true
           [[ "$audit_err" != *"vincula-audit.py not found"* ]]
           [[ "$audit_err" != *"vincula-backup.py not found"* ]]
+          [[ "$audit_err" != *"vincula-audit-archive.py not found"* ]]
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vincula-dist

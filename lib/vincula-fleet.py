@@ -40,10 +40,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.4.1"
+VCL_FLEET_VERSION = "0.4.2"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_CACHE_SCHEMA_VERSION = 3
+FLEET_CACHE_SCHEMA_VERSION = 4
 WORKSPACE_SCHEMA_VERSION = 1
 AUDIT_ARCHIVE_SCHEMA_VERSION = 1
 TELEMETRY_SCHEMA_VERSION = 1
@@ -57,6 +57,8 @@ INSTANCE_STATUS_ACTIVE = "active"
 INSTANCE_STATUS_RETIRED = "retired"
 INSTANCE_STATUSES = (INSTANCE_STATUS_ACTIVE, INSTANCE_STATUS_RETIRED)
 RETIRE_SKIP_SYNC_ENV = "VCL_FLEET_RETIRE_SKIP_SYNC"
+# Test-only: inject failure inside sync --full per-node txn (undocumented).
+SYNC_FULL_FAIL_AFTER_ENV = "VCL_SYNC_FULL_FAIL_AFTER"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
@@ -136,6 +138,35 @@ CREATE TABLE daily_usage (
   connection_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (date, node_id, user_id, destination_host)
 );
+
+CREATE TABLE node_snapshot (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  name TEXT,
+  vincula_version TEXT,
+  ssh TEXT,
+  proxy TEXT,
+  accounting TEXT,
+  registry TEXT,
+  clock TEXT,
+  clock_skew_seconds INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL
+);
+
+CREATE TABLE user_snapshot (
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  tag TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  status TEXT,
+  active_credential_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, user_id)
+);
+
+CREATE INDEX idx_user_snapshot_tag ON user_snapshot(tag);
 """ + INSTANCE_HISTORY_DDL
 
 INSERT_AUDIT_EVENT_SQL = """
@@ -301,8 +332,24 @@ def fleet_db_path() -> Path:
     return _WS.fleet_db_path()
 
 
+LOCAL_STATE_ARCHIVES = _WS.LOCAL_STATE_ARCHIVES
+LOCAL_STATE_UI_RUNTIME = _WS.LOCAL_STATE_UI_RUNTIME
+fleet_local_state_root = _WS.fleet_local_state_root
+fleet_local_state_dir = _WS.fleet_local_state_dir
+ensure_fleet_local_state = _WS.ensure_fleet_local_state
+fleet_controller_config_root = _WS.fleet_controller_config_root
+fleet_controller_config_dir = _WS.fleet_controller_config_dir
+ensure_fleet_controller_config = _WS.ensure_fleet_controller_config
+fleet_controller_bindings_path = _WS.fleet_controller_bindings_path
+fleet_controller_file = _WS.fleet_controller_file
+ensure_controller = _WS.ensure_controller
+migrate_legacy_bindings_if_needed = _WS.migrate_legacy_bindings_if_needed
+migrate_legacy_workspace_view_if_needed = _WS.migrate_legacy_workspace_view_if_needed
+PORTABLE_WORKSPACE_ROOT_NAMES = _WS.PORTABLE_WORKSPACE_ROOT_NAMES
+
 workspace_manifest_path = _WS.workspace_manifest_path
 machine_local_dir = _WS.machine_local_dir
+legacy_machine_local_dir = _WS.legacy_machine_local_dir
 workspace_view_path = _WS.workspace_view_path
 trust_dir = _WS.trust_dir
 known_hosts_path = _WS.known_hosts_path
@@ -310,6 +357,7 @@ workspace_trust_active = _WS.workspace_trust_active
 history_dir = _WS.history_dir
 instances_history_path = _WS.instances_history_path
 append_instance_history_line = _WS.append_instance_history_line
+append_instance_history_lines = _WS.append_instance_history_lines
 parse_instance_history_jsonl = _WS.parse_instance_history_jsonl
 export_instance_history_from_db = _WS.export_instance_history_from_db
 mint_fleet_id = _WS.mint_fleet_id
@@ -324,6 +372,8 @@ load_workspace_view = _WS.load_workspace_view
 save_workspace_view = _WS.save_workspace_view
 remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
+workspace_mutation = _WS.workspace_mutation
+in_workspace_mutation = _WS.in_workspace_mutation
 cas_mutate_workspace = _WS.cas_mutate_workspace
 execute_migrate = _WS.execute_migrate
 export_workspace = _WS.export_workspace
@@ -354,7 +404,17 @@ def open_cache_for_sync():
     return _WS.open_cache_for_sync()
 
 
+def open_cache_readonly_optional():
+    """Query plane: true RO if fleet.db exists; else None (never create/migrate)."""
+    if not fleet_db_path().is_file():
+        return None
+    return open_cache_readonly()
+
+
 planned_credential_refs = _WS.planned_credential_refs
+DEFAULT_ADMIN_CREDENTIAL_REF = _WS.DEFAULT_ADMIN_CREDENTIAL_REF
+ADMIN_CREDENTIAL_REF_KEY = _WS.ADMIN_CREDENTIAL_REF_KEY
+OBSERVE_CREDENTIAL_REF_KEY = _WS.OBSERVE_CREDENTIAL_REF_KEY
 node_schema_field_names = _WS.node_schema_field_names
 RESERVED_NODE_CREDENTIAL_KEYS = _WS.RESERVED_NODE_CREDENTIAL_KEYS
 
@@ -737,10 +797,28 @@ def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def open_cache_check(
+    conn: sqlite3.Connection, *, expect_fleet_id: Optional[str] = None
+) -> None:
+    ver = fleet_db_meta_get(conn, "schema_version")
+    if ver != str(FLEET_CACHE_SCHEMA_VERSION):
+        die(f"unsupported fleet-cache schema: {ver}")
+    cached = fleet_db_meta_get(conn, "fleet_id") or ""
+    expected = (
+        expect_fleet_id
+        if expect_fleet_id is not None
+        else _workspace_fleet_id_or_empty()
+    )
+    if expected and cached and cached != expected:
+        die("CACHE_FLEET_MISMATCH: cache fleet_id mismatch")
+
+
 def open_fleet_db() -> sqlite3.Connection:
-    """Open ~/.config/vincula/fleet.db (or VCL_FLEET_HOME), creating schema 3."""
+    """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 4."""
     _ensure_fleet_home()
     path = fleet_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_private(path.parent, 0o700)
     try:
         conn = sqlite3.connect(str(path), timeout=30)
     except sqlite3.Error as exc:
@@ -749,12 +827,16 @@ def open_fleet_db() -> sqlite3.Connection:
     conn.isolation_level = None
     try:
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        # Rollback journal (DELETE): 1 low-frequency writer + short RO readers (P1-2).
+        conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
         if not _has_meta_table(conn):
             conn.executescript(FLEET_DB_DDL)
             fleet_db_meta_set(
                 conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION)
+            )
+            fleet_db_meta_set(
+                conn, "fleet_id", _workspace_fleet_id_or_empty()
             )
             conn.commit()
         else:
@@ -764,14 +846,14 @@ def open_fleet_db() -> sqlite3.Connection:
                 ver = "2"
             if ver == "2":
                 _migrate_fleet_db_2_to_3(conn)
-            elif ver != str(FLEET_DB_SCHEMA_VERSION):
+                ver = "3"
+            if ver == "3":
+                _migrate_fleet_db_3_to_4(conn)
+            elif ver != "4":
                 conn.close()
                 die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(path) + suffix)
-            if sidecar.is_file():
-                _chmod_private(sidecar, 0o600)
+        open_cache_check(conn)
         return conn
     except SystemExit:
         raise
@@ -781,6 +863,15 @@ def open_fleet_db() -> sqlite3.Connection:
         except Exception:
             pass
         die(f"cannot initialize fleet.db: {exc}")
+
+
+def _workspace_fleet_id_or_empty() -> str:
+    try:
+        if _WS.workspace_trust_active():
+            return str(_WS.load_workspace_manifest()["fleet_id"])
+    except Exception:
+        pass
+    return ""
 
 
 def _migrate_fleet_db_1_to_2(conn: sqlite3.Connection) -> None:
@@ -813,7 +904,45 @@ def _migrate_fleet_db_2_to_3(conn: sqlite3.Connection) -> None:
             "ALTER TABLE sync_cursor ADD COLUMN cursor_kind "
             "TEXT NOT NULL DEFAULT 'event_id'"
         )
-    fleet_db_meta_set(conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION))
+    fleet_db_meta_set(conn, "schema_version", "3")
+    conn.commit()
+
+
+def _migrate_fleet_db_3_to_4(conn: sqlite3.Connection) -> None:
+    """Add node_snapshot / user_snapshot and stamp meta.fleet_id."""
+    conn.executescript(
+        """
+CREATE TABLE IF NOT EXISTS node_snapshot (
+  node_id TEXT PRIMARY KEY,
+  instance_id TEXT,
+  name TEXT,
+  vincula_version TEXT,
+  ssh TEXT,
+  proxy TEXT,
+  accounting TEXT,
+  registry TEXT,
+  clock TEXT,
+  clock_skew_seconds INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_snapshot (
+  node_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  tag TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  status TEXT,
+  active_credential_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_snapshot_tag ON user_snapshot(tag);
+"""
+    )
+    if fleet_db_meta_get(conn, "fleet_id") is None:
+        fleet_db_meta_set(conn, "fleet_id", _workspace_fleet_id_or_empty())
+    fleet_db_meta_set(conn, "schema_version", "4")
     conn.commit()
 
 def insert_instance(
@@ -975,6 +1104,94 @@ def record_instance(
             "reason": "sync-first-sight",
         }
     )
+
+
+def _record_instance_db_pending(
+    conn: sqlite3.Connection,
+    node_id: str,
+    instance_id: str,
+    endpoint: Optional[str] = None,
+    ssh_host: Optional[str] = None,
+    *,
+    now_iso: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """DB-only first-sight; return portable history events for post-commit flush.
+
+    Used by sync --full so portable history is not written inside the SQLite
+    txn (F7-1 half-commit fix). Legacy sync_one_node keeps record_instance.
+    """
+    iid = _optional_text(instance_id)
+    if iid is None:
+        return []
+    if not UUID_RE.fullmatch(iid):
+        return []
+    if iid == node_id:
+        die("instance_id must not equal node_id")
+    existing = conn.execute(
+        """
+        SELECT 1 FROM instance_history
+        WHERE node_id = ? AND instance_id = ?
+        """,
+        (node_id, iid),
+    ).fetchone()
+    if existing is not None:
+        return []
+    ts = now_iso or format_utc(datetime.now(timezone.utc))
+    pending: list[dict[str, Any]] = []
+    validate_node_id(node_id)
+    rows = conn.execute(
+        """
+        SELECT node_id, instance_id, started_at, endpoint
+        FROM instance_history
+        WHERE node_id = ? AND status = ?
+        """,
+        (node_id, INSTANCE_STATUS_ACTIVE),
+    ).fetchall()
+    conn.execute(
+        """
+        UPDATE instance_history
+        SET status = ?, retired_at = ?
+        WHERE node_id = ? AND status = ?
+        """,
+        (INSTANCE_STATUS_RETIRED, ts, node_id, INSTANCE_STATUS_ACTIVE),
+    )
+    for row in rows:
+        pending.append(
+            {
+                "node_id": row["node_id"],
+                "instance_id": row["instance_id"],
+                "started_at": row["started_at"],
+                "retired_at": ts,
+                "endpoint": row["endpoint"],
+                "reason": "retired",
+            }
+        )
+    insert_instance(
+        conn,
+        node_id=node_id,
+        instance_id=iid,
+        started_at=ts,
+        endpoint=endpoint,
+        ssh_host=ssh_host,
+        status=INSTANCE_STATUS_ACTIVE,
+    )
+    pending.append(
+        {
+            "node_id": node_id,
+            "instance_id": iid,
+            "started_at": ts,
+            "retired_at": None,
+            "endpoint": _optional_text(endpoint) or _optional_text(ssh_host),
+            "reason": "sync-first-sight",
+        }
+    )
+    return pending
+
+
+def _sync_full_fail_after(step: str) -> None:
+    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER)."""
+    if os.environ.get(SYNC_FULL_FAIL_AFTER_ENV) == step:
+        raise RuntimeError(f"injected sync --full failure at {step}")
 
 
 def list_instances(
@@ -1185,6 +1402,8 @@ def import_audit_batch(
     now_iso: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
     next_cursor: Optional[int] = None,
+    *,
+    manage_txn: bool = True,
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. UPSERT on (node_id, event_id).
 
@@ -1192,6 +1411,8 @@ def import_audit_batch(
     rows fail the whole import and leave the cursor unchanged. A labeled
     row whose node_id does not match also fails closed. When next_cursor is
     set (sync path), last_export_seq is written to that remote-declared value.
+    When manage_txn is False and conn is given, the caller owns BEGIN/COMMIT/
+    ROLLBACK (used by sync --full per-node txn).
     """
     validate_node_id(node_id)
     inst = _optional_text(instance_id)
@@ -1247,7 +1468,8 @@ def import_audit_batch(
         ):
             die("invalid next_cursor")
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            if manage_txn:
+                conn.execute("BEGIN IMMEDIATE")
             if params:
                 conn.executemany(INSERT_AUDIT_EVENT_SQL, params)
             rebuild_daily_usage_for_node(conn, node_id)
@@ -1287,12 +1509,14 @@ def import_audit_batch(
                     SYNC_STATUS_OK,
                 ),
             )
-            conn.commit()
+            if manage_txn:
+                conn.commit()
         except BaseException:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if manage_txn:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         inserted = 0
         updated = 0
@@ -1502,6 +1726,19 @@ def read_sync_cursor_row(
         SELECT instance_id, last_event_id, last_export_seq, cursor_kind,
                last_sync_at, status
         FROM sync_cursor WHERE node_id = ?
+        """,
+        (node_id,),
+    ).fetchone()
+
+
+def read_node_snapshot_row(
+    conn: sqlite3.Connection, node_id: str
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT node_id, instance_id, name, vincula_version, ssh, proxy,
+               accounting, registry, clock, clock_skew_seconds, synced_at
+        FROM node_snapshot WHERE node_id = ?
         """,
         (node_id,),
     ).fetchone()
@@ -1848,6 +2085,15 @@ def require_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
     return node
 
 
+def _bind_identity_for_workspace(
+    path: str, *, ref: Optional[str] = None
+) -> str:
+    """Machine-local binding via access bind flow; return credential ref (F7-3)."""
+    key = _optional_text(ref) or DEFAULT_ADMIN_CREDENTIAL_REF
+    bind_identity_file(key, path)
+    return key
+
+
 def add_node(
     registry: dict[str, Any],
     *,
@@ -1857,6 +2103,7 @@ def add_node(
     ssh_user: str = "root",
     ssh_port: int = 22,
     identity_file: Optional[str] = None,
+    admin_credential_ref: Optional[str] = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
     validate_node_id(node_id)
@@ -1873,8 +2120,18 @@ def add_node(
         "ssh_port": ssh_port,
         "enabled": enabled,
     }
+    # F7-3: Workspace-active callers must pass admin_credential_ref only;
+    # identity_file is legacy-home persistence.
     if identity_file:
+        if workspace_trust_active():
+            die(
+                "workspace active: identity_file must not be stored in "
+                "fleet.json; use credential bindings"
+            )
         payload["identity_file"] = identity_file
+    if admin_credential_ref:
+        payload["admin_credential_ref"] = admin_credential_ref
+        payload["observe_credential_ref"] = admin_credential_ref
     record = normalize_node(
         payload,
         index=len(registry.get("nodes") or []),
@@ -1934,10 +2191,17 @@ def cmd_init() -> int:
 @with_fleet_op_lock
 def cmd_node_add(args: argparse.Namespace) -> int:
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    identity_file = None
+    # SSH may use the key path; registry persistence depends on Workspace (F7-3).
+    ssh_identity: Optional[str] = None
+    reg_identity: Optional[str] = None
+    admin_ref: Optional[str] = None
     raw_ident = _optional_text(getattr(args, "identity_file", None))
     if raw_ident:
-        identity_file = validate_identity_file(raw_ident, must_exist=True)
+        ssh_identity = validate_identity_file(raw_ident, must_exist=True)
+        if workspace_trust_active():
+            admin_ref = _bind_identity_for_workspace(ssh_identity)
+        else:
+            reg_identity = ssh_identity
     if args.offline:
         if not args.node_id:
             die("--offline requires --node-id UUID", 2)
@@ -1953,7 +2217,7 @@ def cmd_node_add(args: argparse.Namespace) -> int:
             ["vcl", "identity", "--json"],
             batch=batch,
             extra=extra,
-            identity_file=identity_file,
+            identity_file=ssh_identity,
         )
         if proc.returncode != 0:
             detail = _ssh_failure_detail(proc)
@@ -1975,7 +2239,8 @@ def cmd_node_add(args: argparse.Namespace) -> int:
         ssh_host=ssh_host,
         ssh_user=ssh_user,
         ssh_port=ssh_port,
-        identity_file=identity_file,
+        identity_file=reg_identity,
+        admin_credential_ref=admin_ref,
     )
     save_registry(None, registry)
     sys.stdout.write(f"Registered {args.name}\n")
@@ -2011,7 +2276,7 @@ def cmd_node_show(name: str) -> int:
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind and/or local SSH identity_file."""
+    """Endpoint rebind and/or local SSH identity_file / credential binding."""
     identity_raw = _optional_text(getattr(args, "identity_file", None))
     clear_identity = bool(getattr(args, "clear_identity_file", False))
     host = _optional_text(getattr(args, "host", None))
@@ -2026,7 +2291,16 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     if clear_identity:
         node.pop("identity_file", None)
     elif identity_raw:
-        node["identity_file"] = validate_identity_file(identity_raw, must_exist=True)
+        resolved = validate_identity_file(identity_raw, must_exist=True)
+        if workspace_trust_active():
+            # F7-3: machine-local binding only; registry keeps refs.
+            existing = _optional_text(node.get("admin_credential_ref"))
+            ref = _bind_identity_for_workspace(resolved, ref=existing)
+            node["admin_credential_ref"] = ref
+            node["observe_credential_ref"] = ref
+            node.pop("identity_file", None)
+        else:
+            node["identity_file"] = resolved
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
     return 0
@@ -2449,8 +2723,20 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
     )
     ident_path = _optional_text(getattr(args, "identity_file", None))
+    replace_admin_ref: Optional[str] = None
     if ident_path:
-        new_node["identity_file"] = validate_identity_file(ident_path, must_exist=True)
+        resolved = validate_identity_file(ident_path, must_exist=True)
+        if workspace_trust_active():
+            # SSH uses the path via binding after refs are set on new_node.
+            existing = _optional_text(new_node.get("admin_credential_ref"))
+            replace_admin_ref = _bind_identity_for_workspace(
+                resolved, ref=existing
+            )
+            new_node["admin_credential_ref"] = replace_admin_ref
+            new_node["observe_credential_ref"] = replace_admin_ref
+            new_node.pop("identity_file", None)
+        else:
+            new_node["identity_file"] = resolved
     old_instance_id = _cursor_instance_id(node["node_id"])
     from_backup = _optional_text(getattr(args, "from_backup", None))
 
@@ -2668,7 +2954,16 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_host"] = new_host
     stored["ssh_user"] = new_user
     stored["ssh_port"] = new_port
-    if new_node.get("identity_file"):
+    if replace_admin_ref:
+        stored["admin_credential_ref"] = replace_admin_ref
+        stored["observe_credential_ref"] = replace_admin_ref
+        stored.pop("identity_file", None)
+    elif new_node.get("identity_file"):
+        if workspace_trust_active():
+            die(
+                "workspace active: identity_file must not be stored in "
+                "fleet.json; use credential bindings"
+            )
         stored["identity_file"] = new_node["identity_file"]
     stored["status"] = NODE_STATUS_ACTIVE
     stored["enabled"] = True
@@ -3218,7 +3513,7 @@ def _selected_nodes(registry: dict[str, Any], include_all: bool) -> list[dict[st
 
 
 def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Live probe; write last-status.json."""
+    """Live probe only; does not write last-status.json (P1-3 / D58)."""
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
@@ -3231,32 +3526,44 @@ def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
         "controller_utc": format_utc(controller_utc),
         "nodes": [_status_json_node(row) for row in rows],
     }
-    write_last_status(payload)
     payload["_rows"] = rows  # CLI table only; strip before JSON emit
     return payload
 
 
+def _load_legacy_last_status_nodes() -> dict[str, dict[str, Any]]:
+    """0.4.1 compat: index last-status.json nodes by name (read-only)."""
+    path = last_status_path()
+    if not path.is_file():
+        return {}
+    try:
+        prev = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for n in prev.get("nodes") or []:
+        if isinstance(n, dict) and n.get("name"):
+            out[str(n["name"])] = n
+    return out
+
+
 def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
-    """Cache-only: last-status.json + sync_cursor. No SSH. Does not write."""
+    """Cache-only: node_snapshot (+ last-status 0.4.1 fallback) + sync_cursor.
+
+    No SSH. Does not write. Primary health source is sync --full → node_snapshot.
+    """
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
-    prev: dict[str, Any] = {}
-    path = last_status_path()
-    if path.is_file():
-        try:
-            prev = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prev = {}
-    by = {
-        n["name"]: n
-        for n in (prev.get("nodes") or [])
-        if isinstance(n, dict) and n.get("name")
-    }
-    conn = open_fleet_db() if fleet_db_path().is_file() else None
+    legacy_by_name = _load_legacy_last_status_nodes()
+    conn = open_cache_readonly_optional()
     rows: list[dict[str, Any]] = []
     try:
         for node in _selected_nodes(registry, include_all):
-            sl = by.get(node["name"]) or {}
+            snap = (
+                read_node_snapshot_row(conn, node["node_id"])
+                if conn is not None
+                else None
+            )
+            leg = legacy_by_name.get(node["name"]) or {}
             cur = (
                 read_sync_cursor_row(conn, node["node_id"]) if conn is not None else None
             )
@@ -3272,22 +3579,57 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
             life = node_lifecycle_status(node)
             if life == NODE_STATUS_DISABLED:
                 st = "DISABLED"
+                proxy = "UNKNOWN"
+                accounting = "UNKNOWN"
             elif life == NODE_STATUS_RETIRED:
                 st = "-"
+                proxy = "UNKNOWN"
+                accounting = "UNKNOWN"
+            elif snap is not None:
+                st = snap["ssh"] or "UNKNOWN"
+                proxy = snap["proxy"] or "UNKNOWN"
+                accounting = snap["accounting"] or "UNKNOWN"
             else:
-                st = sl.get("ssh") or "UNKNOWN"
-            instance_id = sl.get("instance_id")
+                st = leg.get("ssh") or "UNKNOWN"
+                proxy = leg.get("proxy") or "UNKNOWN"
+                accounting = leg.get("accounting") or "UNKNOWN"
+            instance_id = None
+            if snap is not None:
+                instance_id = snap["instance_id"]
+            if instance_id is None:
+                instance_id = leg.get("instance_id")
             if instance_id is None and cur is not None:
                 instance_id = cur["instance_id"]
             cursor_status = cur["status"] if cur is not None else None
+            vincula_version = None
+            registry_state = None
+            clock = None
+            clock_skew = None
+            synced_at = None
+            if snap is not None:
+                vincula_version = snap["vincula_version"]
+                registry_state = snap["registry"]
+                clock = snap["clock"]
+                clock_skew = snap["clock_skew_seconds"]
+                synced_at = snap["synced_at"]
+            else:
+                vincula_version = leg.get("vincula_version")
+                registry_state = leg.get("registry")
+                clock = leg.get("clock")
+                clock_skew = leg.get("clock_skew_seconds")
             rows.append(
                 {
                     "name": node["name"],
                     "node_id": node["node_id"],
                     "instance_id": instance_id,
                     "ssh": st,
-                    "proxy": sl.get("proxy") or "UNKNOWN",
-                    "accounting": sl.get("accounting") or "UNKNOWN",
+                    "proxy": proxy,
+                    "accounting": accounting,
+                    "vincula_version": vincula_version,
+                    "registry": registry_state,
+                    "clock": clock,
+                    "clock_skew_seconds": clock_skew,
+                    "synced_at": synced_at,
                     "last_sync_at": ls or "-",
                     "data_age": age,
                     "cursor_status": cursor_status or "-",
@@ -3300,15 +3642,22 @@ def run_cached_status_payload(*, include_all: bool = False) -> dict[str, Any]:
     nodes = [
         {
             **_status_json_node(r),
+            "vincula_version": r.get("vincula_version"),
+            "registry": r.get("registry"),
+            "clock": r.get("clock"),
+            "clock_skew_seconds": r.get("clock_skew_seconds"),
+            "synced_at": r.get("synced_at"),
             "last_sync_at": r["last_sync_at"],
             "data_age": r["data_age"],
             "cursor_status": r["cursor_status"],
         }
         for r in rows
     ]
+    # F7-4: overall ok from cached health; only hard SSH/PROXY/ACCOUNTING
+    # FAIL flips ok (UNKNOWN/STALE keep existing contract via status_is_fail).
     payload: dict[str, Any] = {
         "schema_version": STATUS_JSON_SCHEMA_VERSION,
-        "ok": True,
+        "ok": not any(status_is_fail(r) for r in rows),
         "mode": "cache",
         "controller_utc": format_utc(controller_utc),
         "nodes": nodes,
@@ -4745,6 +5094,251 @@ def sync_one_node(
     )
 
 
+UPSERT_NODE_SNAPSHOT_SQL = """INSERT INTO node_snapshot(
+  node_id,instance_id,name,vincula_version,ssh,proxy,accounting,registry,clock,
+  clock_skew_seconds,payload_json,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(node_id) DO UPDATE SET instance_id=excluded.instance_id,name=excluded.name,
+  vincula_version=excluded.vincula_version,ssh=excluded.ssh,proxy=excluded.proxy,
+  accounting=excluded.accounting,registry=excluded.registry,clock=excluded.clock,
+  clock_skew_seconds=excluded.clock_skew_seconds,payload_json=excluded.payload_json,
+  synced_at=excluded.synced_at"""
+
+
+def sync_full_one_node(
+    conn: sqlite3.Connection,
+    node: dict[str, Any],
+    *,
+    now_iso: str,
+    controller_utc: datetime,
+) -> dict[str, Any]:
+    """Pull identity/status/users/audit → one DB txn; fail-closed; no cursor advance on error."""
+    node_id = node["node_id"]
+    after = _cursor_last_export_seq(conn, node_id)
+    life = node_lifecycle_status(node)
+    if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
+        return _sync_result(
+            node,
+            status="DISABLED" if life != NODE_STATUS_RETIRED else "RETIRED",
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+        )
+    # 1) pull (no writes)
+    st, ident, detail = ssh_remote_json(node, ["vcl", "identity", "--json"])
+    if st != "OK" or not isinstance(ident, dict):
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=detail or "identity unreachable",
+        )
+    if ident.get("node_id") != node_id:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error="registry node_id mismatch",
+        )
+    remote_iid = _optional_text(ident.get("instance_id"))
+    st2, status_doc, sdetail = ssh_remote_json(node, ["vcl", "status", "--json"])
+    if st2 != "OK" or not isinstance(status_doc, dict):
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=sdetail or "status unreachable",
+        )
+    users, uerr = _list_users_on_node(node)
+    if uerr is not None:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=uerr,
+        )
+    proc = ssh_audit_export(node, after)
+    meta = parse_export_meta(proc.stderr or "")
+    if proc.returncode == 255:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=_ssh_failure_detail(proc) or "ssh unreachable",
+        )
+    if isinstance(meta, dict) and meta.get("error") in (
+        "CURSOR_AHEAD",
+        "CURSOR_EXPIRED",
+    ):
+        return _sync_result(
+            node,
+            status=(
+                SYNC_STATUS_EXPIRED
+                if meta["error"] == "CURSOR_EXPIRED"
+                else SYNC_STATUS_ERROR
+            ),
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=str(meta["error"]),
+        )
+    if proc.returncode != 0:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=(
+                _ssh_failure_detail(proc)
+                or f"audit export exit {proc.returncode}"
+            ),
+        )
+    try:
+        rows = parse_export_jsonl(proc.stdout or "")
+        next_cursor = validate_export_batch(
+            meta,
+            rows,
+            expected_after=after,
+            expected_node_id=node_id,
+            expected_instance_id=remote_iid,
+        )
+    except ValueError as exc:
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=str(exc),
+        )
+    clock_state, _, skew = clock_skew_from_identity(controller_utc, ident)
+    payload = json.dumps(
+        {"identity": ident, "status": status_doc},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    # 2) single per-node txn (DB only; portable history flushed after commit)
+    pending_history_events: list[dict[str, Any]] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            UPSERT_NODE_SNAPSHOT_SQL,
+            (
+                node_id,
+                remote_iid,
+                node["name"],
+                _optional_text(ident.get("vincula_version")),
+                "OK",
+                classify_proxy(status_doc),
+                classify_accounting(status_doc),
+                "OK",
+                clock_state,
+                skew,
+                payload,
+                now_iso,
+            ),
+        )
+        conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
+        for u in users or []:
+            uid = str(u.get("user_id") or "")
+            if not uid:
+                continue
+            conn.execute(
+                """INSERT INTO user_snapshot(
+                     node_id,user_id,tag,enabled,status,active_credential_id,
+                     payload_json,synced_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    node_id,
+                    uid,
+                    str(u.get("tag") or ""),
+                    1 if u.get("enabled") else 0,
+                    "active" if u.get("enabled") else "disabled",
+                    _optional_text(u.get("active_credential_id")),
+                    json.dumps(u, ensure_ascii=False, sort_keys=True),
+                    now_iso,
+                ),
+            )
+        if remote_iid:
+            pending_history_events = _record_instance_db_pending(
+                conn,
+                node_id,
+                remote_iid,
+                endpoint=None,
+                ssh_host=_optional_text(node.get("ssh_host")),
+                now_iso=now_iso,
+            )
+        _sync_full_fail_after("audit-import")
+        imported = import_audit_batch(
+            node_id,
+            remote_iid,
+            rows,
+            now_iso,
+            conn=conn,
+            next_cursor=next_cursor,
+            manage_txn=False,
+        )
+        conn.commit()
+    except BaseException as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        return _sync_result(
+            node,
+            status=SYNC_STATUS_ERROR,
+            after=after,
+            last_event_id=_cursor_last_event_id(conn, node_id),
+            last_export_seq=after,
+            error=f"full sync txn failed: {exc}",
+        )
+    # 3) portable history after successful DB commit (F7-1); not pseudo-atomic
+    if pending_history_events:
+        try:
+            append_instance_history_lines(pending_history_events)
+        except BaseException as exc:
+            detail = (
+                f"exit {exc.code}"
+                if isinstance(exc, SystemExit)
+                else (str(exc) or repr(exc))
+            )
+            return _sync_result(
+                node,
+                status=SYNC_STATUS_ERROR,
+                after=after,
+                last_event_id=int(imported["last_event_id"]),
+                last_export_seq=int(imported["last_export_seq"]),
+                inserted=int(imported["inserted"]),
+                updated=int(imported.get("updated", 0)),
+                ignored=int(imported["ignored"]),
+                skipped_unlabeled=int(imported["skipped_unlabeled"]),
+                instance_id=remote_iid,
+                error=f"history flush failed: {detail}",
+            )
+    return _sync_result(
+        node,
+        status=SYNC_STATUS_OK,
+        after=after,
+        last_event_id=int(imported["last_event_id"]),
+        last_export_seq=int(imported["last_export_seq"]),
+        inserted=int(imported["inserted"]),
+        updated=int(imported.get("updated", 0)),
+        ignored=int(imported["ignored"]),
+        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        instance_id=remote_iid,
+    )
+
+
 def format_sync_table(rows: list[dict[str, Any]]) -> str:
     lines = [
         f"{'NAME':<8} {'STATUS':<8} {'AFTER':<8} {'CURSOR':<8} "
@@ -4864,12 +5458,42 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return code, doc
 
 
+def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Additive sync --full: identity/health/users/audit → cache (D25)."""
+    registry = load_registry()
+    now_iso = format_utc(datetime.now(timezone.utc))
+    controller_utc = datetime.now(timezone.utc)
+    targets = sync_target_nodes(
+        registry,
+        node_name=(getattr(args, "node", None) or "").strip() or None,
+        include_all=bool(getattr(args, "all", False)),
+        reseed_name=None,
+    )
+    conn = open_cache_for_sync()
+    try:
+        rows = [
+            sync_full_one_node(
+                conn, n, now_iso=now_iso, controller_utc=controller_utc
+            )
+            for n in targets
+        ]  # sequential; no --jobs
+    finally:
+        conn.close()
+    doc = sync_report(rows)
+    doc["operation"] = "sync_full"
+    return (
+        (0 if doc["state"] == OP_SUCCESS else MUTATION_EXIT_PARTIAL),
+        doc,
+    )
+
+
 @with_fleet_op_lock
 def cmd_sync(args: argparse.Namespace) -> int:
-    if getattr(args, "full", False):
-        die("sync --full requires 0.4.2", 2)
     as_json = bool(getattr(args, "as_json", False))
-    code, doc = run_sync_payload(args)
+    if getattr(args, "full", False):
+        code, doc = run_sync_full_payload(args)
+    else:
+        code, doc = run_sync_payload(args)
     if as_json:
         sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     else:
@@ -4879,6 +5503,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
+_AUDIT_ARCHIVE_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -4897,6 +5522,17 @@ def load_backup_module() -> Any:
         return _BACKUP_MOD
     _BACKUP_MOD = _load_controller_sibling("vincula_backup", "vincula-backup.py")
     return _BACKUP_MOD
+
+
+def load_audit_archive_module() -> Any:
+    """Load lib/vincula-audit-archive.py for audit-archive/v1 .vclaudit (D37/D38)."""
+    global _AUDIT_ARCHIVE_MOD
+    if _AUDIT_ARCHIVE_MOD is not None:
+        return _AUDIT_ARCHIVE_MOD
+    _AUDIT_ARCHIVE_MOD = _load_controller_sibling(
+        "vincula_audit_archive", "vincula-audit-archive.py"
+    )
+    return _AUDIT_ARCHIVE_MOD
 
 
 def fleet_utc_today() -> date:
@@ -4947,37 +5583,75 @@ def _sql_like_contains(needle: str) -> str:
     return f"%{escaped}%"
 
 
-def resolve_fleet_user_id(registry: dict[str, Any], tag: str) -> str:
-    """Resolve TAG to one fleet-global user_id via per-node `vcl user list`.
+def local_user_ids_for_tag(conn: sqlite3.Connection, tag: str) -> set[str]:
+    """Local Read Plane: tag → distinct user_id(s).
 
-    Conflicting user_ids across reachable nodes → die (no silent merge).
+    Order (authoritative for audit/stats/status/UI GET):
+      user_snapshot → audit_events / daily_usage fallback.
+    No SSH. Empty set means unknown local user; len>1 is conflict.
     """
+    snap_rows = conn.execute(
+        """
+        SELECT DISTINCT user_id FROM user_snapshot
+        WHERE tag = ? AND user_id IS NOT NULL AND user_id != ''
+        """,
+        (tag,),
+    ).fetchall()
+    ids = {str(r[0]) for r in snap_rows if r[0]}
+    if ids:
+        return ids
+    event_rows = conn.execute(
+        """
+        SELECT DISTINCT user_id FROM audit_events
+        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
+        UNION
+        SELECT DISTINCT user_id FROM daily_usage
+        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
+        """,
+        (tag, tag),
+    ).fetchall()
+    return {str(r[0]) for r in event_rows if r[0]}
+
+
+def resolve_local_user_id(conn: sqlite3.Connection, tag: str) -> str:
+    """Resolve TAG from local cache; die on unknown / LOCAL_USER_ID_CONFLICT."""
     validate_name(tag)
-    found: dict[str, list[str]] = {}
-    reachable = False
-    for node in _selected_nodes(registry, include_all=False):
-        users, err = _list_users_on_node(node)
-        if err is not None:
-            continue
-        reachable = True
-        for user in users or []:
-            if str(user.get("tag") or "") != tag:
-                continue
-            uid = _optional_text(user.get("user_id"))
-            if not uid:
-                continue
-            found.setdefault(uid, []).append(str(node["name"]))
-    if len(found) > 1:
-        detail = "; ".join(
-            f"{uid} on {','.join(names)}" for uid, names in found.items()
-        )
-        die(f"tag {tag} has conflicting user_id across nodes: {detail}")
-    if len(found) == 1:
-        return next(iter(found))
-    if not reachable:
-        die(f"cannot resolve user {tag}: nodes unreachable")
-    die(f"unknown user tag: {tag}")
+    ids = local_user_ids_for_tag(conn, tag)
+    if len(ids) > 1:
+        detail = ", ".join(sorted(ids))
+        die(f"LOCAL_USER_ID_CONFLICT: tag {tag} maps to multiple user_ids: {detail}")
+    if len(ids) == 1:
+        return next(iter(ids))
+    die(f"unknown local user: {tag}")
     raise SystemExit(1)
+
+
+def resolve_fleet_user_id(
+    registry: dict[str, Any],
+    tag: str,
+    *,
+    user_id: Optional[str] = None,
+) -> str:
+    """Resolve TAG → user_id via Local Read Plane (user_snapshot, then events).
+
+    ``user_id`` bypasses tag resolution entirely (no SSH).
+    ``user list`` / ``user show`` remain live observation (SSH) by design;
+    audit / stats / status / UI GET must not SSH.
+    """
+    del registry  # Local plane; registry kept for call-site compatibility.
+    if user_id:
+        uid = str(user_id).strip()
+        if not UUID_RE.fullmatch(uid):
+            die(f"invalid --user-id (expect UUID): {uid}")
+        return uid
+    validate_name(tag)
+    conn = open_cache_readonly_optional()
+    if conn is None:
+        die(f"unknown local user: {tag}")
+    try:
+        return resolve_local_user_id(conn, tag)
+    finally:
+        conn.close()
 
 
 def _row_int(row: sqlite3.Row, key: str) -> int:
@@ -5082,6 +5756,127 @@ def format_audit_table(
     return "\n".join(lines) + "\n"
 
 
+def cmd_audit_archive_create(args: argparse.Namespace) -> int:
+    audit, aa, bak = (
+        load_audit_module(),
+        load_audit_archive_module(),
+        load_backup_module(),
+    )
+    q_from, q_to = (
+        audit.parse_rfc3339(args.query_from),
+        audit.parse_rfc3339(args.query_to),
+    )
+    if q_from > q_to:
+        die("--from must not be after --to")
+    dest = Path(args.output).expanduser().resolve()
+    conn = open_cache_readonly()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                f"SELECT * FROM audit_events WHERE {audit.interval_overlap_sql()} "
+                "ORDER BY started_at,event_id,node_id",
+                (q_to, q_from),
+            )
+        ]
+        fid = fleet_db_meta_get(conn, "fleet_id") or ""
+        nodes, users, instances = aa.attribution_from_events(
+            rows, registry=load_registry()
+        )
+    finally:
+        conn.close()
+    aa.create_archive(
+        fleet_id=fid,
+        created_at=format_utc(datetime.now(timezone.utc)),
+        time_from=q_from,
+        time_to=q_to,
+        events=rows,
+        nodes=nodes,
+        users=users,
+        instances=instances,
+        dest=dest,
+    )
+    sys.stdout.write(
+        f"created {dest}\n"
+        f"events: {len(rows)}\n"
+        f"range: {q_from} → {q_to}\n"
+        f"sha256: {bak.sha256_file(dest)}\n"
+    )
+    if getattr(args, "age_recipient", None):
+        age_out = Path(str(dest) + ".age")
+        bak.age_encrypt(
+            dest, age_out, Path(args.age_recipient).expanduser().resolve()
+        )
+        sys.stdout.write(f"age: {age_out}\n")
+    return 0
+
+
+def cmd_audit_archive_verify(args: argparse.Namespace) -> int:
+    info = load_audit_archive_module().verify_archive(
+        Path(args.file).expanduser().resolve()
+    )
+    if not info.get("ok"):
+        die(info.get("error") or "verify failed")
+    sys.stdout.write(
+        f"ok {info['schema_version']}\n"
+        f"tables: {','.join(info['tables'])}\n"
+    )
+    return 0
+
+
+def cmd_audit_archive_inspect(args: argparse.Namespace) -> int:
+    m = load_audit_archive_module().inspect_archive(
+        Path(args.file).expanduser().resolve()
+    )
+    sys.stdout.write(
+        f"fleet_id={m['fleet_id']}\n"
+        f"created_at={m['created_at']}\n"
+        f"time_from={m['time_from']}\n"
+        f"time_to={m['time_to']}\n"
+        f"events={m['event_count']}\n"
+        f"nodes={m['node_count']} users={m['user_count']} "
+        f"instances={m['instance_count']}\n"
+    )
+    return 0
+
+
+def cmd_audit_archive_restore(args: argparse.Namespace) -> int:
+    aa = load_audit_archive_module()
+    conn = open_cache_for_sync()
+    try:
+        before = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT node_id,last_export_seq FROM sync_cursor")
+        }
+        try:
+            res = aa.restore_archive_into_cache(
+                Path(args.file).expanduser().resolve(),
+                conn,
+                rebuild_daily_usage_for_node=rebuild_daily_usage_for_node,
+            )
+        except aa.ArchiveConflict as e:
+            die(
+                str(e)
+                if "ARCHIVE_CONFLICT" in str(e)
+                else f"ARCHIVE_CONFLICT: {e}"
+            )
+        after = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT node_id,last_export_seq FROM sync_cursor")
+        }
+        if after != before:
+            die("ARCHIVE_CURSOR_TOUCHED: restore must not change sync_cursor")
+    finally:
+        conn.close()
+    sys.stdout.write(
+        f"imported: {res['inserted']}\n"
+        f"duplicates_skipped: {res['deduped']}\n"
+        f"aggregated: {res['aggregated']}\n"
+    )
+    return 0
+
+
 def cmd_audit_user(args: argparse.Namespace) -> int:
     tag = args.tag
     validate_name(tag)
@@ -5091,23 +5886,29 @@ def cmd_audit_user(args: argparse.Namespace) -> int:
     query_to = audit.parse_rfc3339(args.query_to)
     if query_from > query_to:
         die("--from must not be after --to")
-    user_id = resolve_fleet_user_id(registry, tag)
+    bypass = (getattr(args, "user_id", None) or "").strip() or None
+    user_id = resolve_fleet_user_id(registry, tag, user_id=bypass)
     node_name = (getattr(args, "node", None) or "").strip() or None
     node_id = None
     if node_name:
         validate_name(node_name)
         node_id = require_node(registry, node_name)["node_id"]
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_fleet_audit(
-            conn,
-            user_id=user_id,
-            query_from=query_from,
-            query_to=query_to,
-            node_id=node_id,
+        raw_rows = (
+            query_fleet_audit(
+                conn,
+                user_id=user_id,
+                query_from=query_from,
+                query_to=query_to,
+                node_id=node_id,
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     rows: list[dict[str, Any]] = []
     for raw in raw_rows:
@@ -5303,19 +6104,25 @@ def cmd_stats_user(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    user_id = resolve_fleet_user_id(registry, tag)
-    conn = open_fleet_db()
+    bypass = (getattr(args, "user_id", None) or "").strip() or None
+    user_id = resolve_fleet_user_id(registry, tag, user_id=bypass)
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("node_id", "user_id"),
-            extra_where=["user_id = ?"],
-            extra_params=[user_id],
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("node_id", "user_id"),
+                extra_where=["user_id = ?"],
+                extra_params=[user_id],
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     rows.sort(key=lambda r: (r["node"], r["node_id"]))
     return _emit_stats(
@@ -5338,16 +6145,21 @@ def cmd_stats_top_users(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("user_id", "node_id"),
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("user_id", "node_id"),
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="top_users",
@@ -5369,16 +6181,21 @@ def cmd_stats_top_hosts(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("destination_host", "node_id"),
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("destination_host", "node_id"),
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="top_hosts",
@@ -5402,18 +6219,23 @@ def cmd_stats_node(args: argparse.Namespace) -> int:
     start, end = stats_date_window(days)
     registry = load_registry()
     node = require_node(registry, name)
-    conn = open_fleet_db()
+    conn = open_cache_readonly_optional()
     try:
-        raw_rows = query_daily_grouped(
-            conn,
-            start=start,
-            end=end,
-            group_by=("user_id", "node_id", "destination_host"),
-            extra_where=["node_id = ?"],
-            extra_params=[node["node_id"]],
+        raw_rows = (
+            query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("user_id", "node_id", "destination_host"),
+                extra_where=["node_id = ?"],
+                extra_params=[node["node_id"]],
+            )
+            if conn is not None
+            else []
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     rows = [_stats_row_from_sql(registry, raw) for raw in raw_rows]
     return _emit_stats(
         mode="node",
@@ -5507,7 +6329,7 @@ def cmd_workspace_migrate(args: argparse.Namespace) -> int:
 
 def cmd_workspace_init(_args: argparse.Namespace) -> int:
     home = _ensure_fleet_home()
-    for dname in ("trust", "history", "machine-local"):
+    for dname in ("trust", "history"):
         d = home / dname
         d.mkdir(parents=True, exist_ok=True)
         _chmod_private(d, 0o700)
@@ -5766,10 +6588,11 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="cache-only (D58); use probe or --live for SSH",
         description=(
-            "Cache-only (D58): last observation from last-status.json + "
-            "fleet.db sync_cursor. No SSH. Table columns: NAME NODE_ID "
-            "LAST_SYNC DATA_AGE NODE_STATUS CURSOR. Use `probe` or "
-            "`status --live` for live SSH health (writes last-status.json)."
+            "Cache-only (D58): health from node_snapshot (sync --full) with "
+            "last-status.json as 0.4.1 migration fallback, plus fleet.db "
+            "sync_cursor. No SSH. Table columns: NAME NODE_ID LAST_SYNC "
+            "DATA_AGE NODE_STATUS CURSOR. Use `probe` or `status --live` "
+            "for live SSH health (live result only; does not write cache)."
         ),
     )
     p_status.add_argument(
@@ -5790,14 +6613,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_probe = sub.add_parser(
         "probe",
-        help="live SSH health (writes last-status.json)",
+        help="live SSH health (does not write status cache)",
         description=(
             "Probe enabled nodes over SSH (vcl identity --json and "
-            "vcl status --json). Table columns: NAME NODE_ID INSTANCE "
-            "SSH PROXY ACCOUNTING. States: OK / STALE / FAIL / UNKNOWN. "
-            "SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, ACCOUNTING=UNKNOWN. "
-            "Writes last-status.json. Exit 1 if any node is "
-            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL."
+            "vcl status --json). Live result only — does not write "
+            "node_snapshot or last-status.json. Table columns: NAME "
+            "NODE_ID INSTANCE SSH PROXY ACCOUNTING. States: OK / STALE / "
+            "FAIL / UNKNOWN. SSH unreachable → SSH=FAIL, PROXY=UNKNOWN, "
+            "ACCOUNTING=UNKNOWN. Exit 1 if any node is "
+            "SSH/PROXY/ACCOUNTING FAIL; STALE is not FAIL. Persistent "
+            "health cache: sync --full → node_snapshot → status."
         ),
     )
     p_probe.add_argument(
@@ -5892,7 +6717,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ulist = user_sub.add_parser(
         "list",
-        help="aggregate user list from enabled nodes",
+        help="live observation: aggregate user list via SSH (not Local Read Plane)",
     )
     p_ulist.add_argument(
         "--json",
@@ -5903,7 +6728,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ushow = user_sub.add_parser(
         "show",
-        help="per-node credential status for TAG",
+        help="live observation: per-node credential status via SSH",
     )
     p_ushow.add_argument("tag")
     p_ushow.add_argument(
@@ -6059,7 +6884,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument(
         "--full",
         action="store_true",
-        help="full re-sync (requires 0.4.2)",
+        help=(
+            "identity+health+users+audit delta → cache "
+            "(0.4.2; default sync stays legacy)"
+        ),
     )
 
     p_audit = sub.add_parser(
@@ -6071,17 +6899,22 @@ def build_parser() -> argparse.ArgumentParser:
             "`vcl audit`: started_at < --to AND COALESCE(closed_at, "
             "last_seen_at) >= --from). Output columns: time node instance "
             "destination traffic. Rows without node_id are never merged. "
-            "TAG is resolved from per-node user list; conflicting user_id "
-            "is refused."
+            "Local Read Plane: TAG resolves from user_snapshot, then "
+            "audit_events/daily_usage (no SSH). 0 ids → unknown local user; "
+            ">1 → LOCAL_USER_ID_CONFLICT. Pass --user-id to bypass. "
+            "Live observation remains `user list` / `user show`."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     audit_sub = p_audit.add_subparsers(dest="audit_command")
     p_audit_user = audit_sub.add_parser(
         "user",
-        help="connections for TAG in an RFC3339 window",
+        help="connections for TAG in an RFC3339 window (local cache)",
     )
-    p_audit_user.add_argument("tag", help="user tag (resolved to user_id)")
+    p_audit_user.add_argument(
+        "tag",
+        help="user tag (local resolve → user_id; see --user-id)",
+    )
     p_audit_user.add_argument(
         "--from",
         dest="query_from",
@@ -6101,7 +6934,36 @@ def build_parser() -> argparse.ArgumentParser:
         dest="node",
         help="limit to one registry node name",
     )
+    p_audit_user.add_argument(
+        "--user-id",
+        dest="user_id",
+        metavar="UUID",
+        help="bypass tag resolution; query this user_id directly",
+    )
     _add_json_flag(p_audit_user)
+
+    p_arch = audit_sub.add_parser(
+        "archive",
+        help="audit-archive/v1 .vclaudit (D37/D38; no cursor)",
+    )
+    arch_sub = p_arch.add_subparsers(dest="archive_command")
+    p_ac = arch_sub.add_parser("create", help="cache audit_events → FILE.vclaudit")
+    p_ac.add_argument("--from", dest="query_from", required=True, metavar="RFC3339")
+    p_ac.add_argument("--to", dest="query_to", required=True, metavar="RFC3339")
+    p_ac.add_argument("--output", required=True, metavar="FILE.vclaudit")
+    p_ac.add_argument(
+        "--age-recipient",
+        dest="age_recipient",
+        metavar="FILE",
+        help="also FILE.vclaudit.age via age",
+    )
+    for n, h in (
+        ("verify", "schema+tables"),
+        ("inspect", "meta"),
+        ("restore", "import events; never touch sync_cursor"),
+    ):
+        p = arch_sub.add_parser(n, help=h)
+        p.add_argument("file", metavar="FILE.vclaudit")
 
     p_stats = sub.add_parser(
         "stats",
@@ -6111,16 +6973,23 @@ def build_parser() -> argparse.ArgumentParser:
             "(UTC day of started_at). Not byte-identical with node "
             "`vcl stats`. Detail rows keep (user_id, node); unlabeled "
             "node_id is never merged. Combined totals exist only in "
-            "--json totals.by_node."
+            "--json totals.by_node. TAG for `stats user` resolves locally "
+            "(user_snapshot → events/usage; no SSH); --user-id bypasses."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_sub = p_stats.add_subparsers(dest="stats_command")
     p_suser = stats_sub.add_parser(
         "user",
-        help="per-node usage for TAG over --days N",
+        help="per-node usage for TAG over --days N (local cache)",
     )
     p_suser.add_argument("tag")
+    p_suser.add_argument(
+        "--user-id",
+        dest="user_id",
+        metavar="UUID",
+        help="bypass tag resolution; query this user_id directly",
+    )
     _add_days_flag(p_suser)
     _add_json_flag(p_suser)
 
@@ -6260,6 +7129,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         if sub == "user":
             return cmd_audit_user(args)
+        if sub == "archive":
+            a = getattr(args, "archive_command", None)
+            if a is None:
+                parser.parse_args(["audit", "archive", "--help"])
+                return 2
+            return {
+                "create": cmd_audit_archive_create,
+                "verify": cmd_audit_archive_verify,
+                "inspect": cmd_audit_archive_inspect,
+                "restore": cmd_audit_archive_restore,
+            }.get(
+                a, lambda _a: die(f"unknown audit archive command: {a}", 2)
+            )(args)
         die(f"unknown audit command: {sub}", 2)
     if command == "stats":
         sub = getattr(args, "stats_command", None)
