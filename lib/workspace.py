@@ -127,18 +127,18 @@ def fleet_registry_path() -> Path:
 def last_status_path() -> Path:
     if workspace_trust_active():
         fid = load_workspace_manifest()["fleet_id"]
-        c = fleet_local_state_dir(fid) / LOCAL_STATE_UI_RUNTIME / "last-status.json"
-        leg = fleet_home() / "last-status.json"
-        return c if c.is_file() or not leg.is_file() else leg
+        return (
+            fleet_local_state_dir(fid)
+            / LOCAL_STATE_UI_RUNTIME
+            / "last-status.json"
+        )
     return fleet_home() / "last-status.json"
 
 
 def fleet_db_path() -> Path:
     if workspace_trust_active():
         fid = load_workspace_manifest()["fleet_id"]
-        c = fleet_local_state_dir(fid) / "fleet.db"
-        leg = fleet_home() / "fleet.db"
-        return c if c.is_file() or not leg.is_file() else leg
+        return fleet_local_state_dir(fid) / "fleet.db"
     return fleet_home() / "fleet.db"
 
 
@@ -1050,16 +1050,35 @@ def _execute_migrate_locked() -> dict[str, Any]:
         _replace_into(
             staging / WORKSPACE_MANIFEST_NAME, home / WORKSPACE_MANIFEST_NAME
         )
+        fleet_db_dest: Path | None = None
         if (staging / "fleet.db").is_file():
-            _replace_into(staging / "fleet.db", home / "fleet.db")
+            # Commit cache to local-state/<fleet_id>/ (D23); do not write
+            # live home/fleet.db (legacy bak already copied above).
+            ensure_fleet_local_state(fleet_id)
+            fleet_db_dest = fleet_local_state_dir(fleet_id) / "fleet.db"
+            _replace_into(staging / "fleet.db", fleet_db_dest)
             for suffix in ("-wal", "-shm"):
                 side = Path(str(staging / "fleet.db") + suffix)
                 if side.is_file():
-                    _replace_into(side, Path(str(home / "fleet.db") + suffix))
+                    _replace_into(side, Path(str(fleet_db_dest) + suffix))
+            for leftover in (
+                home / "fleet.db",
+                Path(str(home / "fleet.db") + "-wal"),
+                Path(str(home / "fleet.db") + "-shm"),
+            ):
+                if leftover.is_file():
+                    leftover.unlink()
         if (staging / "last-status.json").is_file():
+            ensure_fleet_local_state(fleet_id)
             _replace_into(
-                staging / "last-status.json", home / "last-status.json"
+                staging / "last-status.json",
+                fleet_local_state_dir(fleet_id)
+                / LOCAL_STATE_UI_RUNTIME
+                / "last-status.json",
             )
+            leg_status = home / "last-status.json"
+            if leg_status.is_file():
+                leg_status.unlink()
         _replace_into(
             staging / "trust" / "known_hosts",
             home / "trust" / "known_hosts",
@@ -1080,7 +1099,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
         _migrate_fail_after("atomic commit")
         _migrate_fail_after("preserve old tree as legacy backup")
 
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "fleet_id": fleet_id,
             "ref_map": ref_map,
@@ -1088,6 +1107,9 @@ def _execute_migrate_locked() -> dict[str, Any]:
             "legacy_backup": str(bak),
             "history_exported": history_exported,
         }
+        if fleet_db_dest is not None:
+            result["fleet_db"] = str(fleet_db_dest)
+        return result
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)

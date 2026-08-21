@@ -1829,7 +1829,17 @@ legacies = sorted(home.glob("legacy-pre-workspace-*"))
 assert legacies, "missing legacy backup"
 assert (legacies[0] / "fleet.db").is_file()
 assert (legacies[0] / "fleet.json").is_file()
-conn = sqlite3.connect(str(home / "fleet.db"))
+assert not (home / "fleet.db").is_file(), "live home/fleet.db must not remain"
+ls_root = (
+    Path(os.environ["VCL_FLEET_LOCAL_STATE"])
+    if os.environ.get("VCL_FLEET_LOCAL_STATE")
+    else Path.home() / ".local" / "state" / "vincula"
+)
+db_path = ls_root / result["fleet_id"] / "fleet.db"
+assert db_path.is_file(), db_path
+if result.get("fleet_db"):
+    assert Path(result["fleet_db"]) == db_path
+conn = sqlite3.connect(str(db_path))
 row = conn.execute("SELECT value FROM meta WHERE key='fleet_id'").fetchone()
 assert row and row[0] == result["fleet_id"], row
 conn.close()
@@ -8736,7 +8746,7 @@ printf '%s\n' "$ac041_mig_out" > "${TEST_TMP}/ac-041-mig-out.json"
 
 # --- AC-4.0-M01: node_id/ssh_host/ssh_port/status (+user_id) equal pre vs post ---
 python3 - "$AC041_HOME" "${TEST_TMP}/ac-041-pre.json" <<'PY' || ac041_m01_rc=$?
-import json, sqlite3, sys
+import json, os, sqlite3, sys
 from pathlib import Path
 home, pre_path = Path(sys.argv[1]), Path(sys.argv[2])
 pre = json.loads(pre_path.read_text(encoding="utf-8"))
@@ -8747,7 +8757,16 @@ assert n["ssh_host"] == pre["ssh_host"]
 assert n["ssh_port"] == pre["ssh_port"]
 assert n["status"] == pre["status"]
 assert "identity_file" not in n
-conn = sqlite3.connect(str(home / "fleet.db"))
+ws = json.loads((home / "workspace.json").read_text(encoding="utf-8"))
+ls_root = (
+    Path(os.environ["VCL_FLEET_LOCAL_STATE"])
+    if os.environ.get("VCL_FLEET_LOCAL_STATE")
+    else Path.home() / ".local" / "state" / "vincula"
+)
+db_path = ls_root / ws["fleet_id"] / "fleet.db"
+assert db_path.is_file(), db_path
+assert not (home / "fleet.db").is_file()
+conn = sqlite3.connect(str(db_path))
 uids = sorted(
     r[0] for r in conn.execute("SELECT DISTINCT user_id FROM audit_events").fetchall()
 )
@@ -8871,11 +8890,14 @@ PY
 HA="${TEST_TMP}/m05-a"
 HB="${TEST_TMP}/m05-b"
 M05_FAKE="${TEST_TMP}/m05-fake-state"
-rm -rf "$HA" "$HB" "$M05_FAKE"
+M05_A_LS="${TEST_TMP}/m05-a-local-state"
+M05_B_LS="${TEST_TMP}/m05-b-local-state"
+rm -rf "$HA" "$HB" "$M05_FAKE" "$M05_A_LS" "$M05_B_LS"
 mkdir -p "${HA}/keys" "$M05_FAKE/lax"
 printf 'test-only-not-a-real-m05-key\n' > "${HA}/keys/id"
 chmod 600 "${HA}/keys/id"
 export VCL_FLEET_HOME="$HA"
+export VCL_FLEET_LOCAL_STATE="$M05_A_LS"
 export VCL_FLEET_SSH=/bin/false
 export VCL_FLEET_SSH_KEYSCAN=/bin/false
 unset VCL_FAKE_STATE_DIR
@@ -8896,6 +8918,10 @@ print("fleet.db ready")
 PY
 assert_success "AC-4.0-M05-A fleet.db pre-migrate" test -f "${HA}/fleet.db"
 assert_success "AC-4.0-M05-A migrate" fleet workspace migrate
+M05_FID=$(python3 -c "import json;print(json.load(open('${HA}/workspace.json'))['fleet_id'])")
+M05_A_DB="${M05_A_LS}/${M05_FID}/fleet.db"
+assert_success "AC-4.0-M05-A cache fleet.db" test -f "$M05_A_DB"
+assert_failure "AC-4.0-M05-A no home fleet.db after migrate" test -f "${HA}/fleet.db"
 # Copy portable workspace to B (exclude machine-local + fleet.db + last-status)
 mkdir -p "$HB"
 # Prefer rsync-like selective copy via tar
@@ -8919,6 +8945,7 @@ assert_failure "AC-4.0-M05-B has no fleet.db before bind/sync" \
   test -f "${HB}/fleet.db"
 
 export VCL_FLEET_HOME="$HB"
+export VCL_FLEET_LOCAL_STATE="$M05_B_LS"
 export VCL_FLEET_SSH="${FAKE_SSH}"
 export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
 export VCL_FAKE_STATE_DIR="$M05_FAKE"
@@ -8963,9 +8990,9 @@ PY
 assert_success "AC-4.0-M05-B sync structural" fleet sync --node lax
 assert_success "AC-4.0-M05-B status structural" fleet status
 assert_success "AC-4.0-M05-B ui --help structural" fleet ui --help
-# B1: workspace + no legacy → fleet.db under local-state/<fid> (not $HB)
+# B2: workspace → fleet.db under local-state/<fid> (not $HA/$HB); independent inodes
 M05_B_DB=$(
-  VCL_FLEET_HOME="$HB" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+  VCL_FLEET_HOME="$HB" VCL_FLEET_LOCAL_STATE="$M05_B_LS" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
@@ -8974,8 +9001,8 @@ print(m.fleet_db_path())
 PY
 )
 assert_success "AC-4.0-M05-B fleet.db exists" test -f "$M05_B_DB"
-assert_success "AC-4.0-M05-A fleet.db still exists" test -f "${HA}/fleet.db"
-if [[ "${HA}/fleet.db" -ef "$M05_B_DB" ]]; then
+assert_success "AC-4.0-M05-A fleet.db still exists" test -f "$M05_A_DB"
+if [[ "$M05_A_DB" -ef "$M05_B_DB" ]]; then
   fail "AC-4.0-M05 independent fleet.db (A and B must not be same inode)"
 else
   pass "AC-4.0-M05 independent fleet.db (A and B not same inode)"
@@ -9031,6 +9058,7 @@ fi
 export VCL_FLEET_HOME="${SAVED_AC041_HOME}"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
+unset VCL_FLEET_LOCAL_STATE
 if [[ -n "${FLEET_SAVED_HOME}" ]]; then
   export HOME="${FLEET_SAVED_HOME}"
 else
@@ -9066,3 +9094,95 @@ assert m.fleet_db_path()==Path(sys.argv[2])/"fleet.db"; m.open_fleet_db().close(
 assert (Path(sys.argv[2])/"fleet.db").is_file()
 PY
 export VCL_FLEET_HOME=$SAVED
+
+# --- 0.4.2 B2 ---
+export VCL_FLEET_LOCAL_STATE=$TEST_TMP/xdg-b2
+B2H=$TEST_TMP/ws-042-b2
+B2_KEY=$TEST_TMP/ws-042-b2-id_ed25519
+B2_FAKE=$TEST_TMP/ws-042-b2-fake-state
+rm -rf "$B2H" "$VCL_FLEET_LOCAL_STATE" "$B2_FAKE"
+mkdir -p "$B2H" "$B2_FAKE/lax"
+printf 'test-only-not-a-real-b2-key\n' > "$B2_KEY"
+chmod 600 "$B2_KEY"
+# Seed legacy like B5 (fleet.json+fleet.db+key); node named lax so fake-ssh sync works
+export VCL_FLEET_HOME="$B2H"
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+unset VCL_FAKE_STATE_DIR
+assert_success "B2 fleet init" fleet init
+assert_success "B2 offline node add" \
+  fleet node add lax --host 203.0.113.10 --offline \
+    --node-id "$LAX_REMOTE_NODE_ID" \
+    --identity-file "$B2_KEY"
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vincula_fleet", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+conn = mod.open_fleet_db()
+nid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+iid = "cccccccc-cccc-4ccc-8ccc-ccccccccc042"
+mod.insert_instance(
+    conn,
+    node_id=nid,
+    instance_id=iid,
+    started_at="2026-08-20T00:00:00Z",
+    endpoint="203.0.113.10:22",
+    ssh_host="203.0.113.10",
+)
+conn.commit()
+conn.close()
+PY
+assert_success "B2 migrate" fleet workspace migrate
+FID=$(python3 -c "import json;print(json.load(open('$B2H/workspace.json'))['fleet_id'])")
+assert_success "B2 cache db" test -f "$VCL_FLEET_LOCAL_STATE/$FID/fleet.db"
+assert_success "B2 bak db" bash -c 'test -f '"$B2H"'/legacy-pre-workspace-*/fleet.db'
+assert_failure "B2 no home db" test -f "$B2H/fleet.db"
+# fake-ssh for post-migrate consumers
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+export VCL_FAKE_STATE_DIR="$B2_FAKE"
+python3 - "${PROJECT_DIR}/lib/vincula-accountd.py" "$B2_FAKE" \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+accountd_py, state_dir, ident_path = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+ident = json.loads(ident_path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("accountd", accountd_py)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state_dir / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+conn.execute(
+    """
+    INSERT INTO connections (
+      connection_id, generation, user_id, node_id, instance_id, user_tag,
+      started_at, last_seen_at, closed_at,
+      destination_host, destination_ip, destination_port, network,
+      upload_bytes, download_bytes, export_seq
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        "b2-sync-1", 0, "u-alice", ident["node_id"], ident["instance_id"], "alice",
+        "2026-08-20T08:00:00Z", "2026-08-20T09:00:00Z", "2026-08-20T09:00:00Z",
+        "example.com", "203.0.113.10", 443, "tcp", 10, 20, 1,
+    ),
+)
+acct.meta_set(conn, "audit_export_seq", "1")
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+conn.close()
+print("ok")
+PY
+assert_success "B2 sync" fleet --workspace "$B2H" sync --node lax
+b2_status_json=$(fleet --workspace "$B2H" status --json 2>/dev/null) || true
+assert_success "B2 status cache" grep -q '"mode": "cache"' <<< "$b2_status_json"
+assert_success "B2 audit" fleet --workspace "$B2H" audit
+assert_success "B2 stats" fleet --workspace "$B2H" stats top users --days 1
+dry=$(fleet --workspace "$B2H" workspace migrate --dry-run)
+echo "$dry" | python3 -c 'import json,sys;p=json.load(sys.stdin);assert p["dry_run"] and p["side_effects"]=="none" and len(p["pipeline"])==16'
+pass "B2 dry-run 16-step zero side effects"
+export VCL_FLEET_HOME=$SAVED
+unset VCL_FLEET_LOCAL_STATE
+unset VCL_FAKE_STATE_DIR
