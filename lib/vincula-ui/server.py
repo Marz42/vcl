@@ -768,8 +768,10 @@ def resolve_user_id_for_ui(
     registry: dict[str, Any],
     tag_or_id: str,
     *,
-    allow_ssh: bool,
+    allow_ssh: bool = False,
 ) -> Optional[str]:
+    """Local Read Plane tag→user_id (user_snapshot → events/usage). Never SSH."""
+    del registry, allow_ssh  # UI GET is cache-only; keep kwargs for callers.
     f = fleet()
     text = (tag_or_id or "").strip()
     if not text:
@@ -777,28 +779,15 @@ def resolve_user_id_for_ui(
     if UUID_RE.fullmatch(text):
         return text
     f.validate_name(text)
-    rows = conn.execute(
-        """
-        SELECT DISTINCT user_id FROM audit_events
-        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
-        UNION
-        SELECT DISTINCT user_id FROM daily_usage
-        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
-        """,
-        (text, text),
-    ).fetchall()
-    ids = {str(r[0]) for r in rows if r[0]}
+    ids = f.local_user_ids_for_tag(conn, text)
+    if len(ids) > 1:
+        detail = ", ".join(sorted(ids))
+        raise ValueError(
+            f"LOCAL_USER_ID_CONFLICT: tag {text} maps to multiple user_ids: "
+            f"{detail}"
+        )
     if len(ids) == 1:
         return next(iter(ids))
-    if len(ids) > 1:
-        raise ValueError(f"tag {text} has conflicting user_id in local cache")
-    cache = load_users_cache()
-    if cache:
-        for user in cache.get("users") or []:
-            if str(user.get("tag") or "") == text and user.get("user_id"):
-                return str(user["user_id"])
-    if allow_ssh:
-        return f.resolve_fleet_user_id(registry, text)
     return None
 
 

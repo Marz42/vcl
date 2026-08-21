@@ -6560,7 +6560,7 @@ fi
 
 unknown_audit_rc=0
 unknown_audit_err=$(fleet audit user missing --from "$QUERY_FROM" --to "$QUERY_TO" 2>&1) || unknown_audit_rc=$?
-if (( unknown_audit_rc != 0 )) && [[ "$unknown_audit_err" == *"unknown user tag"* ]]; then
+if (( unknown_audit_rc != 0 )) && [[ "$unknown_audit_err" == *"unknown local user"* ]]; then
   pass "audit unknown tag dies"
 else
   fail "audit unknown tag dies (rc=${unknown_audit_rc} err=${unknown_audit_err})"
@@ -6575,29 +6575,31 @@ else
 fi
 
 conflict_rc=0
-python3 - "$VCL_FAKE_STATE_DIR" <<'PY' || conflict_rc=$?
-import json, sys
-from pathlib import Path
-state = Path(sys.argv[1])
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" <<'PY' || conflict_rc=$?
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+lax_id, tokyo_id = sys.argv[2], sys.argv[3]
 uid_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
 uid_b = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
-for alias, uid in (("lax", uid_a), ("tokyo", uid_b)):
-    path = state / alias / "users.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"].append({
-        "user_id": uid,
-        "tag": "eve",
-        "display_name": "Eve",
-        "department": "",
-        "enabled": True,
-        "created_at": "2026-08-16T00:00:00Z",
-        "credentials": [],
-    })
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+now = "2026-08-16T07:00:00Z"
+conn = m.open_cache_for_sync()
+for nid, uid in ((lax_id, uid_a), (tokyo_id, uid_b)):
+    conn.execute(
+        """INSERT INTO user_snapshot(
+             node_id,user_id,tag,enabled,status,active_credential_id,
+             payload_json,synced_at)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (nid, uid, "eve", 1, "active", None, "{}", now),
+    )
+conn.commit()
+conn.close()
 PY
 conflict_audit_rc=0
 conflict_err=$(fleet audit user eve --from "$QUERY_FROM" --to "$QUERY_TO" 2>&1) || conflict_audit_rc=$?
-if (( conflict_audit_rc != 0 )) && [[ "$conflict_err" == *"conflicting user_id"* ]]; then
+if (( conflict_audit_rc != 0 )) && [[ "$conflict_err" == *"LOCAL_USER_ID_CONFLICT"* ]]; then
   pass "audit dies on tag user_id conflict across nodes"
 else
   fail "audit dies on tag user_id conflict across nodes (rc=${conflict_audit_rc} err=${conflict_err})"
@@ -9835,6 +9837,199 @@ assert_failure "B5 stub gone" \
 export VCL_FLEET_HOME=$B5_SAVED_HOME
 unset VCL_FLEET_LOCAL_STATE
 unset VCL_FAKE_STATE_DIR
+
+# --- 0.4.2 P1-5: local tag→user_id; audit/stats/status/UI Local Read Plane ---
+P15H=$TEST_TMP/p15-home; P15S=$TEST_TMP/p15-fake; P15X=$TEST_TMP/p15-xdg
+rm -rf "$P15H" "$P15S" "$P15X"
+mkdir -p "$P15S/lax" "$P15S/tokyo"
+P15_SAVED_HOME=$VCL_FLEET_HOME
+P15_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+P15_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+export VCL_FLEET_HOME=$P15H VCL_FLEET_LOCAL_STATE=$P15X VCL_FAKE_STATE_DIR=$P15S
+export VCL_FLEET_SSH="${FAKE_SSH}"
+export VCL_FLEET_SSH_KEYSCAN="${FAKE_KEYSCAN}"
+P15_ALICE=11111111-1111-4111-8111-111111111111
+P15_BOB=22222222-2222-4222-8222-222222222222
+P15_CAROL=33333333-3333-4333-8333-333333333333
+P15_EVE_A=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1
+P15_EVE_B=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2
+assert_success "P1-5 init" fleet init
+assert_success "P1-5 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "P1-5 add tokyo" \
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+# Seed snapshot-primary + events-fallback + ambiguous without SSH resolve path
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  "$LAX_REMOTE_NODE_ID" "$TEST_TOKYO_NODE_ID" \
+  "$P15_ALICE" "$P15_BOB" "$P15_CAROL" "$P15_EVE_A" "$P15_EVE_B" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+lax, tokyo = sys.argv[2], sys.argv[3]
+alice, bob, carol, eve_a, eve_b = (
+    sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8],
+)
+now = "2026-08-16T07:00:00Z"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+conn = m.open_cache_for_sync()
+# carol only in user_snapshot (primary; no events)
+conn.execute(
+    """INSERT INTO user_snapshot(
+         node_id,user_id,tag,enabled,status,active_credential_id,
+         payload_json,synced_at) VALUES(?,?,?,?,?,?,?,?)""",
+    (lax, carol, "carol", 1, "active", None, "{}", now),
+)
+# alice in snapshot + events (post-sync style)
+conn.execute(
+    """INSERT INTO user_snapshot(
+         node_id,user_id,tag,enabled,status,active_credential_id,
+         payload_json,synced_at) VALUES(?,?,?,?,?,?,?,?)""",
+    (lax, alice, "alice", 1, "active", None, "{}", now),
+)
+# bob only in audit_events / daily_usage (fallback; no snapshot)
+conn.execute(
+    """INSERT INTO audit_events(
+         node_id,instance_id,event_id,export_seq,connection_id,generation,
+         user_id,user_tag,started_at,last_seen_at,closed_at,
+         destination_host,upload_bytes,download_bytes,imported_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    (lax, iid, 1, 1, "c-bob", 0, bob, "bob",
+     "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z", "2026-08-10T09:00:00Z",
+     "example.com", 10, 20, now),
+)
+conn.execute(
+    """INSERT INTO daily_usage(
+         date,node_id,instance_id,user_id,user_tag,destination_host,
+         upload_bytes,download_bytes,connection_count)
+       VALUES(?,?,?,?,?,?,?,?,?)""",
+    ("2026-08-10", lax, iid, bob, "bob", "example.com", 10, 20, 1),
+)
+# eve ambiguous in user_snapshot (two ids)
+for nid, uid in ((lax, eve_a), (tokyo, eve_b)):
+    conn.execute(
+        """INSERT INTO user_snapshot(
+             node_id,user_id,tag,enabled,status,active_credential_id,
+             payload_json,synced_at) VALUES(?,?,?,?,?,?,?,?)""",
+        (nid, uid, "eve", 1, "active", None, "{}", now),
+    )
+# alice audit row so audit user succeeds after resolve
+conn.execute(
+    """INSERT INTO audit_events(
+         node_id,instance_id,event_id,export_seq,connection_id,generation,
+         user_id,user_tag,started_at,last_seen_at,closed_at,
+         destination_host,upload_bytes,download_bytes,imported_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    (lax, iid, 2, 2, "c-alice", 0, alice, "alice",
+     "2026-08-10T10:00:00Z", "2026-08-10T11:00:00Z", "2026-08-10T11:00:00Z",
+     "example.com", 100, 200, now),
+)
+m.rebuild_daily_usage_for_node(conn, lax)
+conn.commit(); conn.close()
+PY
+export VCL_FAKE_SSH_ARGV_LOG="${P15S}/p15-ssh.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+# snapshot primary (carol has no events — resolve still succeeds; empty audit ok)
+p15_carol_rc=0
+p15_carol=$(fleet audit user carol --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z --json) || p15_carol_rc=$?
+python3 - "$p15_carol" "$p15_carol_rc" "$P15_CAROL" <<'PY'
+import json,sys
+doc=json.loads(sys.argv[1]); assert int(sys.argv[2])==0; assert doc["user_id"]==sys.argv[3]; assert doc["rows"]==[]
+PY
+assert_equal "P1-5 snapshot resolve zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+pass "P1-5 tag resolves from user_snapshot"
+# fallback from events (no snapshot for bob)
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15_bob=$(fleet audit user bob --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z --json) || true
+python3 - "$p15_bob" "$P15_BOB" <<'PY'
+import json,sys
+doc=json.loads(sys.argv[1]); assert doc["user_id"]==sys.argv[2]; assert len(doc["rows"])==1
+PY
+assert_equal "P1-5 events fallback zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+pass "P1-5 tag resolves from audit_events/daily_usage fallback"
+# conflict
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15_eve_err=$(fleet audit user eve --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || p15_eve_rc=$?
+p15_eve_rc=${p15_eve_rc:-0}
+if (( p15_eve_rc != 0 )) && [[ "$p15_eve_err" == *"LOCAL_USER_ID_CONFLICT"* ]]; then
+  pass "P1-5 ambiguous tag → LOCAL_USER_ID_CONFLICT"
+else
+  fail "P1-5 ambiguous tag → LOCAL_USER_ID_CONFLICT (rc=${p15_eve_rc} err=${p15_eve_err})"
+fi
+assert_equal "P1-5 conflict zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# unknown
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15_miss_err=$(fleet audit user missing --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z 2>&1) || p15_miss_rc=$?
+p15_miss_rc=${p15_miss_rc:-0}
+if (( p15_miss_rc != 0 )) && [[ "$p15_miss_err" == *"unknown local user"* ]]; then
+  pass "P1-5 unknown tag → unknown local user"
+else
+  fail "P1-5 unknown tag → unknown local user (rc=${p15_miss_rc} err=${p15_miss_err})"
+fi
+assert_equal "P1-5 unknown zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+# stats user also local-only
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+export VCL_FLEET_STATS_NOW="2026-08-16"
+fleet stats user alice --days 30 --json >/dev/null
+fleet stats user bob --days 30 --json >/dev/null
+assert_equal "P1-5 stats user zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+unset VCL_FLEET_STATS_NOW
+# --user-id bypass (tag need not resolve)
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+p15_bypass=$(fleet audit user missing --user-id "$P15_ALICE" \
+  --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z --json) || true
+python3 - "$p15_bypass" "$P15_ALICE" <<'PY'
+import json,sys
+doc=json.loads(sys.argv[1]); assert doc["user_id"]==sys.argv[2]; assert len(doc["rows"])==1
+PY
+assert_equal "P1-5 --user-id bypass zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+pass "P1-5 --user-id bypasses tag resolution"
+# grep: audit/stats/status/UI GET read paths no SSH resolve
+assert_failure "P1-5 resolve_fleet_user_id no _list_users" \
+  bash -c 'grep -A40 "def resolve_fleet_user_id" "'"${PROJECT_DIR}"'/lib/vincula-fleet.py" | grep -q "_list_users_on_node"'
+assert_success "P1-5 UI resolve has no allow_ssh SSH branch" \
+  bash -c '! grep -A40 "def resolve_user_id_for_ui" "'"${PROJECT_DIR}"'/lib/vincula-ui/server.py" | grep -q "resolve_fleet_user_id"'
+assert_success "P1-5 status is cache-only (run_cached_status)" \
+  grep -q 'No SSH' "${PROJECT_DIR}/lib/vincula-fleet.py"
+# After sync --full, audit/stats work with zero SSH (reuse B5-style seed)
+P15F=$TEST_TMP/p15-full; P15FS=$TEST_TMP/p15-full-fake; P15FX=$TEST_TMP/p15-full-xdg
+rm -rf "$P15F" "$P15FS" "$P15FX"
+mkdir -p "$P15FS/lax"
+export VCL_FLEET_HOME=$P15F VCL_FLEET_LOCAL_STATE=$P15FX VCL_FAKE_STATE_DIR=$P15FS
+assert_success "P1-5 full init" fleet init
+assert_success "P1-5 full add" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "P1-5 full user add" fleet user add alice --nodes lax --user-id "$P15_ALICE"
+assert_success "P1-5 full seed audit" python3 - "$PROJECT_DIR/lib/vincula-accountd.py" "$P15FS" "$PROJECT_DIR/tests/fixtures/nodes" <<'PY'
+import importlib.util,json,sys; from pathlib import Path
+acct_py,state,nodes=sys.argv[1],Path(sys.argv[2]),Path(sys.argv[3])
+spec=importlib.util.spec_from_file_location("a",acct_py); a=importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+ident=json.loads((nodes/"lax"/"identity.json").read_text()); db=state/"lax"/"accounting.db"; db.parent.mkdir(parents=True,exist_ok=True)
+c=a.open_db(str(db))
+c.execute("INSERT INTO connections(connection_id,generation,user_id,node_id,instance_id,user_tag,started_at,last_seen_at,closed_at,destination_host,destination_ip,destination_port,network,upload_bytes,download_bytes,export_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ("lax-1",0,"11111111-1111-4111-8111-111111111111",ident["node_id"],ident["instance_id"],"alice","2026-08-10T08:00:00Z","2026-08-10T09:00:00Z","2026-08-10T09:00:00Z","example.com","203.0.113.10",443,"tcp",1,2,1))
+a.meta_set(c,"audit_export_seq","1"); a.meta_set(c,"audit_pruned_max_export_seq","0"); c.commit(); c.close()
+PY
+assert_success "P1-5 sync --full" fleet sync --full
+export VCL_FAKE_SSH_ARGV_LOG="${P15FS}/p15-after-sync.log"
+: >"$VCL_FAKE_SSH_ARGV_LOG"
+L0=$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")
+fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-11T00:00:00Z --json >/dev/null
+fleet status --json >/dev/null
+export VCL_FLEET_STATS_NOW="2026-08-16"
+fleet stats user alice --days 30 --json >/dev/null
+unset VCL_FLEET_STATS_NOW
+assert_equal "P1-5 post-sync audit/stats/status zero SSH" "$L0" "$(wc -l <"$VCL_FAKE_SSH_ARGV_LOG")"
+pass "P1-5 audit/stats/status Local Read Plane after sync --full"
+unset VCL_FAKE_SSH_ARGV_LOG
+export VCL_FLEET_HOME=$P15_SAVED_HOME
+if [[ -n "$P15_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P15_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$P15_SAVED_FAKE" ]]; then export VCL_FAKE_STATE_DIR=$P15_SAVED_FAKE; else unset VCL_FAKE_STATE_DIR; fi
 
 # --- 0.4.2 B6 ---
 assert_success "B6 create/verify/restore/dedupe/conflict/no-cursor" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$TEST_TMP/b6" <<'PY'

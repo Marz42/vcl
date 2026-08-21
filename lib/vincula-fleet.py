@@ -5404,37 +5404,75 @@ def _sql_like_contains(needle: str) -> str:
     return f"%{escaped}%"
 
 
-def resolve_fleet_user_id(registry: dict[str, Any], tag: str) -> str:
-    """Resolve TAG to one fleet-global user_id via per-node `vcl user list`.
+def local_user_ids_for_tag(conn: sqlite3.Connection, tag: str) -> set[str]:
+    """Local Read Plane: tag → distinct user_id(s).
 
-    Conflicting user_ids across reachable nodes → die (no silent merge).
+    Order (authoritative for audit/stats/status/UI GET):
+      user_snapshot → audit_events / daily_usage fallback.
+    No SSH. Empty set means unknown local user; len>1 is conflict.
     """
+    snap_rows = conn.execute(
+        """
+        SELECT DISTINCT user_id FROM user_snapshot
+        WHERE tag = ? AND user_id IS NOT NULL AND user_id != ''
+        """,
+        (tag,),
+    ).fetchall()
+    ids = {str(r[0]) for r in snap_rows if r[0]}
+    if ids:
+        return ids
+    event_rows = conn.execute(
+        """
+        SELECT DISTINCT user_id FROM audit_events
+        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
+        UNION
+        SELECT DISTINCT user_id FROM daily_usage
+        WHERE user_tag = ? AND user_id IS NOT NULL AND user_id != ''
+        """,
+        (tag, tag),
+    ).fetchall()
+    return {str(r[0]) for r in event_rows if r[0]}
+
+
+def resolve_local_user_id(conn: sqlite3.Connection, tag: str) -> str:
+    """Resolve TAG from local cache; die on unknown / LOCAL_USER_ID_CONFLICT."""
     validate_name(tag)
-    found: dict[str, list[str]] = {}
-    reachable = False
-    for node in _selected_nodes(registry, include_all=False):
-        users, err = _list_users_on_node(node)
-        if err is not None:
-            continue
-        reachable = True
-        for user in users or []:
-            if str(user.get("tag") or "") != tag:
-                continue
-            uid = _optional_text(user.get("user_id"))
-            if not uid:
-                continue
-            found.setdefault(uid, []).append(str(node["name"]))
-    if len(found) > 1:
-        detail = "; ".join(
-            f"{uid} on {','.join(names)}" for uid, names in found.items()
-        )
-        die(f"tag {tag} has conflicting user_id across nodes: {detail}")
-    if len(found) == 1:
-        return next(iter(found))
-    if not reachable:
-        die(f"cannot resolve user {tag}: nodes unreachable")
-    die(f"unknown user tag: {tag}")
+    ids = local_user_ids_for_tag(conn, tag)
+    if len(ids) > 1:
+        detail = ", ".join(sorted(ids))
+        die(f"LOCAL_USER_ID_CONFLICT: tag {tag} maps to multiple user_ids: {detail}")
+    if len(ids) == 1:
+        return next(iter(ids))
+    die(f"unknown local user: {tag}")
     raise SystemExit(1)
+
+
+def resolve_fleet_user_id(
+    registry: dict[str, Any],
+    tag: str,
+    *,
+    user_id: Optional[str] = None,
+) -> str:
+    """Resolve TAG → user_id via Local Read Plane (user_snapshot, then events).
+
+    ``user_id`` bypasses tag resolution entirely (no SSH).
+    ``user list`` / ``user show`` remain live observation (SSH) by design;
+    audit / stats / status / UI GET must not SSH.
+    """
+    del registry  # Local plane; registry kept for call-site compatibility.
+    if user_id:
+        uid = str(user_id).strip()
+        if not UUID_RE.fullmatch(uid):
+            die(f"invalid --user-id (expect UUID): {uid}")
+        return uid
+    validate_name(tag)
+    conn = open_cache_readonly_optional()
+    if conn is None:
+        die(f"unknown local user: {tag}")
+    try:
+        return resolve_local_user_id(conn, tag)
+    finally:
+        conn.close()
 
 
 def _row_int(row: sqlite3.Row, key: str) -> int:
@@ -5666,7 +5704,8 @@ def cmd_audit_user(args: argparse.Namespace) -> int:
     query_to = audit.parse_rfc3339(args.query_to)
     if query_from > query_to:
         die("--from must not be after --to")
-    user_id = resolve_fleet_user_id(registry, tag)
+    bypass = (getattr(args, "user_id", None) or "").strip() or None
+    user_id = resolve_fleet_user_id(registry, tag, user_id=bypass)
     node_name = (getattr(args, "node", None) or "").strip() or None
     node_id = None
     if node_name:
@@ -5883,7 +5922,8 @@ def cmd_stats_user(args: argparse.Namespace) -> int:
     days = args.days
     start, end = stats_date_window(days)
     registry = load_registry()
-    user_id = resolve_fleet_user_id(registry, tag)
+    bypass = (getattr(args, "user_id", None) or "").strip() or None
+    user_id = resolve_fleet_user_id(registry, tag, user_id=bypass)
     conn = open_cache_readonly_optional()
     try:
         raw_rows = (
@@ -6495,7 +6535,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ulist = user_sub.add_parser(
         "list",
-        help="aggregate user list from enabled nodes",
+        help="live observation: aggregate user list via SSH (not Local Read Plane)",
     )
     p_ulist.add_argument(
         "--json",
@@ -6506,7 +6546,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ushow = user_sub.add_parser(
         "show",
-        help="per-node credential status for TAG",
+        help="live observation: per-node credential status via SSH",
     )
     p_ushow.add_argument("tag")
     p_ushow.add_argument(
@@ -6677,17 +6717,22 @@ def build_parser() -> argparse.ArgumentParser:
             "`vcl audit`: started_at < --to AND COALESCE(closed_at, "
             "last_seen_at) >= --from). Output columns: time node instance "
             "destination traffic. Rows without node_id are never merged. "
-            "TAG is resolved from per-node user list; conflicting user_id "
-            "is refused."
+            "Local Read Plane: TAG resolves from user_snapshot, then "
+            "audit_events/daily_usage (no SSH). 0 ids → unknown local user; "
+            ">1 → LOCAL_USER_ID_CONFLICT. Pass --user-id to bypass. "
+            "Live observation remains `user list` / `user show`."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     audit_sub = p_audit.add_subparsers(dest="audit_command")
     p_audit_user = audit_sub.add_parser(
         "user",
-        help="connections for TAG in an RFC3339 window",
+        help="connections for TAG in an RFC3339 window (local cache)",
     )
-    p_audit_user.add_argument("tag", help="user tag (resolved to user_id)")
+    p_audit_user.add_argument(
+        "tag",
+        help="user tag (local resolve → user_id; see --user-id)",
+    )
     p_audit_user.add_argument(
         "--from",
         dest="query_from",
@@ -6706,6 +6751,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--node",
         dest="node",
         help="limit to one registry node name",
+    )
+    p_audit_user.add_argument(
+        "--user-id",
+        dest="user_id",
+        metavar="UUID",
+        help="bypass tag resolution; query this user_id directly",
     )
     _add_json_flag(p_audit_user)
 
@@ -6740,16 +6791,23 @@ def build_parser() -> argparse.ArgumentParser:
             "(UTC day of started_at). Not byte-identical with node "
             "`vcl stats`. Detail rows keep (user_id, node); unlabeled "
             "node_id is never merged. Combined totals exist only in "
-            "--json totals.by_node."
+            "--json totals.by_node. TAG for `stats user` resolves locally "
+            "(user_snapshot → events/usage; no SSH); --user-id bypasses."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_sub = p_stats.add_subparsers(dest="stats_command")
     p_suser = stats_sub.add_parser(
         "user",
-        help="per-node usage for TAG over --days N",
+        help="per-node usage for TAG over --days N (local cache)",
     )
     p_suser.add_argument("tag")
+    p_suser.add_argument(
+        "--user-id",
+        dest="user_id",
+        metavar="UUID",
+        help="bypass tag resolution; query this user_id directly",
+    )
     _add_days_flag(p_suser)
     _add_json_flag(p_suser)
 
