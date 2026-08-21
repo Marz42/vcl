@@ -442,6 +442,19 @@ def _is_live_registry_path(path: Optional[Path]) -> bool:
         return False
 
 
+def _refuse_identity_file_in_workspace_registry(registry: dict[str, Any]) -> None:
+    """F7-3: Workspace-active registry must never persist identity_file (D22/D28)."""
+    if not workspace_trust_active():
+        return
+    for i, node in enumerate(registry.get("nodes") or []):
+        if isinstance(node, dict) and node.get("identity_file"):
+            _host.die(
+                "workspace active: refusing to write identity_file into "
+                f"fleet.json (nodes[{i}]); use credential bindings "
+                "(access bind / admin_credential_ref)"
+            )
+
+
 def _write_registry_file(path: Path, registry: dict[str, Any]) -> None:
     """Raw fleet.json write — no CAS. Call only from workspace_mutation or legacy."""
     payload = validate_registry(registry)
@@ -473,9 +486,13 @@ def _save_registry_unlocked(path: Optional[Path], registry: dict[str, Any]) -> N
     When workspace.json is active and path is the live registry, ALL writes go
     through workspace_mutation (P1-1). Staging paths and legacy homes (no
     workspace.json) write directly without CAS/revision bump.
+
+    F7-3: when Workspace is active, refuse any registry payload that still
+    carries identity_file (portable must use credential refs only).
     """
     path = fleet_registry_path() if path is None else Path(path)
     payload = validate_registry(registry)
+    _refuse_identity_file_in_workspace_registry(payload)
     new_text = json.dumps(payload, indent=2) + "\n"
     if path.is_file():
         try:

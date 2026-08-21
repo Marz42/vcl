@@ -412,6 +412,9 @@ def open_cache_readonly_optional():
 
 
 planned_credential_refs = _WS.planned_credential_refs
+DEFAULT_ADMIN_CREDENTIAL_REF = _WS.DEFAULT_ADMIN_CREDENTIAL_REF
+ADMIN_CREDENTIAL_REF_KEY = _WS.ADMIN_CREDENTIAL_REF_KEY
+OBSERVE_CREDENTIAL_REF_KEY = _WS.OBSERVE_CREDENTIAL_REF_KEY
 node_schema_field_names = _WS.node_schema_field_names
 RESERVED_NODE_CREDENTIAL_KEYS = _WS.RESERVED_NODE_CREDENTIAL_KEYS
 
@@ -2082,6 +2085,15 @@ def require_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
     return node
 
 
+def _bind_identity_for_workspace(
+    path: str, *, ref: Optional[str] = None
+) -> str:
+    """Machine-local binding via access bind flow; return credential ref (F7-3)."""
+    key = _optional_text(ref) or DEFAULT_ADMIN_CREDENTIAL_REF
+    bind_identity_file(key, path)
+    return key
+
+
 def add_node(
     registry: dict[str, Any],
     *,
@@ -2091,6 +2103,7 @@ def add_node(
     ssh_user: str = "root",
     ssh_port: int = 22,
     identity_file: Optional[str] = None,
+    admin_credential_ref: Optional[str] = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
     validate_node_id(node_id)
@@ -2107,8 +2120,18 @@ def add_node(
         "ssh_port": ssh_port,
         "enabled": enabled,
     }
+    # F7-3: Workspace-active callers must pass admin_credential_ref only;
+    # identity_file is legacy-home persistence.
     if identity_file:
+        if workspace_trust_active():
+            die(
+                "workspace active: identity_file must not be stored in "
+                "fleet.json; use credential bindings"
+            )
         payload["identity_file"] = identity_file
+    if admin_credential_ref:
+        payload["admin_credential_ref"] = admin_credential_ref
+        payload["observe_credential_ref"] = admin_credential_ref
     record = normalize_node(
         payload,
         index=len(registry.get("nodes") or []),
@@ -2168,10 +2191,17 @@ def cmd_init() -> int:
 @with_fleet_op_lock
 def cmd_node_add(args: argparse.Namespace) -> int:
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    identity_file = None
+    # SSH may use the key path; registry persistence depends on Workspace (F7-3).
+    ssh_identity: Optional[str] = None
+    reg_identity: Optional[str] = None
+    admin_ref: Optional[str] = None
     raw_ident = _optional_text(getattr(args, "identity_file", None))
     if raw_ident:
-        identity_file = validate_identity_file(raw_ident, must_exist=True)
+        ssh_identity = validate_identity_file(raw_ident, must_exist=True)
+        if workspace_trust_active():
+            admin_ref = _bind_identity_for_workspace(ssh_identity)
+        else:
+            reg_identity = ssh_identity
     if args.offline:
         if not args.node_id:
             die("--offline requires --node-id UUID", 2)
@@ -2187,7 +2217,7 @@ def cmd_node_add(args: argparse.Namespace) -> int:
             ["vcl", "identity", "--json"],
             batch=batch,
             extra=extra,
-            identity_file=identity_file,
+            identity_file=ssh_identity,
         )
         if proc.returncode != 0:
             detail = _ssh_failure_detail(proc)
@@ -2209,7 +2239,8 @@ def cmd_node_add(args: argparse.Namespace) -> int:
         ssh_host=ssh_host,
         ssh_user=ssh_user,
         ssh_port=ssh_port,
-        identity_file=identity_file,
+        identity_file=reg_identity,
+        admin_credential_ref=admin_ref,
     )
     save_registry(None, registry)
     sys.stdout.write(f"Registered {args.name}\n")
@@ -2245,7 +2276,7 @@ def cmd_node_show(name: str) -> int:
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind and/or local SSH identity_file."""
+    """Endpoint rebind and/or local SSH identity_file / credential binding."""
     identity_raw = _optional_text(getattr(args, "identity_file", None))
     clear_identity = bool(getattr(args, "clear_identity_file", False))
     host = _optional_text(getattr(args, "host", None))
@@ -2260,7 +2291,16 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     if clear_identity:
         node.pop("identity_file", None)
     elif identity_raw:
-        node["identity_file"] = validate_identity_file(identity_raw, must_exist=True)
+        resolved = validate_identity_file(identity_raw, must_exist=True)
+        if workspace_trust_active():
+            # F7-3: machine-local binding only; registry keeps refs.
+            existing = _optional_text(node.get("admin_credential_ref"))
+            ref = _bind_identity_for_workspace(resolved, ref=existing)
+            node["admin_credential_ref"] = ref
+            node["observe_credential_ref"] = ref
+            node.pop("identity_file", None)
+        else:
+            node["identity_file"] = resolved
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
     return 0
@@ -2683,8 +2723,20 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
     )
     ident_path = _optional_text(getattr(args, "identity_file", None))
+    replace_admin_ref: Optional[str] = None
     if ident_path:
-        new_node["identity_file"] = validate_identity_file(ident_path, must_exist=True)
+        resolved = validate_identity_file(ident_path, must_exist=True)
+        if workspace_trust_active():
+            # SSH uses the path via binding after refs are set on new_node.
+            existing = _optional_text(new_node.get("admin_credential_ref"))
+            replace_admin_ref = _bind_identity_for_workspace(
+                resolved, ref=existing
+            )
+            new_node["admin_credential_ref"] = replace_admin_ref
+            new_node["observe_credential_ref"] = replace_admin_ref
+            new_node.pop("identity_file", None)
+        else:
+            new_node["identity_file"] = resolved
     old_instance_id = _cursor_instance_id(node["node_id"])
     from_backup = _optional_text(getattr(args, "from_backup", None))
 
@@ -2902,7 +2954,16 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_host"] = new_host
     stored["ssh_user"] = new_user
     stored["ssh_port"] = new_port
-    if new_node.get("identity_file"):
+    if replace_admin_ref:
+        stored["admin_credential_ref"] = replace_admin_ref
+        stored["observe_credential_ref"] = replace_admin_ref
+        stored.pop("identity_file", None)
+    elif new_node.get("identity_file"):
+        if workspace_trust_active():
+            die(
+                "workspace active: identity_file must not be stored in "
+                "fleet.json; use credential bindings"
+            )
         stored["identity_file"] = new_node["identity_file"]
     stored["status"] = NODE_STATUS_ACTIVE
     stored["enabled"] = True

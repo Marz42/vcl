@@ -2421,7 +2421,7 @@ reg = {
         }
     ],
 }
-mod._WS._save_registry_unlocked(None, reg)
+mod._WS._write_registry_file(mod.fleet_registry_path(), reg)
 m = mod.load_workspace_manifest()
 mod.refresh_manifest_digest(m)
 mod.save_workspace_manifest(m)
@@ -10137,6 +10137,134 @@ assert "refresh_manifest_digest" not in joined, joined
 print("ok")
 PY
 export VCL_FLEET_HOME=$F72_SAVED_HOME
+
+# --- 0.4.2 F7-3 / T1: Workspace routes --identity-file to machine-local binding ---
+# With Workspace active, node add/set --identity-file must NOT write identity_file
+# into portable fleet.json; CONFIG credential binding exists; verify+export PASS.
+# Legacy (no workspace) identity_file persistence remains covered earlier in this file.
+F73_SAVED_HOME=$VCL_FLEET_HOME
+F73_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+F73_SAVED_CFG=${XDG_CONFIG_HOME:-}
+F73H=$TEST_TMP/f73-home
+F73X=$TEST_TMP/f73-xdg
+F73CFG=$TEST_TMP/f73-cfg
+F73_KEY=$TEST_TMP/f73-id_ed25519
+F73_KEY2=$TEST_TMP/f73-id_ed25519-set
+F73_TGZ=$TEST_TMP/f73-export.tgz
+rm -rf "$F73H" "$F73X" "$F73CFG"
+mkdir -p "$F73H" "$F73X" "$F73CFG"
+printf 'test-only-not-a-real-f73-key\n' > "$F73_KEY"
+printf 'test-only-not-a-real-f73-key-set\n' > "$F73_KEY2"
+chmod 600 "$F73_KEY" "$F73_KEY2"
+export VCL_FLEET_HOME=$F73H
+export VCL_FLEET_LOCAL_STATE=$F73X
+export XDG_CONFIG_HOME=$F73CFG
+export VCL_FLEET_SSH=/bin/false
+export VCL_FLEET_SSH_KEYSCAN=/bin/false
+
+assert_success "F7-3 T1 workspace init" fleet workspace init
+assert_success "F7-3 T1 node add --identity-file" \
+  fleet node add n --host 203.0.113.10 --offline \
+    --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0f73" \
+    --identity-file "$F73_KEY"
+
+f73_add_rc=0
+python3 - "$F73H" "$F73_KEY" <<'PY' || f73_add_rc=$?
+import json, sys
+from pathlib import Path
+home, key = Path(sys.argv[1]), Path(sys.argv[2]).resolve()
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+raw = (home / "fleet.json").read_text(encoding="utf-8")
+assert '"identity_file"' not in raw and "'identity_file'" not in raw, raw
+n = reg["nodes"][0]
+assert "identity_file" not in n, n
+assert n.get("admin_credential_ref") == "admin-default", n
+assert n.get("observe_credential_ref") == "admin-default", n
+print("ok")
+PY
+if (( f73_add_rc == 0 )); then
+  pass "F7-3 T1 add: fleet.json has refs, no identity_file"
+else
+  fail "F7-3 T1 add: fleet.json has refs, no identity_file"
+fi
+
+F73_LIST=$(fleet access list)
+if [[ "$F73_LIST" == *"admin-default"* ]] && [[ "$F73_LIST" == *"identity_file"* ]]; then
+  pass "F7-3 T1 access list shows admin-default binding after add"
+else
+  fail "F7-3 T1 access list shows admin-default binding after add (${F73_LIST})"
+fi
+F73_FID=$(python3 -c 'import json; print(json.load(open("'"$F73H"'/workspace.json"))["fleet_id"])')
+assert_success "F7-3 T1 CONFIG binding file exists" \
+  test -f "${F73CFG}/vincula/controllers/${F73_FID}/credential-bindings.json"
+assert_failure "F7-3 T1 no identity_file string in fleet.json" \
+  grep -q identity_file "${F73H}/fleet.json"
+
+assert_success "F7-3 T1 node set --identity-file" \
+  fleet node set n --identity-file "$F73_KEY2"
+f73_set_rc=0
+python3 - "$F73H" "$F73_KEY2" <<'PY' || f73_set_rc=$?
+import json, sys
+from pathlib import Path
+home, key = Path(sys.argv[1]), Path(sys.argv[2]).resolve()
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+raw = (home / "fleet.json").read_text(encoding="utf-8")
+assert "identity_file" not in raw, raw
+n = reg["nodes"][0]
+assert "identity_file" not in n, n
+assert n.get("admin_credential_ref") == "admin-default", n
+print("ok")
+PY
+if (( f73_set_rc == 0 )); then
+  pass "F7-3 T1 set: fleet.json still has no identity_file"
+else
+  fail "F7-3 T1 set: fleet.json still has no identity_file"
+fi
+F73_LIST2=$(fleet access list)
+F73_ABS2=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$F73_KEY2")
+if [[ "$F73_LIST2" == *"admin-default"* ]] && [[ "$F73_LIST2" == *"$F73_ABS2"* ]]; then
+  pass "F7-3 T1 access list updated binding path after set"
+else
+  fail "F7-3 T1 access list updated binding path after set (${F73_LIST2})"
+fi
+
+assert_success "F7-3 T1 workspace verify PASS" fleet workspace verify
+rm -f "$F73_TGZ"
+assert_success "F7-3 T1 workspace export PASS" fleet workspace export "$F73_TGZ"
+assert_success "F7-3 T1 export archive exists" test -f "$F73_TGZ"
+if tar -xOzf "$F73_TGZ" | grep -qE 'identity_file'; then
+  fail "F7-3 T1 export payload has no identity_file"
+else
+  pass "F7-3 T1 export payload has no identity_file"
+fi
+
+# Save-entry invariant: direct attempt to persist identity_file must die
+f73_inv_rc=0
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$F73H" "$F73_KEY" <<'PY' || f73_inv_rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+os.environ["VCL_FLEET_HOME"] = sys.argv[2]
+spec.loader.exec_module(mod)
+reg = mod.load_registry()
+reg["nodes"][0]["identity_file"] = str(Path(sys.argv[3]).resolve())
+try:
+    mod._WS._save_registry_unlocked(None, reg)
+except SystemExit as exc:
+    assert int(exc.code) != 0
+    raise SystemExit(0)
+raise SystemExit("expected die on identity_file write")
+PY
+if (( f73_inv_rc == 0 )); then
+  pass "F7-3 T1 registry save refuses identity_file when workspace active"
+else
+  fail "F7-3 T1 registry save refuses identity_file when workspace active"
+fi
+
+export VCL_FLEET_HOME=$F73_SAVED_HOME
+if [[ -n "$F73_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F73_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
+if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
 
 # --- 0.4.2 P1-5: local tag→user_id; audit/stats/status/UI Local Read Plane ---
 P15H=$TEST_TMP/p15-home; P15S=$TEST_TMP/p15-fake; P15X=$TEST_TMP/p15-xdg
