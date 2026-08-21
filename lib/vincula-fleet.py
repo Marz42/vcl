@@ -2188,10 +2188,13 @@ def cmd_init() -> int:
     return 0
 
 
-@with_fleet_op_lock
-def cmd_node_add(args: argparse.Namespace) -> int:
-    ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    # SSH may use the key path; registry persistence depends on Workspace (F7-3).
+def _node_identity_binding(
+    args: argparse.Namespace,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve --identity-file for SSH vs registry (F7-3).
+
+    Returns ``(ssh_identity, reg_identity, admin_credential_ref)``.
+    """
     ssh_identity: Optional[str] = None
     reg_identity: Optional[str] = None
     admin_ref: Optional[str] = None
@@ -2202,35 +2205,39 @@ def cmd_node_add(args: argparse.Namespace) -> int:
             admin_ref = _bind_identity_for_workspace(ssh_identity)
         else:
             reg_identity = ssh_identity
-    if args.offline:
-        if not args.node_id:
-            die("--offline requires --node-id UUID", 2)
-        node_id = args.node_id
-    else:
-        extra, batch = prepare_ssh_host_key(
-            ssh_host, ssh_port, getattr(args, "host_key", None)
-        )
-        proc = ssh_run(
-            ssh_host,
-            ssh_user,
-            ssh_port,
-            ["vcl", "identity", "--json"],
-            batch=batch,
-            extra=extra,
-            identity_file=ssh_identity,
-        )
-        if proc.returncode != 0:
-            detail = _ssh_failure_detail(proc)
-            if _is_host_key_failure(detail):
-                die(
-                    f"SSH host key not accepted for {ssh_user}@{ssh_host}: "
-                    f"{detail}\n{_host_key_guidance(ssh_user, ssh_host)}"
-                )
-            die(f"SSH failed for {ssh_user}@{ssh_host}: {detail}")
-        ident = parse_identity_json(proc.stdout)
-        node_id = ident["node_id"]
-        if args.node_id and args.node_id != node_id:
-            die(f"remote node_id {node_id} does not match --node-id {args.node_id}")
+    return ssh_identity, reg_identity, admin_ref
+
+
+@with_fleet_op_lock
+def cmd_node_adopt(args: argparse.Namespace) -> int:
+    """SSH identity verify + register (D49). Non-interactive requires --host-key (D34)."""
+    ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
+    ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    extra, batch = prepare_ssh_host_key(
+        ssh_host, ssh_port, getattr(args, "host_key", None)
+    )
+    proc = ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["vcl", "identity", "--json"],
+        batch=batch,
+        extra=extra,
+        identity_file=ssh_identity,
+    )
+    if proc.returncode != 0:
+        detail = _ssh_failure_detail(proc)
+        if _is_host_key_failure(detail):
+            die(
+                f"SSH host key not accepted for {ssh_user}@{ssh_host}: "
+                f"{detail}\n{_host_key_guidance(ssh_user, ssh_host)}"
+            )
+        die(f"SSH failed for {ssh_user}@{ssh_host}: {detail}")
+    ident = parse_identity_json(proc.stdout)
+    node_id = ident["node_id"]
+    want_id = getattr(args, "node_id", None)
+    if want_id and want_id != node_id:
+        die(f"remote node_id {node_id} does not match --node-id {want_id}")
     registry = load_registry()
     add_node(
         registry,
@@ -2244,6 +2251,69 @@ def cmd_node_add(args: argparse.Namespace) -> int:
     )
     save_registry(None, registry)
     sys.stdout.write(f"Registered {args.name}\n")
+    return 0
+
+
+@with_fleet_op_lock
+def cmd_node_register(args: argparse.Namespace) -> int:
+    """Registry-only register; no SSH (D49)."""
+    ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
+    _ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    node_id = getattr(args, "node_id", None)
+    if not node_id:
+        if getattr(args, "offline", False):
+            die("--offline requires --node-id UUID", 2)
+        die("register requires --node-id UUID", 2)
+    registry = load_registry()
+    add_node(
+        registry,
+        node_id=node_id,
+        name=args.name,
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=reg_identity,
+        admin_credential_ref=admin_ref,
+    )
+    save_registry(None, registry)
+    sys.stdout.write(f"Registered {args.name}\n")
+    return 0
+
+
+def cmd_node_add(args: argparse.Namespace) -> int:
+    """Legacy alias: online→adopt; --offline→register (D49; 0.4.x no warning)."""
+    if getattr(args, "offline", False):
+        return cmd_node_register(args)
+    return cmd_node_adopt(args)
+
+
+@with_fleet_op_lock
+def cmd_node_provision(args: argparse.Namespace) -> int:
+    """Fresh VPS install+verify+register via lib/provision.py (D33/D35)."""
+    ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
+    ssh_identity, _reg_identity, admin_ref = _node_identity_binding(args)
+    vcl = _optional_text(getattr(args, "vcl_server", None)) or os.environ.get(
+        "VCL_SERVER"
+    )
+    # identity_file is the SSH path; run_provision commits F7-3 correctly when
+    # admin_credential_ref is set (plan's reg_identity-only pass would drop -i).
+    doc = load_provision_module().run_provision(
+        name=args.name,
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=ssh_identity,
+        host_key=getattr(args, "host_key", None),
+        admin_credential_ref=admin_ref,
+        vcl_server=vcl,
+        skip_sync=bool(getattr(args, "no_sync", False)),
+    )
+    if getattr(args, "as_json", False):
+        sys.stdout.write(json.dumps(doc, indent=2) + "\n")
+        return 0 if doc.get("ok") else 1
+    if not doc.get("ok"):
+        die(f"{doc.get('error')}: {doc.get('remedy') or doc.get('detail') or 'failed'}")
+    sys.stdout.write(f"Provisioned {args.name} node_id={doc['node_id']}\n")
     return 0
 
 
@@ -6465,7 +6535,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_add = node_sub.add_parser(
         "add",
-        help="register a node via SSH identity (or --offline)",
+        help="register via SSH (adopt alias); --offline ≡ register",
+        description=(
+            "legacy alias: online→adopt; --offline→register (0.4.x no warning)"
+        ),
     )
     p_add.add_argument("name", help="short name (same charset as user tags)")
     p_add.add_argument("--host", required=True, help="SSH hostname or IP")
@@ -6480,7 +6553,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument(
         "--offline",
         action="store_true",
-        help="register without SSH (requires --node-id)",
+        help="register without SSH (requires --node-id); ≡ node register",
     )
     p_add.add_argument(
         "--host-key",
@@ -6491,6 +6564,87 @@ def build_parser() -> argparse.ArgumentParser:
         "--identity-file",
         dest="identity_file",
         help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+    )
+
+    p_adopt = node_sub.add_parser(
+        "adopt",
+        help="SSH identity verify + register (D49)",
+    )
+    p_adopt.add_argument("name", help="short name (same charset as user tags)")
+    p_adopt.add_argument("--host", required=True, help="SSH hostname or IP")
+    p_adopt.add_argument("--user", help="SSH user (default: root, or user@host)")
+    p_adopt.add_argument(
+        "--port", type=int, default=22, help="SSH port (default: 22)"
+    )
+    p_adopt.add_argument("--node-id", dest="node_id", help="logical node UUID")
+    p_adopt.add_argument(
+        "--host-key",
+        dest="host_key",
+        help="pin remote host-key fingerprint SHA256:... (writes Fleet known_hosts (workspace/trust or ~/.ssh))",
+    )
+    p_adopt.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+    )
+
+    p_prov = node_sub.add_parser(
+        "provision",
+        help="fresh VPS install+verify+register (D33/D35)",
+    )
+    p_prov.add_argument("name", help="short name (same charset as user tags)")
+    p_prov.add_argument("--host", required=True, help="SSH hostname or IP")
+    p_prov.add_argument("--user", help="SSH user (default: root, or user@host)")
+    p_prov.add_argument(
+        "--port", type=int, default=22, help="SSH port (default: 22)"
+    )
+    p_prov.add_argument(
+        "--host-key",
+        dest="host_key",
+        help="pin remote host-key fingerprint SHA256:... (required non-interactive)",
+    )
+    p_prov.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+    )
+    p_prov.add_argument(
+        "--server",
+        dest="vcl_server",
+        help="VCL_SERVER; skip ipify; to installer",
+    )
+    p_prov.add_argument(
+        "--no-sync",
+        action="store_true",
+        dest="no_sync",
+        help="skip post-provision sync --full",
+    )
+    _add_json_flag(p_prov)
+
+    p_reg = node_sub.add_parser(
+        "register",
+        help="registry-only; no SSH (D49)",
+    )
+    p_reg.add_argument("name", help="short name (same charset as user tags)")
+    p_reg.add_argument(
+        "--node-id",
+        dest="node_id",
+        required=True,
+        help="logical node UUID",
+    )
+    p_reg.add_argument(
+        "--host",
+        required=True,
+        help="SSH hostname or IP (stored; no SSH this command)",
+    )
+    p_reg.add_argument("--user", help="SSH user (default: root, or user@host)")
+    p_reg.add_argument(
+        "--port", type=int, default=22, help="SSH port (default: 22)"
+    )
+    p_reg.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        help="local SSH private key; workspace→credential binding (F7-3)",
     )
 
     node_sub.add_parser("list", help="list registered nodes")
@@ -7170,6 +7324,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         if sub == "add":
             return cmd_node_add(args)
+        if sub == "adopt":
+            return cmd_node_adopt(args)
+        if sub == "provision":
+            return cmd_node_provision(args)
+        if sub == "register":
+            return cmd_node_register(args)
         if sub == "list":
             return cmd_node_list()
         if sub == "show":

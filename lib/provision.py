@@ -507,6 +507,7 @@ def run_provision(
     admin_credential_ref: Optional[str] = None,
     vcl_server: Optional[str] = None,
     skip_preflight: bool = False,
+    skip_sync: bool = False,
 ) -> dict[str, Any]:
     """Fresh VPS: preflight → payload → SCP → install → verify → commit → sync --full.
 
@@ -514,6 +515,7 @@ def run_provision(
     ``{"ok": False, "error": "REMOTE_READY_LOCAL_UNCOMMITTED", ...}`` without
     re-running the installer. Repair path: ``node adopt`` / register only.
     Initial sync is always ``sync --full`` (D25), never bare ``sync``.
+    ``skip_sync=True`` skips the post-commit ``sync --full`` (``--no-sync``).
     """
     host = _require_host()
     if vcl_server is None:
@@ -613,7 +615,10 @@ def run_provision(
     ident = host.parse_identity_json(ident_proc.stdout or "")
     node_id = ident["node_id"]
 
-    reg_identity = identity_file
+    # F7-3: identity_file is for SSH; registry stores path only in legacy home.
+    # Workspace-active callers pass admin_credential_ref and must not persist
+    # identity_file into fleet.json.
+    reg_identity = None if admin_credential_ref else identity_file
     admin_ref = admin_credential_ref
 
     def _commit() -> None:
@@ -642,6 +647,8 @@ def run_provision(
             "detail": str(exc),
         }
 
+    if skip_sync:
+        return {"ok": True, "node_id": node_id}
     _code, sync_doc = host.run_sync_full_payload(
         types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
     )
