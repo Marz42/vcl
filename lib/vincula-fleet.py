@@ -301,6 +301,12 @@ def fleet_db_path() -> Path:
     return _WS.fleet_db_path()
 
 
+LOCAL_STATE_ARCHIVES = _WS.LOCAL_STATE_ARCHIVES
+LOCAL_STATE_UI_RUNTIME = _WS.LOCAL_STATE_UI_RUNTIME
+fleet_local_state_root = _WS.fleet_local_state_root
+fleet_local_state_dir = _WS.fleet_local_state_dir
+ensure_fleet_local_state = _WS.ensure_fleet_local_state
+
 workspace_manifest_path = _WS.workspace_manifest_path
 machine_local_dir = _WS.machine_local_dir
 workspace_view_path = _WS.workspace_view_path
@@ -738,9 +744,11 @@ def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def open_fleet_db() -> sqlite3.Connection:
-    """Open ~/.config/vincula/fleet.db (or VCL_FLEET_HOME), creating schema 3."""
+    """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 3."""
     _ensure_fleet_home()
     path = fleet_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_private(path.parent, 0o700)
     try:
         conn = sqlite3.connect(str(path), timeout=30)
     except sqlite3.Error as exc:
@@ -5514,6 +5522,7 @@ def cmd_workspace_init(_args: argparse.Namespace) -> int:
     if not fleet_registry_path().is_file():
         _WS._save_registry_unlocked(None, empty_registry())
     create_workspace_manifest()
+    ensure_fleet_local_state(load_workspace_manifest()["fleet_id"])
     return 0
 
 

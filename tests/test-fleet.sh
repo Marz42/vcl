@@ -8963,9 +8963,19 @@ PY
 assert_success "AC-4.0-M05-B sync structural" fleet sync --node lax
 assert_success "AC-4.0-M05-B status structural" fleet status
 assert_success "AC-4.0-M05-B ui --help structural" fleet ui --help
-assert_success "AC-4.0-M05-B fleet.db exists" test -f "${HB}/fleet.db"
+# B1: workspace + no legacy → fleet.db under local-state/<fid> (not $HB)
+M05_B_DB=$(
+  VCL_FLEET_HOME="$HB" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vf", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m.fleet_db_path())
+PY
+)
+assert_success "AC-4.0-M05-B fleet.db exists" test -f "$M05_B_DB"
 assert_success "AC-4.0-M05-A fleet.db still exists" test -f "${HA}/fleet.db"
-if [[ "${HA}/fleet.db" -ef "${HB}/fleet.db" ]]; then
+if [[ "${HA}/fleet.db" -ef "$M05_B_DB" ]]; then
   fail "AC-4.0-M05 independent fleet.db (A and B must not be same inode)"
 else
   pass "AC-4.0-M05 independent fleet.db (A and B not same inode)"
@@ -9026,3 +9036,33 @@ if [[ -n "${FLEET_SAVED_HOME}" ]]; then
 else
   unset HOME
 fi
+
+# --- 0.4.2 B1 ---
+SAVED=$VCL_FLEET_HOME; export VCL_FLEET_LOCAL_STATE=$TEST_TMP/xdg-b1
+B1H=$TEST_TMP/ws-042-b1; rm -rf "$B1H" "$VCL_FLEET_LOCAL_STATE"
+assert_success "B1 init" fleet --workspace "$B1H" workspace init
+FID=$(python3 -c "import json;print(json.load(open('$B1H/workspace.json'))['fleet_id'])")
+assert_success "B1 path/digest/export-excl" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B1H" "$VCL_FLEET_LOCAL_STATE" "$FID" "$TEST_TMP/b1.tgz" <<'PY'
+import importlib.util,os,sys,tarfile; from pathlib import Path
+p,home,root,fid,tgz=sys.argv[1],Path(sys.argv[2]),Path(sys.argv[3]),sys.argv[4],Path(sys.argv[5])
+os.environ.update(VCL_FLEET_HOME=str(home), VCL_FLEET_LOCAL_STATE=str(root))
+spec=importlib.util.spec_from_file_location("vf",p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert m.fleet_db_path()==root/fid/"fleet.db"
+assert m.last_status_path()==root/fid/"ui-runtime"/"last-status.json"
+assert (root/fid/"archives").is_dir() and (root/fid/"ui-runtime").is_dir()
+d0=m.compute_state_digest(); m.open_fleet_db().close()
+assert m.fleet_db_path().is_file() and d0==m.compute_state_digest()
+assert "fleet.db" not in m.PORTABLE_DIGEST_NAMES
+m.export_workspace(tgz)
+names=tarfile.open(tgz).getnames()
+assert not any(("fleet.db" in x or "ui-runtime" in x or "local-state" in x) for x in names), names
+PY
+LEG=$TEST_TMP/leg-b1; rm -rf "$LEG"; mkdir -p "$LEG"
+assert_success "B1 legacy home db" env -u VCL_FLEET_LOCAL_STATE VCL_FLEET_HOME="$LEG" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LEG" <<'PY'
+import importlib.util,os,sys; from pathlib import Path
+os.environ["VCL_FLEET_HOME"]=sys.argv[2]; os.environ.pop("VCL_FLEET_LOCAL_STATE",None)
+spec=importlib.util.spec_from_file_location("vf",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert m.fleet_db_path()==Path(sys.argv[2])/"fleet.db"; m.open_fleet_db().close()
+assert (Path(sys.argv[2])/"fleet.db").is_file()
+PY
+export VCL_FLEET_HOME=$SAVED

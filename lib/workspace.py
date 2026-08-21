@@ -91,13 +91,54 @@ def fleet_home() -> Path:
         return Path(xdg) / "vincula"
     return Path.home() / ".config" / "vincula"
 
+
+LOCAL_STATE_ARCHIVES, LOCAL_STATE_UI_RUNTIME = "archives", "ui-runtime"
+
+
+def fleet_local_state_root() -> Path:
+    o = os.environ.get("VCL_FLEET_LOCAL_STATE")
+    if o:
+        return Path(o)
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "vincula"
+    return Path(
+        os.environ["XDG_STATE_HOME"]
+        if os.environ.get("XDG_STATE_HOME")
+        else Path.home() / ".local" / "state"
+    ) / "vincula"
+
+
+def fleet_local_state_dir(fleet_id: str) -> Path:
+    return fleet_local_state_root() / fleet_id
+
+
+def ensure_fleet_local_state(fleet_id: str) -> Path:
+    root = fleet_local_state_dir(fleet_id)
+    for d in (root, root / LOCAL_STATE_ARCHIVES, root / LOCAL_STATE_UI_RUNTIME):
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+    return root
+
+
 def fleet_registry_path() -> Path:
     return fleet_home() / "fleet.json"
 
+
 def last_status_path() -> Path:
+    if workspace_trust_active():
+        fid = load_workspace_manifest()["fleet_id"]
+        c = fleet_local_state_dir(fid) / LOCAL_STATE_UI_RUNTIME / "last-status.json"
+        leg = fleet_home() / "last-status.json"
+        return c if c.is_file() or not leg.is_file() else leg
     return fleet_home() / "last-status.json"
 
+
 def fleet_db_path() -> Path:
+    if workspace_trust_active():
+        fid = load_workspace_manifest()["fleet_id"]
+        c = fleet_local_state_dir(fid) / "fleet.db"
+        leg = fleet_home() / "fleet.db"
+        return c if c.is_file() or not leg.is_file() else leg
     return fleet_home() / "fleet.db"
 
 
