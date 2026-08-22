@@ -1086,11 +1086,15 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         sys.stdout.write(f"{uid}\n")
         return 0
 
-    if cmd == "sudo" and argv[1:] == ["-n", "true"]:
-        if os.environ.get("VCL_FAKE_SUDO_FAIL", "").strip() == "1":
-            sys.stderr.write("sudo: a password is required\n")
-            return 1
-        return 0
+    if cmd == "sudo" and len(argv) >= 2 and argv[1] == "-n":
+        if argv[2:] == ["true"]:
+            if os.environ.get("VCL_FAKE_SUDO_FAIL", "").strip() == "1":
+                sys.stderr.write("sudo: a password is required\n")
+                return 1
+            return 0
+        if len(argv) >= 3 and argv[2] == "bash":
+            return _fake_run_vincula_installer(alias, argv[2:])
+        return None
 
     if cmd == "df" and argv[1:2] == ["-Pk"]:
         avail = os.environ.get("VCL_FAKE_DF_AVAIL_KB", "2048000").strip() or "2048000"

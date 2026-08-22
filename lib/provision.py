@@ -15,7 +15,7 @@ import os
 import shlex
 import types
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional, cast
 
 _host: Any = None
 
@@ -28,6 +28,8 @@ _sbr_spec.loader.exec_module(_sbr)
 SING_BOX_VERSION = _sbr.SING_BOX_VERSION
 release_asset_name = _sbr.release_asset_name
 release_asset_url = _sbr.release_asset_url
+
+PrivilegeMode = Literal["root", "sudo"]
 
 # D51: single arch-neutral node payload pinned for 0.4.x provision.
 NODE_PAYLOAD_VERSION = "0.3.1"
@@ -371,6 +373,7 @@ def unpack_and_run_installer(
     identity_file: Optional[str] = None,
     extra: Optional[list[str]] = None,
     vcl_server: Optional[str] = None,
+    privilege_mode: PrivilegeMode = "root",
 ) -> None:
     """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.1).
 
@@ -394,6 +397,8 @@ def unpack_and_run_installer(
         host.die(f"remote tar unpack failed: {detail}")
 
     install_argv: list[str] = ["bash", f"{REMOTE_UNPACK}/vincula.sh"]
+    if privilege_mode == "sudo":
+        install_argv = ["sudo", "-n", *install_argv]
     vcl = (vcl_server or "").strip()
     if vcl:
         install_argv = ["env", f"VCL_SERVER={vcl}", *install_argv]
@@ -420,6 +425,75 @@ def _arch_from_checks(checks: list[dict[str, Any]]) -> Optional[str]:
             detail = str(row.get("detail") or "").strip()
             return detail or None
     return None
+
+
+def _privilege_mode_from_checks(checks: list[dict[str, Any]]) -> Optional[PrivilegeMode]:
+    for row in checks:
+        if row.get("id") != "root_or_sudo" or row.get("status") != "pass":
+            continue
+        detail = str(row.get("detail") or "")
+        if detail == "uid=0":
+            return "root"
+        if "sudo -n ok" in detail:
+            return "sudo"
+    return None
+
+
+def _probe_remote_uid(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+) -> Optional[str]:
+    proc = _host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["id", "-u"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip()
+
+
+def _resolve_privilege_mode(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+    checks: Optional[list[dict[str, Any]]] = None,
+) -> PrivilegeMode:
+    from_checks = _privilege_mode_from_checks(checks or [])
+    if from_checks is not None:
+        return from_checks
+    uid = _probe_remote_uid(
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        identity_file=identity_file,
+        extra=extra,
+    )
+    if uid == "0":
+        return "root"
+    sudo_proc = _host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["sudo", "-n", "true"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if sudo_proc.returncode == 0:
+        return "sudo"
+    _require_host().die(f"remote uid={uid or '?'} and sudo -n failed; refusing install")
 
 
 def _probe_remote_os_id(
@@ -531,11 +605,19 @@ def run_provision(
     resolved = resolve_node_payload()
     manifest = verify_local_payload(resolved)
 
-    extra: Optional[list[str]]
+    extra: Optional[list[str]] = []
     checks: list[dict[str, Any]] = []
+    privilege_mode: PrivilegeMode = "root"
     if skip_preflight:
         extra, _batch = host.prepare_ssh_host_key(ssh_host, ssh_port, host_key)
         arch = _probe_remote_arch(
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            extra=extra,
+        )
+        privilege_mode = _resolve_privilege_mode(
             ssh_host=ssh_host,
             ssh_user=ssh_user,
             ssh_port=ssh_port,
@@ -554,6 +636,10 @@ def run_provision(
         )
         _preflight_die_if_failed(preflight)
         checks = list(preflight.get("checks") or [])
+        pm = preflight.get("privilege_mode") or "root"
+        if pm not in ("root", "sudo"):
+            host.die(f"invalid privilege_mode from preflight: {pm!r}")
+        privilege_mode = cast(PrivilegeMode, pm)
         extra, _batch = host.prepare_ssh_host_key(ssh_host, ssh_port, host_key)
         arch = _arch_from_checks(checks) or _probe_remote_arch(
             ssh_host=ssh_host,
@@ -587,6 +673,7 @@ def run_provision(
         identity_file=identity_file,
         extra=extra,
         vcl_server=vcl_server,
+        privilege_mode=privilege_mode,
     )
 
     verify_proc = host.ssh_run(
@@ -785,11 +872,43 @@ def run_provision_preflight(
     else:
         add(_skipped("ssh_connect"))
 
+    privilege_mode: Optional[PrivilegeMode] = None
+    remote_uid: Optional[str] = None
+    if want("root_or_sudo") or any(want(f"cmd_{b}") for b in REQUIRED_CMDS):
+        uid_proc = _ssh(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            ["id", "-u"],
+            identity_file=identity_file,
+            extra=extra,
+        )
+        if uid_proc.returncode == 0:
+            remote_uid = (uid_proc.stdout or "").strip()
+            if remote_uid == "0":
+                privilege_mode = "root"
+            else:
+                sudo_proc = _ssh(
+                    ssh_host,
+                    ssh_user,
+                    ssh_port,
+                    ["sudo", "-n", "true"],
+                    identity_file=identity_file,
+                    extra=extra,
+                )
+                if sudo_proc.returncode == 0:
+                    privilege_mode = "sudo"
+                else:
+                    privilege_mode = None
+
     # --- B2-T2: required commands ---
     for bin_name in REQUIRED_CMDS:
         cid = f"cmd_{bin_name}"
         if not want(cid):
             add(_skipped(cid))
+            continue
+        if bin_name == "sudo" and privilege_mode == "root":
+            add(_skipped(cid, "not required for uid=0"))
             continue
         proc = _ssh(
             ssh_host,
@@ -848,36 +967,24 @@ def run_provision_preflight(
         add(_skipped("arch"))
 
     if want("root_or_sudo"):
-        proc = _ssh(
-            ssh_host,
-            ssh_user,
-            ssh_port,
-            ["id", "-u"],
-            identity_file=identity_file,
-            extra=extra,
-        )
-        uid = (proc.stdout or "").strip()
-        if proc.returncode == 0 and uid == "0":
+        if privilege_mode == "root":
             add(_check("root_or_sudo", "pass", "uid=0"))
-        else:
-            sudo_proc = _ssh(
-                ssh_host,
-                ssh_user,
-                ssh_port,
-                ["sudo", "-n", "true"],
-                identity_file=identity_file,
-                extra=extra,
-            )
-            if sudo_proc.returncode == 0:
-                add(_check("root_or_sudo", "pass", f"uid={uid or '?'} sudo -n ok"))
-            else:
-                add(
-                    _check(
-                        "root_or_sudo",
-                        "fail",
-                        f"uid={uid or '?'} and sudo -n failed",
-                    )
+        elif privilege_mode == "sudo":
+            add(
+                _check(
+                    "root_or_sudo",
+                    "pass",
+                    f"uid={remote_uid or '?'} sudo -n ok",
                 )
+            )
+        else:
+            add(
+                _check(
+                    "root_or_sudo",
+                    "fail",
+                    f"uid={remote_uid or '?'} and sudo -n failed",
+                )
+            )
     else:
         add(_skipped("root_or_sudo"))
 
@@ -1071,4 +1178,7 @@ def run_provision_preflight(
         add(_skipped("reality"))
 
     ok = not any(c.get("status") == "fail" for c in checks)
-    return {"ok": ok, "checks": checks}
+    result: dict[str, Any] = {"ok": ok, "checks": checks}
+    if privilege_mode in ("root", "sudo"):
+        result["privilege_mode"] = privilege_mode
+    return result

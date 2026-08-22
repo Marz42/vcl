@@ -11570,6 +11570,58 @@ assert sb and sb[0]["status"] == "pass", result["checks"]
 assert "sing-box-1.13.18-linux-amd64.tar.gz" in sb[0]["detail"], sb[0]
 PY
 
+# --- 0.4.3 P1-2 unified root/sudo privilege model ---
+assert_success "P1-2 root preflight passes without sudo cmd" \
+  env VCL_FAKE_UID=0 VCL_FAKE_MISSING_CMDS=sudo python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is True, result
+assert result.get("privilege_mode") == "root", result
+sudo_row = [c for c in result["checks"] if c["id"] == "cmd_sudo"]
+assert sudo_row and sudo_row[0]["status"] == "skip", result["checks"]
+PY
+
+assert_success "P1-2 non-root sudo preflight privilege_mode sudo" \
+  env VCL_FAKE_UID=1000 python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is True, result
+assert result.get("privilege_mode") == "sudo", result
+PY
+
+assert_success "P1-2 neither root nor sudo fails preflight" \
+  env VCL_FAKE_UID=1000 VCL_FAKE_SUDO_FAIL=1 python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is False, result
+rows = [c for c in result["checks"] if c["id"] == "root_or_sudo"]
+assert rows and rows[0]["status"] == "fail", result["checks"]
+PY
+
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
 B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"
 if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then
