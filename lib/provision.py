@@ -40,6 +40,7 @@ IO_CHUNK = 1024 * 1024
 # Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh): random 0700 dir.
 REMOTE_STAGE_PREFIX = "vincula-provision."
 REMOTE_STAGE_DIR = "/tmp"
+DEFAULT_REALITY_HOST = "www.cloudflare.com"
 
 _CREATE_REMOTE_STAGE_PY = (
     "import tempfile, os, stat; "
@@ -276,6 +277,12 @@ def validate_manifest_for_target(
         host.die(
             f"os {norm_os!r} not in supported_os={supported_os}; refusing install"
         )
+
+
+def select_reality_host() -> str:
+    """Installer-consistent REALITY target (``VCL_REALITY_HOST`` or default)."""
+    raw = os.environ.get("VCL_REALITY_HOST", "").strip()
+    return raw or DEFAULT_REALITY_HOST
 
 
 def _remote_stage_paths(remote_stage: str) -> dict[str, str]:
@@ -722,6 +729,7 @@ def run_provision(
             host_key=host_key,
             manifest=manifest,
             vcl_server=vcl_server,
+            reality_host=select_reality_host(),
         )
         _preflight_die_if_failed(preflight)
         checks = list(preflight.get("checks") or [])
@@ -1281,7 +1289,7 @@ def run_provision_preflight(
         add(_skipped("public_ip"))
 
     if want("reality"):
-        rh = (reality_host or "").strip()
+        rh = (reality_host or select_reality_host()).strip()
         if not rh:
             add(_skipped("reality", "reality_host not configured"))
         else:

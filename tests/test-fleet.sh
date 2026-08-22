@@ -11622,6 +11622,63 @@ rows = [c for c in result["checks"] if c["id"] == "root_or_sudo"]
 assert rows and rows[0]["status"] == "fail", result["checks"]
 PY
 
+# --- 0.4.3 P2-6 reality preflight uses installer-consistent target ---
+assert_success "P2-6 reality preflight runs with default target" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, os, sys
+path, host_key = sys.argv[1], sys.argv[2]
+os.environ.pop("VCL_REALITY_HOST", None)
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+reality = [c for c in result["checks"] if c["id"] == "reality"]
+assert reality and reality[0]["status"] == "pass", result["checks"]
+assert "cloudflare.com" in reality[0]["detail"], reality[0]
+PY
+
+assert_success "P2-6 reality preflight honors VCL_REALITY_HOST" \
+  env VCL_REALITY_HOST=www.example.com python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+reality = [c for c in result["checks"] if c["id"] == "reality"]
+assert reality and reality[0]["status"] == "pass", result["checks"]
+assert "www.example.com" in reality[0]["detail"], reality[0]
+PY
+
+assert_success "P2-6 reality preflight fails on unreachable target" \
+  env \
+    VCL_REALITY_HOST=bad-reality.test \
+    VCL_FAKE_CURL_FAIL=https://bad-reality.test/ \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is False, result
+reality = [c for c in result["checks"] if c["id"] == "reality"]
+assert reality and reality[0]["status"] == "fail", result["checks"]
+assert reality[0]["status"] != "skip", reality[0]
+PY
+
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
 B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"
 if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then
