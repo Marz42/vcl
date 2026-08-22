@@ -11979,6 +11979,43 @@ assert getattr(seen[0], "node", None) == "lax"
 assert (doc.get("sync") or {}).get("operation") == "sync_full", doc
 PY
 
+b4_stage_payload "${TEST_TMP}/b4-sudo-payload"
+mkdir -p "${TEST_TMP}/b4-sudo-state" "${TEST_TMP}/b4-sudo-home"
+: >"${TEST_TMP}/b4-sudo.argv"
+assert_success "P1-2 sudo install invokes sudo -n bash vincula.sh" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=1000 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sudo-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-sudo.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/b4-sudo-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+def fake_sync(args):
+    return (0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []})
+
+fleet.run_sync_full_payload = fake_sync
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+)
+assert doc.get("ok") is True, doc
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+assert "sudo" in log and "-n" in log and "vincula.sh" in log, log
+PY
+
 # --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
 B6_SAVED_HOME=$HOME
 B6_SAVED_FLEET_HOME=$VCL_FLEET_HOME

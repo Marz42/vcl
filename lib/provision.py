@@ -496,6 +496,38 @@ def _resolve_privilege_mode(
     _require_host().die(f"remote uid={uid or '?'} and sudo -n failed; refusing install")
 
 
+def _validate_before_remote_install(
+    *,
+    name: str,
+    identity_file: Optional[str],
+    admin_credential_ref: Optional[str],
+) -> None:
+    """Pre-check registry commit requirements before any remote mutation."""
+    host = _require_host()
+    host.validate_name(name)
+    reg = host.load_registry()
+    if host.find_by_name(reg, name) is not None:
+        host.die(f"duplicate name: {name!r}; refusing install")
+    reg_identity = None if admin_credential_ref else identity_file
+    if reg_identity and host.workspace_trust_active():
+        host.die(
+            "workspace active: identity_file must not be stored in "
+            "fleet.json; use credential bindings"
+        )
+    reg_path = host.fleet_registry_path()
+    parent = reg_path.parent
+    if not parent.is_dir():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            host.die(f"registry directory not creatable: {parent}: {exc}")
+    if reg_path.exists():
+        if not os.access(reg_path, os.W_OK):
+            host.die(f"registry not writable: {reg_path}")
+    elif not os.access(parent, os.W_OK):
+        host.die(f"registry directory not writable: {parent}")
+
+
 def _probe_remote_os_id(
     *,
     ssh_host: str,
@@ -658,6 +690,12 @@ def run_provision(
     )
     validate_manifest_for_target(manifest, os_id=os_id, arch=arch)
 
+    _validate_before_remote_install(
+        name=name,
+        identity_file=identity_file,
+        admin_credential_ref=admin_credential_ref,
+    )
+
     upload_and_verify_remote_payload(
         resolved,
         ssh_host=ssh_host,
@@ -731,6 +769,14 @@ def run_provision(
 
     try:
         _commit()
+    except SystemExit as exc:
+        return {
+            "ok": False,
+            "error": REMOTE_READY_LOCAL_UNCOMMITTED,
+            "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
+            "node_id": node_id,
+            "detail": str(exc) if str(exc) else "registry commit failed",
+        }
     except Exception as exc:
         # Remote is installed and verified; do not re-run vincula.sh.
         return {
