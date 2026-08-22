@@ -11881,7 +11881,7 @@ n = [0]
 
 def fake_sync(args):
     n[0] += 1
-    return (0, {"operation": "sync_full", "state": "success", "nodes": []})
+    return (0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []})
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
@@ -11962,7 +11962,7 @@ seen = []
 def fake_sync(args):
     n[0] += 1
     seen.append(args)
-    return (0, {"operation": "sync_full", "state": "success", "nodes": []})
+    return (0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []})
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
@@ -12014,6 +12014,161 @@ doc = prov.run_provision(
 assert doc.get("ok") is True, doc
 log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
 assert "sudo" in log and "-n" in log and "vincula.sh" in log, log
+PY
+
+b4_stage_payload "${TEST_TMP}/b4-dupname-payload"
+mkdir -p "${TEST_TMP}/b4-dupname-state" "${TEST_TMP}/b4-dupname-home"
+: >"${TEST_TMP}/b4-dupname.argv"
+assert_success "P1-3 duplicate name blocked before remote install" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-dupname-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-dupname.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/b4-dupname-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-dupname-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, io, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+reg = fleet.load_registry()
+fleet.add_node(
+    reg,
+    node_id="00000000-0000-4000-8000-000000000099",
+    name="lax",
+    ssh_host="203.0.113.99",
+)
+fleet.save_registry(None, reg)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on duplicate name before install"
+assert "duplicate name" in buf.getvalue()
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+assert "vincula.sh" not in log, log
+PY
+
+b4_stage_payload "${TEST_TMP}/b4-sysexit-payload"
+mkdir -p "${TEST_TMP}/b4-sysexit-state" "${TEST_TMP}/b4-sysexit-home"
+assert_success "P1-3 SystemExit on commit returns REMOTE_READY_LOCAL_UNCOMMITTED" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sysexit-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/b4-sysexit-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sysexit-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, subprocess, sys
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+def boom(registry, **kwargs):
+    fleet.die("duplicate node_id: injected")
+
+fleet.add_node = boom
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+)
+assert doc.get("ok") is False, doc
+assert doc.get("error") == "REMOTE_READY_LOCAL_UNCOMMITTED", doc
+assert "node adopt" in (doc.get("remedy") or ""), doc
+PY
+
+b4_stage_payload "${TEST_TMP}/b4-partial-payload"
+mkdir -p "${TEST_TMP}/b4-partial-state" "${TEST_TMP}/b4-partial-home"
+assert_success "P1-4 provision PARTIAL when initial sync fails" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-partial-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/b4-partial-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-partial-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, subprocess, sys
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+def fake_sync(args):
+    return (2, {"operation": "sync_full", "state": "PARTIAL", "nodes": []})
+
+fleet.run_sync_full_payload = fake_sync
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+)
+assert doc.get("ok") is False, doc
+assert doc.get("state") == "PARTIAL", doc
+assert doc.get("remote_ready") is True, doc
+assert doc.get("registered") is True, doc
+assert "sync --full --node lax" in (doc.get("remedy") or ""), doc
+PY
+
+assert_success "P1-4 provision CLI exit 2 on sync PARTIAL" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from argparse import Namespace
+
+fleet_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+
+def fake_run_provision(**kwargs):
+    return {
+        "ok": False,
+        "state": "PARTIAL",
+        "remote_ready": True,
+        "registered": True,
+        "node_id": "00000000-0000-4000-8000-000000000001",
+        "sync": {"operation": "sync_full", "state": "PARTIAL", "nodes": []},
+        "remedy": "vcl-fleet sync --full --node lax",
+    }
+
+prov.run_provision = fake_run_provision
+args = Namespace(
+    name="lax",
+    host="203.0.113.10",
+    user=None,
+    port=None,
+    host_key="SHA256:deadbeef",
+    identity_file=None,
+    vcl_server=None,
+    no_sync=False,
+    as_json=False,
+)
+rc = fleet.cmd_node_provision(args)
+assert rc == 2, rc
 PY
 
 # --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
@@ -12176,7 +12331,7 @@ export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-ok.argv
 export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-ok-state"
 export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.3.1.tar.gz"
 assert_success "B6 prov ok" \
-  fleet node provision provn --host 203.0.113.10 --host-key "$HK" --server 203.0.113.10
+  fleet node provision provn --host 203.0.113.10 --host-key "$HK" --server 203.0.113.10 --no-sync
 assert_success "B6 prov list" grep -q '^provn ' <<< "$(fleet node list)"
 assert_success "B6 sha256 -c" grep -q 'sha256sum' "$TEST_TMP/b6-ok.argv"
 assert_success "B6 installer" grep -q 'vincula.sh' "$TEST_TMP/b6-ok.argv"

@@ -2310,7 +2310,15 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
     )
     if getattr(args, "as_json", False):
         sys.stdout.write(json.dumps(doc, indent=2) + "\n")
+        if doc.get("state") == OP_PARTIAL:
+            return MUTATION_EXIT_PARTIAL
         return 0 if doc.get("ok") else 1
+    if doc.get("state") == OP_PARTIAL:
+        sys.stderr.write(
+            f"vcl-fleet: provision PARTIAL (remote ready): "
+            f"{doc.get('remedy') or 'sync required'}\n"
+        )
+        return MUTATION_EXIT_PARTIAL
     if not doc.get("ok"):
         die(f"{doc.get('error')}: {doc.get('remedy') or doc.get('detail') or 'failed'}")
     sys.stdout.write(f"Provisioned {args.name} node_id={doc['node_id']}\n")

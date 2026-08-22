@@ -792,6 +792,16 @@ def run_provision(
     _code, sync_doc = host.run_sync_full_payload(
         types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
     )
+    if _code != 0 or sync_doc.get("state") != "SUCCESS":
+        return {
+            "ok": False,
+            "state": "PARTIAL",
+            "remote_ready": True,
+            "registered": True,
+            "node_id": node_id,
+            "sync": sync_doc,
+            "remedy": f"vcl-fleet sync --full --node {name}",
+        }
     return {"ok": True, "node_id": node_id, "sync": sync_doc}
 
 
