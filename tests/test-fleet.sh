@@ -11828,6 +11828,36 @@ print("ok", archive)
 PY
 '
 
+assert_success "B3 build-controller installs payload triple to dist for source provisioning" \
+  bash -c '
+set -euo pipefail
+cd "'"$PROJECT_DIR"'"
+test -f dist/vincula-node-0.3.1.tar.gz
+test -f dist/vincula-node-0.3.1.tar.gz.sha256
+test -f dist/payload-manifest.json
+python3 - "'"$PROJECT_DIR"'/lib/vincula-fleet.py" <<'"'"'PY'"'"'
+import importlib.util
+import os
+import sys
+
+fleet_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+os.environ.pop("VCL_NODE_ARCHIVE", None)
+os.environ.pop("VCL_PAYLOAD_MANIFEST", None)
+resolved = prov.resolve_node_payload()
+for key in ("tarball", "sha256_sidecar", "manifest_path"):
+    p = resolved[key]
+    assert p.is_file(), f"missing {key}: {p}"
+    assert "dist" in p.parts, f"{key} not under dist: {p}"
+loaded = prov.verify_local_payload(resolved)
+assert loaded["node_payload_version"] == "0.3.1"
+print("ok resolve from dist flat")
+PY
+'
+
 # --- 0.4.3 B4 provision install path (SCP→verify→install→commit→sync --full) ---
 B4_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
 B4_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"

@@ -93,6 +93,7 @@ p.write_text(
     + "\n"
 )
 PY
+install -m 0644 "${OUT}/payload/"* "${DIST_ROOT}/"
 
 (
   cd "$OUT"
