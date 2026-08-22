@@ -27,6 +27,7 @@ FILES=(
   lib/vincula-backup.py
   lib/vincula-audit-archive.py
   lib/provision.py
+  lib/sing_box_release.py
   lib/workspace.py
   lib/access.py
   lib/trust.py

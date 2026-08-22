@@ -11530,6 +11530,46 @@ assert raised
 assert "non-interactive add requires --host-key SHA256:" in buf.getvalue()
 PY
 
+# --- 0.4.3 P1-1 singbox_release probes real asset URL ---
+assert_success "P1-1 sing-box release asset URL parity py/sh" \
+  python3 - "$PROJECT_DIR" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "sing_box_release", root / "lib/sing_box_release.py"
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for arch in ("amd64", "arm64"):
+    py_name = mod.release_asset_name(arch)
+    sh_name = subprocess.check_output(
+        ["bash", "-c", f'source "{root}/lib/sing-box-release.sh"; release_asset_name {arch}'],
+        text=True,
+    ).strip()
+    assert py_name == sh_name, (arch, py_name, sh_name)
+PY
+
+DIR_URL="https://github.com/SagerNet/sing-box/releases/download/v1.13.18/"
+assert_success "P1-1 preflight passes when bare dir URL fails but asset URL ok" \
+  env VCL_FAKE_CURL_FAIL="$DIR_URL" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is True, result
+sb = [c for c in result["checks"] if c["id"] == "singbox_release"]
+assert sb and sb[0]["status"] == "pass", result["checks"]
+assert "sing-box-1.13.18-linux-amd64.tar.gz" in sb[0]["detail"], sb[0]
+PY
+
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
 B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.1.tar.gz"
 if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then

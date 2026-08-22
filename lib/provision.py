@@ -9,6 +9,7 @@ and Reality. Host-key policy unchanged (D34). Stdlib only. Python 3.10+.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -17,6 +18,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 _host: Any = None
+
+_sbr_path = Path(__file__).resolve().parent / "sing_box_release.py"
+_sbr_spec = importlib.util.spec_from_file_location("sing_box_release", _sbr_path)
+if _sbr_spec is None or _sbr_spec.loader is None:
+    raise RuntimeError(f"cannot load {_sbr_path}")
+_sbr = importlib.util.module_from_spec(_sbr_spec)
+_sbr_spec.loader.exec_module(_sbr)
+SING_BOX_VERSION = _sbr.SING_BOX_VERSION
+release_asset_name = _sbr.release_asset_name
+release_asset_url = _sbr.release_asset_url
 
 # D51: single arch-neutral node payload pinned for 0.4.x provision.
 NODE_PAYLOAD_VERSION = "0.3.1"
@@ -60,10 +71,6 @@ REQUIRED_CMDS = (
 
 DEFAULT_SUPPORTED_ARCH = ("amd64", "arm64")
 DISK_MIN_AVAIL_KB = 512000
-SING_BOX_VERSION = "1.13.18"
-SINGBOX_RELEASE_PROBE = (
-    f"https://github.com/SagerNet/sing-box/releases/download/v{SING_BOX_VERSION}/"
-)
 
 ARCH_MAP = {
     "x86_64": "amd64",
@@ -977,28 +984,39 @@ def run_provision_preflight(
         add(_skipped("https_out"))
 
     if want("singbox_release"):
-        proc = _ssh(
-            ssh_host,
-            ssh_user,
-            ssh_port,
-            [
-                "curl",
-                "-fsS",
-                "--max-time",
-                "15",
-                "-o",
-                "/dev/null",
-                "-I",
-                SINGBOX_RELEASE_PROBE,
-            ],
-            identity_file=identity_file,
-            extra=extra,
-        )
-        if proc.returncode != 0:
-            detail = (proc.stderr or "").strip() or f"exit {proc.returncode}"
-            add(_check("singbox_release", "fail", detail))
+        probe_arch = _arch_from_checks(checks)
+        if probe_arch is None:
+            add(_check("singbox_release", "fail", "arch check did not pass"))
         else:
-            add(_check("singbox_release", "pass", f"v{SING_BOX_VERSION} reachable"))
+            asset_url = release_asset_url(probe_arch)
+            proc = _ssh(
+                ssh_host,
+                ssh_user,
+                ssh_port,
+                [
+                    "curl",
+                    "-fsS",
+                    "--max-time",
+                    "15",
+                    "-o",
+                    "/dev/null",
+                    "-I",
+                    asset_url,
+                ],
+                identity_file=identity_file,
+                extra=extra,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or "").strip() or f"exit {proc.returncode}"
+                add(_check("singbox_release", "fail", detail))
+            else:
+                add(
+                    _check(
+                        "singbox_release",
+                        "pass",
+                        f"{release_asset_name(probe_arch)} reachable",
+                    )
+                )
     else:
         add(_skipped("singbox_release"))
 

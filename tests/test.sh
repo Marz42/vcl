@@ -104,7 +104,7 @@ assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
 assert_equal "runs when read from standard input" "vincula 0.3.1" \
-  "$(bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
+  "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
 assert_equal "installs vincula helper" "/usr/local/bin/vincula" "$HELPER_PATH"
@@ -697,7 +697,7 @@ assert_success "release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/release.lock"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 9 first-party files" "9" \
+assert_equal "release.lock has 10 first-party files" "10" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -708,6 +708,8 @@ assert_success "verify_sibling_release_lock warns when lock is missing" \
 nolock_dir="${TEST_TMP}/missing-release-lock"
 mkdir -p "$nolock_dir"
 cp "${PROJECT_DIR}/vincula.sh" "${nolock_dir}/vincula.sh"
+mkdir -p "${nolock_dir}/lib"
+cp "${PROJECT_DIR}/lib/sing-box-release.sh" "${nolock_dir}/lib/sing-box-release.sh"
 nolock_rc=0
 nolock_err=$(bash -c 'source "$1"' _ "${nolock_dir}/vincula.sh" 2>&1 >/dev/null) || nolock_rc=$?
 if (( nolock_rc == 0 )) && [[ "$nolock_err" == *"release.lock not found"* ]]; then
@@ -994,7 +996,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 9 first-party files" "9" \
+assert_equal "dist node release.lock has 10 first-party files" "10" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
