@@ -1,5 +1,7 @@
 # Vincula 0.2.9 — Known issues / limitations
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices. Fleet stats are derived from synced connection `started_at` UTC days and are **not** byte-identical with node `vcl stats`.
 
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** — fake-ssh multi-node fixture coverage for Fleet Users & Audit is green; there is no Windows 11 live `vcl-fleet.cmd` run and no live SSH against real VPS nodes (provision / sync / retire). 0.2.9 does **not** use the D20 24h soak gate. See [`release-readiness-0.2.9.md`](release-readiness-0.2.9.md).

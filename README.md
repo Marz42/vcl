@@ -1,13 +1,15 @@
-# vincula V0.3.1
+# vincula（节点 0.3.1 · 控制器 0.4.3）
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
 ```text
 协议固定：VLESS + REALITY + xtls-rprx-vision + TCP
 sing-box 固定：1.13.18（不追 latest）
+节点戳：VINCULA_VERSION=0.3.1（CLI：vcl / vincula）
+控制器戳：VCL_FLEET_VERSION=0.4.3（CLI：vcl-fleet）
 ```
 
-一次安装得到可导入的 VLESS URI；用 `vcl user` 管理用户；用 `vcl stats` / `vcl audit` 查看近似流量（**approximate / Clash polling**，非计费级）。
+一次安装得到可导入的 VLESS URI；用节点 `vcl user` 管理用户；用 `vcl stats` / `vcl audit` 查看近似流量（**approximate / Clash polling**，非计费级）。多节点工作站用 **`vcl-fleet`**（不是节点上的 `vcl`）。
 
 | 项目 | 值 |
 | --- | --- |
@@ -18,9 +20,11 @@ sing-box 固定：1.13.18（不追 latest）
 | 默认 REALITY SNI | `www.cloudflare.com` |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
 | 用户 registry | `users.json` schema 2 |
-| Accounting | schema **4**（`export_seq`）；raw 90 天 / daily 90 天 |
+| Accounting | **accounting-db/v4**（`export_seq`）；raw 90 天 / daily 90 天 |
+| Fleet registry / cache | **fleet-registry/v2** · **fleet-cache/v4**（控制器） |
+| Workspace / archive | **workspace/v1** · **audit-archive/v1**（控制器 0.4.1+ / 0.4.2） |
 
-Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)  
+Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 0.4.3 证据：[`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)  
 历史冻结门禁：[`docs/legacy/`](docs/legacy/)
 
 ---
@@ -268,32 +272,52 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 ---
 
-## Fleet Users & Audit（工作站控制器）
+## Fleet Users & Audit（工作站控制器 · 0.4.3）
 
-0.3.0+ 提供 **vcl-fleet**（SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`）。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、增量同步审计、查询 stats、退役节点。**`node replace`** 走 runtime-only 新机上的真实 `vcl restore --reissue-output`。**0.3.1** 另有 localhost-only 只读 Local Audit UI：`vcl-fleet ui`（Overview / Audit / Health；突变仍走 CLI）。
+入口是 **`vcl-fleet`**（`bin/vcl-fleet` → `lib/vincula-fleet.py`；Windows：`bin/vcl-fleet.cmd`）。SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、同步审计、查询 stats、退役节点。节点 `vcl` **没有** `fleet` 子命令。
 
-节点 `vcl` **没有** `fleet` 子命令。完整 CLI、Windows 11 用法、`--host-key`、PARTIAL / `CURSOR_EXPIRED` / retire / replace / UI：[`docs/fleet.md`](docs/fleet.md)。命令手册与 **UI 手测清单**：[`docs/manual.md`](docs/manual.md#ui-manual-test)。
+**0.4.x 要点：**
 
-AC 夹具证据是 **fake-ssh 多节点**（lax + tokyo；replace 用 lax2）。**B14 live replace 已 PASS**；**B21–B23** live gates PASS。发行建议：**READY**（见 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)；B24 replace smoke 延后为 Known Issue；真 `0.3.0→0.3.1` 以 B22 rc1→rc2 为替代证据）：
-[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
+| 能力 | 说明 |
+| --- | --- |
+| Portable workspace | `workspace init/show/verify/export/import/migrate`；根目录仅 `workspace.json` / `fleet.json` / `trust/` / `history/` |
+| Machine-local | 凭据绑定 + `controller.json` → `XDG_CONFIG…/vincula/controllers/<fleet_id>/`；`fleet.db` → `XDG_STATE…/vincula/<fleet_id>/`（**不再**写在 workspace 根或遗留 `machine-local/`） |
+| `status` | **cache-only**（无 SSH）；健康来自 `sync --full` → `node_snapshot` |
+| `probe` | 实时 SSH 探活（**无**位置参数节点名）；**不**写 status 缓存；`status --live` 为已弃用别名 |
+| `sync --full` | identity+health+users+audit → cache；裸 `sync` 仍为 legacy 审计增量 |
+| Adopt / Provision | `node adopt`（已装）· `node provision`（fresh VPS，钉 Node 0.3.1）· `node register`（registry-only）；`add` 为 legacy alias |
+| Audit archive | `audit archive create\|verify\|inspect\|restore`（**audit-archive/v1** `.vclaudit`） |
+| Access | `access bind/list/verify`（机器本地 credential refs） |
+| UI | `vcl-fleet ui` localhost-only（Overview / Audit / Health；突变仍走 CLI） |
+
+完整 CLI：[`docs/fleet.md`](docs/fleet.md) · 手册：[`docs/manual.md`](docs/manual.md) · 0.4.3 证据：[`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。节点线 gate 仍见 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
 
 ```bash
-python3 bin/vcl-fleet version
-python3 bin/vcl-fleet init
+python3 bin/vcl-fleet version                    # → vcl-fleet 0.4.3
+python3 bin/vcl-fleet workspace init
+python3 bin/vcl-fleet access bind admin --identity-file ~/.ssh/id_ed25519
+# 已装节点：
+python3 bin/vcl-fleet node adopt lax --host 203.0.113.10 --host-key SHA256:...
+# fresh VPS（controller-carried payload；非 air-gap；可选 --server / VCL_SERVER）：
+python3 bin/vcl-fleet node provision NAME --host HOST --host-key SHA256:...
+# legacy：node add ≡ adopt；add --offline --node-id ≡ register
 python3 bin/vcl-fleet node add lax --host 203.0.113.10 --host-key SHA256:...
-python3 bin/vcl-fleet status
+python3 bin/vcl-fleet sync --full                # 填充 cache / node_snapshot
+python3 bin/vcl-fleet status                     # cache-only；列 LAST_SYNC / DATA_AGE / …
+python3 bin/vcl-fleet probe                      # live SSH；列 SSH / PROXY / ACCOUNTING
 python3 bin/vcl-fleet verify
 
 python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice
-python3 bin/vcl-fleet user list
+python3 bin/vcl-fleet user list                  # live SSH 观察
 python3 bin/vcl-fleet user rotate alice --node lax
 python3 bin/vcl-fleet user disable alice --node lax   # --node 必填
 
-python3 bin/vcl-fleet sync
-python3 bin/vcl-fleet sync --reseed lax              # CURSOR_EXPIRED / unlabeled；不是 backup
+python3 bin/vcl-fleet sync                       # legacy 审计增量
+python3 bin/vcl-fleet sync --reseed lax          # CURSOR_EXPIRED / unlabeled；不是 backup
 python3 bin/vcl-fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-16T00:00:00Z
 python3 bin/vcl-fleet stats user alice --days 7
-python3 bin/vcl-fleet ui                             # http://127.0.0.1:8765 ；仅 loopback
+python3 bin/vcl-fleet audit archive create --from … --to … --output out.vclaudit
+python3 bin/vcl-fleet ui                         # http://127.0.0.1:8765 ；仅 loopback
 
 python3 bin/vcl-fleet node set lax --host 203.0.113.10   # rebind：同一实例，凭据保留
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
@@ -313,7 +337,8 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 - `0.2.7` → **0.2.8**：保留 `node_id`，mint `instance_id`；accounting schema 仍为 3
 - `0.2.8` → **0.2.9**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
 - `0.2.9` → **0.3.0**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
-- `0.3.0` / `0.3.1-dev` / `0.3.1-rc1` / `0.3.1-rc2` → **0.3.1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting 若仍为 schema 3 则开库 **3→4**。升级后若 Fleet 仍为 legacy `event_id` cursor：每节点一次 `vcl-fleet sync --reseed NAME`
+- `0.3.0` / `0.3.1-dev` / `0.3.1-rc1` / `0.3.1-rc2` → **0.3.1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting-db 若仍为 v3 则开库 **v3→v4**。升级后若 Fleet 仍为 legacy `event_id` cursor：每节点一次 `vcl-fleet sync --reseed NAME`
+- 控制器 **0.4.x**：与节点解耦（`VCL_FLEET_VERSION`）；0.4.1 workspace/v1；0.4.2 fleet-cache/v4 + `sync --full` + audit-archive/v1；**0.4.3** Adopt & Provision（`node adopt` / `provision` / `register`）已关；Node 仍钉 0.3.1
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 

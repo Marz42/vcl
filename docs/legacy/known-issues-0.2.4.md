@@ -1,5 +1,7 @@
 # Vincula 0.2.4 — 现存问题清单
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 更新日期：2026-08-15（freeze）  
 Gate：**READY WITH DOCUMENTED LIMITATIONS**（freeze candidate；V-MIG / V-RB / V-PY310 已 PASS）
 
