@@ -765,6 +765,83 @@ def _alias_dir(alias: str) -> Path:
     return path
 
 
+def _staging_track_path(alias: str) -> Path:
+    return _alias_dir(alias) / "provision_staging.json"
+
+
+def _staging_load(alias: str) -> list[dict]:
+    path = _staging_track_path(alias)
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    return data if isinstance(data, list) else []
+
+
+def _staging_save(alias: str, rows: list[dict]) -> None:
+    _write_json(_staging_track_path(alias), rows)
+
+
+def _staging_add(alias: str, stage_path: str, mode: int) -> None:
+    rows = _staging_load(alias)
+    rows.append({"path": stage_path, "mode": mode})
+    _staging_save(alias, rows)
+    _staging_audit(alias, "create", stage_path, mode)
+
+
+def _staging_remove(alias: str, stage_path: str) -> None:
+    rows = [row for row in _staging_load(alias) if row.get("path") != stage_path]
+    _staging_save(alias, rows)
+    _staging_audit(alias, "remove", stage_path)
+
+
+def _staging_audit(
+    alias: str, event: str, stage_path: str, mode: int | None = None
+) -> None:
+    path = _alias_dir(alias) / "provision_staging_audit.jsonl"
+    row: dict[str, object] = {"event": event, "path": stage_path}
+    if mode is not None:
+        row["mode"] = mode
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _handle_python3_remote(alias: str, argv: list[str]) -> int | None:
+    """Simulate remote python3 staging helpers used by lib/provision.py."""
+    if not argv or argv[0] != "python3":
+        return None
+    script = ""
+    if "-c" in argv:
+        idx = argv.index("-c")
+        if idx + 1 < len(argv):
+            script = argv[idx + 1]
+    if not script:
+        return None
+    if "tempfile.mkdtemp" in script and "vincula-provision." in script:
+        import stat
+        import tempfile
+
+        base = _alias_dir(alias) / "remote_tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        stage = tempfile.mkdtemp(prefix="vincula-provision.", dir=str(base))
+        os.chmod(stage, stat.S_IRWXU)
+        _staging_add(alias, stage, stat.S_IRWXU)
+        sys.stdout.write(stage)
+        return 0
+    if "shutil.rmtree" in script:
+        import re
+        import shutil
+
+        match = re.search(r"shutil\.rmtree\(([^,)]+)", script)
+        if match is None:
+            return 1
+        stage_path = match.group(1).strip().strip("'\"")
+        shutil.rmtree(stage_path, ignore_errors=True)
+        _staging_remove(alias, stage_path)
+        return 0
+    return None
+
+
 def _remote_backup_path() -> str:
     return "/var/backups/vincula/backup.tar"
 
@@ -1133,6 +1210,10 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             sys.stdout.write("203.0.113.50\n")
         return 0
 
+    handled_py = _handle_python3_remote(alias, argv)
+    if handled_py is not None:
+        return handled_py
+
     # --- B4: mkdir / sha256sum / tar / env / bash (provision install path) ---
     if cmd == "mkdir" and "-p" in argv[1:]:
         return 0
@@ -1269,6 +1350,12 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
     if kind in ("status", "verify") and not data.get("ok", True):
+        return 1
+    if (
+        kind == "verify"
+        and os.environ.get("VCL_FAKE_PROVISION_VERIFY_FAIL", "").strip() == "1"
+    ):
+        sys.stderr.write("fake-ssh: provision verify failed\n")
         return 1
     return 0
 

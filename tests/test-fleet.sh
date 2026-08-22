@@ -12171,6 +12171,159 @@ rc = fleet.cmd_node_provision(args)
 assert rc == 2, rc
 PY
 
+# --- 0.4.3 P2-5 random 0700 provision staging + cleanup ---
+b4_stage_payload "${TEST_TMP}/p2-5-ok-payload"
+mkdir -p "${TEST_TMP}/p2-5-ok-state" "${TEST_TMP}/p2-5-ok-home"
+assert_success "P2-5 provision happy path cleans random staging dir" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-ok-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/p2-5-ok-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-ok-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+state_dir = Path(os.environ["VCL_FAKE_STATE_DIR"])
+
+def assert_no_staging_strays():
+    active = state_dir / "lax" / "provision_staging.json"
+    if active.is_file():
+        rows = json.loads(active.read_text(encoding="utf-8"))
+        assert not rows, rows
+    remote_tmp = state_dir / "lax" / "remote_tmp"
+    if remote_tmp.is_dir():
+        stray = list(remote_tmp.glob("vincula-provision.*"))
+        assert not stray, stray
+
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+    skip_sync=True,
+)
+assert doc.get("ok") is True, doc
+audit = state_dir / "lax" / "provision_staging_audit.jsonl"
+assert audit.is_file(), audit
+creates = []
+for line in audit.read_text(encoding="utf-8").splitlines():
+    row = json.loads(line)
+    if row.get("event") == "create":
+        creates.append(row)
+assert creates, audit.read_text(encoding="utf-8")
+assert all(row.get("mode") == 0o700 for row in creates), creates
+assert_no_staging_strays()
+PY
+
+b4_stage_payload "${TEST_TMP}/p2-5-digest-payload"
+mkdir -p "${TEST_TMP}/p2-5-digest-state" "${TEST_TMP}/p2-5-digest-home"
+assert_success "P2-5 digest failure cleans random staging dir" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_REMOTE_DIGEST_FAIL=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-digest-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/p2-5-digest-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-digest-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, io, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+state_dir = Path(os.environ["VCL_FAKE_STATE_DIR"])
+
+def assert_no_staging_strays():
+    active = state_dir / "lax" / "provision_staging.json"
+    if active.is_file():
+        rows = json.loads(active.read_text(encoding="utf-8"))
+        assert not rows, rows
+    remote_tmp = state_dir / "lax" / "remote_tmp"
+    if remote_tmp.is_dir():
+        stray = list(remote_tmp.glob("vincula-provision.*"))
+        assert not stray, stray
+
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on remote digest mismatch"
+assert "digest mismatch (remote)" in buf.getvalue()
+assert_no_staging_strays()
+PY
+
+b4_stage_payload "${TEST_TMP}/p2-5-verify-payload"
+mkdir -p "${TEST_TMP}/p2-5-verify-state" "${TEST_TMP}/p2-5-verify-home"
+assert_success "P2-5 verify failure cleans random staging dir" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_PROVISION_VERIFY_FAIL=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-verify-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/p2-5-verify-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-verify-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
+import importlib.util, io, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+state_dir = Path(os.environ["VCL_FAKE_STATE_DIR"])
+
+def assert_no_staging_strays():
+    active = state_dir / "lax" / "provision_staging.json"
+    if active.is_file():
+        rows = json.loads(active.read_text(encoding="utf-8"))
+        assert not rows, rows
+    remote_tmp = state_dir / "lax" / "remote_tmp"
+    if remote_tmp.is_dir():
+        stray = list(remote_tmp.glob("vincula-provision.*"))
+        assert not stray, stray
+
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on remote verify failure"
+assert "remote vcl verify failed" in buf.getvalue()
+assert_no_staging_strays()
+PY
+
 # --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
 B6_SAVED_HOME=$HOME
 B6_SAVED_FLEET_HOME=$VCL_FLEET_HOME

@@ -37,12 +37,16 @@ NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
 IO_CHUNK = 1024 * 1024
-# Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh).
-REMOTE_STAGE = "/tmp/vincula-provision"
-REMOTE_TAR = f"{REMOTE_STAGE}/{NODE_TARBALL_NAME}"
-REMOTE_SUM = f"{REMOTE_STAGE}/{NODE_SHA256_NAME}"
-REMOTE_MAN = f"{REMOTE_STAGE}/{MANIFEST_NAME}"
-REMOTE_UNPACK = f"{REMOTE_STAGE}/vincula-node-{NODE_PAYLOAD_VERSION}"
+# Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh): random 0700 dir.
+REMOTE_STAGE_PREFIX = "vincula-provision."
+REMOTE_STAGE_DIR = "/tmp"
+
+_CREATE_REMOTE_STAGE_PY = (
+    "import tempfile, os, stat; "
+    f'd = tempfile.mkdtemp(prefix="{REMOTE_STAGE_PREFIX}", dir="{REMOTE_STAGE_DIR}"); '
+    "os.chmod(d, stat.S_IRWXU); "
+    "print(d, end='')"
+)
 
 # Commit-boundary failure: remote install+verify succeeded, local registry
 # write did not. Repair = re-run register/adopt (never re-run installer).
@@ -274,6 +278,68 @@ def validate_manifest_for_target(
         )
 
 
+def _remote_stage_paths(remote_stage: str) -> dict[str, str]:
+    return {
+        "tar": f"{remote_stage}/{NODE_TARBALL_NAME}",
+        "sum": f"{remote_stage}/{NODE_SHA256_NAME}",
+        "man": f"{remote_stage}/{MANIFEST_NAME}",
+        "unpack": f"{remote_stage}/vincula-node-{NODE_PAYLOAD_VERSION}",
+    }
+
+
+def _create_remote_stage(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+) -> str:
+    """Create a random 0700 staging directory on the remote host."""
+    host = _require_host()
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["python3", "-c", _CREATE_REMOTE_STAGE_PY],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or (
+            f"exit {proc.returncode}"
+        )
+        host.die(f"remote staging dir creation failed: {detail}")
+    stage = (proc.stdout or "").strip()
+    if not stage:
+        host.die("remote staging dir creation returned empty path")
+    return stage
+
+
+def _cleanup_remote_stage(
+    remote_stage: str,
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+) -> None:
+    """Best-effort removal of the remote staging directory."""
+    host = _require_host()
+    q = shlex.quote(remote_stage)
+    host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["python3", "-c", f"import shutil; shutil.rmtree({q}, ignore_errors=True)"],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+
+
 def verify_remote_payload_digest(
     *,
     ssh_host: str,
@@ -281,7 +347,7 @@ def verify_remote_payload_digest(
     ssh_port: int = 22,
     identity_file: Optional[str] = None,
     extra: Optional[list[str]] = None,
-    remote_stage: str = REMOTE_STAGE,
+    remote_stage: str,
 ) -> None:
     """Fail-closed remote sha256sum -c before unpack (AC-4.2-04).
 
@@ -328,33 +394,21 @@ def upload_and_verify_remote_payload(
     ssh_port: int = 22,
     identity_file: Optional[str] = None,
     extra: Optional[list[str]] = None,
+    remote_stage: str,
 ) -> None:
-    """SCP tarball+sidecar+manifest to REMOTE_STAGE, then remote sha256sum -c.
+    """SCP tarball+sidecar+manifest to ``remote_stage``, then remote sha256sum -c.
 
     Fail-closed: digest mismatch dies before unpack/installer (AC-4.2-04).
     """
     host = _require_host()
+    paths = _remote_stage_paths(remote_stage)
     node = _ssh_node_dict(ssh_host, ssh_user, ssh_port, identity_file)
-    mkdir_proc = host.ssh_run(
-        ssh_host,
-        ssh_user,
-        ssh_port,
-        ["mkdir", "-p", REMOTE_STAGE],
-        batch=True,
-        extra=extra,
-        identity_file=identity_file,
-    )
-    if mkdir_proc.returncode != 0:
-        detail = (mkdir_proc.stderr or mkdir_proc.stdout or "").strip() or (
-            f"exit {mkdir_proc.returncode}"
-        )
-        host.die(f"remote mkdir {REMOTE_STAGE} failed: {detail}")
-    host.scp_push(node, Path(resolved["tarball"]), REMOTE_TAR, extra=extra)
+    host.scp_push(node, Path(resolved["tarball"]), paths["tar"], extra=extra)
     host.scp_push(
-        node, Path(resolved["sha256_sidecar"]), REMOTE_SUM, extra=extra
+        node, Path(resolved["sha256_sidecar"]), paths["sum"], extra=extra
     )
     host.scp_push(
-        node, Path(resolved["manifest_path"]), REMOTE_MAN, extra=extra
+        node, Path(resolved["manifest_path"]), paths["man"], extra=extra
     )
     verify_remote_payload_digest(
         ssh_host=ssh_host,
@@ -362,6 +416,7 @@ def upload_and_verify_remote_payload(
         ssh_port=ssh_port,
         identity_file=identity_file,
         extra=extra,
+        remote_stage=remote_stage,
     )
 
 
@@ -374,6 +429,7 @@ def unpack_and_run_installer(
     extra: Optional[list[str]] = None,
     vcl_server: Optional[str] = None,
     privilege_mode: PrivilegeMode = "root",
+    remote_stage: str,
 ) -> None:
     """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.1).
 
@@ -381,11 +437,12 @@ def unpack_and_run_installer(
     lands ``/usr/local/bin/vcl`` and ``/etc/vincula`` (not ``/opt``).
     """
     host = _require_host()
+    paths = _remote_stage_paths(remote_stage)
     tar_proc = host.ssh_run(
         ssh_host,
         ssh_user,
         ssh_port,
-        ["tar", "-xzf", REMOTE_TAR, "-C", REMOTE_STAGE],
+        ["tar", "-xzf", paths["tar"], "-C", remote_stage],
         batch=True,
         extra=extra,
         identity_file=identity_file,
@@ -396,7 +453,7 @@ def unpack_and_run_installer(
         )
         host.die(f"remote tar unpack failed: {detail}")
 
-    install_argv: list[str] = ["bash", f"{REMOTE_UNPACK}/vincula.sh"]
+    install_argv: list[str] = ["bash", f"{paths['unpack']}/vincula.sh"]
     if privilege_mode == "sudo":
         install_argv = ["sudo", "-n", *install_argv]
     vcl = (vcl_server or "").strip()
@@ -696,113 +753,132 @@ def run_provision(
         admin_credential_ref=admin_credential_ref,
     )
 
-    upload_and_verify_remote_payload(
-        resolved,
+    remote_stage = _create_remote_stage(
         ssh_host=ssh_host,
         ssh_user=ssh_user,
         ssh_port=ssh_port,
         identity_file=identity_file,
         extra=extra,
     )
-    unpack_and_run_installer(
-        ssh_host=ssh_host,
-        ssh_user=ssh_user,
-        ssh_port=ssh_port,
-        identity_file=identity_file,
-        extra=extra,
-        vcl_server=vcl_server,
-        privilege_mode=privilege_mode,
-    )
-
-    verify_proc = host.ssh_run(
-        ssh_host,
-        ssh_user,
-        ssh_port,
-        ["vcl", "verify", "--json"],
-        batch=True,
-        extra=extra,
-        identity_file=identity_file,
-    )
-    if verify_proc.returncode != 0:
-        detail = (verify_proc.stderr or verify_proc.stdout or "").strip() or (
-            f"exit {verify_proc.returncode}"
-        )
-        host.die(f"remote vcl verify failed: {detail}")
-    _require_verify_ok(verify_proc.stdout or "")
-
-    ident_proc = host.ssh_run(
-        ssh_host,
-        ssh_user,
-        ssh_port,
-        ["vcl", "identity", "--json"],
-        batch=True,
-        extra=extra,
-        identity_file=identity_file,
-    )
-    if ident_proc.returncode != 0:
-        detail = (ident_proc.stderr or ident_proc.stdout or "").strip() or (
-            f"exit {ident_proc.returncode}"
-        )
-        host.die(f"remote vcl identity failed: {detail}")
-    ident = host.parse_identity_json(ident_proc.stdout or "")
-    node_id = ident["node_id"]
-
-    # F7-3: identity_file is for SSH; registry stores path only in legacy home.
-    # Workspace-active callers pass admin_credential_ref and must not persist
-    # identity_file into fleet.json.
-    reg_identity = None if admin_credential_ref else identity_file
-    admin_ref = admin_credential_ref
-
-    def _commit() -> None:
-        reg = host.load_registry()
-        host.add_node(
-            reg,
-            node_id=node_id,
-            name=name,
+    try:
+        upload_and_verify_remote_payload(
+            resolved,
             ssh_host=ssh_host,
             ssh_user=ssh_user,
             ssh_port=ssh_port,
-            identity_file=reg_identity,
-            admin_credential_ref=admin_ref,
+            identity_file=identity_file,
+            extra=extra,
+            remote_stage=remote_stage,
         )
-        host.save_registry(None, reg)
+        unpack_and_run_installer(
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            extra=extra,
+            vcl_server=vcl_server,
+            privilege_mode=privilege_mode,
+            remote_stage=remote_stage,
+        )
 
-    try:
-        _commit()
-    except SystemExit as exc:
-        return {
-            "ok": False,
-            "error": REMOTE_READY_LOCAL_UNCOMMITTED,
-            "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
-            "node_id": node_id,
-            "detail": str(exc) if str(exc) else "registry commit failed",
-        }
-    except Exception as exc:
-        # Remote is installed and verified; do not re-run vincula.sh.
-        return {
-            "ok": False,
-            "error": REMOTE_READY_LOCAL_UNCOMMITTED,
-            "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
-            "node_id": node_id,
-            "detail": str(exc),
-        }
+        verify_proc = host.ssh_run(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            ["vcl", "verify", "--json"],
+            batch=True,
+            extra=extra,
+            identity_file=identity_file,
+        )
+        if verify_proc.returncode != 0:
+            detail = (verify_proc.stderr or verify_proc.stdout or "").strip() or (
+                f"exit {verify_proc.returncode}"
+            )
+            host.die(f"remote vcl verify failed: {detail}")
+        _require_verify_ok(verify_proc.stdout or "")
 
-    if skip_sync:
-        return {"ok": True, "node_id": node_id}
-    _code, sync_doc = host.run_sync_full_payload(
-        types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
-    )
-    if _code != 0 or sync_doc.get("state") != "SUCCESS":
-        return {
-            "ok": False,
-            "state": "PARTIAL",
-            "remote_ready": True,
-            "registered": True,
-            "node_id": node_id,
-            "sync": sync_doc,
-            "remedy": f"vcl-fleet sync --full --node {name}",
-        }
-    return {"ok": True, "node_id": node_id, "sync": sync_doc}
+        ident_proc = host.ssh_run(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            ["vcl", "identity", "--json"],
+            batch=True,
+            extra=extra,
+            identity_file=identity_file,
+        )
+        if ident_proc.returncode != 0:
+            detail = (ident_proc.stderr or ident_proc.stdout or "").strip() or (
+                f"exit {ident_proc.returncode}"
+            )
+            host.die(f"remote vcl identity failed: {detail}")
+        ident = host.parse_identity_json(ident_proc.stdout or "")
+        node_id = ident["node_id"]
+
+        # F7-3: identity_file is for SSH; registry stores path only in legacy home.
+        # Workspace-active callers pass admin_credential_ref and must not persist
+        # identity_file into fleet.json.
+        reg_identity = None if admin_credential_ref else identity_file
+        admin_ref = admin_credential_ref
+
+        def _commit() -> None:
+            reg = host.load_registry()
+            host.add_node(
+                reg,
+                node_id=node_id,
+                name=name,
+                ssh_host=ssh_host,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+                identity_file=reg_identity,
+                admin_credential_ref=admin_ref,
+            )
+            host.save_registry(None, reg)
+
+        try:
+            _commit()
+        except SystemExit as exc:
+            return {
+                "ok": False,
+                "error": REMOTE_READY_LOCAL_UNCOMMITTED,
+                "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
+                "node_id": node_id,
+                "detail": str(exc) if str(exc) else "registry commit failed",
+            }
+        except Exception as exc:
+            # Remote is installed and verified; do not re-run vincula.sh.
+            return {
+                "ok": False,
+                "error": REMOTE_READY_LOCAL_UNCOMMITTED,
+                "remedy": f"vcl-fleet node adopt {name} --host {ssh_host}",
+                "node_id": node_id,
+                "detail": str(exc),
+            }
+
+        if skip_sync:
+            return {"ok": True, "node_id": node_id}
+        _code, sync_doc = host.run_sync_full_payload(
+            types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
+        )
+        if _code != 0 or sync_doc.get("state") != "SUCCESS":
+            return {
+                "ok": False,
+                "state": "PARTIAL",
+                "remote_ready": True,
+                "registered": True,
+                "node_id": node_id,
+                "sync": sync_doc,
+                "remedy": f"vcl-fleet sync --full --node {name}",
+            }
+        return {"ok": True, "node_id": node_id, "sync": sync_doc}
+    finally:
+        _cleanup_remote_stage(
+            remote_stage,
+            ssh_host=ssh_host,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            identity_file=identity_file,
+            extra=extra,
+        )
 
 
 def _check(
