@@ -11473,8 +11473,8 @@ assert_success "B1 packs provision.py" grep -q 'lib/provision.py' "$PROJECT_DIR/
 
 # --- 0.4.3 B2 provision preflight (D35+D34) ---
 B2_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
-assert_success "B2 missing curl fails preflight" \
-  env VCL_FAKE_MISSING_CMDS=curl python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+assert_success "B2 missing apt-get fails stage-1 preflight" \
+  env VCL_FAKE_MISSING_CMDS=apt-get python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
 import importlib.util, sys
 path, host_key = sys.argv[1], sys.argv[2]
 spec = importlib.util.spec_from_file_location("vincula_fleet", path)
@@ -11486,8 +11486,10 @@ result = prov.run_provision_preflight(
     host_key=host_key,
 )
 assert result["ok"] is False, result
-curl_fail = [c for c in result["checks"] if c["id"] == "cmd_curl"]
-assert curl_fail and curl_fail[0]["status"] == "fail", result["checks"]
+apt_fail = [c for c in result["checks"] if c["id"] == "cmd_apt-get"]
+assert apt_fail and apt_fail[0]["status"] == "fail", result["checks"]
+boot = [c for c in result["checks"] if c["id"] == "bootstrap"]
+assert boot and boot[0]["status"] == "skip", boot
 PY
 
 assert_success "B2 already_vincula fails with adopt remedy" \
@@ -11620,6 +11622,30 @@ result = prov.run_provision_preflight(
 assert result["ok"] is False, result
 rows = [c for c in result["checks"] if c["id"] == "root_or_sudo"]
 assert rows and rows[0]["status"] == "fail", result["checks"]
+PY
+
+mkdir -p "${TEST_TMP}/p1-py-state"
+assert_success "LIVE-P1 missing python3 bootstraps and preflight passes" \
+  env \
+    VCL_FAKE_MISSING_CMDS=python3 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/p1-py-state" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+)
+assert result["ok"] is True, result
+py_row = [c for c in result["checks"] if c["id"] == "cmd_python3"]
+assert py_row and py_row[0]["status"] == "pass", result["checks"]
+boot = [c for c in result["checks"] if c["id"] == "bootstrap"]
+assert boot and boot[0]["status"] == "pass", boot
+assert "python3" in (boot[0].get("detail") or ""), boot[0]
 PY
 
 # --- 0.4.3 P2-6 reality preflight uses installer-consistent target ---
@@ -12069,7 +12095,7 @@ PY
 b4_stage_payload "${TEST_TMP}/b4-sudo-payload"
 mkdir -p "${TEST_TMP}/b4-sudo-state" "${TEST_TMP}/b4-sudo-home"
 : >"${TEST_TMP}/b4-sudo.argv"
-assert_success "P1-2 sudo install invokes sudo -n bash vincula.sh" \
+assert_success "P1-2 sudo install invokes sudo -n env VCL_SERVER bash vincula.sh" \
   env \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_UID=1000 \
@@ -12078,7 +12104,7 @@ assert_success "P1-2 sudo install invokes sudo -n bash vincula.sh" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sudo-home" \
     VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.3.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
-import importlib.util, os, subprocess, sys
+import importlib.util, json, os, subprocess, sys
 from pathlib import Path
 
 fleet_path, host_key = sys.argv[1], sys.argv[2]
@@ -12096,11 +12122,24 @@ doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
     host_key=host_key,
+    vcl_server="203.0.113.10",
     skip_preflight=True,
 )
 assert doc.get("ok") is True, doc
 log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
-assert "sudo" in log and "-n" in log and "vincula.sh" in log, log
+found = False
+for line in log.splitlines():
+    if not line.strip():
+        continue
+    row = json.loads(line)
+    argv = row.get("argv") or []
+    if argv and argv[0] == "sudo" and any("vincula.sh" in str(a) for a in argv):
+        assert argv[:3] == ["sudo", "-n", "env"], argv
+        assert "VCL_SERVER=203.0.113.10" in argv, argv
+        assert "bash" in argv, argv
+        found = True
+        break
+assert found, log
 PY
 
 b4_stage_payload "${TEST_TMP}/b4-dupname-payload"
@@ -12545,9 +12584,20 @@ B6PF=$TEST_TMP/b6-preflight
 mkdir -p "$B6PF"
 export HOME=$B6PF VCL_FLEET_HOME=$B6PF
 assert_success "B6 preflight home init" fleet init
-VCL_FAKE_MISSING_CMDS=curl fleet node provision m1 --host 203.0.113.10 --host-key "$HK" \
+: >"$TEST_TMP/b6-m1.argv"
+export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-m1.argv
+export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-m1-state"
+mkdir -p "$VCL_FAKE_STATE_DIR"
+VCL_FAKE_APT_FAIL=1 VCL_FAKE_MISSING_CMDS=python3 fleet node provision m1 \
+  --host 203.0.113.10 --host-key "$HK" \
   2>&1 | tee "$TEST_TMP/b6-m1.err" >/dev/null || true
-assert_success "B6 miss curl" grep -qE 'cmd_curl|curl' "$TEST_TMP/b6-m1.err"
+assert_success "B6 apt fail" grep -qiE 'bootstrap|apt-get|python3' "$TEST_TMP/b6-m1.err"
+assert_failure "B6 apt fail zero install" grep -q 'vincula.sh' "$TEST_TMP/b6-m1.argv"
+assert_failure "B6 apt fail zero register" grep -q '^m1 ' <<< "$(fleet node list 2>/dev/null || true)"
+unset VCL_FAKE_APT_FAIL
+unset VCL_FAKE_MISSING_CMDS
+unset VCL_FAKE_STATE_DIR
+unset VCL_FAKE_SSH_ARGV_LOG
 VCL_FAKE_ALREADY_VINCULA=1 fleet node provision m2 --host 203.0.113.10 --host-key "$HK" \
   2>&1 | tee "$TEST_TMP/b6-m2.err" >/dev/null || true
 assert_success "B6 use adopt" grep -q 'use node adopt' "$TEST_TMP/b6-m2.err"
@@ -12595,3 +12645,313 @@ if [[ -n "$B6_SAVED_NODE_ARCHIVE" ]]; then export VCL_NODE_ARCHIVE=$B6_SAVED_NOD
 if [[ -n "$B6_SAVED_FAKE_PROVISION" ]]; then export VCL_FAKE_PROVISION=$B6_SAVED_FAKE_PROVISION; else unset VCL_FAKE_PROVISION; fi
 if [[ -n "$B6_SAVED_MISSING" ]]; then export VCL_FAKE_MISSING_CMDS=$B6_SAVED_MISSING; else unset VCL_FAKE_MISSING_CMDS; fi
 if [[ -n "$B6_SAVED_ALREADY" ]]; then export VCL_FAKE_ALREADY_VINCULA=$B6_SAVED_ALREADY; else unset VCL_FAKE_ALREADY_VINCULA; fi
+
+# --- LIVE PR#8: two-stage preflight, progress, user link ---
+LIVE_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
+b4_stage_payload "${TEST_TMP}/live-p1-payload"
+
+mkdir -p "${TEST_TMP}/live-py-state" "${TEST_TMP}/live-py-home"
+: >"${TEST_TMP}/live-py.argv"
+assert_success "LIVE-P1 missing python3 provision succeeds" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_MISSING_CMDS=python3 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-py-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-py.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-py-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+def fake_sync(args):
+    return (0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []})
+
+fleet.run_sync_full_payload = fake_sync
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    vcl_server="203.0.113.10",
+    skip_sync=True,
+)
+assert doc.get("ok") is True, doc
+reg = fleet.load_registry()
+assert any(n.get("name") == "lax" for n in (reg.get("nodes") or [])), reg
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+assert "apt-get" in log and "python3" in log, log
+assert "vincula.sh" in log, log
+assert "mktemp" in log, log
+assert "python3 -c" not in log, log
+PY
+
+mkdir -p "${TEST_TMP}/live-apt-state" "${TEST_TMP}/live-apt-home"
+: >"${TEST_TMP}/live-apt.argv"
+assert_success "LIVE-P1 apt failure is zero install and zero register" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_APT_FAIL=1 \
+    VCL_FAKE_MISSING_CMDS=python3 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-apt-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-apt.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-apt-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, io, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        vcl_server="203.0.113.10",
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, buf.getvalue()
+err = buf.getvalue()
+assert "bootstrap" in err or "apt-get" in err, err
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+assert "vincula.sh" not in log, log
+reg = fleet.load_registry()
+assert not (reg.get("nodes") or []), reg
+PY
+
+mkdir -p "${TEST_TMP}/live-root-state" "${TEST_TMP}/live-root-home"
+: >"${TEST_TMP}/live-root.argv"
+assert_success "LIVE-P1 root installer is env VCL_SERVER then bash" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=0 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-root-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-root.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-root-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    vcl_server="203.0.113.99",
+    skip_preflight=True,
+    skip_sync=True,
+)
+assert doc.get("ok") is True, doc
+found = False
+for line in Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    argv = json.loads(line).get("argv") or []
+    if argv and argv[0] == "env" and any("vincula.sh" in str(a) for a in argv):
+        assert argv[0] == "env", argv
+        assert argv[1] == "VCL_SERVER=203.0.113.99", argv
+        assert argv[2] == "bash", argv
+        found = True
+        break
+assert found
+PY
+
+mkdir -p "${TEST_TMP}/live-hb-state" "${TEST_TMP}/live-hb-home"
+assert_success "LIVE-P2 human progress and heartbeat go to stderr" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_INSTALL_SLEEP=0.55 \
+    VCL_PROVISION_HEARTBEAT_SECONDS=0.2 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-hb-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-hb-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, io, os, subprocess, sys
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+err = io.StringIO()
+old = sys.stderr
+sys.stderr = err
+try:
+    doc = prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+        skip_sync=True,
+    )
+finally:
+    sys.stderr = old
+assert doc.get("ok") is True, doc
+text = err.getvalue()
+assert "provision: upload" in text, text
+assert "provision: install" in text, text
+assert "still running" in text, text
+PY
+
+mkdir -p "${TEST_TMP}/live-json-state" "${TEST_TMP}/live-json-home"
+LIVE_JSON_HOME="${TEST_TMP}/live-json-home"
+LIVE_JSON_STATE="${TEST_TMP}/live-json-state"
+export HOME=$LIVE_JSON_HOME VCL_FLEET_HOME=$LIVE_JSON_HOME
+assert_success "LIVE-P2 json home init" fleet init
+export VCL_FAKE_PROVISION=1
+export VCL_FAKE_STATE_DIR="$LIVE_JSON_STATE"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz"
+json_rc=0
+json_out=$(fleet node provision jsontest --host 203.0.113.10 --host-key "$LIVE_HK" \
+  --server 203.0.113.10 --no-sync --json 2>"${TEST_TMP}/live-json.err") || json_rc=$?
+unset VCL_FAKE_PROVISION VCL_NODE_ARCHIVE
+unset VCL_FAKE_STATE_DIR
+json_rc=${json_rc:-0}
+if (( json_rc == 0 )); then
+  pass "LIVE-P2 provision --json exits 0"
+else
+  fail "LIVE-P2 provision --json exits 0 (rc=${json_rc})"
+fi
+assert_success "LIVE-P2 --json stdout is pure JSON" \
+  python3 -c 'import json,sys; json.loads(sys.argv[1])' "$json_out"
+assert_failure "LIVE-P2 --json stdout has no progress lines" \
+  grep -q 'provision:' <<<"$json_out"
+assert_success "LIVE-P2 progress on stderr" \
+  grep -q 'provision:' "${TEST_TMP}/live-json.err"
+
+mkdir -p "${TEST_TMP}/live-sec-state" "${TEST_TMP}/live-sec-home"
+assert_success "LIVE-P2 install failure redacts secrets" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_INSTALL_FAIL=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-sec-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-sec-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, io, os, subprocess, sys
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised
+err = buf.getvalue()
+assert "vless://<redacted>" in err or "vless://" not in err, err
+assert "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" not in err, err
+assert "fake-reality-private-key" not in err, err
+assert "fake-clash-secret" not in err, err
+PY
+
+# user link
+LINK_HOME="${TEST_TMP}/live-link-home"
+LINK_STATE="${TEST_TMP}/live-link-state"
+mkdir -p "$LINK_HOME" "$LINK_STATE"
+export HOME=$LINK_HOME VCL_FLEET_HOME=$LINK_HOME VCL_FAKE_STATE_DIR=$LINK_STATE
+unset VCL_FAKE_PROVISION VCL_NODE_ARCHIVE VCL_FAKE_MISSING_CMDS VCL_FAKE_APT_FAIL
+assert_success "LIVE-P2 link fleet init" fleet init
+assert_success "LIVE-P2 link add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+assert_success "LIVE-P2 link add sg" \
+  fleet node add sg --host 203.0.113.12 --offline --node-id "$TEST_SG_NODE_ID"
+if fleet user add alice --node lax >/dev/null; then
+  pass "LIVE-P2 link add alice"
+else
+  fail "LIVE-P2 link add alice"
+fi
+link_out=$(fleet user link alice --node lax) || link_rc=$?
+link_rc=${link_rc:-0}
+if (( link_rc == 0 )) && [[ "$link_out" == vless://* ]]; then
+  pass "LIVE-P2 user link success prints URI"
+else
+  fail "LIVE-P2 user link success prints URI (rc=${link_rc} out=${link_out})"
+fi
+assert_success "LIVE-P2 user link URI is node-specific" \
+  grep -q '@203.0.113.10:443' <<<"$link_out"
+: >"${TEST_TMP}/live-link.argv"
+export VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-link.argv"
+fleet user link alice --node lax >/dev/null
+assert_failure "LIVE-P2 user link does not log URI" \
+  grep -q 'vless://' "${TEST_TMP}/live-link.argv"
+unset VCL_FAKE_SSH_ARGV_LOG
+miss_node_err=$(fleet user link alice 2>&1) || miss_node_rc=$?
+miss_node_rc=${miss_node_rc:-0}
+if (( miss_node_rc != 0 )) && grep -q 'pass --node' <<<"$miss_node_err"; then
+  pass "LIVE-P2 user link requires --node"
+else
+  fail "LIVE-P2 user link requires --node (rc=${miss_node_rc} err=${miss_node_err})"
+fi
+unreach_err=$(fleet user link alice --node sg 2>&1) || unreach_rc=$?
+unreach_rc=${unreach_rc:-0}
+if (( unreach_rc != 0 )); then
+  pass "LIVE-P2 user link node unreachable fails"
+else
+  fail "LIVE-P2 user link node unreachable fails (err=${unreach_err})"
+fi
+nouser_err=$(fleet user link nosuch --node lax 2>&1) || nouser_rc=$?
+nouser_rc=${nouser_rc:-0}
+if (( nouser_rc != 0 )) && grep -qi 'not found' <<<"$nouser_err"; then
+  pass "LIVE-P2 user link user not found fails"
+else
+  fail "LIVE-P2 user link user not found fails (rc=${nouser_rc} err=${nouser_err})"
+fi
+python3 - "$LINK_STATE" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1]) / "lax" / "users.json"
+data = json.loads(path.read_text(encoding="utf-8"))
+alice = next(u for u in data["users"] if u["tag"] == "alice")
+for cred in alice.get("credentials") or []:
+    cred["status"] = "revoked"
+path.write_text(json.dumps(data), encoding="utf-8")
+PY
+nocred_err=$(fleet user link alice --node lax 2>&1) || nocred_rc=$?
+nocred_rc=${nocred_rc:-0}
+if (( nocred_rc != 0 )) && grep -qi 'no active credential' <<<"$nocred_err"; then
+  pass "LIVE-P2 user link no active credential fails"
+else
+  fail "LIVE-P2 user link no active credential fails (rc=${nocred_rc} err=${nocred_err})"
+fi
+unset VCL_FAKE_STATE_DIR
+

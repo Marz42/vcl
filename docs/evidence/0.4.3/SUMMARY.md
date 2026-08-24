@@ -29,7 +29,8 @@ Offline gate after B1–B7 stamp: **`bash tests/test.sh` 1693 PASS** · **`bash 
 | Command | Role |
 | --- | --- |
 | `node adopt` | 已装节点：SSH `vcl identity --json` → register |
-| `node provision` | fresh VPS：preflight → SCP payload → install → verify → register → `sync --full` |
+| `node provision` | fresh VPS：两阶段 preflight → SCP payload → install → verify → register → `sync --full` |
+| `user link TAG --node NAME` | 单节点实时 SSH 取 VLESS URI（不缓存） |
 | `node register` | registry-only（无 SSH）；`--node-id` + `--host` 必填 |
 | `node add` | legacy alias ≡ `adopt` |
 | `node add --offline --node-id` | legacy alias ≡ `register` |

@@ -12,7 +12,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shlex
+import subprocess
+import sys
+import time
 import types
 from pathlib import Path
 from typing import Any, Literal, Optional, cast
@@ -37,17 +41,13 @@ NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
 IO_CHUNK = 1024 * 1024
-# Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh): random 0700 dir.
+# Remote staging (B4 SCP → sha256sum -c → unpack → vincula.sh): mktemp 0700.
+# Bootstrap (apt/python3) must not be required before this directory exists.
 REMOTE_STAGE_PREFIX = "vincula-provision."
 REMOTE_STAGE_DIR = "/tmp"
 DEFAULT_REALITY_HOST = "www.cloudflare.com"
-
-_CREATE_REMOTE_STAGE_PY = (
-    "import tempfile, os, stat; "
-    f'd = tempfile.mkdtemp(prefix="{REMOTE_STAGE_PREFIX}", dir="{REMOTE_STAGE_DIR}"); '
-    "os.chmod(d, stat.S_IRWXU); "
-    "print(d, end='')"
-)
+INSTALL_TIMEOUT_SECONDS = 600.0
+DEFAULT_HEARTBEAT_SECONDS = 20.0
 
 # Commit-boundary failure: remote install+verify succeeded, local registry
 # write did not. Repair = re-run register/adopt (never re-run installer).
@@ -74,6 +74,39 @@ REQUIRED_CMDS = (
     "systemctl",
     "ss",
     "df",
+    "mktemp",
+)
+
+# vincula.sh ensure_dependencies installs these; not hard stage-1 gates.
+BOOTSTRAP_CMDS = (
+    "python3",
+    "curl",
+    "tar",
+    "sha256sum",
+    "ss",
+    "mktemp",
+)
+BOOTSTRAP_PACKAGES = {
+    "python3": "python3",
+    "curl": "curl",
+    "tar": "tar",
+    "sha256sum": "coreutils",
+    "ss": "iproute2",
+    "mktemp": "coreutils",
+}
+
+_VLESS_RE = re.compile(r"vless://\S+", re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+_PRIVKEY_RE = re.compile(
+    r"(PrivateKey|private[_-]?key|REALITY[_-]?PRIVATE)\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+_SECRET_RE = re.compile(
+    r"(clash[_-]?secret|secret)\s*[:=]\s*\S+",
+    re.IGNORECASE,
 )
 
 DEFAULT_SUPPORTED_ARCH = ("amd64", "arm64")
@@ -94,8 +127,28 @@ REMOTE_CHECK_IDS = (
     "root_or_sudo",
     "disk",
     "already_vincula",
+    "bootstrap",
     "port_443",
     "sing_box_unit",
+    "https_out",
+    "singbox_release",
+    "public_ip",
+    "reality",
+)
+
+STAGE1_CHECK_IDS = (
+    "ssh_connect",
+    "os",
+    "arch",
+    "root_or_sudo",
+    "disk",
+    "already_vincula",
+    "sing_box_unit",
+    *(f"cmd_{b}" for b in REQUIRED_CMDS if b not in BOOTSTRAP_CMDS),
+)
+
+STAGE2_CHECK_IDS = (
+    "port_443",
     "https_out",
     "singbox_release",
     "public_ip",
@@ -122,6 +175,95 @@ def _require_host() -> Any:
     if _host is None:
         raise RuntimeError("provision.bind(host) required")
     return _host
+
+
+def _progress(message: str) -> None:
+    """Human-mode stage lines. Always stderr so ``--json`` stdout stays JSON."""
+    sys.stderr.write(f"provision: {message}\n")
+    sys.stderr.flush()
+
+
+def sanitize_operator_text(text: str, *, limit: int = 400) -> str:
+    """Redact VLESS URI / UUID / Reality private key / Clash secret from text."""
+    if not text:
+        return ""
+    out = _VLESS_RE.sub("vless://<redacted>", text)
+    out = _PRIVKEY_RE.sub(r"\1=<redacted>", out)
+    out = _SECRET_RE.sub(r"\1=<redacted>", out)
+    out = _UUID_RE.sub("<uuid>", out)
+    out = out.replace("\x00", "")
+    if len(out) > limit:
+        out = out[:limit] + "…"
+    return out
+
+
+def _heartbeat_seconds() -> float:
+    raw = os.environ.get("VCL_PROVISION_HEARTBEAT_SECONDS", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return DEFAULT_HEARTBEAT_SECONDS
+    return DEFAULT_HEARTBEAT_SECONDS
+
+
+def _priv_argv(privilege_mode: PrivilegeMode, argv: list[str]) -> list[str]:
+    if privilege_mode == "sudo":
+        return ["sudo", "-n", *argv]
+    return argv
+
+
+def installer_remote_argv(
+    unpack_script: str,
+    *,
+    privilege_mode: PrivilegeMode,
+    vcl_server: Optional[str],
+) -> list[str]:
+    """Build remote installer argv.
+
+    sudo must wrap ``env`` so VCL_SERVER survives sudo's env reset:
+    ``sudo -n env VCL_SERVER=... bash vincula.sh``.
+    """
+    argv: list[str] = ["bash", unpack_script]
+    vcl = (vcl_server or "").strip()
+    if vcl:
+        argv = ["env", f"VCL_SERVER={vcl}", *argv]
+    return _priv_argv(privilege_mode, argv)
+
+
+def _popen_with_heartbeat(
+    argv: list[str],
+    *,
+    timeout: float,
+    heartbeat: float,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        _require_host().die(f"cannot execute {argv[0]}: {exc}")
+    start = time.monotonic()
+    last_beat = start
+    poll = min(0.25, heartbeat if heartbeat > 0 else 0.25)
+    while proc.poll() is None:
+        now = time.monotonic()
+        if now - start >= timeout:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            msg = f"ssh timed out after {timeout}s"
+            return subprocess.CompletedProcess(argv, 255, stdout or "", msg)
+        if heartbeat > 0 and now - last_beat >= heartbeat:
+            _progress(f"install still running ({int(now - start)}s)")
+            last_beat = now
+        time.sleep(poll)
+    stdout, stderr = proc.communicate()
+    return subprocess.CompletedProcess(
+        argv, proc.returncode or 0, stdout or "", stderr or ""
+    )
 
 
 def _payload_paths(root: Path) -> dict[str, Path]:
@@ -302,25 +444,35 @@ def _create_remote_stage(
     identity_file: Optional[str],
     extra: Optional[list[str]],
 ) -> str:
-    """Create a random 0700 staging directory on the remote host."""
+    """Create a random 0700 staging directory via mktemp (no Python)."""
     host = _require_host()
+    template = f"{REMOTE_STAGE_DIR}/{REMOTE_STAGE_PREFIX}XXXXXX"
     proc = host.ssh_run(
         ssh_host,
         ssh_user,
         ssh_port,
-        ["python3", "-c", _CREATE_REMOTE_STAGE_PY],
+        ["mktemp", "-d", template],
         batch=True,
         extra=extra,
         identity_file=identity_file,
     )
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip() or (
-            f"exit {proc.returncode}"
+        detail = sanitize_operator_text(
+            (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
         )
         host.die(f"remote staging dir creation failed: {detail}")
     stage = (proc.stdout or "").strip()
     if not stage:
         host.die("remote staging dir creation returned empty path")
+    host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        ["chmod", "700", stage],
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
     return stage
 
 
@@ -333,14 +485,15 @@ def _cleanup_remote_stage(
     identity_file: Optional[str],
     extra: Optional[list[str]],
 ) -> None:
-    """Best-effort removal of the remote staging directory."""
+    """Best-effort removal of the remote staging directory (no Python)."""
     host = _require_host()
-    q = shlex.quote(remote_stage)
+    if not remote_stage:
+        return
     host.ssh_run(
         ssh_host,
         ssh_user,
         ssh_port,
-        ["python3", "-c", f"import shutil; shutil.rmtree({q}, ignore_errors=True)"],
+        ["rm", "-rf", "--", remote_stage],
         batch=True,
         extra=extra,
         identity_file=identity_file,
@@ -455,30 +608,47 @@ def unpack_and_run_installer(
         identity_file=identity_file,
     )
     if tar_proc.returncode != 0:
-        detail = (tar_proc.stderr or tar_proc.stdout or "").strip() or (
-            f"exit {tar_proc.returncode}"
+        detail = sanitize_operator_text(
+            (tar_proc.stderr or tar_proc.stdout or "").strip()
+            or f"exit {tar_proc.returncode}"
         )
         host.die(f"remote tar unpack failed: {detail}")
 
-    install_argv: list[str] = ["bash", f"{paths['unpack']}/vincula.sh"]
-    if privilege_mode == "sudo":
-        install_argv = ["sudo", "-n", *install_argv]
-    vcl = (vcl_server or "").strip()
-    if vcl:
-        install_argv = ["env", f"VCL_SERVER={vcl}", *install_argv]
-    install_proc = host.ssh_run(
-        ssh_host,
-        ssh_user,
-        ssh_port,
-        install_argv,
-        batch=True,
-        extra=extra,
-        identity_file=identity_file,
-        timeout=600.0,
+    install_argv = installer_remote_argv(
+        f"{paths['unpack']}/vincula.sh",
+        privilege_mode=privilege_mode,
+        vcl_server=vcl_server,
     )
+    heartbeat = _heartbeat_seconds()
+    ssh_argv_fn = getattr(host, "ssh_argv", None)
+    if callable(ssh_argv_fn) and heartbeat > 0:
+        argv = ssh_argv_fn(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            install_argv,
+            batch=True,
+            extra=extra,
+            identity_file=identity_file,
+        )
+        install_proc = _popen_with_heartbeat(
+            argv, timeout=INSTALL_TIMEOUT_SECONDS, heartbeat=heartbeat
+        )
+    else:
+        install_proc = host.ssh_run(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            install_argv,
+            batch=True,
+            extra=extra,
+            identity_file=identity_file,
+            timeout=INSTALL_TIMEOUT_SECONDS,
+        )
     if install_proc.returncode != 0:
-        detail = (install_proc.stderr or install_proc.stdout or "").strip() or (
-            f"exit {install_proc.returncode}"
+        detail = sanitize_operator_text(
+            (install_proc.stderr or install_proc.stdout or "").strip()
+            or f"exit {install_proc.returncode}"
         )
         host.die(f"remote vincula.sh install failed: {detail}")
 
@@ -721,6 +891,7 @@ def run_provision(
             extra=extra,
         )
     else:
+        _progress("preflight")
         preflight = run_provision_preflight(
             ssh_host=ssh_host,
             ssh_user=ssh_user,
@@ -761,6 +932,7 @@ def run_provision(
         admin_credential_ref=admin_credential_ref,
     )
 
+    _progress("upload")
     remote_stage = _create_remote_stage(
         ssh_host=ssh_host,
         ssh_user=ssh_user,
@@ -778,6 +950,7 @@ def run_provision(
             extra=extra,
             remote_stage=remote_stage,
         )
+        _progress("install")
         unpack_and_run_installer(
             ssh_host=ssh_host,
             ssh_user=ssh_user,
@@ -789,6 +962,7 @@ def run_provision(
             remote_stage=remote_stage,
         )
 
+        _progress("verify")
         verify_proc = host.ssh_run(
             ssh_host,
             ssh_user,
@@ -799,8 +973,9 @@ def run_provision(
             identity_file=identity_file,
         )
         if verify_proc.returncode != 0:
-            detail = (verify_proc.stderr or verify_proc.stdout or "").strip() or (
-                f"exit {verify_proc.returncode}"
+            detail = sanitize_operator_text(
+                (verify_proc.stderr or verify_proc.stdout or "").strip()
+                or f"exit {verify_proc.returncode}"
             )
             host.die(f"remote vcl verify failed: {detail}")
         _require_verify_ok(verify_proc.stdout or "")
@@ -815,8 +990,9 @@ def run_provision(
             identity_file=identity_file,
         )
         if ident_proc.returncode != 0:
-            detail = (ident_proc.stderr or ident_proc.stdout or "").strip() or (
-                f"exit {ident_proc.returncode}"
+            detail = sanitize_operator_text(
+                (ident_proc.stderr or ident_proc.stdout or "").strip()
+                or f"exit {ident_proc.returncode}"
             )
             host.die(f"remote vcl identity failed: {detail}")
         ident = host.parse_identity_json(ident_proc.stdout or "")
@@ -827,6 +1003,8 @@ def run_provision(
         # identity_file into fleet.json.
         reg_identity = None if admin_credential_ref else identity_file
         admin_ref = admin_credential_ref
+
+        _progress("register")
 
         def _commit() -> None:
             reg = host.load_registry()
@@ -864,6 +1042,7 @@ def run_provision(
 
         if skip_sync:
             return {"ok": True, "node_id": node_id}
+        _progress("sync")
         _code, sync_doc = host.run_sync_full_payload(
             types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
         )
@@ -1041,15 +1220,10 @@ def run_provision_preflight(
                 else:
                     privilege_mode = None
 
-    # --- B2-T2: required commands ---
-    for bin_name in REQUIRED_CMDS:
-        cid = f"cmd_{bin_name}"
-        if not want(cid):
-            add(_skipped(cid))
-            continue
-        if bin_name == "sudo" and privilege_mode == "root":
-            add(_skipped(cid, "not required for uid=0"))
-            continue
+    # --- Stage 1 cmds: hard gates vs bootstrapable (python3/curl/...) ---
+    missing_bootstrap: list[str] = []
+
+    def _probe_cmd(bin_name: str) -> tuple[bool, str]:
         proc = _ssh(
             ssh_host,
             ssh_user,
@@ -1059,10 +1233,25 @@ def run_provision_preflight(
             extra=extra,
         )
         if proc.returncode != 0:
-            add(_check(cid, "fail", f"{bin_name} not found"))
-        else:
-            path = (proc.stdout or "").strip() or bin_name
-            add(_check(cid, "pass", path))
+            return False, f"{bin_name} not found"
+        return True, (proc.stdout or "").strip() or bin_name
+
+    for bin_name in REQUIRED_CMDS:
+        cid = f"cmd_{bin_name}"
+        if not want(cid):
+            add(_skipped(cid))
+            continue
+        if bin_name == "sudo" and privilege_mode == "root":
+            add(_skipped(cid, "not required for uid=0"))
+            continue
+        found, detail = _probe_cmd(bin_name)
+        if found:
+            add(_check(cid, "pass", detail))
+            continue
+        if bin_name in BOOTSTRAP_CMDS:
+            missing_bootstrap.append(bin_name)
+            continue
+        add(_check(cid, "fail", detail))
 
     # --- B2-T3: OS / arch / sudo / disk ---
     if want("os"):
@@ -1171,6 +1360,152 @@ def run_provision_preflight(
     else:
         add(_skipped("already_vincula"))
 
+    if want("sing_box_unit"):
+        proc = _ssh(
+            ssh_host,
+            ssh_user,
+            ssh_port,
+            ["systemctl", "cat", "sing-box.service"],
+            identity_file=identity_file,
+            extra=extra,
+        )
+        if proc.returncode == 0:
+            add(_check("sing_box_unit", "fail", "sing-box.service present"))
+        else:
+            add(_check("sing_box_unit", "pass", "no sing-box.service"))
+    else:
+        add(_skipped("sing_box_unit"))
+
+    def _skip_stage2(reason: str) -> None:
+        for cid in STAGE2_CHECK_IDS:
+            if want(cid):
+                add(_skipped(cid, reason))
+            else:
+                add(_skipped(cid))
+
+    def _finish(ok_flag: bool) -> dict[str, Any]:
+        result: dict[str, Any] = {"ok": ok_flag, "checks": checks}
+        if privilege_mode in ("root", "sudo"):
+            result["privilege_mode"] = privilege_mode
+        return result
+
+    stage1_failed = any(c.get("status") == "fail" for c in checks)
+    if stage1_failed:
+        if want("bootstrap"):
+            add(_skipped("bootstrap", "stage-1 failed"))
+        else:
+            add(_skipped("bootstrap"))
+        for bin_name in missing_bootstrap:
+            add(_check(f"cmd_{bin_name}", "fail", f"{bin_name} not found"))
+        _skip_stage2("stage-1 failed")
+        return _finish(False)
+
+    # --- bootstrap missing deps (python3/curl/...) then stage-2 probes ---
+    if want("bootstrap"):
+        if not missing_bootstrap:
+            add(_check("bootstrap", "pass", "already present"))
+        else:
+            _progress("bootstrap")
+            packages: list[str] = []
+            seen_pkg: set[str] = set()
+            for cmd_name in missing_bootstrap:
+                pkg = BOOTSTRAP_PACKAGES.get(cmd_name, cmd_name)
+                if pkg not in seen_pkg:
+                    seen_pkg.add(pkg)
+                    packages.append(pkg)
+            pm: PrivilegeMode = privilege_mode or "root"
+            upd = _ssh(
+                ssh_host,
+                ssh_user,
+                ssh_port,
+                _priv_argv(pm, ["apt-get", "update", "-qq"]),
+                identity_file=identity_file,
+                extra=extra,
+            )
+            if upd.returncode != 0:
+                detail = sanitize_operator_text(
+                    (upd.stderr or "").strip() or f"exit {upd.returncode}"
+                )
+                add(
+                    _check(
+                        "bootstrap",
+                        "fail",
+                        f"apt-get update failed: {detail}",
+                        remedy="fix apt on the VPS",
+                    )
+                )
+                for bin_name in missing_bootstrap:
+                    add(_check(f"cmd_{bin_name}", "fail", f"{bin_name} not found"))
+                _skip_stage2("bootstrap failed")
+                return _finish(False)
+            inst = _ssh(
+                ssh_host,
+                ssh_user,
+                ssh_port,
+                _priv_argv(
+                    pm,
+                    [
+                        "env",
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "apt-get",
+                        "install",
+                        "-y",
+                        "--no-install-recommends",
+                        *packages,
+                    ],
+                ),
+                identity_file=identity_file,
+                extra=extra,
+            )
+            if inst.returncode != 0:
+                detail = sanitize_operator_text(
+                    (inst.stderr or "").strip() or f"exit {inst.returncode}"
+                )
+                add(
+                    _check(
+                        "bootstrap",
+                        "fail",
+                        f"apt-get install failed: {detail}",
+                        remedy="fix apt on the VPS",
+                    )
+                )
+                for bin_name in missing_bootstrap:
+                    add(_check(f"cmd_{bin_name}", "fail", f"{bin_name} not found"))
+                _skip_stage2("bootstrap failed")
+                return _finish(False)
+            still_missing: list[str] = []
+            for bin_name in missing_bootstrap:
+                found, detail = _probe_cmd(bin_name)
+                if found:
+                    add(_check(f"cmd_{bin_name}", "pass", detail))
+                else:
+                    still_missing.append(bin_name)
+                    add(
+                        _check(
+                            f"cmd_{bin_name}",
+                            "fail",
+                            f"{bin_name} not found after apt",
+                        )
+                    )
+            if still_missing:
+                add(
+                    _check(
+                        "bootstrap",
+                        "fail",
+                        "missing after apt: " + ",".join(still_missing),
+                    )
+                )
+                _skip_stage2("bootstrap failed")
+                return _finish(False)
+            add(_check("bootstrap", "pass", "installed " + " ".join(packages)))
+    else:
+        add(_skipped("bootstrap"))
+        for bin_name in missing_bootstrap:
+            add(_check(f"cmd_{bin_name}", "fail", f"{bin_name} not found"))
+        if missing_bootstrap:
+            _skip_stage2("bootstrap skipped")
+            return _finish(False)
+
     if want("port_443"):
         proc = _ssh(
             ssh_host,
@@ -1188,23 +1523,7 @@ def run_provision_preflight(
     else:
         add(_skipped("port_443"))
 
-    if want("sing_box_unit"):
-        proc = _ssh(
-            ssh_host,
-            ssh_user,
-            ssh_port,
-            ["systemctl", "cat", "sing-box.service"],
-            identity_file=identity_file,
-            extra=extra,
-        )
-        if proc.returncode == 0:
-            add(_check("sing_box_unit", "fail", "sing-box.service present"))
-        else:
-            add(_check("sing_box_unit", "pass", "no sing-box.service"))
-    else:
-        add(_skipped("sing_box_unit"))
-
-    # --- B2-T5: outbound / public IP / Reality ---
+    # --- Stage 2: outbound / public IP / Reality ---
     if want("https_out"):
         proc = _ssh(
             ssh_host,

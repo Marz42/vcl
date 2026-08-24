@@ -1112,15 +1112,85 @@ _PROVISION_CMDS = frozenset(
         "systemctl",
         "ss",
         "df",
+        "mktemp",
+        "chmod",
+        "rm",
+        "bash",
+        "sh",
+        "env",
     }
 )
+
+
+def _bootstrap_state_path() -> Path | None:
+    explicit = os.environ.get("VCL_FAKE_BOOTSTRAP_STATE", "").strip()
+    if explicit:
+        return Path(explicit)
+    root = _state_root()
+    if root is not None:
+        return root / "bootstrap-cmds.json"
+    return None
+
+
+def _installed_cmds() -> set[str]:
+    path = _bootstrap_state_path()
+    if path is None or not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if isinstance(data, list):
+        return {str(x) for x in data}
+    return set()
+
+
+def _mark_cmds_installed(cmds: set[str]) -> None:
+    path = _bootstrap_state_path()
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged = _installed_cmds() | cmds
+    path.write_text(json.dumps(sorted(merged)), encoding="utf-8")
 
 
 def _missing_cmds() -> set[str]:
     raw = os.environ.get("VCL_FAKE_MISSING_CMDS", "").strip()
     if not raw:
         return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    return {part.strip() for part in raw.split(",") if part.strip()} - _installed_cmds()
+
+
+_APT_PACKAGE_TO_CMDS = {
+    "python3": {"python3"},
+    "curl": {"curl"},
+    "tar": {"tar"},
+    "coreutils": {"sha256sum", "mktemp", "timeout"},
+    "iproute2": {"ss", "ip"},
+}
+
+
+def _handle_apt_get(argv: list[str]) -> int:
+    if os.environ.get("VCL_FAKE_APT_FAIL", "").strip() == "1":
+        sys.stderr.write("E: fake apt-get failure\n")
+        return 100
+    if "install" in argv:
+        installed: set[str] = set()
+        for arg in argv:
+            if arg.startswith("-") or arg in (
+                "apt-get",
+                "install",
+                "update",
+                "env",
+            ):
+                continue
+            if arg in _APT_PACKAGE_TO_CMDS:
+                installed |= _APT_PACKAGE_TO_CMDS[arg]
+            else:
+                installed.add(arg)
+        if installed:
+            _mark_cmds_installed(installed)
+    return 0
 
 
 def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
@@ -1169,9 +1239,7 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
                 sys.stderr.write("sudo: a password is required\n")
                 return 1
             return 0
-        if len(argv) >= 3 and argv[2] == "bash":
-            return _fake_run_vincula_installer(alias, argv[2:])
-        return None
+        return _handle_provision_remote(alias, argv[2:])
 
     if cmd == "df" and argv[1:2] == ["-Pk"]:
         avail = os.environ.get("VCL_FAKE_DF_AVAIL_KB", "2048000").strip() or "2048000"
@@ -1245,14 +1313,40 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             return None
         return 0
 
-    if cmd == "env" and len(argv) >= 3:
-        # env VCL_SERVER=... bash .../vincula.sh
+    if cmd == "env" and len(argv) >= 2:
         rest = list(argv[1:])
         while rest and "=" in rest[0] and not rest[0].startswith("-"):
             rest = rest[1:]
-        if rest and rest[0] == "bash":
-            return _fake_run_vincula_installer(alias, rest)
+        if rest:
+            return _handle_provision_remote(alias, rest)
         return None
+
+    if cmd == "apt-get":
+        return _handle_apt_get(argv)
+
+    if cmd == "mktemp" and "-d" in argv[1:]:
+        import stat
+        import tempfile
+
+        base = _alias_dir(alias) / "remote_tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        stage = tempfile.mkdtemp(prefix="vincula-provision.", dir=str(base))
+        os.chmod(stage, stat.S_IRWXU)
+        _staging_add(alias, stage, stat.S_IRWXU)
+        sys.stdout.write(stage + "\n")
+        return 0
+
+    if cmd == "chmod":
+        return 0
+
+    if cmd == "rm" and any(a in ("-rf", "-fr") or a.startswith("-") and "r" in a and "f" in a for a in argv[1:]):
+        import shutil
+
+        targets = [a for a in argv[1:] if not a.startswith("-")]
+        for target in targets:
+            shutil.rmtree(target, ignore_errors=True)
+            _staging_remove(alias, target)
+        return 0
 
     if cmd == "bash":
         return _fake_run_vincula_installer(alias, argv)
@@ -1267,6 +1361,17 @@ def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
     joined = " ".join(argv)
     if "vincula.sh" not in joined:
         return None
+    hang = os.environ.get("VCL_FAKE_INSTALL_SLEEP", "").strip()
+    if hang:
+        time.sleep(float(hang))
+    if os.environ.get("VCL_FAKE_INSTALL_FAIL", "").strip() == "1":
+        sys.stdout.write(
+            "vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@203.0.113.10:443\n"
+            "PrivateKey: fake-reality-private-key\n"
+            "secret: fake-clash-secret\n"
+        )
+        sys.stderr.write("vincula.sh: fake install failure\n")
+        return 1
     if _state_root() is None:
         sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR required for provision install\n")
         return 1

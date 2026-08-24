@@ -4504,6 +4504,42 @@ def cmd_user_enable_disable(args: argparse.Namespace, *, enabled: bool) -> int:
     return 0
 
 
+def cmd_user_link(args: argparse.Namespace) -> int:
+    """Live SSH ``vcl user link TAG`` on a single node. No cache, no log, no batch."""
+    tag = args.tag
+    validate_name(tag)
+    node_name = _require_single_node_flag(args, "link")
+    node = require_enabled_node(load_registry(), node_name)
+    as_json = bool(getattr(args, "as_json", False))
+    ssh_state, stdout, detail = ssh_remote_text(
+        node, ["vcl", "user", "link", tag]
+    )
+    if ssh_state != "OK":
+        die(_ssh_error(255, detail))
+    uri = _first_vless_uri(stdout)
+    if not uri or not uri.startswith("vless://"):
+        err = (detail or "").strip() or f"user {tag} has no link on {node_name}"
+        die(err)
+    if as_json:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "schema_version": MUTATION_SCHEMA_VERSION,
+                    "ok": True,
+                    "tag": tag,
+                    "node": node_name,
+                    "vless_uri": uri,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        return 0
+    sys.stdout.write(uri + "\n")
+    return 0
+
+
 def cmd_user_rotate(args: argparse.Namespace) -> int:
     tag = args.tag
     validate_name(tag)
@@ -6840,8 +6876,8 @@ def build_parser() -> argparse.ArgumentParser:
             "All nodes SUCCESS → exit 0. Any FAILED (including all failed) "
             "→ PARTIAL, exit 2, per-node status, and a copy-paste "
             "remediation command. Distributed rollback is not promised "
-            "and is not performed. enable/disable/rotate require --node "
-            "(no fleet-wide disable). import validates the whole CSV "
+            "and is not performed. enable/disable/rotate/link require --node "
+            "(no fleet-wide disable or batch URI export). import validates the whole CSV "
             "before any SSH; export --credentials requires --output "
             "(mode 0600)."
         ),
@@ -6909,6 +6945,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="as_json",
         help="print JSON (schema_version 1)",
+    )
+
+    p_ulink = user_sub.add_parser(
+        "link",
+        help="live SSH: print VLESS URI for TAG on a single --node",
+        description=(
+            "Fetch the live VLESS URI via SSH ``vcl user link TAG`` on one "
+            "node. --node is required (no fleet-wide / batch export). "
+            "Does not cache, write logs, or persist the URI."
+        ),
+    )
+    p_ulink.add_argument("tag")
+    p_ulink.add_argument(
+        "--node",
+        dest="node",
+        help="target node (required; refusing fleet-wide link)",
+    )
+    p_ulink.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="print JSON including vless_uri (stdout only; not cached)",
     )
 
     p_uenable = user_sub.add_parser(
@@ -7366,6 +7424,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_user_list(args)
         if sub == "show":
             return cmd_user_show(args)
+        if sub == "link":
+            return cmd_user_link(args)
         if sub == "enable":
             return cmd_user_enable_disable(args, enabled=True)
         if sub == "disable":

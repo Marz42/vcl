@@ -345,13 +345,14 @@ python3 bin/vcl-fleet user add alice --nodes lax,tokyo --display-name Alice --de
 python3 bin/vcl-fleet user add alice --nodes tokyo --user-id <GLOBAL>   # remediation
 python3 bin/vcl-fleet user list
 python3 bin/vcl-fleet user show alice
+python3 bin/vcl-fleet user link alice --node lax
 python3 bin/vcl-fleet user rotate alice --node lax
 python3 bin/vcl-fleet user disable alice --node lax
 ```
 
-`--node N` ≡ `--nodes N`. `enable` / `disable` / `rotate` **require** `--node`
-(AC-2.9-03: no fleet-wide disable). Missing `--node` exits non-zero with
-`refusing fleet-wide disable; pass --node`.
+`--node N` ≡ `--nodes N`. `enable` / `disable` / `rotate` / `link` **require** `--node`
+(AC-2.9-03: no fleet-wide disable; link is single-node live URI, never batched). Missing `--node` exits non-zero with
+`refusing fleet-wide disable; pass --node` (or the matching action).
 
 ### PARTIAL (exit 2)
 
