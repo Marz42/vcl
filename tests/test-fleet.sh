@@ -680,7 +680,7 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.4.3" "0.4.3" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.4.4" "0.4.4" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
 assert_equal "NODE 0.3.1" "0.3.1" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -8703,6 +8703,57 @@ assert users["users"][0]["tag"] == "alice"
 st, recipes, _ = get("/api/recipes")
 assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])
 assert "CLI-only" in recipes["note"] or "cli-only" in recipes["note"].lower() or "reseed" in recipes["note"].lower()
+recipe_ids = {r["id"] for r in recipes["recipes"]}
+for need in (
+    "node-adopt",
+    "node-provision",
+    "node-register",
+    "workspace-init",
+    "workspace-verify",
+    "workspace-export",
+    "workspace-import",
+    "audit-archive-create",
+    "audit-archive-restore",
+    "user-link",
+):
+    assert need in recipe_ids, (need, recipe_ids)
+assert "node-add" in recipe_ids  # legacy alias retained
+recipes_blob = json.dumps(recipes).lower()
+assert "vless://" not in recipes_blob
+assert "private_key" not in recipes_blob
+assert "clash_secret" not in recipes_blob
+assert "sync --full" in recipes["note"].lower() or any(
+    "sync --full" in (r.get("command") or "") for r in recipes["recipes"]
+)
+
+st, meta, _ = get("/api/meta")
+assert st == 200
+assert meta.get("sync") == "full"
+assert meta.get("identity_mutations") is False
+assert "sync_full" in (meta.get("cache_writes") or [])
+assert "workspace" in overview
+assert overview["workspace"].get("conflict") in (
+    "ok",
+    "absent",
+    "WORKSPACE_ROLLBACK",
+    "WORKSPACE_DIVERGED",
+    "WORKSPACE_INCONSISTENT",
+)
+assert "workspace" in health
+assert health["workspace"].get("conflict") in (
+    "ok",
+    "absent",
+    "WORKSPACE_ROLLBACK",
+    "WORKSPACE_DIVERGED",
+    "WORKSPACE_INCONSISTENT",
+)
+# AC-4.4-01 / 04: sync_full wiring + empty-state copy
+ui_src = Path(ui.__file__).read_text(encoding="utf-8")
+assert "run_sync_full_payload" in ui_src
+assert 'operation": "sync_full"' in ui_src or "operation': 'sync_full'" in ui_src
+static_app = (Path(static_dir) / "app.js").read_text(encoding="utf-8")
+assert "node adopt" in static_app and "node provision" in static_app
+assert "Sync --full" in static_app or "sync --full" in static_app.lower()
 
 alice_uid = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
 st, audit, _ = get(
@@ -8848,8 +8899,8 @@ t1.start(); t2.start(); t1.join(); t2.join()
 assert len(results) == 2
 assert all(r.get("schema_version") == 1 and "node_count" in r for r in results)
 
-# Concurrent /api/sync must not both enter run_sync_payload
-orig_sync = fleet.run_sync_payload
+# Concurrent /api/sync must not both enter run_sync_full_payload
+orig_sync = fleet.run_sync_full_payload
 inside = 0
 max_inside = 0
 guard = threading.Lock()
@@ -8871,7 +8922,7 @@ def wrapped_sync(ns):
         with guard:
             inside -= 1
 
-fleet.run_sync_payload = wrapped_sync
+fleet.run_sync_full_payload = wrapped_sync
 sync_err = []
 sync_ok = []
 
@@ -8884,10 +8935,11 @@ def sync_worker():
 st1 = threading.Thread(target=sync_worker)
 st2 = threading.Thread(target=sync_worker)
 st1.start(); st2.start(); st1.join(); st2.join()
-fleet.run_sync_payload = orig_sync
+fleet.run_sync_full_payload = orig_sync
 assert not sync_err, sync_err
 assert len(sync_ok) == 2
 assert max_inside == 1, max_inside
+assert all(r[1].get("operation") == "sync_full" for r in sync_ok), sync_ok
 
 # Worker cap: one in-flight request, the next is 503
 busy_httpd, busy_thread, busy_tok = ui.serve_in_thread(

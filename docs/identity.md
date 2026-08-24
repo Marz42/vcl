@@ -2,7 +2,7 @@
 
 `node_id` 是逻辑节点身份，永久冻结。`instance_id` 是一次物理安装。二者均为 UUID，且 **不得相等**。
 
-**版本解耦（0.4.x）：** 控制器戳 `VCL_FLEET_VERSION`（当前 **0.4.2**；入口 `vcl-fleet` / `bin/vcl-fleet` → `lib/vincula-fleet.py`）；节点戳 `VINCULA_VERSION`（仍为 **0.3.1**，节点 CLI 仍为 `vcl` / `vincula`）。二者独立 bump；控制器升级 **不**要求节点 allowlist / installer 变更。
+**版本解耦（0.4.x）：** 控制器戳 `VCL_FLEET_VERSION`（当前 **0.4.4**；入口 `vcl-fleet` / `bin/vcl-fleet` → `lib/vincula-fleet.py`）；节点戳 `VINCULA_VERSION`（仍为 **0.3.1**，节点 CLI 仍为 `vcl` / `vincula`）。二者独立 bump；控制器升级 **不**要求节点 allowlist / installer 变更。
 
 ## `node_id` vs `instance_id`
 

@@ -32,6 +32,7 @@
   <main>
     <section id="page-overview" class="page active">
       <div class="kpi-row" id="kpi-row"></div>
+      <p id="workspace-strip" class="hint" hidden></p>
       <div class="grid-2">
         <div class="card">
           <h2>Top users <span class="muted">(7d, approximate)</span></h2>
@@ -94,9 +95,11 @@
       <div class="card">
         <h2>Node health</h2>
         <p class="hint">
-          Cache from <code>last-status.json</code>. Use Refresh / Verify / Sync for SSH-backed updates.
+          Health from <code>sync --full</code> → <code>node_snapshot</code> (cache-only status).
+          Use Refresh / Verify for live probe; Sync runs <code>sync --full</code>.
           Click a row for node drill-down.
         </p>
+        <p id="health-workspace-strip" class="hint" hidden></p>
         <div id="health-table" class="table-wrap"></div>
       </div>
     </section>
@@ -122,7 +125,7 @@
 
   <footer class="foot">
     <span id="foot-version">vcl-fleet</span>
-    · Overview / Audit / Health · Sync/Refresh write local cache · reseed CLI-only · closing UI does not affect nodes
+    · Overview / Audit / Health · Sync = <code>sync --full</code> · reseed CLI-only · closing UI does not affect nodes
   </footer>
 
   <script src="/app.js"></script>

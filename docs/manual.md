@@ -1209,22 +1209,26 @@ python3 bin/vcl-fleet audit archive restore out.vclaudit
 
 ### `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` {#fleet-ui}
 
-工作站 **localhost-only** 只读 Local Audit UI（**Overview / Audit / Health** 三页）。
-Users / Nodes 只作 drill-down，不是独立管理台。默认监听
-`http://127.0.0.1:8765`。仅允许 loopback（`127.0.0.1` / `::1`）；`0.0.0.0` /
-公网绑定会 **立即失败退出**（exit **2**）。关闭 UI 进程 **不影响** VPS 节点。
+工作站 **localhost-only** 只读 Local Audit UI v2（D53 / **0.4.4**；
+**Overview / Audit / Health** 三页）。Users / Nodes 只作 drill-down，不是独立管理台。
+默认监听 `http://127.0.0.1:8765`。仅允许 loopback（`127.0.0.1` / `::1`）；
+`0.0.0.0` / 公网绑定会 **立即失败退出**（exit **2**）。关闭 UI 进程 **不影响** VPS 节点。
+合同：[`docs/specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md)。
 
 **数据源：** STATE 本地缓存（fleet-cache/v4 `fleet.db` / registry /
 `node_snapshot` / 可选 users cache）。页面按钮
-**Refresh status** / **Verify** / **Sync**（及 Overview 上的 **Refresh users**）
-走与 CLI 相同的控制器路径（含 SSH）。审计检索与
-`vcl-fleet audit user` 同一 interval-overlap 谓词；Top-N 与
+**Refresh status** / **Verify** / **Sync**（= CLI `sync --full`）
+（及 Overview 上的 **Refresh users**）走与 CLI 相同的控制器路径（含 SSH）。
+Overview / Health 展示只读 **workspace** 条（`fleet_id` / revision / conflict）。
+审计检索与 `vcl-fleet audit user` 同一 interval-overlap 谓词；Top-N 与
 `vcl-fleet stats top …` 同一 `daily_usage` 聚合。记账徽标为
 **approximate**（Clash polling，不能当发票）。
 
-**禁止（第一版）：** UI 内 add / rotate / retire / replace / restore / import /
-**reseed**。突变与 reseed 一律 CLI；顶栏 **CLI recipes** 只复制命令、不代执行。
-GET API 只读本地缓存（解析 tag 不 SSH）。所有 `/api/*` 要求
+**禁止：** UI 内 add / rotate / retire / replace / restore / import /
+**reseed** / provision 安装。突变与 reseed 一律 CLI；顶栏 **CLI recipes**
+只复制命令（含 adopt / provision / register / workspace / archive /
+`user link`；`node add` 为 legacy alias）、不代执行。GET API 只读本地缓存
+（解析 tag 不 SSH）。所有 `/api/*` 要求
 `X-Vincula-UI-Token`（注入首页 meta）+ loopback `Host`；POST 另要求
 `Content-Type: application/json`；**若请求带 `Origin`，必须匹配** loopback
 （浏览器 POST 会带 Origin；curl 等可省略）。默认页与 API
@@ -1256,25 +1260,27 @@ Local Audit UI (no identity mutations; Sync/Refresh write local cache; reseed is
 
 | 页 / 面板 | 内容 |
 | --- | --- |
-| 顶栏警告条 | 不健康 / ACCOUNTING STALE·FAIL / 时钟 / 无 status 缓存等 |
-| **Overview** | KPI（节点数、健康占比）、7 日 Top users / Top destinations（approximate）、Warnings、用户摘要表 |
+| 顶栏警告条 | 不健康 / ACCOUNTING STALE·FAIL / 时钟 / workspace conflict / 无 status 缓存等 |
+| **Overview** | KPI、只读 workspace 条、7 日 Top users / Top destinations（approximate）、Warnings、用户摘要表 |
 | **Audit** | 必填 user + `--from`/`--to`（RFC3339，窗口 ≤31 天）；默认最多 500 行；可选 node、destination 子串 |
-| **Health** | `NAME \| SSH \| PROXY \| ACCOUNTING \| VERSION \| CLOCK \| LAST_SYNC`；点行开 Node 抽屉 |
+| **Health** | workspace 条 + `NAME \| SSH \| PROXY \| ACCOUNTING \| VERSION \| CLOCK \| LAST_SYNC`；点行开 Node 抽屉 |
 | Node 抽屉 | `node_id` / instance 时间线 / endpoint / cursor；无 URI |
 | User 抽屉 | tag / `user_id` / 节点分配 / credential **id**（非 uuid/uri）/ 近 7 日用量 |
-| CLI recipes | 复制 init/node/user/backup 等命令模板 |
+| CLI recipes | 复制 adopt/provision/workspace/archive/`user link` 等；`node add`=legacy alias |
 
 #### CLI → UI 归宿（全覆盖、不越权）
 
 | CLI | UI |
 | --- | --- |
 | `status` / `verify` | Health + Overview warnings；按钮 Refresh / Verify |
-| `sync` / `sync --reseed` | 顶栏 **Sync**（仅普通 sync）；`--reseed` **仅 CLI** |
+| `sync --full` / `sync --reseed` | 顶栏 **Sync** = `sync --full`；`--reseed` **仅 CLI** |
+| `workspace *` | Overview/Health 只读条；init/verify/export/import → recipes |
 | `node list/show/instances` | Health + Node 抽屉 |
 | `user list/show` | Overview 用户表 + User 抽屉；Refresh users 写 `users-cache.json` |
-| `audit user` | Audit 页 |
+| `user link` | recipes only（CLI 实时 URI；UI 不渲染） |
+| `audit user` / `audit archive *` | Audit 页；archive → recipes |
 | `stats *` | Overview Top-N + 抽屉摘要 |
-| `init` / `node add\|set\|replace\|retire\|enable\|disable` | CLI recipes only |
+| `init` / `node adopt\|provision\|register\|add\|set\|replace\|retire\|enable\|disable` | CLI recipes only |
 | `user add\|import\|export\|rotate\|enable\|disable` | CLI recipes only |
 | `version` / `help` | 页脚版本 |
 
@@ -1713,8 +1719,9 @@ python3 bin/vcl-fleet ui
 ## Local Audit UI 手动测试指南 {#ui-manual-test}
 
 面向管理员工作站（优先 **Windows 11**；Linux/macOS 同样适用）。自动化夹具在
-`tests/test-fleet.sh`（AC-3.1）；本节是 **真人浏览器 + 真/假节点** 手测清单。
-合同仍见 [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) —— B15 合上
+`tests/test-fleet.sh`（AC-3.1 + AC-4.4 / D53）；本节是 **真人浏览器 + 真/假节点**
+手测清单。合同见 [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md) 与
+[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) —— UI 合上
 **不**单独等于 READY FOR RC。
 
 ### 前置
@@ -1775,30 +1782,32 @@ bin\vcl-fleet.cmd ui --host 0.0.0.0 --port 8765
 
 ```bat
 bin\vcl-fleet.cmd status --json
-bin\vcl-fleet.cmd sync
+bin\vcl-fleet.cmd sync --full
 bin\vcl-fleet.cmd ui
 ```
 
 | 检查 | 期望 |
 | --- | --- |
 | Overview KPI | 节点数、healthy/unhealthy、上次 sync/status 缓存时间 |
+| workspace 条 | Overview/Health 显示 `fleet_id` + conflict（或 absent 提示 init） |
 | approximate 徽标 | 可见；文案强调非计费 |
 | Top users / destinations | 有 sync 数据时非空；声明 7d / approximate |
-| 顶栏警告 | ACCOUNTING `STALE`/`FAIL`、时钟、无 status 等优先于图表 |
+| 顶栏警告 | ACCOUNTING `STALE`/`FAIL`、时钟、workspace conflict、无 status 等优先于图表 |
 | Health 表 | 列含 SSH / PROXY / ACCOUNTING / VERSION / CLOCK / LAST_SYNC |
+| 空态文案 | 指向 `node adopt` / `node provision`（不只写 `node add`） |
 | 默认页源码/界面 | **无** `vless://`、Reality 私钥、Clash secret、成批凭据倾倒 |
 | 主导航 | **仅**三页；无独立「Users 管理 / Nodes 编辑」页 |
 
-### C. Refresh / Sync（AC-3.1-10）
+### C. Refresh / Sync（AC-3.1-10 / AC-4.4-01..02）
 
 | 动作 | 期望 |
 | --- | --- |
 | **Refresh status** | 走 SSH status；更新 `last-status.json`；Health/Overview 重绘 |
 | **Verify** | 走 verify（含时钟等）；写回 last-status |
-| **Sync…** | 确认后普通 sync（写 `fleet.db`）；**不会**问 reseed。reseed 用 CLI |
+| **Sync…** | 确认后跑 **`sync --full`**（写 `fleet.db`）；PARTIAL/非零 toast 标明 FAIL；**不会**问 reseed。reseed 用 CLI |
 | **Refresh users** | SSH `user list`；写 `users-cache.json`；Overview 用户表更新；仍无 URI |
 
-无节点或 SSH 失败时：UI 应报错/toast，**不得**假装 mutation 成功。
+无节点或 SSH 失败时：UI 应报错/toast，**不得**假装 SUCCESS / mutation 成功。
 
 ### D. Audit（AC-3.1-05 / 08）
 
@@ -1820,9 +1829,10 @@ bin\vcl-fleet.cmd audit user alice --from 2026-08-01T00:00:00Z --to 2026-08-19T0
 | Overview 点用户行 | 抽屉：tag、`user_id`、节点分配、credential **id**（可有）、近 7 日用量 |
 | 抽屉「Open Audit」 | 跳转 Audit 并预填 user/node |
 
-### F. CLI recipes 与 API 鉴权
+### F. CLI recipes 与 API 鉴权（AC-4.4-03 / 06）
 
-1. 打开 **CLI recipes**；确认 `--reseed` 标为 CLI-only。
+1. 打开 **CLI recipes**；确认含 adopt / provision / register / workspace /
+   archive / `user link`；`--reseed` 与 `user link` 标为 CLI-only；无 URI/secret。
 2. **Copy** 后粘贴到终端可执行；UI **本身不执行**这些命令。
 3. 从页面源码取 `meta[name=vcl-ui-token]`，再测：
 

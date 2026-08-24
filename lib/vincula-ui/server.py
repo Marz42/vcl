@@ -3,7 +3,8 @@
 
 Bound to loopback only. GET APIs are local-cache only. Explicit POST
 refresh/sync write the workstation cache (not identity mutations).
-No add/rotate/retire/replace/restore/import/reseed via UI.
+UI Sync uses ``sync --full`` (D53 / 0.4.4). No add/rotate/retire/replace/
+restore/import/reseed via UI.
 """
 
 from __future__ import annotations
@@ -211,7 +212,7 @@ def recipes_payload() -> dict[str, Any]:
         "schema_version": UI_SCHEMA_VERSION,
         "note": (
             "Copy-paste CLI only. No identity/node mutations via UI. "
-            "Sync/Refresh write local cache only. "
+            "UI Sync runs vcl-fleet sync --full (cache write). "
             "vcl-fleet sync --reseed is CLI-only (UI refuses reseed)."
         ),
         "recipes": [
@@ -221,8 +222,52 @@ def recipes_payload() -> dict[str, Any]:
                 "command": "vcl-fleet init",
             },
             {
+                "id": "workspace-init",
+                "title": "Workspace init",
+                "command": "vcl-fleet workspace init",
+            },
+            {
+                "id": "workspace-verify",
+                "title": "Workspace verify (digest / conflict)",
+                "command": "vcl-fleet workspace verify",
+            },
+            {
+                "id": "workspace-export",
+                "title": "Workspace export",
+                "command": "vcl-fleet workspace export fleet.tgz",
+            },
+            {
+                "id": "workspace-import",
+                "title": "Workspace import",
+                "command": "vcl-fleet workspace import fleet.tgz",
+            },
+            {
+                "id": "node-adopt",
+                "title": "Adopt installed node (SSH identity + register)",
+                "command": (
+                    "vcl-fleet node adopt NAME --host HOST "
+                    "--host-key SHA256:..."
+                ),
+            },
+            {
+                "id": "node-provision",
+                "title": "Provision fresh VPS (pinned node 0.3.1)",
+                "command": (
+                    "vcl-fleet node provision NAME --host HOST "
+                    "--host-key SHA256:..."
+                ),
+            },
+            {
+                "id": "node-register",
+                "title": "Register registry-only (no SSH)",
+                "command": (
+                    "vcl-fleet node register NAME --host HOST "
+                    "--node-id UUID"
+                ),
+            },
+            {
                 "id": "node-add",
-                "title": "Add node (online)",
+                "title": "Legacy alias: node add ≡ adopt",
                 "command": (
                     "vcl-fleet node add NAME --host HOST "
                     "--host-key SHA256:..."
@@ -230,7 +275,7 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "node-add-offline",
-                "title": "Add node (offline)",
+                "title": "Legacy alias: add --offline ≡ register",
                 "command": (
                     "vcl-fleet node add NAME --host HOST --offline "
                     "--node-id UUID"
@@ -295,6 +340,11 @@ def recipes_payload() -> dict[str, Any]:
                 "command": "vcl-fleet user enable|disable TAG --node NAME",
             },
             {
+                "id": "user-link",
+                "title": "Live single-node VLESS URI (CLI only; not shown in UI)",
+                "command": "vcl-fleet user link TAG --node NAME",
+            },
+            {
                 "id": "backup-restore",
                 "title": "Backup / restore (node CLI; see docs/backup.md)",
                 "command": (
@@ -303,10 +353,25 @@ def recipes_payload() -> dict[str, Any]:
                 ),
             },
             {
-                "id": "sync",
-                "title": "Sync (UI Sync button) / reseed (CLI only)",
+                "id": "audit-archive-create",
+                "title": "Create audit archive (.vclaudit)",
                 "command": (
-                    "vcl-fleet sync [--node NAME]\n"
+                    "vcl-fleet audit archive create --from RFC3339 "
+                    "--to RFC3339 --output out.vclaudit"
+                ),
+            },
+            {
+                "id": "audit-archive-restore",
+                "title": "Restore audit archive (never touches sync cursor)",
+                "command": (
+                    "vcl-fleet audit archive restore --input out.vclaudit"
+                ),
+            },
+            {
+                "id": "sync",
+                "title": "Sync --full (UI Sync button) / reseed (CLI only)",
+                "command": (
+                    "vcl-fleet sync --full [--node NAME]\n"
                     "vcl-fleet sync --reseed NAME   # CLI only; wipes local audit"
                 ),
             },
@@ -344,6 +409,41 @@ def _sync_cursors(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
             item["instance_id"] = fleet()._optional_text(row["instance_id"])
         out.append(item)
     return out
+
+
+def _workspace_surface() -> dict[str, Any]:
+    """Read-only workspace strip for Overview/Health (D53). Never mutates."""
+    f = fleet()
+    try:
+        if not f.workspace_trust_active():
+            return {
+                "active": False,
+                "fleet_id": None,
+                "revision": None,
+                "conflict": "absent",
+            }
+        manifest = f.load_workspace_manifest()
+        conflict = f.detect_workspace_conflict(manifest)
+        return {
+            "active": True,
+            "fleet_id": str(manifest.get("fleet_id") or ""),
+            "revision": int(manifest.get("revision") or 0),
+            "conflict": conflict or "ok",
+        }
+    except SystemExit:
+        return {
+            "active": False,
+            "fleet_id": None,
+            "revision": None,
+            "conflict": "absent",
+        }
+    except Exception:  # noqa: BLE001 — UI must never crash on workspace probe
+        return {
+            "active": False,
+            "fleet_id": None,
+            "revision": None,
+            "conflict": "absent",
+        }
 
 
 def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -522,6 +622,31 @@ def api_overview() -> dict[str, Any]:
         healthy = 0
         unhealthy = len(active)
 
+    warnings = _warnings_from_status(status_doc)
+    workspace = _workspace_surface()
+    if workspace.get("conflict") not in (None, "ok", "absent"):
+        warnings = list(warnings) + [
+            {
+                "level": "red",
+                "code": "workspace-conflict",
+                "message": (
+                    f"Workspace conflict: {workspace['conflict']} "
+                    f"(fleet_id={workspace.get('fleet_id') or '—'})"
+                ),
+            }
+        ]
+    elif not workspace.get("active"):
+        warnings = list(warnings) + [
+            {
+                "level": "amber",
+                "code": "workspace-absent",
+                "message": (
+                    "No portable workspace yet. Run "
+                    "`vcl-fleet workspace init` (or adopt/provision a node)."
+                ),
+            }
+        ]
+
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "version": f.VCL_FLEET_VERSION,
@@ -540,7 +665,8 @@ def api_overview() -> dict[str, Any]:
         "top_users": top_users,
         "top_hosts": top_hosts,
         "stats_window": {"days": 7, "from": start, "to": end},
-        "warnings": _warnings_from_status(status_doc),
+        "warnings": warnings,
+        "workspace": workspace,
     }
 
 
@@ -553,13 +679,27 @@ def api_health() -> dict[str, Any]:
         cursors = _sync_cursors(conn, registry)
     finally:
         conn.close()
+    workspace = _workspace_surface()
+    warnings = _warnings_from_status(status_doc)
+    if workspace.get("conflict") not in (None, "ok", "absent"):
+        warnings = list(warnings) + [
+            {
+                "level": "red",
+                "code": "workspace-conflict",
+                "message": (
+                    f"Workspace conflict: {workspace['conflict']} "
+                    f"(fleet_id={workspace.get('fleet_id') or '—'})"
+                ),
+            }
+        ]
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "accounting_mode": "approximate",
         "last_status_at": (status_doc or {}).get("controller_utc"),
         "last_status_ok": (status_doc or {}).get("ok"),
         "nodes": _node_health_rows(registry, status_doc, cursors),
-        "warnings": _warnings_from_status(status_doc),
+        "warnings": warnings,
+        "workspace": workspace,
     }
 
 
@@ -983,18 +1123,20 @@ def api_refresh_status(*, verify: bool) -> dict[str, Any]:
 
 
 def api_sync(*, node: Optional[str] = None) -> dict[str, Any]:
+    """UI Sync = CLI ``sync --full`` (D53). Never legacy bare sync."""
     f = fleet()
     ns = argparse.Namespace(
         node=node,
         all=False,
         reseed=None,
         as_json=True,
+        full=True,
     )
     with f.fleet_op_lock():
-        code, payload = f.run_sync_payload(ns)
+        code, payload = f.run_sync_full_payload(ns)
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "operation": "sync",
+        "operation": "sync_full",
         "exit_code": code,
         "ok": code == 0,
         "result": payload,
@@ -1252,9 +1394,11 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                         "version": fleet().VCL_FLEET_VERSION,
                         "pages": ["overview", "audit", "health"],
                         "identity_mutations": False,
-                        "cache_writes": ["refresh", "sync"],
+                        "cache_writes": ["refresh", "sync_full"],
+                        "sync": "full",
                         "reseed": "cli-only",
                         "bind": "loopback-only",
+                        "ui_contract": "D53",
                         "auth": {
                             "token_header": UI_TOKEN_HEADER,
                             "host_loopback_only": True,

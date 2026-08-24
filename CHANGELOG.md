@@ -2,6 +2,16 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.4 (2026-08-24)
+**Controller-only** Local Audit UI v2 (D53). Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+### Added
+- **UI Sync → `sync --full`：** Local Audit UI POST `/api/sync` 走 identity+health+users+audit → cache（与 CLI `vcl-fleet sync --full` 同路径）；reseed 仍 CLI-only。
+- **Recipes / 空态对齐 0.4.3：** adopt / provision / register、workspace、audit archive、`user link TAG --node NAME`；`node add` 保留为 legacy alias 配方。
+- **只读 workspace 条：** Overview / Health 展示 `fleet_id` + conflict（ROLLBACK / DIVERGED / INCONSISTENT / absent）；无身份 mutation、不渲染 URI/secret。
+### Notes
+- Spec: [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md)。Evidence: [`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md)。
+- D57 observe≠admin、`node add` runtime warning 仍属 0.5+。`VCL_FLEET_VERSION=0.4.4`。
+
 ## 0.4.3 (2026-08-21)
 **Controller-only** Adopt & Provision. Stamp: CTRL `0.4.3`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added

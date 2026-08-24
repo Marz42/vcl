@@ -10,9 +10,10 @@ Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py`,
 `trust.py`, and `vincula-ui/` (Local Audit UI static + stdlib HTTP).
 Required for `audit` / archive, local backup verify, workspace, and `vcl-fleet ui`.
 
-**Stamp (0.4.2 tree):** controller `VCL_FLEET_VERSION=0.4.2`; remote nodes remain
-`VINCULA_VERSION=0.3.1` (node helper is still `vcl`). **0.4.3** is in progress
-(docs first; stamp stays `0.4.2` until 0.4.3 closes).
+**Stamp (0.4.4 tree):** controller `VCL_FLEET_VERSION=0.4.4`; remote nodes remain
+`VINCULA_VERSION=0.3.1` (node helper is still `vcl`). Local Audit UI v2 (D53):
+UI Sync = `sync --full`; recipes cover adopt/provision/workspace/archive;
+no identity mutations.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
