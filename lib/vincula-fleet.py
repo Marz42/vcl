@@ -372,6 +372,7 @@ load_workspace_view = _WS.load_workspace_view
 save_workspace_view = _WS.save_workspace_view
 remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
+read_only_workspace_surface = _WS.read_only_workspace_surface
 workspace_mutation = _WS.workspace_mutation
 in_workspace_mutation = _WS.in_workspace_mutation
 cas_mutate_workspace = _WS.cas_mutate_workspace

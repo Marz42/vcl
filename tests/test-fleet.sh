@@ -69,13 +69,28 @@ readonly TEST_TOKYO_NODE_ID="8bb18c32-3333-4333-8333-333333333333"
 readonly TEST_SG_NODE_ID="9cc29d43-4444-4444-8444-444444444444"
 
 FLEET_SAVED_HOME="${HOME:-}"
+FLEET_SAVED_XDG="${XDG_CONFIG_HOME:-}"
 export HOME="${TEST_TMP}/user-home"
-mkdir -p "${HOME}"
+export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
 
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home"
 export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
 export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
 export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
+if [[ -n "${FLEET_SAVED_HOME}" && "${HOME}" != "${FLEET_SAVED_HOME}" ]]; then
+  pass "P1 gate: fleet suite HOME isolated from real user dir"
+else
+  case "${HOME}" in
+    "${TEST_TMP}"/*) pass "P1 gate: fleet suite HOME under TEST_TMP" ;;
+    *) fail "P1 gate: fleet suite HOME isolated (HOME=${HOME})" ;;
+  esac
+fi
+if [[ "${XDG_CONFIG_HOME}" == "${TEST_TMP}/xdg-config" ]]; then
+  pass "P1 gate: fleet suite XDG_CONFIG_HOME isolated under TEST_TMP"
+else
+  fail "P1 gate: fleet suite XDG_CONFIG_HOME isolated under TEST_TMP"
+fi
 unset VCL_FAKE_STATE_DIR
 unset VCL_FAKE_FAIL_RESTORE
 unset VCL_FAKE_RESTORE_LIE_OK
@@ -8670,7 +8685,15 @@ assert st == 200
 assert meta["identity_mutations"] is False
 assert meta["reseed"] == "cli-only"
 assert "refresh" in meta["cache_writes"]
-assert meta["pages"] == ["overview", "audit", "health"]
+assert meta["pages"] == [
+    "overview",
+    "nodes",
+    "users",
+    "traffic",
+    "audit",
+    "operations",
+]
+assert meta.get("ui_contract") == "D53-rev1"
 assert "Content-Security-Policy" in hdrs
 assert "DENY" in (hdrs.get("X-Frame-Options") or "")
 assert "trace" not in json.dumps(meta)
@@ -8988,10 +9011,123 @@ busy_thread.join(timeout=5)
 # Restore primary server runtime (token + port) after the busy-server helper.
 ui.set_ui_runtime(token=token, listen_port=port)
 
+# AC-4.4-rev1: probe live overlay; GET /api/nodes stays cache; no last-status write
+orig_live = fleet.run_status_payload
+
+def fake_probe(include_all=False):
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "controller_utc": "2026-08-16T08:00:00Z",
+        "nodes": [
+            {
+                "name": "lax",
+                "ssh": "OK",
+                "proxy": "OK",
+                "accounting": "OK",
+            }
+        ],
+    }
+
+ls_path = fleet.last_status_path()
+ls_before = ls_path.stat().st_mtime_ns if ls_path.is_file() else None
+fleet.run_status_payload = fake_probe
+st, probe_doc, _ = post("/api/refresh/probe", {})
+assert probe_doc["operation"] == "probe"
+assert probe_doc["result"]["nodes"][0]["accounting"] == "OK"
+if ls_path.is_file():
+    assert ls_path.stat().st_mtime_ns == ls_before, "probe must not write last-status"
+overlay = ui.api_nodes(live_overlay=probe_doc["result"])
+assert overlay["data_source"] == "live-probe"
+assert overlay["nodes"][0]["accounting"] == "OK"
+st, cache_nodes, _ = get("/api/nodes")
+assert cache_nodes.get("data_source", "cache") == "cache"
+assert cache_nodes["nodes"][0]["accounting"] == "STALE"
+fleet.run_status_payload = orig_live
+
+# AC-4.4-02: sync PARTIAL exit 2 → ok=false operation=sync_full
+orig_sync2 = fleet.run_sync_full_payload
+
+def fake_sync_partial(ns):
+    return 2, {"state": "PARTIAL", "nodes": [{"name": "lax", "status": "FAIL"}]}
+
+fleet.run_sync_full_payload = fake_sync_partial
+st, sync_part, _ = post("/api/sync", {})
+assert sync_part["ok"] is False
+assert sync_part["operation"] == "sync_full"
+assert sync_part["exit_code"] == 2
+assert sync_part["result"]["state"] == "PARTIAL"
+fleet.run_sync_full_payload = orig_sync2
+
+# AC-4.4-03: recipe CLI argv parses (incl. archive restore positional file)
+import re
+import shlex
+
+parser = fleet.build_parser()
+SKIP_RECIPES = {"backup-restore", "sync", "status-verify", "node-enable", "user-enable"}
+
+
+def recipe_argv(line: str) -> list[str]:
+    trial = line
+    for old, new in (
+        ("vcl-fleet ", ""),
+        ("NAME", "lax"),
+        ("HOST", "203.0.113.10"),
+        ("NEW_HOST", "203.0.113.11"),
+        ("NODE1,NODE2", "lax"),
+        ("NODE", "lax"),
+        ("TAG", "alice"),
+        ("FILE", "out.vclaudit"),
+        ("fleet.tgz", "fleet.tgz"),
+        ("users.csv", "users.csv"),
+        ("SHA256:...", "SHA256:abc"),
+        ("RFC3339", "2026-08-01T00:00:00Z"),
+        ("enable|disable", "enable"),
+        ("|verify|probe|status", " status"),
+    ):
+        trial = trial.replace(old, new)
+    trial = re.sub(r"\[[^\]]*\]", "", trial)
+    trial = " ".join(trial.split())
+    return shlex.split(trial)
+
+
+for rec in recipes["recipes"]:
+    if rec["id"] in SKIP_RECIPES:
+        continue
+    cmd = rec["command"]
+    for line in cmd.splitlines():
+        line = line.strip()
+        if not line or line.startswith("vcl ") or line.startswith("#"):
+            continue
+        parser.parse_args(recipe_argv(line))
+parser.parse_args(["audit", "archive", "restore", "out.vclaudit"])
+restore_rec = next(r for r in recipes["recipes"] if r["id"] == "audit-archive-restore")
+assert "restore out.vclaudit" in restore_rec["command"]
+assert "--input" not in restore_rec["command"]
+export_rec = next(r for r in recipes["recipes"] if r["id"] == "workspace-export")
+assert "export fleet.tgz" in export_rec["command"]
+assert "--output" not in export_rec["command"]
+
+st, ops, _ = get("/api/operations")
+assert st == 200 and isinstance(ops.get("rows"), list)
+assert any(r.get("operation") == "probe" for r in ops["rows"])
+
+assert "liveProbeOverlay" in static_app
+assert "/api/refresh/probe" in static_app
+assert "btn-probe" in (Path(static_dir) / "index.html").read_text(encoding="utf-8")
+
 # Static index: token meta, no vless
 st, html, idx_hdrs = req("/", headers={})
 assert st == 200
-assert "Overview" in html and "Audit" in html and "Health" in html
+assert (
+    "Overview" in html
+    and "Nodes" in html
+    and "Users" in html
+    and "Traffic" in html
+    and "Audit" in html
+    and "Operations" in html
+)
+assert 'data-page="health"' not in html
 assert "vless://" not in html.lower()
 assert 'name="vcl-ui-token"' in html
 assert "Content-Security-Policy" in idx_hdrs
@@ -9002,9 +9138,131 @@ thread.join(timeout=5)
 print("ui api ok")
 PY
 if (( ui_api_rc == 0 )); then
-  pass "AC-3.1 UI overview/health/audit/recipes + no mutation routes"
+  pass "AC-3.1 UI six-page overview/nodes/users/traffic/audit/operations + probe overlay"
 else
-  fail "AC-3.1 UI overview/health/audit/recipes + no mutation routes (rc=${ui_api_rc})"
+  fail "AC-3.1 UI six-page overview/nodes/users/traffic/audit/operations + probe overlay (rc=${ui_api_rc})"
+fi
+
+# AC-4.4-05: read-only workspace surface (five states) + GET does not write
+ws_ro_rc=0
+python3 - "${PROJECT_DIR}/lib/workspace.py" "${PROJECT_DIR}/lib/vincula-ui/server.py" \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "${TEST_TMP}/ws-ro-five" <<'PY' || ws_ro_rc=$?
+import importlib.util
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+
+ws_path, ui_path, fleet_path, base = sys.argv[1:5]
+base = Path(base)
+
+spec_ws = importlib.util.spec_from_file_location("workspace", ws_path)
+ws = importlib.util.module_from_spec(spec_ws)
+spec_ws.loader.exec_module(ws)
+
+spec_f = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec_f)
+sys.modules["vincula_fleet"] = fleet
+spec_f.loader.exec_module(fleet)
+
+spec_ui = importlib.util.spec_from_file_location("vincula_ui_server", ui_path)
+ui = importlib.util.module_from_spec(spec_ui)
+spec_ui.loader.exec_module(ui)
+ui.set_fleet_module(fleet)
+
+import argparse
+
+ws.bind(fleet)
+ns = argparse.Namespace()
+
+
+def init_ws_home(home: Path) -> None:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    fleet.cmd_init()
+    fleet.cmd_workspace_init(ns)
+    conn = fleet.open_fleet_db()
+    conn.close()
+
+
+def snapshot(home: Path) -> set[str]:
+    out = set()
+    if home.is_dir():
+        for p in home.rglob("*"):
+            if p.is_file():
+                out.add(str(p.relative_to(home)))
+    return out
+
+
+def surface(home: Path) -> dict:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    fleet._WS = ws  # noqa: SLF001
+    return ws.read_only_workspace_surface()
+
+
+def overview_workspace(home: Path) -> dict:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    ui.set_fleet_module(fleet)
+    before = snapshot(home)
+    doc = ui.api_overview()
+    after = snapshot(home)
+    assert before == after, (before ^ after, home)
+    return doc["workspace"]
+
+
+home_absent = base / "absent"
+home_absent.mkdir(parents=True, exist_ok=True)
+assert surface(home_absent)["conflict"] == "absent"
+
+home_ok = base / "ok"
+home_ok.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_ok)
+assert surface(home_ok)["conflict"] == "ok"
+assert overview_workspace(home_ok)["conflict"] == "ok"
+
+home_roll = base / "rollback"
+home_roll.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_roll)
+m = ws.load_workspace_manifest()
+ws.save_workspace_view(
+    {
+        "schema_version": 1,
+        "fleet_id": m["fleet_id"],
+        "last_seen_revision": m["revision"] + 2,
+        "last_seen_write_id": m["write_id"],
+        "last_seen_state_digest": m["state_digest"],
+    }
+)
+assert surface(home_roll)["conflict"] == "WORKSPACE_ROLLBACK"
+
+home_div = base / "diverged"
+home_div.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_div)
+m = ws.load_workspace_manifest()
+ws.save_workspace_view(
+    {
+        "schema_version": 1,
+        "fleet_id": m["fleet_id"],
+        "last_seen_revision": m["revision"],
+        "last_seen_write_id": str(uuid.uuid4()),
+        "last_seen_state_digest": m["state_digest"],
+    }
+)
+assert surface(home_div)["conflict"] == "WORKSPACE_DIVERGED"
+
+home_bad = base / "inconsistent"
+home_bad.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_bad)
+m = ws.load_workspace_manifest()
+m["state_digest"] = "sha256:" + ("f" * 64)
+ws.save_workspace_manifest(m)
+assert surface(home_bad)["conflict"] == "WORKSPACE_INCONSISTENT"
+print("ws-ro-five ok")
+PY
+if (( ws_ro_rc == 0 )); then
+  pass "AC-4.4-05 read-only workspace five states + GET no write"
+else
+  fail "AC-4.4-05 read-only workspace five states + GET no write (rc=${ws_ro_rc})"
 fi
 
 ui_help=$(fleet ui -h 2>&1) || true

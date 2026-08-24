@@ -1,4 +1,4 @@
-# Fleet operator guide（控制器 0.4.3 · 节点 0.3.1）
+# Fleet operator guide（控制器 0.4.4 · 节点 0.3.1）
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, syncs audit into a local **fleet-cache/v4**
@@ -12,13 +12,14 @@ does not use `/etc/vincula`.
 `lib/vincula-fleet.py`）。SPEC `vcl fleet <sub>` **≡** `vcl-fleet <sub>`。节点
 helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
 
-**版本：** CTRL `VCL_FLEET_VERSION=0.4.3`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
+**版本：** CTRL `VCL_FLEET_VERSION=0.4.4`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-0.4.3 evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
+0.4.4 UI v2 evidence: [`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md) · rev1 roadmap [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md).
+0.4.3 adopt/provision: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
 Node-line gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md).
 B14 live two-VPS replace: **PASS (2026-08-18)** —
@@ -123,7 +124,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet workspace init\|show\|verify\|export\|import\|migrate` | portable workspace/v1 生命周期 |
 | `vcl-fleet access bind\|list\|verify` | 机器本地 credential bindings（D28） |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only 只读 Local Audit UI |
-| `vcl-fleet version` | `vcl-fleet 0.4.3` |
+| `vcl-fleet version` | `vcl-fleet 0.4.4` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`（legacy；优先 `adopt` / `register`）。
@@ -143,7 +144,7 @@ Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 (`vcl-fleet ui`). **0.4.1+** adds workspace / access / cache-only status；
 **0.4.2** adds `sync --full` / audit archive / fleet-cache/v4；
 **0.4.3** adds `node adopt` / `provision` / `register`（`add` alias retained）；
-**0.4.4** Local Audit UI v2 (D53)：UI Sync=`sync --full`、recipes 对齐 0.4.3、只读 workspace 条。
+**0.4.4** Local Audit UI v2 (D53-rev1)：六页 Overview/Nodes/Users/Traffic/Audit/Operations；Probe 不写 cache；UI Sync=`sync --full`、recipes 对齐 CLI、严格只读 workspace 条。
 
 ## Adopt / Provision / Register（0.4.3）
 
@@ -172,23 +173,24 @@ loopback binds (`127.0.0.1`, `::1`); `0.0.0.0` / public listens are refused
 (AC-3.1-01). Stopping the UI process does **not** affect VPS nodes
 (AC-3.1-09). Spec: [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md).
 
-**Pages:** Overview / Audit / Health. Users and Nodes are **read-only
-drill-downs**, not admin editors. There are **no** UI identity mutations
+**Pages:** Overview / Nodes / Users / Traffic / Audit / Operations. **Probe**
+runs live SSH and renders results in the UI without writing `last-status.json`;
+**Verify** writes cache like CLI verify. There are **no** UI identity mutations
 (add/rotate/retire/replace/restore/import) and **no UI reseed** (CLI
 `vcl-fleet sync --reseed NAME` only). **Sync** = CLI `vcl-fleet sync --full`
-(identity+health+users+audit → cache); PARTIAL / non-zero is surfaced, never
+(identity+health+users+audit → cache); PARTIAL / exit 2 → `ok=false`, never
 painted as SUCCESS. Recipes cover adopt / provision / register / workspace /
 audit archive / `user link`; `node add` remains a **legacy alias**. Overview /
-Health show a read-only workspace strip (`fleet_id` + conflict). `/api/*`
+Nodes show a read-only workspace strip (`fleet_id` + conflict). `/api/*`
 requires loopback `Host` + process UI token; POST requires JSON
 `Content-Type` and, **when Origin is present**, a matching loopback Origin
 (missing Origin is allowed for same-machine tools). Default views never show Reality keys,
 Clash secret, or VLESS URI.
 
 **Data:** Local Read Plane from STATE cache（fleet-cache/v4 `fleet.db`、
-registry、`node_snapshot` / 可选 `users-cache`）。Buttons **Refresh status** /
-**Verify** / **Sync (--full)** call the same controller paths as the CLI（含 SSH 写入
-cache）。GET audit is local cache only (no implicit SSH). Audit uses the
+registry、`node_snapshot` / 可选 `users-cache`）。Buttons **Probe** /
+**Verify** / **Sync (--full)** call the same controller paths as the CLI（Probe 不写
+last-status；Verify/Sync 写 cache）。GET audit is local cache only (no implicit SSH). Audit uses the
 same interval-overlap query layer as `vcl-fleet audit user`, with a 31-day
 window cap and a 500-row default page. The HTTP server caps concurrent
 workers (503 when busy) and applies a per-request socket timeout.

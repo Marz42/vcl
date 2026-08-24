@@ -10,16 +10,19 @@
   <header class="top">
     <div class="brand">
       <strong>Vincula Fleet</strong>
-      <span class="muted">Local Audit UI · localhost · no identity mutations</span>
+      <span class="muted">Local Audit UI v2 · localhost · no identity mutations</span>
       <span id="approx-badge" class="badge approx" title="Clash polling; not byte-identical with node stats">approximate accounting</span>
     </div>
     <nav class="tabs" aria-label="Main">
       <button type="button" class="tab active" data-page="overview">Overview</button>
+      <button type="button" class="tab" data-page="nodes">Nodes</button>
+      <button type="button" class="tab" data-page="users">Users</button>
+      <button type="button" class="tab" data-page="traffic">Traffic</button>
       <button type="button" class="tab" data-page="audit">Audit</button>
-      <button type="button" class="tab" data-page="health">Health</button>
+      <button type="button" class="tab" data-page="operations">Operations</button>
     </nav>
     <div class="actions">
-      <button type="button" id="btn-refresh-status" class="btn">Refresh status</button>
+      <button type="button" id="btn-probe" class="btn" title="Live SSH probe (does not write last-status.json)">Probe</button>
       <button type="button" id="btn-verify" class="btn">Verify</button>
       <button type="button" id="btn-sync" class="btn primary">Sync…</button>
       <button type="button" id="btn-recipes" class="btn">CLI recipes ▾</button>
@@ -33,6 +36,7 @@
     <section id="page-overview" class="page active">
       <div class="kpi-row" id="kpi-row"></div>
       <p id="workspace-strip" class="hint" hidden></p>
+      <p id="live-probe-strip" class="hint" hidden></p>
       <div class="grid-2">
         <div class="card">
           <h2>Top users <span class="muted">(7d, approximate)</span></h2>
@@ -48,13 +52,61 @@
         <div id="overview-warnings"></div>
         <p class="hint">
           Drill-down:
-          <button type="button" class="linkish" id="goto-health">Health</button>
+          <button type="button" class="linkish" id="goto-nodes">Nodes</button>
           ·
           <button type="button" class="linkish" id="goto-audit">Audit</button>
           ·
-          <button type="button" class="linkish" id="btn-refresh-users">Refresh users (SSH)</button>
+          <button type="button" class="linkish" id="goto-operations">Operations</button>
         </p>
-        <div id="users-summary" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-nodes" class="page">
+      <div class="card">
+        <h2>Nodes</h2>
+        <p class="hint">
+          Default: cache from <code>sync --full</code> → <code>node_snapshot</code>.
+          <strong>Probe</strong> runs live SSH (shown until next cache reload); does not write
+          <code>last-status.json</code>. Click a row for drill-down.
+        </p>
+        <p id="nodes-workspace-strip" class="hint" hidden></p>
+        <div id="nodes-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-users" class="page">
+      <div class="card">
+        <h2>Users</h2>
+        <p class="hint">
+          From local cache. <button type="button" class="linkish" id="btn-refresh-users">Refresh users (SSH)</button>
+          writes <code>users-cache.json</code> only.
+        </p>
+        <div id="users-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-traffic" class="page">
+      <div class="card">
+        <h2>Traffic <span class="muted">(approximate)</span></h2>
+        <p class="hint">Aggregated from synced <code>daily_usage</code>. Not mixed with Audit connection rows.</p>
+        <form id="traffic-form" class="form-grid inline-form">
+          <label>Kind
+            <select name="kind" id="traffic-kind">
+              <option value="users">Top users</option>
+              <option value="nodes">Top nodes</option>
+              <option value="hosts">Top hosts</option>
+            </select>
+          </label>
+          <label>Days
+            <input name="days" id="traffic-days" type="number" min="1" max="90" value="7" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Load</button>
+          </div>
+        </form>
+        <div id="traffic-results" class="table-wrap">
+          <p class="empty">Run Sync (--full) first, then Load.</p>
+        </div>
       </div>
     </section>
 
@@ -91,16 +143,14 @@
       </div>
     </section>
 
-    <section id="page-health" class="page">
+    <section id="page-operations" class="page">
       <div class="card">
-        <h2>Node health</h2>
+        <h2>Operations history</h2>
         <p class="hint">
-          Health from <code>sync --full</code> → <code>node_snapshot</code> (cache-only status).
-          Use Refresh / Verify for live probe; Sync runs <code>sync --full</code>.
-          Click a row for node drill-down.
+          Local record of UI-triggered sync / probe / verify / refresh-users.
+          High-risk mutations (adopt, provision, rotate, …) are CLI-only — see recipes.
         </p>
-        <p id="health-workspace-strip" class="hint" hidden></p>
-        <div id="health-table" class="table-wrap"></div>
+        <div id="operations-table" class="table-wrap"></div>
       </div>
     </section>
   </main>
@@ -125,7 +175,7 @@
 
   <footer class="foot">
     <span id="foot-version">vcl-fleet</span>
-    · Overview / Audit / Health · Sync = <code>sync --full</code> · reseed CLI-only · closing UI does not affect nodes
+    · Overview / Nodes / Users / Traffic / Audit / Operations · Sync = <code>sync --full</code> · reseed CLI-only
   </footer>
 
   <script src="/app.js"></script>

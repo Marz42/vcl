@@ -93,6 +93,83 @@ def users_cache_path() -> Path:
     return fleet().fleet_home() / "users-cache.json"
 
 
+def _ui_runtime_dir(*, create: bool = False) -> Path:
+    f = fleet()
+    root: Path | None = None
+    try:
+        if f.workspace_trust_active():
+            manifest = f.load_workspace_manifest()
+            fid = str(manifest.get("fleet_id") or "").strip()
+            if fid:
+                root = f.fleet_local_state_dir(fid) / "ui-runtime"
+    except SystemExit:
+        root = None
+    if root is None:
+        root = f.fleet_home() / "ui-runtime"
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    return root
+
+
+def operations_log_path(*, create: bool = False) -> Path:
+    return _ui_runtime_dir(create=create) / "operations.jsonl"
+
+
+def append_ui_operation(
+    *,
+    operation: str,
+    target: str = "",
+    state: str,
+    exit_code: int,
+    ok: bool,
+    detail: str = "",
+) -> None:
+    """Append one UI-triggered operation row (never stores secrets)."""
+    record = {
+        "time": fleet().format_utc(datetime.now(timezone.utc)),
+        "operation": operation,
+        "target": target,
+        "state": state,
+        "exit_code": int(exit_code),
+        "ok": bool(ok),
+    }
+    if detail:
+        record["detail"] = detail[:500]
+    path = operations_log_path(create=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
+    path = operations_log_path(create=False)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    out.reverse()
+    return out
+
+
 def load_last_status_doc() -> Optional[dict[str, Any]]:
     """UI GET status plane: same cached payload as `fleet status` (P1-3).
 
@@ -363,9 +440,7 @@ def recipes_payload() -> dict[str, Any]:
             {
                 "id": "audit-archive-restore",
                 "title": "Restore audit archive (never touches sync cursor)",
-                "command": (
-                    "vcl-fleet audit archive restore --input out.vclaudit"
-                ),
+                "command": "vcl-fleet audit archive restore out.vclaudit",
             },
             {
                 "id": "sync",
@@ -377,8 +452,10 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "status-verify",
-                "title": "Status / verify (also UI Refresh)",
-                "command": "vcl-fleet status|verify [--json] [--all]",
+                "title": "Status (cache) / probe (live) / verify",
+                "command": (
+                    "vcl-fleet status|probe|verify [--json] [--all]"
+                ),
             },
         ],
     }
@@ -412,38 +489,8 @@ def _sync_cursors(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _workspace_surface() -> dict[str, Any]:
-    """Read-only workspace strip for Overview/Health (D53). Never mutates."""
-    f = fleet()
-    try:
-        if not f.workspace_trust_active():
-            return {
-                "active": False,
-                "fleet_id": None,
-                "revision": None,
-                "conflict": "absent",
-            }
-        manifest = f.load_workspace_manifest()
-        conflict = f.detect_workspace_conflict(manifest)
-        return {
-            "active": True,
-            "fleet_id": str(manifest.get("fleet_id") or ""),
-            "revision": int(manifest.get("revision") or 0),
-            "conflict": conflict or "ok",
-        }
-    except SystemExit:
-        return {
-            "active": False,
-            "fleet_id": None,
-            "revision": None,
-            "conflict": "absent",
-        }
-    except Exception:  # noqa: BLE001 — UI must never crash on workspace probe
-        return {
-            "active": False,
-            "fleet_id": None,
-            "revision": None,
-            "conflict": "absent",
-        }
+    """Read-only workspace strip for Overview/Nodes (strict, no writes)."""
+    return fleet().read_only_workspace_surface()
 
 
 def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -670,10 +717,13 @@ def api_overview() -> dict[str, Any]:
     }
 
 
-def api_health() -> dict[str, Any]:
+def api_nodes(*, live_overlay: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Node health table (cache + optional live probe overlay)."""
     f = fleet()
     registry = f.load_registry()
     status_doc = load_last_status_doc()
+    if live_overlay:
+        status_doc = dict(live_overlay)
     conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
@@ -695,11 +745,28 @@ def api_health() -> dict[str, Any]:
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "accounting_mode": "approximate",
+        "data_source": "live-probe" if live_overlay else "cache",
         "last_status_at": (status_doc or {}).get("controller_utc"),
         "last_status_ok": (status_doc or {}).get("ok"),
         "nodes": _node_health_rows(registry, status_doc, cursors),
         "warnings": warnings,
         "workspace": workspace,
+    }
+
+
+def api_health() -> dict[str, Any]:
+    """Legacy alias for ``api_nodes`` (AC-3.1 fixtures)."""
+    return api_nodes()
+
+
+def api_operations(*, limit: int = 100) -> dict[str, Any]:
+    lim = max(1, min(int(limit), 500))
+    rows = read_ui_operations(limit=lim)
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "limit": lim,
+        "rows": rows,
+        "note": "Local UI/CLI operation history; secrets redacted.",
     }
 
 
@@ -1072,15 +1139,18 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
 
 def api_stats_top(kind: str, days: int) -> dict[str, Any]:
     f = fleet()
-    if kind not in ("users", "hosts"):
-        raise ValueError("kind must be users or hosts")
+    if kind not in ("users", "hosts", "nodes"):
+        raise ValueError("kind must be users, hosts, or nodes")
     if days < 1:
         raise ValueError("days must be >= 1")
     registry = f.load_registry()
     start, end = f.stats_date_window(days)
-    group_by = (
-        ("user_id", "node_id") if kind == "users" else ("destination_host", "node_id")
-    )
+    if kind == "nodes":
+        group_by = ("node_id",)
+    elif kind == "users":
+        group_by = ("user_id", "node_id")
+    else:
+        group_by = ("destination_host", "node_id")
     conn = f.open_cache_readonly()
     try:
         raw = f.query_daily_grouped(
@@ -1102,24 +1172,57 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
     }
 
 
-def api_refresh_status(*, verify: bool) -> dict[str, Any]:
+def api_refresh_probe() -> dict[str, Any]:
+    """Live SSH probe (``cmd_probe`` path). Does not write last-status.json."""
     f = fleet()
-    if verify:
-        payload = f.run_verify_payload(include_all=False)
-        op = "verify"
-    else:
-        payload = f.run_status_payload(include_all=False)
-        op = "status"
+    payload = f.run_status_payload(include_all=False)
     payload = dict(payload)
     payload.pop("_rows", None)
     code = 0 if payload.get("ok") else 1
+    state = "SUCCESS" if code == 0 else "FAIL"
+    append_ui_operation(
+        operation="probe",
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "operation": op,
+        "operation": "probe",
         "exit_code": code,
         "ok": code == 0,
         "result": payload,
     }
+
+
+def api_refresh_verify() -> dict[str, Any]:
+    """Live verify; writes last-status.json (same as CLI verify)."""
+    f = fleet()
+    payload = f.run_verify_payload(include_all=False)
+    payload = dict(payload)
+    payload.pop("_rows", None)
+    code = 0 if payload.get("ok") else 1
+    state = "SUCCESS" if code == 0 else "FAIL"
+    append_ui_operation(
+        operation="verify",
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operation": "verify",
+        "exit_code": code,
+        "ok": code == 0,
+        "result": payload,
+    }
+
+
+def api_refresh_status(*, verify: bool) -> dict[str, Any]:
+    """Backward-compatible refresh routes."""
+    if verify:
+        return api_refresh_verify()
+    return api_refresh_probe()
 
 
 def api_sync(*, node: Optional[str] = None) -> dict[str, Any]:
@@ -1134,6 +1237,14 @@ def api_sync(*, node: Optional[str] = None) -> dict[str, Any]:
     )
     with f.fleet_op_lock():
         code, payload = f.run_sync_full_payload(ns)
+    state = str((payload or {}).get("state") or ("SUCCESS" if code == 0 else "FAIL"))
+    append_ui_operation(
+        operation="sync_full",
+        target=str(node or ""),
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": "sync_full",
@@ -1184,6 +1295,12 @@ def api_refresh_users() -> dict[str, Any]:
         "unreachable": payload.get("unreachable") or [],
     }
     write_users_cache(cache)
+    append_ui_operation(
+        operation="refresh_users",
+        state=str(payload.get("state") or ("SUCCESS" if code == 0 else "FAIL")),
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": "refresh-users",
@@ -1342,8 +1459,16 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 self._send_json(200, api_overview())
                 return
-            if path == "/api/health":
-                self._send_json(200, api_health())
+            if path in ("/api/health", "/api/nodes"):
+                self._send_json(200, api_nodes())
+                return
+            if path == "/api/operations":
+                lim_raw = one("limit") or "100"
+                try:
+                    lim = int(lim_raw)
+                except ValueError as exc:
+                    raise ValueError("limit must be an integer") from exc
+                self._send_json(200, api_operations(limit=lim))
                 return
             if path == "/api/recipes":
                 self._send_json(200, recipes_payload())
@@ -1392,13 +1517,20 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                     {
                         "schema_version": UI_SCHEMA_VERSION,
                         "version": fleet().VCL_FLEET_VERSION,
-                        "pages": ["overview", "audit", "health"],
+                        "pages": [
+                            "overview",
+                            "nodes",
+                            "users",
+                            "traffic",
+                            "audit",
+                            "operations",
+                        ],
                         "identity_mutations": False,
                         "cache_writes": ["refresh", "sync_full"],
                         "sync": "full",
                         "reseed": "cli-only",
                         "bind": "loopback-only",
-                        "ui_contract": "D53",
+                        "ui_contract": "D53-rev1",
                         "auth": {
                             "token_header": UI_TOKEN_HEADER,
                             "host_loopback_only": True,
@@ -1445,11 +1577,14 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
-            if path == "/api/refresh/status":
-                self._send_json(200, api_refresh_status(verify=False))
+            if path == "/api/refresh/probe":
+                self._send_json(200, api_refresh_probe())
                 return
             if path == "/api/refresh/verify":
-                self._send_json(200, api_refresh_status(verify=True))
+                self._send_json(200, api_refresh_verify())
+                return
+            if path == "/api/refresh/status":
+                self._send_json(200, api_refresh_probe())
                 return
             if path == "/api/refresh/users":
                 self._send_json(200, api_refresh_users())

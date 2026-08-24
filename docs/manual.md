@@ -1,12 +1,12 @@
-# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.3）
+# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.4）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
 从零装两台节点并接入 Fleet 的逐步命令见
 [已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
 
-合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.3：[`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
+合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.4：[`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · UI spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
 
-记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.3`）。**0.4.x** Node 仍钉 **0.3.1**；Controller 为 **0.4.3**（Adopt & Provision）。
+记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.4`）。**0.4.x** Node 仍钉 **0.3.1**；Controller 当前 **0.4.4**（Local Audit UI v2 / D53-rev1）。
 
 ---
 
@@ -1172,7 +1172,7 @@ python3 bin/vcl-fleet sync --json
 python3 bin/vcl-fleet workspace init
 python3 bin/vcl-fleet workspace show
 python3 bin/vcl-fleet workspace verify
-python3 bin/vcl-fleet workspace export --output ws.tgz
+python3 bin/vcl-fleet workspace export ws.tgz
 python3 bin/vcl-fleet workspace import ws.tgz
 python3 bin/vcl-fleet workspace migrate
 ```
@@ -1493,7 +1493,7 @@ bash scripts/build-release.sh
 bash scripts/build-controller.sh   # 可选；工作站也可直接用源树 bin/vcl-fleet
 
 ls -l dist/vincula-node-*.tar.gz dist/vincula-node-*.tar.gz.sha256
-python3 bin/vcl-fleet version      # 期望含 0.4.3（控制器）；节点仍为 0.3.1
+python3 bin/vcl-fleet version      # 期望含 0.4.4（控制器）；节点仍为 0.3.1
 ```
 
 把 **每个 VPS** 各拷一份节点包（示例用 scp）：

@@ -777,6 +777,51 @@ def remember_workspace_view(manifest: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+def read_only_workspace_surface() -> dict[str, Any]:
+    """Strict read-only workspace strip for UI GET (D53 / 0.4.4).
+
+    Never mkdir, never remember_workspace_view, never workspace_mutation.
+    """
+    path = workspace_manifest_path()
+    if not path.is_file():
+        return {
+            "active": False,
+            "fleet_id": None,
+            "revision": None,
+            "conflict": "absent",
+        }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {
+            "active": False,
+            "fleet_id": None,
+            "revision": None,
+            "conflict": "absent",
+        }
+    try:
+        manifest = validate_workspace_manifest(raw)
+    except SystemExit:
+        return {
+            "active": True,
+            "fleet_id": str(raw.get("fleet_id") or "") or None,
+            "revision": int(raw.get("revision") or 0)
+            if isinstance(raw.get("revision"), int)
+            else None,
+            "conflict": WS_ERR_INCONSISTENT,
+        }
+    try:
+        conflict = detect_workspace_conflict(manifest)
+    except SystemExit:
+        conflict = WS_ERR_INCONSISTENT
+    return {
+        "active": True,
+        "fleet_id": str(manifest.get("fleet_id") or ""),
+        "revision": int(manifest.get("revision") or 0),
+        "conflict": conflict or "ok",
+    }
+
+
 def detect_workspace_conflict(
     manifest: dict[str, Any], view: dict[str, Any] | None = None
 ) -> str | None:
