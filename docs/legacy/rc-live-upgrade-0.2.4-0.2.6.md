@@ -1,5 +1,7 @@
 # Vincula live upgrade RC — 0.2.4 → 0.2.5 → 0.2.6
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 面向 **远端 Debian amd64 VPS** 的升级链实机验收。
 
 ## 前置

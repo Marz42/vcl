@@ -57,11 +57,11 @@ Companion: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · Evidenc
 | --- | --- |
 | B14 live replace (+ AC-3.0-11, age, Win11) | **PASS** — [`evidence/0.3.1-live/`](evidence/0.3.1-live/) |
 | B15 Local Audit UI | **Implemented** (AC-3.1 fixtures) |
-| B18 Schema 4 installer health | **PASS** |
+| B18 accounting-db/v4 installer health | **PASS** |
 | B19–B20 freeze + CI + artifacts | **PASS** |
 | B21 fresh install | **PASS** — [`evidence/0.3.1-rc2/B21-fresh-install.md`](evidence/0.3.1-rc2/B21-fresh-install.md) |
 | B22 upgrade (rc1→rc2 surrogate) | **PASS** — [`evidence/0.3.1-rc2/B22-upgrade-rc1.md`](evidence/0.3.1-rc2/B22-upgrade-rc1.md) |
-| B23 Schema 4 Fleet re-sync | **PASS** — [`evidence/0.3.1-rc2/B23-fleet-resync.md`](evidence/0.3.1-rc2/B23-fleet-resync.md) |
+| B23 accounting-db/v4 Fleet re-sync | **PASS** — [`evidence/0.3.1-rc2/B23-fleet-resync.md`](evidence/0.3.1-rc2/B23-fleet-resync.md) |
 | B24 replace smoke | **Deferred** (see above) |
 | B25 docs consistency | **PASS** (this freeze) |
 | B26 branch protection | **PASS** |

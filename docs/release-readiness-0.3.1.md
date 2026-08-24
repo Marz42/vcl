@@ -23,12 +23,12 @@ Known P1 release blockers: 0
 
 | ID | Result |
 | --- | --- |
-| B18 Schema 4 installer health | **PASS** |
+| B18 accounting-db/v4 installer health | **PASS** |
 | B19 rc2 scope freeze / tag | **PASS** (`v0.3.1-rc2`) |
 | B20 CI + artifact build | **PASS** |
 | B21 fresh install live | **PASS** |
 | B22 live upgrade (rc1→rc2 surrogate) | **PASS** |
-| B23 Schema 4 Fleet re-sync | **PASS** |
+| B23 accounting-db/v4 Fleet re-sync | **PASS** |
 | B24 replace regression smoke | **DEFERRED** (Known Issue) |
 | B25 documentation consistency | **PASS** |
 | B26 branch protection | **PASS** |
@@ -37,7 +37,7 @@ Known P1 release blockers: 0
 
 ## Earlier living-tree closures
 
-B14 live replace **PASS**. B15 UI **implemented**. B17 restore/sync fail-close **CLOSED**. Schema 4 / Export Protocol v2 **on tree**. Known P0: **0**.
+B14 live replace **PASS**. B15 UI **implemented**. B17 restore/sync fail-close **CLOSED**. accounting-db/v4 / Export Protocol v2 **on tree**. Known P0: **0**.
 
 ## Upgrade contract
 

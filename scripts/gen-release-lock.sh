@@ -11,6 +11,7 @@ files=(
   vincula-bootstrap.sh
   bin/vincula
   lib/vincula-common.sh
+  lib/sing-box-release.sh
   lib/vincula-accountd.py
   lib/vincula-stats.py
   lib/vincula-audit.py

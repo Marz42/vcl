@@ -2,6 +2,21 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.3 (2026-08-21)
+**Controller-only** Adopt & Provision. Stamp: CTRL `0.4.3`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+### Added
+- **`node adopt` / `provision` / `register`（D33/D49）：** adopt=已装+SSH identity+register；provision=fresh install+verify+register+`sync --full`；register=registry-only。`node add`≡adopt；`node add --offline --node-id`≡register（0.4.x 无 warning）。
+- **非 air-gap D35 payload：** controller zip `payload/vincula-node-0.3.1.tar.gz`+.sha256+`payload-manifest.json`；本地+远端 digest fail-closed。
+- **Provision preflight（D35/D34）：** 两阶段：SSH/OS/arch/权限/apt/冲突 → 自动安装缺失依赖（含 python3）→ 网络/端口/Reality。`VCL_SERVER`/`--server` 跳过 ipify。sudo 安装：`sudo -n env VCL_SERVER=… bash vincula.sh`。
+- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）。
+- **`user link TAG --node NAME`：** 实时 SSH 取单节点 VLESS URI；必须 `--node`；不缓存、不写日志、不批量导出。
+### Fixes (LIVE PR #8)
+- **P1** 两阶段 preflight：python3 不再是硬前置；缺依赖经 apt 安装后再做网络/端口/Reality。staging 用 `mktemp`。sudo：`sudo -n env VCL_SERVER=… bash vincula.sh`。apt 失败零安装/零注册。
+- **P2** 人类模式 stderr 阶段进度 + 安装心跳（15–30s）；`--json` stdout 保持纯 JSON；不透传/记录 VLESS URI、UUID、Reality 私钥、Clash secret。安装 SSH 用 reader 线程排空管道（避免远端输出 >64KiB 堵死被误报 600s 超时）；保存有界脱敏尾部。
+### Notes
+- Evidence: [`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。LIVE AC-4.2-01/02/05/06 **PASS LIVE**（2026-08-24，Debian 13 amd64，root 路径，HEAD `3429eb6`）。
+- Schema namespaces (D45) 未变。业务在 `lib/provision.py`；`VCL_FLEET_VERSION=0.4.3`。
+
 ## 0.4.2 (2026-08-21)
 **Controller-only** Local Cache & Archive. Stamp: CTRL `0.4.2`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added
@@ -14,7 +29,7 @@
 ### Fixes (P1)
 - **P1-1** `workspace_mutation` sole portable-write entry (CAS/rev/digest).
 - **P1-2** cache rollback journal; RO `mode=ro` + `query_only`.
-- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write).
+- **P1-3** cached status ← `node_snapshot`; probe live-only (no last-status write); `status --live` remains a **deprecated** alias for `probe`.
 - **P1-4** archive canonical excludes `imported_at`; restore rebuilds daily_usage.
 - **P1-5** local tag→user_id; audit/stats/status/UI Local Read Plane.
 - **P1-6** (also under Added) machine-local → CONFIG/STATE; copyable workspace root.
@@ -25,7 +40,8 @@
 - **F7-4** cached status `ok` from node health (explicit FAIL → non-zero).
 - **F7-5** workspace export refuses inconsistent / conflicted workspace.
 ### Notes
-- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md). LIVE optional AC-4.1-03/06.
+- Evidence: [`docs/evidence/0.4.2/SUMMARY.md`](docs/evidence/0.4.2/SUMMARY.md) (offline gate **1652** / **884** PASS after F7). LIVE optional AC-4.1-03/06.
+- Schema namespaces (D45): accounting-db/v4 · fleet-registry/v2 · fleet-cache/v4 · workspace/v1 · audit-archive/v1.
 
 ## 0.4.1 (2026-08-21)
 

@@ -1,15 +1,15 @@
-# Accounting reliability (V0.2.7 / V0.2.8 / V0.2.9 / V0.3.0)
+# Accounting reliability (V0.2.7 … V0.3.1)
 
 Vincula does **not** ship a patched sing-box binary. Accounting is built on:
 
 1. Stock sing-box **1.13.18** Clash API (`experimental.clash_api` bound to `127.0.0.1` only)
 2. Per-user `acct/<tag>` direct outbounds + `auth_user` route rules
 
-Clash API poll is the **only** production collector in 0.2.7 through 0.3.0. There is no file-backed ingest path.
+Clash API poll is the **only** production collector in 0.2.7 through 0.3.1. There is no file-backed ingest path.
 
 ## Status: Approximate — Reliable Accounting is NOT done
 
-| Claim | V0.2.7 reality |
+| Claim | V0.2.7+ reality |
 | --- | --- |
 | Exact per-flow billing | **No** — Clash API polling can miss short-lived connections |
 | Lifecycle-complete closed events from stock sing-box | **No** — not available as a stable stream in 1.13.18 |
@@ -18,9 +18,9 @@ Clash API poll is the **only** production collector in 0.2.7 through 0.3.0. Ther
 
 Do not treat poll-derived numbers as byte-perfect metering. Product retention defaults are **raw 90 days** / **daily 90 days** (UTC day boundaries for rollups).
 
-## Schema 4
+## accounting-db/v4
 
-SQLite `accounting.db` uses `meta.schema_version = 4` (migrates 2→3→4 on open).
+SQLite `accounting.db` uses **accounting-db/v4** (`meta.schema_version = 4`; migrates 2→3→4 on open). Docs must not say bare “Schema 4”.
 
 | Object | Role |
 | --- | --- |
@@ -35,7 +35,7 @@ SQLite `accounting.db` uses `meta.schema_version = 4` (migrates 2→3→4 on ope
 | `poll_baseline` | Durable Clash counters + accounted totals for the open generation |
 | `daily_usage` | Unchanged UTC-day rollup keyed by `(date, user_id, destination_host)` |
 
-Schema 3→4 never rewrites `event_id`. Closed rows get contiguous `export_seq` ordered by `event_id ASC`; open rows stay `NULL`. Schema 2→3 rewrite keeps accounted bytes, assigns `event_id`, sets `generation=0`, leaves `instance_id` NULL, and does **not** invent `poll_baseline` counters. Migrates are **irreversible**; rollback is restore of the pre-upgrade backup.
+accounting-db v3→v4 never rewrites `event_id`. Closed rows get contiguous `export_seq` ordered by `event_id ASC`; open rows stay `NULL`. Schema 2→3 rewrite keeps accounted bytes, assigns `event_id`, sets `generation=0`, leaves `instance_id` NULL, and does **not** invent `poll_baseline` counters. Migrates are **irreversible**; rollback is restore of the pre-upgrade backup.
 
 Open-row polls use **UPDATE-first** writes so AUTOINCREMENT is not burned on every Clash tick.
 
@@ -74,5 +74,5 @@ Open-row polls use **UPDATE-first** writes so AUTOINCREMENT is not burned on eve
 - Retention knobs live in `/etc/vincula/config.toml`
 - Daily rollup uses the UTC date of `closed_at` (else `started_at`)
 - `vcl accounting status` reports Clash poll only; it does not claim a preferred JSONL ingest
-- `vcl accounting check` runs the same Accounting Plane checker as `vcl verify` (schema 4, heartbeat, baseline/counter sanity, retention backlog)
-- `vcl audit` is connection-level RFC3339 interval-overlap over schema 4; durable `audit export` is closed-only by `export_seq` (Protocol v2). `vcl stats` remains UTC day granularity
+- `vcl accounting check` runs the same Accounting Plane checker as `vcl verify` (accounting-db/v4, heartbeat, baseline/counter sanity, retention backlog)
+- `vcl audit` is connection-level RFC3339 interval-overlap over accounting-db/v4; durable `audit export` is closed-only by `export_seq` (Protocol v2). `vcl stats` remains UTC day granularity

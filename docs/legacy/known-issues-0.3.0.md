@@ -1,5 +1,7 @@
 # Vincula 0.3.0 — Known issues / limitations
 
+> **(历史文档，命令名 vcl 已迁移为 vcl-fleet；节点 CLI 仍为 vcl)**
+
 > **Historical freeze record.** Living tree: [`../known-issues-0.3.1.md`](../known-issues-0.3.1.md).
 > **B14 later PASS (2026-08-18)**; “B14 deferred / NOT RUN” below is freeze-era text only.
 

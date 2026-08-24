@@ -145,6 +145,11 @@ jobs:
           [[ "$audit_err" != *"vincula-audit.py not found"* ]]
           [[ "$audit_err" != *"vincula-backup.py not found"* ]]
           [[ "$audit_err" != *"vincula-audit-archive.py not found"* ]]
+          test -f "${UNPACK}/lib/provision.py"
+          provision_err=$(cd "$CWD" && env -u PYTHONPATH -u PYTHONHOME \
+            python3 -s -c "import importlib.util,sys; p=sys.argv[1]; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.load_provision_module()" \
+            "${UNPACK}/lib/vincula-fleet.py" 2>&1) || true
+          [[ "$provision_err" != *"provision.py not found"* ]]
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vincula-dist

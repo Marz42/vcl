@@ -1,5 +1,7 @@
 # Vincula 0.2.8 — Known issues / limitations
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices.
 
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** — offline fixture coverage for Fleet Foundation is green; there is no Windows 11 live `vcl-fleet.cmd` run and no live SSH against real VPS nodes. 0.2.8 does **not** use the D20 24h soak gate. See [`release-readiness-0.2.8.md`](release-readiness-0.2.8.md).

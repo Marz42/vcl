@@ -1,5 +1,7 @@
 # Vincula 0.3.0 Release Readiness
 
+> **(历史文档，命令名 vcl 已迁移为 vcl-fleet；节点 CLI 仍为 vcl)**
+
 > **Historical freeze record.** Living tree is `0.3.1` —
 > [`../release-readiness-0.3.1.md`](../release-readiness-0.3.1.md).
 > **B14 later PASS (2026-08-18)**; do not treat “B14 deferred” text below as current.

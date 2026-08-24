@@ -1,5 +1,7 @@
 # Vincula 0.2.4 Release Readiness Report
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Date:** 2026-08-14  
 **Tree version:** 0.2.4  
 **Automated suite:** `bash tests/test.sh` → **All 209 tests passed** (WSL2)  

@@ -1,5 +1,7 @@
 # Vincula 0.2.7 — Known issues / limitations
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices.
 
 **Release recommendation:** **READY WITH DOCUMENTED LIMITATIONS** — no live 24h soak has been run, so AC-2.7-09 is missing and this tree must not be called `READY FOR RC`. See [`release-readiness-0.2.7.md`](release-readiness-0.2.7.md).

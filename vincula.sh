@@ -12,10 +12,19 @@ IFS=$'\n\t'
 umask 077
 
 readonly VINCULA_VERSION="0.3.1"
-readonly SING_BOX_VERSION="1.13.18"
+_VINCULA_ROOT=""
+_vincula_self="${BASH_SOURCE[0]:-}"
+if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
+  _VINCULA_ROOT="$(cd "$(dirname "$_vincula_self")" && pwd)"
+elif [[ -n "${VINCULA_ROOT:-}" ]]; then
+  _VINCULA_ROOT="$VINCULA_ROOT"
+else
+  _VINCULA_ROOT="$(pwd)"
+fi
+# shellcheck source=lib/sing-box-release.sh
+source "${_VINCULA_ROOT}/lib/sing-box-release.sh"
 readonly SING_BOX_AMD64_SHA256="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
 readonly SING_BOX_ARM64_SHA256="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
-readonly SING_BOX_RELEASE_BASE="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}"
 readonly PUBLIC_IP_URL="https://api.ipify.org"
 readonly DEFAULT_LISTEN="0.0.0.0"
 readonly BACKUP_MARKER=".vincula-backup"
@@ -360,14 +369,6 @@ expected_archive_sha256() {
     arm64) printf '%s\n' "$SING_BOX_ARM64_SHA256" ;;
     *) return 1 ;;
   esac
-}
-
-release_asset_name() {
-  printf 'sing-box-%s-linux-%s.tar.gz\n' "$SING_BOX_VERSION" "$1"
-}
-
-release_asset_url() {
-  printf '%s/%s\n' "$SING_BOX_RELEASE_BASE" "$(release_asset_name "$1")"
 }
 
 validate_port() {

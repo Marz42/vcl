@@ -26,6 +26,8 @@ FILES=(
   lib/vincula-audit.py
   lib/vincula-backup.py
   lib/vincula-audit-archive.py
+  lib/provision.py
+  lib/sing_box_release.py
   lib/workspace.py
   lib/access.py
   lib/trust.py
@@ -55,6 +57,44 @@ for f in "${FILES[@]}"; do
 done
 chmod 0755 "${OUT}/bin/vcl-fleet"
 
+# D51: embed pinned node payload (not in FILES / controller.lock — own digest+manifest).
+NODE_VER=$(grep -E '^readonly VINCULA_VERSION=' "${ROOT}/vincula.sh" | sed -E 's/.*"([^"]+)".*/\1/')
+[[ -n "$NODE_VER" ]] || { printf 'ERROR: could not parse VINCULA_VERSION for node payload\n' >&2; exit 1; }
+NODE_TAR="${DIST_ROOT}/vincula-node-${NODE_VER}.tar.gz"
+[[ -f "$NODE_TAR" && -f "${NODE_TAR}.sha256" ]] || {
+  printf 'ERROR: run build-release.sh first: missing %s\n' "$NODE_TAR" >&2
+  exit 1
+}
+mkdir -p "${OUT}/payload"
+install -m 0644 "$NODE_TAR" "${NODE_TAR}.sha256" "${OUT}/payload/"
+DIGEST=$(awk '{print $1}' "${NODE_TAR}.sha256")
+python3 - <<PY
+import json
+import pathlib
+
+p = pathlib.Path("${OUT}/payload/payload-manifest.json")
+p.write_text(
+    json.dumps(
+        {
+            "controller_version": "${VERSION}",
+            "node_payload_version": "${NODE_VER}",
+            "sha256": "${DIGEST}",
+            "supported_os": [
+                "debian12",
+                "debian13",
+                "ubuntu22.04",
+                "ubuntu24.04",
+                "ubuntu26.04",
+            ],
+            "supported_arch": ["amd64", "arm64"],
+        },
+        indent=2,
+    )
+    + "\n"
+)
+PY
+install -m 0644 "${OUT}/payload/"* "${DIST_ROOT}/"
+
 (
   cd "$OUT"
   : > controller.lock
@@ -78,11 +118,11 @@ rm -f -- "$ARCHIVE" "$SIDECAR"
   python3 -m zipfile -c "$(basename "$ARCHIVE")" "$NAME"
 )
 
-python3 - "$ARCHIVE" "$NAME" <<'PY'
+python3 - "$ARCHIVE" "$NAME" "$NODE_VER" <<'PY'
 import sys
 import zipfile
 
-archive, prefix = sys.argv[1], sys.argv[2]
+archive, prefix, node_ver = sys.argv[1], sys.argv[2], sys.argv[3]
 need = (
     f"{prefix}/README-controller.md",
     f"{prefix}/bin/vcl-fleet",
@@ -91,6 +131,7 @@ need = (
     f"{prefix}/lib/vincula-audit.py",
     f"{prefix}/lib/vincula-backup.py",
     f"{prefix}/lib/vincula-audit-archive.py",
+    f"{prefix}/lib/provision.py",
     f"{prefix}/lib/workspace.py",
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
@@ -100,7 +141,11 @@ need = (
     f"{prefix}/lib/vincula-ui/static/app.css",
     f"{prefix}/lib/vincula-ui/static/app.js",
     f"{prefix}/controller.lock",
+    f"{prefix}/payload/vincula-node-{node_ver}.tar.gz",
+    f"{prefix}/payload/vincula-node-{node_ver}.tar.gz.sha256",
+    f"{prefix}/payload/payload-manifest.json",
 )
+# Forbid installer/lock at zip lib roots; payload tarball contents are opaque.
 forbidden = ("vincula.sh", "release.lock", "vincula-accountd.service")
 with zipfile.ZipFile(archive) as zf:
     names = zf.namelist()

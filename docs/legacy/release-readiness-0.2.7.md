@@ -1,5 +1,7 @@
 # Vincula 0.2.7 Release Readiness
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Tree version:** 0.2.7  
 **Date:** 2026-08-16  
 **Focus:** Stability & Audit Foundation (schema 3, durable baseline, JSONL A2, batched retention, `vcl audit`, D3 checker)  

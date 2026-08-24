@@ -1,5 +1,7 @@
 # Vincula 0.2.8 Release Readiness
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Tree version:** 0.2.8  
 **Date:** 2026-08-16  
 **Focus:** Fleet Foundation (`instance_id` mint, `vcl-fleet` registry/SSH/status/verify, dual artifact, D14 host-key, clock skew)  

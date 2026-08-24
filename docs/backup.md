@@ -1,6 +1,8 @@
-# Backup, restore, and replace (0.3.1)
+# Backup, restore, and replace (0.3.1 节点)
 
 Node **identity / audit archives** and physical-instance replacement.
+**命令名：** 节点 CLI 仍为 `vcl` / `vincula`；工作站控制器为 `vcl-fleet`
+（勿把下文节点命令写成控制器入口）。
 Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md)
 (0.3.0 freeze record: [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md)).

@@ -1,5 +1,7 @@
 # Vincula 0.2.6 — Known issues / limitations
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 **Policy:** Accounting remains **approximate / Clash polling**. Short-lived connections may be missed between polls. Do not use for invoices.
 
 ## Product limitations

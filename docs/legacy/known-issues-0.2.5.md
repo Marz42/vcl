@@ -1,5 +1,7 @@
 # Vincula 0.2.5 — Known issues / limitations
 
+> **(0.2.x 历史文档，命令名 vcl 已迁移为 vcl-fleet)**
+
 更新日期：2026-08-15  
 Gate：**READY WITH DOCUMENTED LIMITATIONS**
 
