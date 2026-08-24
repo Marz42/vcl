@@ -12818,6 +12818,61 @@ assert "provision: install" in text, text
 assert "still running" in text, text
 PY
 
+assert_success "LIVE-P2 popen drains 1MiB without timeout" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys, time
+
+fleet_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+cmd = [
+    sys.executable,
+    "-c",
+    "import sys; sys.stdout.write('x' * (1024 * 1024)); sys.stdout.flush()",
+]
+t0 = time.monotonic()
+proc = prov._popen_with_heartbeat(cmd, timeout=15.0, heartbeat=20.0)
+elapsed = time.monotonic() - t0
+assert proc.returncode == 0, (proc.returncode, proc.stderr)
+assert elapsed < 15.0, elapsed
+assert "ssh timed out" not in (proc.stderr or "")
+assert len(proc.stdout) <= prov.INSTALL_OUTPUT_BOUND + 1, len(proc.stdout)
+assert proc.stdout.endswith("x"), proc.stdout[-8:]
+PY
+
+mkdir -p "${TEST_TMP}/live-1m-state" "${TEST_TMP}/live-1m-home"
+assert_success "LIVE-P2 installer 1MiB stdout completes (not timeout)" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_INSTALL_BYTES=1048576 \
+    VCL_PROVISION_INSTALL_TIMEOUT=15 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/live-1m-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/live-1m-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.3.1.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
+import importlib.util, os, subprocess, sys, time
+
+fleet_path, host_key = sys.argv[1], sys.argv[2]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+t0 = time.monotonic()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+    skip_sync=True,
+)
+elapsed = time.monotonic() - t0
+assert doc.get("ok") is True, doc
+assert elapsed < 15.0, elapsed
+PY
+
 mkdir -p "${TEST_TMP}/live-json-state" "${TEST_TMP}/live-json-home"
 LIVE_JSON_HOME="${TEST_TMP}/live-json-home"
 LIVE_JSON_STATE="${TEST_TMP}/live-json-state"

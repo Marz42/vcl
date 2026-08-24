@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -48,6 +49,8 @@ REMOTE_STAGE_DIR = "/tmp"
 DEFAULT_REALITY_HOST = "www.cloudflare.com"
 INSTALL_TIMEOUT_SECONDS = 600.0
 DEFAULT_HEARTBEAT_SECONDS = 20.0
+# Keep a tail of installer stdout/stderr (drain the rest so the pipe cannot block).
+INSTALL_OUTPUT_BOUND = 8192
 
 # Commit-boundary failure: remote install+verify succeeded, local registry
 # write did not. Repair = re-run register/adopt (never re-run installer).
@@ -197,6 +200,15 @@ def sanitize_operator_text(text: str, *, limit: int = 400) -> str:
     return out
 
 
+def _bound_output(text: str, *, limit: int = INSTALL_OUTPUT_BOUND) -> str:
+    """Keep a bounded tail of drained installer output."""
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return "…" + text[-limit:]
+
+
 def _heartbeat_seconds() -> float:
     raw = os.environ.get("VCL_PROVISION_HEARTBEAT_SECONDS", "").strip()
     if raw:
@@ -205,6 +217,16 @@ def _heartbeat_seconds() -> float:
         except ValueError:
             return DEFAULT_HEARTBEAT_SECONDS
     return DEFAULT_HEARTBEAT_SECONDS
+
+
+def _install_timeout_seconds() -> float:
+    raw = os.environ.get("VCL_PROVISION_INSTALL_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return INSTALL_TIMEOUT_SECONDS
+    return INSTALL_TIMEOUT_SECONDS
 
 
 def _priv_argv(privilege_mode: PrivilegeMode, argv: list[str]) -> list[str]:
@@ -237,32 +259,94 @@ def _popen_with_heartbeat(
     timeout: float,
     heartbeat: float,
 ) -> subprocess.CompletedProcess[str]:
+    """Run argv while draining pipes on reader threads.
+
+    The child can write more than the OS pipe buffer (~64 KiB). A parent that
+    only ``poll()``s until exit, then ``communicate()``s, can deadlock and look
+    like the 600s install timeout. Two reader threads keep rolling tails of
+    stdout/stderr; the main thread only heartbeats and enforces timeout.
+    """
+
+    def _reader(stream: Any, box: list[str]) -> None:
+        buf = ""
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > INSTALL_OUTPUT_BOUND:
+                    buf = buf[-INSTALL_OUTPUT_BOUND:]
+        except (ValueError, OSError):
+            pass
+        finally:
+            box[0] = buf
+            try:
+                stream.close()
+            except OSError:
+                pass
+
     try:
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except OSError as exc:
         _require_host().die(f"cannot execute {argv[0]}: {exc}")
+    stdout_box = [""]
+    stderr_box = [""]
+    t_out = threading.Thread(
+        target=_reader,
+        args=(proc.stdout, stdout_box),
+        name="vcl-provision-stdout",
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_reader,
+        args=(proc.stderr, stderr_box),
+        name="vcl-provision-stderr",
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
     start = time.monotonic()
     last_beat = start
     poll = min(0.25, heartbeat if heartbeat > 0 else 0.25)
-    while proc.poll() is None:
+    timed_out = False
+    while True:
         now = time.monotonic()
+        if proc.poll() is not None:
+            break
         if now - start >= timeout:
+            timed_out = True
             proc.kill()
-            stdout, stderr = proc.communicate()
-            msg = f"ssh timed out after {timeout}s"
-            return subprocess.CompletedProcess(argv, 255, stdout or "", msg)
+            break
         if heartbeat > 0 and now - last_beat >= heartbeat:
             _progress(f"install still running ({int(now - start)}s)")
             last_beat = now
         time.sleep(poll)
-    stdout, stderr = proc.communicate()
+    t_out.join(timeout=5.0)
+    t_err.join(timeout=5.0)
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
+    stdout = _bound_output(stdout_box[0])
+    stderr = _bound_output(stderr_box[0])
+    if timed_out:
+        return subprocess.CompletedProcess(
+            argv, 255, stdout, f"ssh timed out after {timeout}s"
+        )
     return subprocess.CompletedProcess(
-        argv, proc.returncode or 0, stdout or "", stderr or ""
+        argv, proc.returncode or 0, stdout, stderr
     )
 
 
@@ -620,8 +704,9 @@ def unpack_and_run_installer(
         vcl_server=vcl_server,
     )
     heartbeat = _heartbeat_seconds()
+    install_timeout = _install_timeout_seconds()
     ssh_argv_fn = getattr(host, "ssh_argv", None)
-    if callable(ssh_argv_fn) and heartbeat > 0:
+    if callable(ssh_argv_fn):
         argv = ssh_argv_fn(
             ssh_host,
             ssh_user,
@@ -632,7 +717,7 @@ def unpack_and_run_installer(
             identity_file=identity_file,
         )
         install_proc = _popen_with_heartbeat(
-            argv, timeout=INSTALL_TIMEOUT_SECONDS, heartbeat=heartbeat
+            argv, timeout=install_timeout, heartbeat=heartbeat
         )
     else:
         install_proc = host.ssh_run(
@@ -643,7 +728,7 @@ def unpack_and_run_installer(
             batch=True,
             extra=extra,
             identity_file=identity_file,
-            timeout=INSTALL_TIMEOUT_SECONDS,
+            timeout=install_timeout,
         )
     if install_proc.returncode != 0:
         detail = sanitize_operator_text(

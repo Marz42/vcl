@@ -12,7 +12,7 @@
 - **`user link TAG --node NAME`：** 实时 SSH 取单节点 VLESS URI；必须 `--node`；不缓存、不写日志、不批量导出。
 ### Fixes (LIVE PR #8)
 - **P1** 两阶段 preflight：python3 不再是硬前置；缺依赖经 apt 安装后再做网络/端口/Reality。staging 用 `mktemp`。sudo：`sudo -n env VCL_SERVER=… bash vincula.sh`。apt 失败零安装/零注册。
-- **P2** 人类模式 stderr 阶段进度 + 安装心跳（15–30s）；`--json` stdout 保持纯 JSON；不透传/记录 VLESS URI、UUID、Reality 私钥、Clash secret。
+- **P2** 人类模式 stderr 阶段进度 + 安装心跳（15–30s）；`--json` stdout 保持纯 JSON；不透传/记录 VLESS URI、UUID、Reality 私钥、Clash secret。安装 SSH 用 reader 线程排空管道（避免远端输出 >64KiB 堵死被误报 600s 超时）；保存有界脱敏尾部。
 ### Notes
 - Evidence: [`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。LIVE AC-4.2-01/02/05/06 可选。
 - Schema namespaces (D45) 未变。业务在 `lib/provision.py`；`VCL_FLEET_VERSION=0.4.3`。

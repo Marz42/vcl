@@ -1364,6 +1364,15 @@ def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
     hang = os.environ.get("VCL_FAKE_INSTALL_SLEEP", "").strip()
     if hang:
         time.sleep(float(hang))
+    blob = os.environ.get("VCL_FAKE_INSTALL_BYTES", "").strip()
+    if blob:
+        n = int(blob)
+        chunk = "x" * 65536
+        while n > 0:
+            piece = chunk if n >= len(chunk) else chunk[:n]
+            sys.stdout.write(piece)
+            sys.stdout.flush()
+            n -= len(piece)
     if os.environ.get("VCL_FAKE_INSTALL_FAIL", "").strip() == "1":
         sys.stdout.write(
             "vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@203.0.113.10:443\n"

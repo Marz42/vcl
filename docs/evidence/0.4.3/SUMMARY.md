@@ -18,6 +18,7 @@
 
 - **D34:** 禁 `StrictHostKeyChecking=no`；non-TTY 必 `--host-key`。
 - **D35:** controller-carried digest-verified first-party payload，**非** air-gap；远端仍需 apt / HTTPS / sing-box release / 公网 IP / Reality。
+- **P2 pipe drain:** provision installer SSH drains stdout/stderr on reader threads; saved output is a bounded redacted tail so large remote logs cannot deadlock as a 600s timeout.
 - **D49:** `node add`≡`adopt`；`node add --offline --node-id`≡`register`；0.4.x 保留 alias、无 runtime warning。
 
 ## Test counts

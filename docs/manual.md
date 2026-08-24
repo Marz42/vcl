@@ -766,11 +766,9 @@ python3 bin/vcl-fleet node adopt lax --host 203.0.113.10 --host-key SHA256:abcd�
 
 ### `vcl-fleet node provision NAME --host HOST [选项]`
 
-Fresh VPS：两阶段 preflight（SSH/OS/arch/权限/apt/冲突 → 自动安装缺失依赖含 python3 → 网络/端口/Reality）→ 推送 controller-carried node payload → 远端 `vincula.sh` 安装（钉 Node **0.3.1**）→ `vcl verify` / `identity` → 注册 → 默认 `sync --full`（D33/D35）。人类模式向 stderr 打阶段进度，安装阶段约每 20 秒心跳；`--json` 时 stdout 仍只有 JSON。
+Fresh VPS：两阶段 preflight（SSH/OS/arch/权限/apt/冲突 → 自动安装缺失依赖含 python3 → 网络/端口/Reality）→ 推送 controller-carried node payload → 远端 `vincula.sh` 安装（钉 Node **0.3.1**）→ `vcl verify` / `identity` → 注册 → 默认 `sync --full`（D33/D35）。人类模式向 stderr 打阶段进度，安装阶段约每 20 秒心跳；`--json` 时 stdout 仍只有 JSON。安装 SSH 持续排空 stdout/stderr，只保留有界脱敏尾部，避免远端输出超过管道缓冲时被误报超时。
 
 **非 air-gap（D35）：** payload 是 controller 携带、两端 digest 校验的 first-party 包（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。**不是** air-gap：远端仍可需 apt、HTTPS、sing-box release、公网 IP、Reality。勿用「air-gap」描述 provision。sudo 路径把 `VCL_SERVER` 放在 sudo 之内：`sudo -n env VCL_SERVER=… bash vincula.sh`。
-
-**非 air-gap（D35）：** payload 是 controller 携带、两端 digest 校验的 first-party 包（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。**不是** air-gap：远端仍可需 apt、HTTPS、sing-box release、公网 IP、Reality。勿用「air-gap」描述 provision。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
