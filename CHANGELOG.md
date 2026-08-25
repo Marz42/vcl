@@ -2,17 +2,24 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.4.4 (2026-08-24)
-**Controller-only** Local Audit UI v2 (D53). Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
+## 0.4.4 (2026-08-25)
+**Controller-only** Local Audit UI **v2** (D53-rev1 / rev1 §16). This milestone **is** UI v2 — not a later add-on.
+Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added
 - **UI Sync → `sync --full`：** Local Audit UI POST `/api/sync` 走 identity+health+users+audit → cache（与 CLI `vcl-fleet sync --full` 同路径）；reseed 仍 CLI-only。
-- **D53-rev1 / §16 六页 UI：** Overview KPIs（含 User Count / Traffic Today / Last Sync / Cache Age / Traffic Trend）、Nodes（Users / Traffic Today / Endpoint + detail）、Users（Department / Enabled / Today / 30D）、Traffic（过滤+趋势+上下行）、Audit（IP/port/network）、Operations；**Command Builder** 生成完整 CLI。
+- **D53-rev1 / §16 六页 UI：** Overview / Nodes / Users / Traffic / Audit / Operations；Overview KPIs（User Count / Traffic Today / Last Sync / Cache Age / Traffic Trend）；**Command Builder** 生成完整 CLI（`shlex.join`，shell-safe）。
 - **Recipes / 空态对齐 CLI：** adopt / provision / register、workspace、audit archive restore（positional file）、`user link TAG --node NAME`；`node add` 保留为 legacy alias。
 - **严格只读 workspace 条：** GET 走 `read_only_workspace_surface`（五态 conflict）；无 mkdir / 无 `remember_workspace_view`。
-- **NN #4：** UI 不暴露/缓存 `active_credential_id`（VLESS UUID）→ `has_active_credential`。
+- **NN #4：** UI 不暴露/缓存 `active_credential_id`（VLESS UUID）→ `has_active_credential` 布尔；users-cache 落在 `ui-runtime/`（升级迁移并删除 Fleet Home 旧文件）。
+### Fixed (merge blockers)
+- Command Builder 不再裸拼接字段（防 `;` / `$()` 等注入进粘贴命令）。
+- Traffic 趋势与表格/totals 共用同一过滤条件。
+- `user_snapshot` 凭据态来自 SQL 布尔；audit/usage 回退为 unknown，不再写死 `no`。
 ### Notes
 - Spec: [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md) · rev1 [`docs/specs/vcl-spec-v0.4-v0.5-rev1.md`](docs/specs/vcl-spec-v0.4-v0.5-rev1.md) §16。Evidence: [`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md)。
+- AC-4.3-05 **PARTIAL**：列表页已覆盖日常只读；Node/User drawer 与完整 CLI Operations 历史仍有 §16 缺口（见 SUMMARY）。
 - D57 observe≠admin、`node add` runtime warning 仍属 0.5+。`VCL_FLEET_VERSION=0.4.4`。
+- 手测：[`docs/manual.md` § Local Audit UI](docs/manual.md#ui-manual-test)。
 
 ## 0.4.3 (2026-08-21)
 **Controller-only** Adopt & Provision. Stamp: CTRL `0.4.3`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).

@@ -1,7 +1,9 @@
 # 0.4.4 Local Audit UI v2 (D53-rev1) — DoD SUMMARY
 
+**Milestone:** Local Audit UI **v2 belongs to controller 0.4.4** (not deferred to 0.4.5+).
 **Stamp:** CTRL `0.4.4` / NODE `0.3.1` · **Gate:** offline `bash tests/test.sh` + `bash tests/test-fleet.sh`
 **Spec:** [`../../specs/V0.4.4_ui_v2.md`](../../specs/V0.4.4_ui_v2.md) · **Rev1 roadmap:** [`../../specs/vcl-spec-v0.4-v0.5-rev1.md`](../../specs/vcl-spec-v0.4-v0.5-rev1.md) §16
+**Hand-test:** [`../../manual.md#ui-manual-test`](../../manual.md#ui-manual-test)
 
 | AC | Result | Evidence |
 | --- | --- | --- |

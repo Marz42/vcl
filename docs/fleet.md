@@ -13,6 +13,7 @@ does not use `/etc/vincula`.
 helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
 
 **版本：** CTRL `VCL_FLEET_VERSION=0.4.4`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
+**Local Audit UI v2 = 本戳 0.4.4**（六页 + Command Builder；见下节）。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
@@ -161,7 +162,9 @@ Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 - **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）；Controller 戳随发行线（0.4.3+）。
 - Evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。
 
-## Local Audit UI (0.4.4 / D53)
+## Local Audit UI v2 (0.4.4 / D53-rev1)
+
+**归属：** UI v2 是 **控制器 0.4.4** 的交付内容（rev1 §16）；0.3.1 仅有 B15 三页雏形。
 
 ```bash
 python3 bin/vcl-fleet ui
