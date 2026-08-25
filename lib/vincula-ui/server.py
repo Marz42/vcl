@@ -3,7 +3,8 @@
 
 Bound to loopback only. GET APIs are local-cache only. Explicit POST
 refresh/sync write the workstation cache (not identity mutations).
-No add/rotate/retire/replace/restore/import/reseed via UI.
+UI Sync uses ``sync --full`` (D53 / 0.4.4). No add/rotate/retire/replace/
+restore/import/reseed via UI.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import mimetypes
 import re
 import secrets
+import shlex
 import sys
 import threading
 import traceback
@@ -88,8 +90,116 @@ def assert_loopback_host(host: str) -> str:
     return raw
 
 
-def users_cache_path() -> Path:
+def users_cache_path(*, create: bool = False) -> Path:
+    """Local UI users cache — always under ui-runtime (never Fleet Home / workspace)."""
+    return _ui_runtime_dir(create=create) / "users-cache.json"
+
+
+def legacy_users_cache_path() -> Path:
+    """Pre-0.4.4 path (Fleet Home root). Must not remain after migrate."""
     return fleet().fleet_home() / "users-cache.json"
+
+
+def _ui_runtime_dir(*, create: bool = False) -> Path:
+    """Resolve ui-runtime under machine-local STATE when workspace is active.
+
+    Fail closed: if ``workspace.json`` exists but cannot be loaded, never fall
+    back to ``fleet_home()/ui-runtime`` (that would pollute the portable root).
+    ``create=True`` dies; ``create=False`` raises ``RuntimeError`` so GET can
+    soft-fail without writing.
+    """
+    f = fleet()
+    if f.workspace_trust_active():
+        try:
+            manifest = f.load_workspace_manifest()
+        except SystemExit as exc:
+            msg = (
+                "WORKSPACE_INCONSISTENT: refuse ui-runtime under portable "
+                "workspace root (fix or recreate workspace.json)"
+            )
+            if create:
+                f.die(msg, int(exc.code) if isinstance(exc.code, int) else 2)
+            raise RuntimeError(msg) from exc
+        fid = str(manifest.get("fleet_id") or "").strip()
+        if not fid:
+            msg = (
+                "WORKSPACE_INCONSISTENT: workspace.json missing fleet_id; "
+                "refuse ui-runtime under portable workspace root"
+            )
+            if create:
+                f.die(msg, 2)
+            raise RuntimeError(msg)
+        root = f.fleet_local_state_dir(fid) / "ui-runtime"
+    else:
+        root = f.fleet_home() / "ui-runtime"
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    return root
+
+
+def operations_log_path(*, create: bool = False) -> Path:
+    return _ui_runtime_dir(create=create) / "operations.jsonl"
+
+
+def append_ui_operation(
+    *,
+    operation: str,
+    target: str = "",
+    state: str,
+    exit_code: int,
+    ok: bool,
+    detail: str = "",
+) -> None:
+    """Append one UI-triggered operation row (never stores secrets)."""
+    record = {
+        "time": fleet().format_utc(datetime.now(timezone.utc)),
+        "operation": operation,
+        "target": target,
+        "state": state,
+        "exit_code": int(exit_code),
+        "ok": bool(ok),
+    }
+    if detail:
+        record["detail"] = detail[:500]
+    path = operations_log_path(create=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
+    try:
+        path = operations_log_path(create=False)
+    except RuntimeError:
+        return []
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            # Unify on ``time`` (legacy rows may have used ``at``).
+            if not item.get("time") and item.get("at"):
+                item = {**item, "time": item["at"]}
+            out.append(item)
+    out.reverse()
+    return out
 
 
 def load_last_status_doc() -> Optional[dict[str, Any]]:
@@ -130,19 +240,153 @@ def _status_cache_empty(doc: Optional[dict[str, Any]]) -> bool:
     return True
 
 
-def load_users_cache() -> Optional[dict[str, Any]]:
-    path = users_cache_path()
-    if not path.is_file():
-        return None
+def _node_has_active_credential(node: dict[str, Any]) -> Optional[bool]:
+    """Bool when known; None when credential state is unavailable (audit fallback)."""
+    if "has_active_credential" in node:
+        val = node.get("has_active_credential")
+        if val is None:
+            return None
+        return bool(val)
+    if "active_credential_id" in node:
+        return bool(node.get("active_credential_id"))
+    return None
+
+
+def sanitize_user_node_for_ui(node: dict[str, Any]) -> dict[str, Any]:
+    """UI-safe node assignment: never expose VLESS credential UUID (NN #4)."""
+    out: dict[str, Any] = {
+        "name": node.get("name"),
+        "tag": node.get("tag"),
+        "enabled": node.get("enabled"),
+        "status": node.get("status"),
+        "has_active_credential": _node_has_active_credential(node),
+    }
+    if "node_id" in node:
+        out["node_id"] = node.get("node_id")
+    return out
+
+
+def sanitize_users_for_ui(users: Any) -> list[dict[str, Any]]:
+    """Strip credential UUIDs from user list (refresh write + legacy cache read)."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(users, list):
+        return out
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        nodes_raw = user.get("nodes") or []
+        nodes_out = [
+            sanitize_user_node_for_ui(n)
+            for n in nodes_raw
+            if isinstance(n, dict)
+        ]
+        rec: dict[str, Any] = {
+            "tag": user.get("tag"),
+            "user_id": user.get("user_id"),
+            "display_name": user.get("display_name"),
+            "department": user.get("department"),
+            "source": user.get("source"),
+            "nodes": nodes_out,
+        }
+        out.append(rec)
+    return out
+
+
+def migrate_users_cache() -> None:
+    """Move Fleet Home users-cache.json → ui-runtime; rewrite sanitized; delete legacy.
+
+    Call **only** from UI serve/start (not from GET ``load_users_cache``).
+    Never leaves credential UUID on disk. Does not mkdir when there is nothing
+    to migrate. Fail closed if workspace.json is unusable (via ``_ui_runtime_dir``).
+    """
+    f = fleet()
+    legacy = legacy_users_cache_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+        dest = users_cache_path(create=False)
+    except RuntimeError as exc:
+        f.die(str(exc), 2)
+    if not legacy.is_file() and not dest.is_file():
+        return
+    payload: Optional[dict[str, Any]] = None
+    for candidate in (dest, legacy):
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            payload = data
+            break
+    if payload is None:
+        if legacy.is_file():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        return
+    safe = dict(payload)
+    safe["users"] = sanitize_users_for_ui(payload.get("users"))
+    dest_write = users_cache_path(create=True)
+    f._atomic_write_json(dest_write, safe)
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    try:
+        disk = dest_write.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "active_credential_id" in disk:
+        f._atomic_write_json(
+            dest_write,
+            {
+                "schema_version": int(safe.get("schema_version") or UI_SCHEMA_VERSION),
+                "ok": safe.get("ok"),
+                "refreshed_at": safe.get("refreshed_at"),
+                "users": safe.get("users") or [],
+                "unreachable": safe.get("unreachable") or [],
+            },
+        )
+
+
+def load_users_cache() -> Optional[dict[str, Any]]:
+    """Read users cache (sanitized). Does not migrate or mkdir.
+
+    Prefer ui-runtime path; fall back to legacy Fleet Home file read-only so
+    GET works until the next UI start migrates it.
+    """
+    try:
+        runtime = users_cache_path(create=False)
+    except RuntimeError:
+        runtime = None
+    candidates = [p for p in (runtime, legacy_users_cache_path()) if p is not None]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        sanitized = dict(data)
+        sanitized["users"] = sanitize_users_for_ui(data.get("users"))
+        return sanitized
+    return None
 
 
 def write_users_cache(payload: dict[str, Any]) -> None:
-    fleet()._atomic_write_json(users_cache_path(), payload)
+    safe = dict(payload)
+    safe["users"] = sanitize_users_for_ui(payload.get("users"))
+    fleet()._atomic_write_json(users_cache_path(create=True), safe)
+    legacy = legacy_users_cache_path()
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def _human_bytes(n: int) -> str:
@@ -154,6 +398,522 @@ def _human_bytes(n: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024.0
     return f"{int(n)} B"
+
+
+def _parse_rfc3339_utc(value: Optional[str]) -> Optional[datetime]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _cache_age_seconds(last_iso: Optional[str]) -> Optional[int]:
+    dt = _parse_rfc3339_utc(last_iso)
+    if dt is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0, int((now - dt).total_seconds()))
+
+
+def _usage_aggregate(
+    conn: Any,
+    *,
+    start: str,
+    end: str,
+    group_by: tuple[str, ...],
+    extra_where: Optional[list[str]] = None,
+    extra_params: Optional[list[Any]] = None,
+) -> list[dict[str, Any]]:
+    f = fleet()
+    registry = f.load_registry()
+    raw = f.query_daily_grouped(
+        conn,
+        start=start,
+        end=end,
+        group_by=group_by,
+        extra_where=extra_where,
+        extra_params=extra_params,
+    )
+    return [f._stats_row_from_sql(registry, r) for r in raw]
+
+
+def _traffic_totals_for_window(
+    conn: Any, *, start: str, end: str
+) -> dict[str, Any]:
+    rows = _usage_aggregate(conn, start=start, end=end, group_by=("node_id",))
+    upload = sum(int(r.get("upload_bytes") or 0) for r in rows)
+    download = sum(int(r.get("download_bytes") or 0) for r in rows)
+    conns = sum(int(r.get("connection_count") or 0) for r in rows)
+    return {
+        "upload_bytes": upload,
+        "download_bytes": download,
+        "bytes": upload + download,
+        "connection_count": conns,
+        "upload_human": _human_bytes(upload),
+        "download_human": _human_bytes(download),
+        "bytes_human": _human_bytes(upload + download),
+    }
+
+
+def _traffic_trend(
+    conn: Any,
+    *,
+    days: int = 7,
+    extra_where: Optional[list[str]] = None,
+    extra_params: Optional[list[Any]] = None,
+) -> list[dict[str, Any]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(
+        conn,
+        start=start,
+        end=end,
+        group_by=("date",),
+        extra_where=extra_where,
+        extra_params=extra_params,
+    )
+    out: list[dict[str, Any]] = []
+    for row in raw:
+        keys = set(row.keys())
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        date = str(row["date"]) if "date" in keys else ""
+        out.append(
+            {
+                "date": date,
+                "upload_bytes": upload,
+                "download_bytes": download,
+                "bytes": upload + download,
+                "connection_count": f._row_int(row, "connection_count"),
+                "bytes_human": _human_bytes(upload + download),
+            }
+        )
+    out.sort(key=lambda r: r["date"])
+    return out
+
+
+def _user_bytes_map(conn: Any, *, days: int) -> dict[str, dict[str, int]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(
+        conn, start=start, end=end, group_by=("user_id",)
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in raw:
+        uid = str(row["user_id"] or "")
+        if not uid:
+            continue
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        out[uid] = {
+            "upload_bytes": upload,
+            "download_bytes": download,
+            "bytes": upload + download,
+            "connection_count": f._row_int(row, "connection_count"),
+        }
+    return out
+
+
+def _node_bytes_map(conn: Any, *, days: int) -> dict[str, dict[str, int]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(
+        conn, start=start, end=end, group_by=("node_id",)
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in raw:
+        nid = str(row["node_id"] or "")
+        if not nid:
+            continue
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        out[nid] = {
+            "upload_bytes": upload,
+            "download_bytes": download,
+            "bytes": upload + download,
+            "connection_count": f._row_int(row, "connection_count"),
+        }
+    return out
+
+
+def _node_user_counts(conn: Any) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT node_id, COUNT(DISTINCT user_id) AS n
+        FROM user_snapshot
+        WHERE user_id IS NOT NULL AND user_id != ''
+        GROUP BY node_id
+        """
+    ).fetchall()
+    return {str(r["node_id"]): int(r["n"]) for r in rows}
+
+
+def _users_from_snapshot(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prefer user_snapshot (sync --full) for department / enabled."""
+    f = fleet()
+    rows = conn.execute(
+        """
+        SELECT node_id, user_id, tag, enabled, status, payload_json,
+          CASE
+            WHEN active_credential_id IS NOT NULL
+             AND active_credential_id != ''
+            THEN 1 ELSE 0
+          END AS has_active_credential
+        FROM user_snapshot
+        WHERE user_id IS NOT NULL AND user_id != ''
+        ORDER BY tag, user_id, node_id
+        """
+    ).fetchall()
+    if not rows:
+        return _users_from_db(conn, registry)
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        uid = str(row["user_id"])
+        tag = f._optional_text(row["tag"]) or uid
+        nid = str(row["node_id"])
+        dept = None
+        display = None
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+            if isinstance(payload, dict):
+                dept = payload.get("department") or None
+                display = payload.get("display_name") or None
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if uid not in grouped:
+            grouped[uid] = {
+                "tag": tag,
+                "user_id": uid,
+                "display_name": display,
+                "department": dept,
+                "source": "user_snapshot",
+                "nodes": [],
+            }
+            order.append(uid)
+        rec = grouped[uid]
+        if tag and rec["tag"] == uid:
+            rec["tag"] = tag
+        if not rec.get("department") and dept:
+            rec["department"] = dept
+        if not rec.get("display_name") and display:
+            rec["display_name"] = display
+        node_name = f.node_display_name(registry, nid)
+        enabled = bool(int(row["enabled"] or 0))
+        has_cred = bool(int(row["has_active_credential"] or 0))
+        if not any(n.get("node_id") == nid for n in rec["nodes"]):
+            rec["nodes"].append(
+                {
+                    "name": node_name,
+                    "node_id": nid,
+                    "tag": tag,
+                    "enabled": enabled,
+                    "status": f._optional_text(row["status"])
+                    or ("active" if enabled else "disabled"),
+                    "has_active_credential": has_cred,
+                }
+            )
+    return [grouped[k] for k in order]
+
+
+def _enabled_state_summary(nodes: list[dict[str, Any]]) -> str:
+    if not nodes:
+        return "—"
+    flags = [n.get("enabled") for n in nodes]
+    if all(f is True for f in flags):
+        return "enabled"
+    if all(f is False for f in flags):
+        return "disabled"
+    if any(f is None for f in flags):
+        known = [f for f in flags if f is not None]
+        if not known:
+            return "unknown"
+        return "mixed"
+    return "mixed"
+
+
+def _enrich_users_traffic(
+    users: list[dict[str, Any]], conn: Any
+) -> list[dict[str, Any]]:
+    today = _user_bytes_map(conn, days=1)
+    month = _user_bytes_map(conn, days=30)
+    out: list[dict[str, Any]] = []
+    for u in users:
+        rec = dict(u)
+        uid = str(u.get("user_id") or "")
+        t = today.get(uid) or {}
+        m = month.get(uid) or {}
+        rec["today_bytes"] = int(t.get("bytes") or 0)
+        rec["today_human"] = _human_bytes(rec["today_bytes"])
+        rec["bytes_30d"] = int(m.get("bytes") or 0)
+        rec["bytes_30d_human"] = _human_bytes(rec["bytes_30d"])
+        rec["enabled_state"] = _enabled_state_summary(list(u.get("nodes") or []))
+        nodes = list(u.get("nodes") or [])
+        rec["node_count"] = len(nodes)
+        rec["node_names"] = ", ".join(
+            str(n.get("name") or "") for n in nodes if n.get("name")
+        )
+        out.append(rec)
+    return out
+
+
+COMMAND_BUILDER_OPS: dict[str, dict[str, Any]] = {
+    "adopt": {
+        "title": "Adopt node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "Host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node adopt {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "provision": {
+        "title": "Provision node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "Host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node provision {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "user_add": {
+        "title": "Add user",
+        "fields": [
+            {"name": "tag", "label": "User tag", "required": True},
+            {"name": "nodes", "label": "Nodes (comma-separated)", "required": True},
+            {"name": "display_name", "label": "Display name", "required": False},
+            {"name": "department", "label": "Department", "required": False},
+        ],
+        "template": "vcl-fleet user add {tag} --nodes {nodes}",
+    },
+    "rotate": {
+        "title": "Rotate credential",
+        "fields": [
+            {"name": "tag", "label": "User tag", "required": True},
+            {"name": "node", "label": "Node", "required": True},
+        ],
+        "template": "vcl-fleet user rotate {tag} --node {node}",
+    },
+    "replace": {
+        "title": "Replace node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "New host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node replace {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "restore": {
+        "title": "Restore audit archive",
+        "fields": [
+            {"name": "file", "label": "Archive file (.vclaudit)", "required": True},
+        ],
+        "template": "vcl-fleet audit archive restore {file}",
+    },
+    "reseed": {
+        "title": "Reseed sync cursor (CLI-only)",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+        ],
+        "template": "vcl-fleet sync --reseed {name}",
+    },
+}
+
+
+def _builder_validate_name(kind: str, raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError(f"missing required field: {kind}")
+    if not NAME_RE.fullmatch(text):
+        raise ValueError(f"invalid {kind}: {text}")
+    return text
+
+
+def _builder_validate_host(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: host")
+    f = fleet()
+    try:
+        return f.validate_ssh_host(text)
+    except SystemExit as exc:
+        raise ValueError(f"invalid host: {text}") from exc
+
+
+def _builder_validate_host_key(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: host_key")
+    f = fleet()
+    try:
+        return f.normalize_fingerprint(text)
+    except SystemExit as exc:
+        raise ValueError(f"invalid host_key: {text}") from exc
+
+
+def _builder_validate_nodes_csv(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: nodes")
+    parts = [p.strip() for p in text.split(",")]
+    names: list[str] = []
+    for part in parts:
+        if not part:
+            raise ValueError("invalid nodes: empty entry")
+        if not NAME_RE.fullmatch(part):
+            raise ValueError(f"invalid node name: {part}")
+        names.append(part)
+    return ",".join(names)
+
+
+def _builder_validate_file(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: file")
+    if "\x00" in text or "\n" in text or "\r" in text:
+        raise ValueError("invalid file path")
+    return text
+
+
+def api_command_builder_meta() -> dict[str, Any]:
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operations": [
+            {
+                "id": oid,
+                "title": spec["title"],
+                "fields": spec["fields"],
+            }
+            for oid, spec in COMMAND_BUILDER_OPS.items()
+        ],
+        "note": (
+            "Command Builder copies CLI only — no UI mutations (D53). "
+            "Fill fields to generate a complete command (shell-safe via shlex)."
+        ),
+    }
+
+
+def api_command_build(body: dict[str, Any]) -> dict[str, Any]:
+    """Build a shell-safe CLI string from an argv list (never raw concat)."""
+    op = str((body or {}).get("operation") or "").strip()
+    if op not in COMMAND_BUILDER_OPS:
+        raise ValueError(f"unknown operation: {op or '(empty)'}")
+    spec = COMMAND_BUILDER_OPS[op]
+    fields_in = (body or {}).get("fields") or {}
+    if not isinstance(fields_in, dict):
+        raise ValueError("fields must be an object")
+    values: dict[str, str] = {}
+    for field in spec["fields"]:
+        name = str(field["name"])
+        raw = str(fields_in.get(name) or "").strip()
+        if field.get("required") and not raw:
+            raise ValueError(f"missing required field: {name}")
+        if not raw:
+            values[name] = ""
+            continue
+        if name in ("name", "tag", "node"):
+            values[name] = _builder_validate_name(name, raw)
+        elif name == "host":
+            values[name] = _builder_validate_host(raw)
+        elif name == "host_key":
+            values[name] = _builder_validate_host_key(raw)
+        elif name == "nodes":
+            values[name] = _builder_validate_nodes_csv(raw)
+        elif name == "file":
+            values[name] = _builder_validate_file(raw)
+        else:
+            # display_name / department — free text; escaped by shlex.join
+            if "\x00" in raw or "\n" in raw or "\r" in raw:
+                raise ValueError(f"invalid {name}")
+            values[name] = raw
+
+    argv: list[str]
+    if op == "adopt":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "adopt",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "provision":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "provision",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "user_add":
+        argv = [
+            "vcl-fleet",
+            "user",
+            "add",
+            values["tag"],
+            "--nodes",
+            values["nodes"],
+        ]
+        if values.get("display_name"):
+            argv.extend(["--display-name", values["display_name"]])
+        if values.get("department"):
+            argv.extend(["--department", values["department"]])
+    elif op == "rotate":
+        argv = [
+            "vcl-fleet",
+            "user",
+            "rotate",
+            values["tag"],
+            "--node",
+            values["node"],
+        ]
+    elif op == "replace":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "replace",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "restore":
+        argv = [
+            "vcl-fleet",
+            "audit",
+            "archive",
+            "restore",
+            values["file"],
+        ]
+    elif op == "reseed":
+        argv = ["vcl-fleet", "sync", "--reseed", values["name"]]
+    else:
+        raise ValueError(f"unknown operation: {op}")
+
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operation": op,
+        "command": shlex.join(argv),
+        "argv": argv,
+        "copy_ready": True,
+    }
 
 
 def _parse_host_header(host_header: str) -> tuple[str, Optional[int]]:
@@ -211,7 +971,7 @@ def recipes_payload() -> dict[str, Any]:
         "schema_version": UI_SCHEMA_VERSION,
         "note": (
             "Copy-paste CLI only. No identity/node mutations via UI. "
-            "Sync/Refresh write local cache only. "
+            "UI Sync runs vcl-fleet sync --full (cache write). "
             "vcl-fleet sync --reseed is CLI-only (UI refuses reseed)."
         ),
         "recipes": [
@@ -221,8 +981,52 @@ def recipes_payload() -> dict[str, Any]:
                 "command": "vcl-fleet init",
             },
             {
+                "id": "workspace-init",
+                "title": "Workspace init",
+                "command": "vcl-fleet workspace init",
+            },
+            {
+                "id": "workspace-verify",
+                "title": "Workspace verify (digest / conflict)",
+                "command": "vcl-fleet workspace verify",
+            },
+            {
+                "id": "workspace-export",
+                "title": "Workspace export",
+                "command": "vcl-fleet workspace export fleet.tgz",
+            },
+            {
+                "id": "workspace-import",
+                "title": "Workspace import",
+                "command": "vcl-fleet workspace import fleet.tgz",
+            },
+            {
+                "id": "node-adopt",
+                "title": "Adopt installed node (SSH identity + register)",
+                "command": (
+                    "vcl-fleet node adopt NAME --host HOST "
+                    "--host-key SHA256:..."
+                ),
+            },
+            {
+                "id": "node-provision",
+                "title": "Provision fresh VPS (pinned node 0.3.1)",
+                "command": (
+                    "vcl-fleet node provision NAME --host HOST "
+                    "--host-key SHA256:..."
+                ),
+            },
+            {
+                "id": "node-register",
+                "title": "Register registry-only (no SSH)",
+                "command": (
+                    "vcl-fleet node register NAME --host HOST "
+                    "--node-id UUID"
+                ),
+            },
+            {
                 "id": "node-add",
-                "title": "Add node (online)",
+                "title": "Legacy alias: node add ≡ adopt",
                 "command": (
                     "vcl-fleet node add NAME --host HOST "
                     "--host-key SHA256:..."
@@ -230,7 +1034,7 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "node-add-offline",
-                "title": "Add node (offline)",
+                "title": "Legacy alias: add --offline ≡ register",
                 "command": (
                     "vcl-fleet node add NAME --host HOST --offline "
                     "--node-id UUID"
@@ -295,6 +1099,11 @@ def recipes_payload() -> dict[str, Any]:
                 "command": "vcl-fleet user enable|disable TAG --node NAME",
             },
             {
+                "id": "user-link",
+                "title": "Live single-node VLESS URI (CLI only; not shown in UI)",
+                "command": "vcl-fleet user link TAG --node NAME",
+            },
+            {
                 "id": "backup-restore",
                 "title": "Backup / restore (node CLI; see docs/backup.md)",
                 "command": (
@@ -303,17 +1112,32 @@ def recipes_payload() -> dict[str, Any]:
                 ),
             },
             {
-                "id": "sync",
-                "title": "Sync (UI Sync button) / reseed (CLI only)",
+                "id": "audit-archive-create",
+                "title": "Create audit archive (.vclaudit)",
                 "command": (
-                    "vcl-fleet sync [--node NAME]\n"
+                    "vcl-fleet audit archive create --from RFC3339 "
+                    "--to RFC3339 --output out.vclaudit"
+                ),
+            },
+            {
+                "id": "audit-archive-restore",
+                "title": "Restore audit archive (never touches sync cursor)",
+                "command": "vcl-fleet audit archive restore out.vclaudit",
+            },
+            {
+                "id": "sync",
+                "title": "Sync --full (UI Sync button) / reseed (CLI only)",
+                "command": (
+                    "vcl-fleet sync --full [--node NAME]\n"
                     "vcl-fleet sync --reseed NAME   # CLI only; wipes local audit"
                 ),
             },
             {
                 "id": "status-verify",
-                "title": "Status / verify (also UI Refresh)",
-                "command": "vcl-fleet status|verify [--json] [--all]",
+                "title": "Status (cache) / probe (live) / verify",
+                "command": (
+                    "vcl-fleet status|probe|verify [--json] [--all]"
+                ),
             },
         ],
     }
@@ -344,6 +1168,11 @@ def _sync_cursors(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
             item["instance_id"] = fleet()._optional_text(row["instance_id"])
         out.append(item)
     return out
+
+
+def _workspace_surface() -> dict[str, Any]:
+    """Read-only workspace strip for Overview/Nodes (strict, no writes)."""
+    return fleet().read_only_workspace_surface()
 
 
 def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -427,6 +1256,9 @@ def _node_health_rows(
     registry: dict[str, Any],
     status_doc: Optional[dict[str, Any]],
     cursors: list[dict[str, Any]],
+    *,
+    user_counts: Optional[dict[str, int]] = None,
+    traffic_today: Optional[dict[str, dict[str, int]]] = None,
 ) -> list[dict[str, Any]]:
     by_name: dict[str, dict[str, Any]] = {}
     for node in status_doc.get("nodes") or [] if status_doc else []:
@@ -441,6 +1273,12 @@ def _node_health_rows(
         nid = str(node.get("node_id") or "")
         probe = by_name.get(name) or {}
         cur = by_id.get(nid) or {}
+        host = str(node.get("ssh_host") or "")
+        user = str(node.get("ssh_user") or "root")
+        port = int(node.get("ssh_port") or 22)
+        endpoint = f"{user}@{host}:{port}" if host else "—"
+        today = (traffic_today or {}).get(nid) or {}
+        today_bytes = int(today.get("bytes") or 0)
         rows.append(
             {
                 "name": name,
@@ -450,9 +1288,19 @@ def _node_health_rows(
                 "ssh_host": node.get("ssh_host"),
                 "ssh_user": node.get("ssh_user"),
                 "ssh_port": node.get("ssh_port"),
+                "endpoint": endpoint,
                 "ssh": probe.get("ssh", "-"),
                 "proxy": probe.get("proxy", "-"),
                 "accounting": probe.get("accounting", "-"),
+                "health": (
+                    "FAIL"
+                    if probe.get("ssh") == "FAIL"
+                    or probe.get("proxy") == "FAIL"
+                    or probe.get("accounting") == "FAIL"
+                    else probe.get("ssh")
+                    or probe.get("proxy")
+                    or "—"
+                ),
                 "version": probe.get("vincula_version"),
                 "clock": probe.get("clock"),
                 "clock_skew_seconds": probe.get("clock_skew_seconds"),
@@ -461,6 +1309,9 @@ def _node_health_rows(
                 "cursor_status": cur.get("cursor_status"),
                 "last_event_id": cur.get("last_event_id"),
                 "registry": probe.get("registry"),
+                "user_count": int((user_counts or {}).get(nid) or 0),
+                "traffic_today_bytes": today_bytes,
+                "traffic_today_human": _human_bytes(today_bytes),
                 "warnings": list(probe.get("warnings") or []),
                 "checks": list(probe.get("checks") or []),
             }
@@ -476,6 +1327,7 @@ def api_overview() -> dict[str, Any]:
     try:
         cursors = _sync_cursors(conn, registry)
         start, end = f.stats_date_window(7)
+        today_start, today_end = f.stats_date_window(1)
         top_users_raw = f.query_daily_grouped(
             conn,
             start=start,
@@ -494,10 +1346,25 @@ def api_overview() -> dict[str, Any]:
         top_hosts = [
             f._stats_row_from_sql(registry, r) for r in top_hosts_raw[:10]
         ]
+        traffic_today = _traffic_totals_for_window(
+            conn, start=today_start, end=today_end
+        )
+        traffic_trend = _traffic_trend(conn, days=7)
+        user_counts = _node_user_counts(conn)
+        node_today = _node_bytes_map(conn, days=1)
+        snap_users = _users_from_snapshot(conn, registry)
+        user_count = len(snap_users)
+        recent_conns = int(traffic_today.get("connection_count") or 0)
     finally:
         conn.close()
 
-    health_rows = _node_health_rows(registry, status_doc, cursors)
+    health_rows = _node_health_rows(
+        registry,
+        status_doc,
+        cursors,
+        user_counts=user_counts,
+        traffic_today=node_today,
+    )
     active = [
         r
         for r in health_rows
@@ -522,6 +1389,44 @@ def api_overview() -> dict[str, Any]:
         healthy = 0
         unhealthy = len(active)
 
+    warnings = _warnings_from_status(status_doc)
+    workspace = _workspace_surface()
+    if workspace.get("conflict") not in (None, "ok", "absent"):
+        warnings = list(warnings) + [
+            {
+                "level": "red",
+                "code": "workspace-conflict",
+                "message": (
+                    f"Workspace conflict: {workspace['conflict']} "
+                    f"(fleet_id={workspace.get('fleet_id') or '—'})"
+                ),
+            }
+        ]
+    elif not workspace.get("active"):
+        warnings = list(warnings) + [
+            {
+                "level": "amber",
+                "code": "workspace-absent",
+                "message": (
+                    "No portable workspace yet. Run "
+                    "`vcl-fleet workspace init` (or adopt/provision a node)."
+                ),
+            }
+        ]
+
+    last_sync_candidates = [
+        c.get("last_sync_at")
+        for c in cursors
+        if c.get("last_sync_at")
+    ]
+    last_sync_at = None
+    if last_sync_candidates:
+        last_sync_at = max(str(x) for x in last_sync_candidates)
+    cache_age = _cache_age_seconds(last_sync_at)
+    recent_problems = [
+        w for w in warnings if w.get("level") in ("red", "amber")
+    ][:12]
+
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "version": f.VCL_FLEET_VERSION,
@@ -530,36 +1435,91 @@ def api_overview() -> dict[str, Any]:
             "Fleet accounting is approximate (Clash polling). "
             "Totals are not byte-identical with node vcl stats."
         ),
+        "fleet_health": "OK" if unhealthy == 0 and active else (
+            "DEGRADED" if active else "EMPTY"
+        ),
         "node_count": len(registry.get("nodes") or []),
         "active_node_count": len(active),
         "healthy": healthy,
         "unhealthy": unhealthy,
+        "offline": unhealthy,
+        "user_count": user_count,
+        "active_connections_today": recent_conns,
+        "traffic_today": traffic_today,
+        "last_sync_at": last_sync_at,
+        "cache_age_seconds": cache_age,
         "last_status_at": (status_doc or {}).get("controller_utc"),
         "last_status_ok": (status_doc or {}).get("ok"),
         "cursors": cursors,
+        "traffic_trend": traffic_trend,
+        "node_health": health_rows,
         "top_users": top_users,
         "top_hosts": top_hosts,
+        "recent_problems": recent_problems,
         "stats_window": {"days": 7, "from": start, "to": end},
-        "warnings": _warnings_from_status(status_doc),
+        "warnings": warnings,
+        "workspace": workspace,
+    }
+
+
+def api_nodes(*, live_overlay: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Node health table (cache + optional live probe overlay)."""
+    f = fleet()
+    registry = f.load_registry()
+    status_doc = load_last_status_doc()
+    if live_overlay:
+        status_doc = dict(live_overlay)
+    conn = f.open_cache_readonly()
+    try:
+        cursors = _sync_cursors(conn, registry)
+        user_counts = _node_user_counts(conn)
+        node_today = _node_bytes_map(conn, days=1)
+    finally:
+        conn.close()
+    workspace = _workspace_surface()
+    warnings = _warnings_from_status(status_doc)
+    if workspace.get("conflict") not in (None, "ok", "absent"):
+        warnings = list(warnings) + [
+            {
+                "level": "red",
+                "code": "workspace-conflict",
+                "message": (
+                    f"Workspace conflict: {workspace['conflict']} "
+                    f"(fleet_id={workspace.get('fleet_id') or '—'})"
+                ),
+            }
+        ]
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "accounting_mode": "approximate",
+        "data_source": "live-probe" if live_overlay else "cache",
+        "last_status_at": (status_doc or {}).get("controller_utc"),
+        "last_status_ok": (status_doc or {}).get("ok"),
+        "nodes": _node_health_rows(
+            registry,
+            status_doc,
+            cursors,
+            user_counts=user_counts,
+            traffic_today=node_today,
+        ),
+        "warnings": warnings,
+        "workspace": workspace,
     }
 
 
 def api_health() -> dict[str, Any]:
-    f = fleet()
-    registry = f.load_registry()
-    status_doc = load_last_status_doc()
-    conn = f.open_cache_readonly()
-    try:
-        cursors = _sync_cursors(conn, registry)
-    finally:
-        conn.close()
+    """Legacy alias for ``api_nodes`` (AC-3.1 fixtures)."""
+    return api_nodes()
+
+
+def api_operations(*, limit: int = 100) -> dict[str, Any]:
+    lim = max(1, min(int(limit), 500))
+    rows = read_ui_operations(limit=lim)
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "accounting_mode": "approximate",
-        "last_status_at": (status_doc or {}).get("controller_utc"),
-        "last_status_ok": (status_doc or {}).get("ok"),
-        "nodes": _node_health_rows(registry, status_doc, cursors),
-        "warnings": _warnings_from_status(status_doc),
+        "limit": lim,
+        "rows": rows,
+        "note": "Local UI/CLI operation history; secrets redacted.",
     }
 
 
@@ -589,6 +1549,31 @@ def api_node(name: str) -> dict[str, Any]:
             extra_params=[node["node_id"]],
         )
         usage = [f._stats_row_from_sql(registry, r) for r in usage_raw[:20]]
+        users_on_node = []
+        for u in _users_from_snapshot(conn, registry):
+            for n in u.get("nodes") or []:
+                if n.get("node_id") == node["node_id"] or n.get("name") == name:
+                    users_on_node.append(
+                        {
+                            "tag": u.get("tag"),
+                            "user_id": u.get("user_id"),
+                            "department": u.get("department"),
+                            "enabled": n.get("enabled"),
+                            "status": n.get("status"),
+                            "has_active_credential": n.get(
+                                "has_active_credential"
+                            ),
+                        }
+                    )
+                    break
+        node_today = _node_bytes_map(conn, days=1).get(str(node["node_id"])) or {}
+        traffic_today = {
+            "upload_bytes": int(node_today.get("upload_bytes") or 0),
+            "download_bytes": int(node_today.get("download_bytes") or 0),
+            "bytes": int(node_today.get("bytes") or 0),
+            "connection_count": int(node_today.get("connection_count") or 0),
+            "bytes_human": _human_bytes(int(node_today.get("bytes") or 0)),
+        }
     finally:
         conn.close()
     cursor_doc = None
@@ -599,6 +1584,18 @@ def api_node(name: str) -> dict[str, Any]:
             "last_sync_at": cursor["last_sync_at"],
             "status": cursor["status"],
         }
+    host = str(node.get("ssh_host") or "")
+    endpoint = (
+        f"{node.get('ssh_user') or 'root'}@{host}:{int(node.get('ssh_port') or 22)}"
+        if host
+        else "—"
+    )
+    last_ops = [
+        r
+        for r in read_ui_operations(limit=50)
+        if str(r.get("target") or "") in ("", name)
+        or name in str(r.get("target") or "")
+    ][:20]
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "node": {
@@ -607,15 +1604,21 @@ def api_node(name: str) -> dict[str, Any]:
             "ssh_host": node["ssh_host"],
             "ssh_user": node["ssh_user"],
             "ssh_port": node["ssh_port"],
+            "endpoint": endpoint,
             "enabled": node["enabled"],
             "status": f.node_lifecycle_status(node),
         },
         "probe": probe,
         "cursor": cursor_doc,
         "instances": instances,
+        "users": users_on_node,
+        "traffic_today": traffic_today,
         "recent_usage": usage,
+        "last_operations": last_ops,
         "stats_window": {"days": 7, "from": start, "to": end},
-        "secrets_note": "URI / Reality keys / Clash secret are never shown.",
+        "secrets_note": (
+            "URI / credential UUID / Reality keys / Clash secret are never shown."
+        ),
     }
 
 
@@ -665,7 +1668,7 @@ def _users_from_db(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
                     "tag": tag,
                     "enabled": None,
                     "status": "seen-in-sync",
-                    "active_credential_id": None,
+                    "has_active_credential": None,
                 }
             )
     return [grouped[k] for k in order]
@@ -675,36 +1678,41 @@ def api_users() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     cache = load_users_cache()
-    if cache and isinstance(cache.get("users"), list):
-        return {
-            "schema_version": UI_SCHEMA_VERSION,
-            "source": "users-cache",
-            "ok": cache.get("ok"),
-            "refreshed_at": cache.get("refreshed_at"),
-            "users": cache["users"],
-            "unreachable": cache.get("unreachable") or [],
-            "note": (
-                "Cached from last Refresh users (SSH). "
-                "No VLESS URI or secrets."
-            ),
-        }
     conn = f.open_cache_readonly()
     try:
-        users = _users_from_db(conn, registry)
+        if cache and isinstance(cache.get("users"), list) and cache["users"]:
+            users = sanitize_users_for_ui(cache["users"])
+            source = "users-cache"
+            note = (
+                "Cached from last Refresh users (SSH). "
+                "No VLESS URI, credential UUID, or secrets."
+            )
+            ok = cache.get("ok")
+            refreshed_at = cache.get("refreshed_at")
+            unreachable = cache.get("unreachable") or []
+        else:
+            users = _users_from_snapshot(conn, registry)
+            source = users[0]["source"] if users else "fleet.db"
+            note = (
+                "From user_snapshot / synced audit. "
+                "Refresh users over SSH for latest enabled state. "
+                "No VLESS URI, credential UUID, or secrets."
+            )
+            ok = True
+            refreshed_at = None
+            unreachable = []
+        users = _enrich_users_traffic(users, conn)
     finally:
         conn.close()
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "source": "fleet.db",
-        "ok": True,
-        "refreshed_at": None,
+        "source": source,
+        "ok": ok,
+        "refreshed_at": refreshed_at,
         "users": users,
-        "unreachable": [],
-        "note": (
-            "Derived from synced audit/daily_usage. "
-            "Refresh users over SSH for enabled/credential status. "
-            "No VLESS URI or secrets."
-        ),
+        "unreachable": unreachable,
+        "note": note,
+        "accounting_mode": "approximate",
     }
 
 
@@ -757,8 +1765,7 @@ def api_user(tag: str) -> dict[str, Any]:
         "recent_usage": recent,
         "stats_window": {"days": 7, "from": start, "to": end},
         "secrets_note": (
-            "credential_id may appear when users-cache was refreshed; "
-            "URI / Reality keys / Clash secret are never shown."
+            "URI / credential UUID / Reality keys / Clash secret are never shown."
         ),
     }
 
@@ -815,6 +1822,17 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         )
     node_name = (params.get("node") or "").strip() or None
     destination = (params.get("destination") or "").strip().lower() or None
+    destination_ip = (params.get("destination_ip") or "").strip() or None
+    network = (params.get("network") or "").strip().lower() or None
+    port_raw = (params.get("port") or "").strip()
+    destination_port: Optional[int] = None
+    if port_raw:
+        try:
+            destination_port = int(port_raw)
+        except ValueError as exc:
+            raise ValueError("port must be an integer") from exc
+        if destination_port < 1 or destination_port > 65535:
+            raise ValueError("port must be 1..65535")
     limit_raw = (params.get("limit") or "").strip()
     if limit_raw:
         try:
@@ -859,6 +1877,9 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
             query_to=query_to,
             node_id=node_id,
             destination_contains=destination,
+            destination_ip=destination_ip,
+            destination_port=destination_port,
+            network=network,
             limit=limit + 1,
             after_started_at=after_started,
             after_event_id=after_event_id,
@@ -887,6 +1908,10 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
                     f._optional_text(raw["instance_id"])
                 ),
                 "destination": dest,
+                "destination_host": f._optional_text(raw["destination_host"]),
+                "destination_ip": f._optional_text(raw["destination_ip"]),
+                "destination_port": raw["destination_port"],
+                "network": f._optional_text(raw["network"]),
                 "upload_bytes": upload,
                 "download_bytes": download,
                 "traffic": traffic,
@@ -918,6 +1943,9 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         "to": query_to,
         "node": node_name,
         "destination": destination,
+        "destination_ip": destination_ip,
+        "port": destination_port,
+        "network": network,
         "limit": limit,
         "truncated": truncated,
         "next_cursor": next_cursor,
@@ -930,24 +1958,121 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def api_stats_top(kind: str, days: int) -> dict[str, Any]:
+def api_stats_top(
+    kind: str,
+    days: int,
+    *,
+    node: Optional[str] = None,
+    user: Optional[str] = None,
+    department: Optional[str] = None,
+    destination: Optional[str] = None,
+) -> dict[str, Any]:
     f = fleet()
-    if kind not in ("users", "hosts"):
-        raise ValueError("kind must be users or hosts")
+    if kind not in ("users", "hosts", "nodes"):
+        raise ValueError("kind must be users, hosts, or nodes")
     if days < 1:
         raise ValueError("days must be >= 1")
     registry = f.load_registry()
     start, end = f.stats_date_window(days)
-    group_by = (
-        ("user_id", "node_id") if kind == "users" else ("destination_host", "node_id")
-    )
+    if kind == "nodes":
+        group_by: tuple[str, ...] = ("node_id",)
+    elif kind == "users":
+        group_by = ("user_id", "node_id")
+    else:
+        group_by = ("destination_host", "node_id")
+    extra_where: list[str] = []
+    extra_params: list[Any] = []
+    if node:
+        f.validate_name(node)
+        nid = f.require_node(registry, node)["node_id"]
+        extra_where.append("node_id = ?")
+        extra_params.append(nid)
+    if destination:
+        extra_where.append("lower(destination_host) LIKE ? ESCAPE '\\'")
+        extra_params.append(f._sql_like_contains(destination.lower()))
     conn = f.open_cache_readonly()
     try:
+        allowed_uids: Optional[set[str]] = None
+        if user or department:
+            snap_users = _users_from_snapshot(conn, registry)
+            # Also merge department from users-cache when present.
+            cache = load_users_cache()
+            by_uid: dict[str, dict[str, Any]] = {
+                str(u.get("user_id")): u
+                for u in snap_users
+                if u.get("user_id")
+            }
+            if cache and isinstance(cache.get("users"), list):
+                for u in sanitize_users_for_ui(cache["users"]):
+                    uid = str(u.get("user_id") or "")
+                    if not uid:
+                        continue
+                    if uid in by_uid:
+                        if u.get("department") and not by_uid[uid].get(
+                            "department"
+                        ):
+                            by_uid[uid]["department"] = u.get("department")
+                        if u.get("tag"):
+                            by_uid[uid]["tag"] = u.get("tag")
+                    else:
+                        by_uid[uid] = u
+            allowed_uids = set()
+            for u in by_uid.values():
+                if user:
+                    tag = str(u.get("tag") or "")
+                    uid = str(u.get("user_id") or "")
+                    if user not in (tag, uid):
+                        continue
+                if department:
+                    dept = str(u.get("department") or "")
+                    if dept.lower() != department.lower():
+                        continue
+                if u.get("user_id"):
+                    allowed_uids.add(str(u["user_id"]))
+            if not allowed_uids:
+                # No matching users → empty table/totals/trend (same filter plane).
+                return {
+                    "schema_version": UI_SCHEMA_VERSION,
+                    "mode": f"top-{kind}",
+                    "days": days,
+                    "from": start,
+                    "to": end,
+                    "accounting_mode": "approximate",
+                    "filters": {
+                        "node": node,
+                        "user": user,
+                        "department": department,
+                        "destination": destination,
+                    },
+                    "rows": [],
+                    "totals": {
+                        **f._stats_totals([]),
+                        "upload_human": _human_bytes(0),
+                        "download_human": _human_bytes(0),
+                        "bytes_human": _human_bytes(0),
+                    },
+                    "trend": [],
+                }
+        if allowed_uids is not None:
+            placeholders = ",".join("?" for _ in allowed_uids)
+            extra_where.append(f"user_id IN ({placeholders})")
+            extra_params.extend(sorted(allowed_uids))
         raw = f.query_daily_grouped(
-            conn, start=start, end=end, group_by=group_by
+            conn,
+            start=start,
+            end=end,
+            group_by=group_by,
+            extra_where=extra_where or None,
+            extra_params=extra_params or None,
         )
         rows = [f._stats_row_from_sql(registry, r) for r in raw]
         totals = f._stats_totals(rows)
+        trend = _traffic_trend(
+            conn,
+            days=days,
+            extra_where=extra_where or None,
+            extra_params=list(extra_params) if extra_params else None,
+        )
     finally:
         conn.close()
     return {
@@ -957,44 +2082,99 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
         "from": start,
         "to": end,
         "accounting_mode": "approximate",
+        "filters": {
+            "node": node,
+            "user": user,
+            "department": department,
+            "destination": destination,
+        },
         "rows": rows,
-        "totals": totals,
+        "totals": {
+            **totals,
+            "upload_human": _human_bytes(int(totals.get("upload_bytes") or 0)),
+            "download_human": _human_bytes(int(totals.get("download_bytes") or 0)),
+            "bytes_human": _human_bytes(int(totals.get("bytes") or 0)),
+        },
+        "trend": trend,
     }
 
 
-def api_refresh_status(*, verify: bool) -> dict[str, Any]:
+def api_refresh_probe() -> dict[str, Any]:
+    """Live SSH probe (``cmd_probe`` path). Does not write last-status.json."""
     f = fleet()
-    if verify:
-        payload = f.run_verify_payload(include_all=False)
-        op = "verify"
-    else:
-        payload = f.run_status_payload(include_all=False)
-        op = "status"
+    payload = f.run_status_payload(include_all=False)
     payload = dict(payload)
     payload.pop("_rows", None)
     code = 0 if payload.get("ok") else 1
+    state = "SUCCESS" if code == 0 else "FAIL"
+    append_ui_operation(
+        operation="probe",
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "operation": op,
+        "operation": "probe",
         "exit_code": code,
         "ok": code == 0,
         "result": payload,
     }
 
 
+def api_refresh_verify() -> dict[str, Any]:
+    """Live verify; writes last-status.json (same as CLI verify)."""
+    f = fleet()
+    payload = f.run_verify_payload(include_all=False)
+    payload = dict(payload)
+    payload.pop("_rows", None)
+    code = 0 if payload.get("ok") else 1
+    state = "SUCCESS" if code == 0 else "FAIL"
+    append_ui_operation(
+        operation="verify",
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operation": "verify",
+        "exit_code": code,
+        "ok": code == 0,
+        "result": payload,
+    }
+
+
+def api_refresh_status(*, verify: bool) -> dict[str, Any]:
+    """Backward-compatible refresh routes."""
+    if verify:
+        return api_refresh_verify()
+    return api_refresh_probe()
+
+
 def api_sync(*, node: Optional[str] = None) -> dict[str, Any]:
+    """UI Sync = CLI ``sync --full`` (D53). Never legacy bare sync."""
     f = fleet()
     ns = argparse.Namespace(
         node=node,
         all=False,
         reseed=None,
         as_json=True,
+        full=True,
     )
     with f.fleet_op_lock():
-        code, payload = f.run_sync_payload(ns)
+        code, payload = f.run_sync_full_payload(ns)
+    state = str((payload or {}).get("state") or ("SUCCESS" if code == 0 else "FAIL"))
+    append_ui_operation(
+        operation="sync_full",
+        target=str(node or ""),
+        state=state,
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "operation": "sync",
+        "operation": "sync_full",
         "exit_code": code,
         "ok": code == 0,
         "result": payload,
@@ -1006,7 +2186,7 @@ def api_refresh_users() -> dict[str, Any]:
     code, payload = f.run_user_list_payload()
     if not isinstance(payload, dict):
         raise RuntimeError("user list did not return JSON")
-    users_out: list[dict[str, Any]] = []
+    users_raw: list[dict[str, Any]] = []
     for user in payload.get("users") or []:
         if not isinstance(user, dict):
             continue
@@ -1014,6 +2194,7 @@ def api_refresh_users() -> dict[str, Any]:
         for n in user.get("nodes") or []:
             if not isinstance(n, dict):
                 continue
+            # Map SSH list → UI fields; sanitize drops active_credential_id.
             nodes_out.append(
                 {
                     "name": n.get("name"),
@@ -1023,7 +2204,7 @@ def api_refresh_users() -> dict[str, Any]:
                     "active_credential_id": n.get("active_credential_id"),
                 }
             )
-        users_out.append(
+        users_raw.append(
             {
                 "tag": user.get("tag"),
                 "user_id": user.get("user_id"),
@@ -1033,6 +2214,7 @@ def api_refresh_users() -> dict[str, Any]:
                 "nodes": nodes_out,
             }
         )
+    users_out = sanitize_users_for_ui(users_raw)
     cache = {
         "schema_version": UI_SCHEMA_VERSION,
         "ok": bool(payload.get("ok")),
@@ -1042,6 +2224,12 @@ def api_refresh_users() -> dict[str, Any]:
         "unreachable": payload.get("unreachable") or [],
     }
     write_users_cache(cache)
+    append_ui_operation(
+        operation="refresh_users",
+        state=str(payload.get("state") or ("SUCCESS" if code == 0 else "FAIL")),
+        exit_code=code,
+        ok=code == 0,
+    )
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": "refresh-users",
@@ -1200,8 +2388,16 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 self._send_json(200, api_overview())
                 return
-            if path == "/api/health":
-                self._send_json(200, api_health())
+            if path in ("/api/health", "/api/nodes"):
+                self._send_json(200, api_nodes())
+                return
+            if path == "/api/operations":
+                lim_raw = one("limit") or "100"
+                try:
+                    lim = int(lim_raw)
+                except ValueError as exc:
+                    raise ValueError("limit must be an integer") from exc
+                self._send_json(200, api_operations(limit=lim))
                 return
             if path == "/api/recipes":
                 self._send_json(200, recipes_payload())
@@ -1227,6 +2423,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                             "to": one("to"),
                             "node": one("node"),
                             "destination": one("destination"),
+                            "destination_ip": one("destination_ip"),
+                            "port": one("port"),
+                            "network": one("network"),
                             "limit": one("limit"),
                             "after_started_at": one("after_started_at"),
                             "after_event_id": one("after_event_id"),
@@ -1242,7 +2441,20 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                     days = int(days_raw)
                 except ValueError as exc:
                     raise ValueError("days must be an integer") from exc
-                self._send_json(200, api_stats_top(kind, days))
+                self._send_json(
+                    200,
+                    api_stats_top(
+                        kind,
+                        days,
+                        node=one("node") or None,
+                        user=one("user") or None,
+                        department=one("department") or None,
+                        destination=one("destination") or None,
+                    ),
+                )
+                return
+            if path == "/api/command-builder":
+                self._send_json(200, api_command_builder_meta())
                 return
             if path == "/api/meta":
                 self._send_json(
@@ -1250,11 +2462,20 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                     {
                         "schema_version": UI_SCHEMA_VERSION,
                         "version": fleet().VCL_FLEET_VERSION,
-                        "pages": ["overview", "audit", "health"],
+                        "pages": [
+                            "overview",
+                            "nodes",
+                            "users",
+                            "traffic",
+                            "audit",
+                            "operations",
+                        ],
                         "identity_mutations": False,
-                        "cache_writes": ["refresh", "sync"],
+                        "cache_writes": ["refresh", "sync_full"],
+                        "sync": "full",
                         "reseed": "cli-only",
                         "bind": "loopback-only",
+                        "ui_contract": "D53-rev1",
                         "auth": {
                             "token_header": UI_TOKEN_HEADER,
                             "host_loopback_only": True,
@@ -1301,14 +2522,20 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
-            if path == "/api/refresh/status":
-                self._send_json(200, api_refresh_status(verify=False))
+            if path == "/api/refresh/probe":
+                self._send_json(200, api_refresh_probe())
                 return
             if path == "/api/refresh/verify":
-                self._send_json(200, api_refresh_status(verify=True))
+                self._send_json(200, api_refresh_verify())
+                return
+            if path == "/api/refresh/status":
+                self._send_json(200, api_refresh_probe())
                 return
             if path == "/api/refresh/users":
                 self._send_json(200, api_refresh_users())
+                return
+            if path == "/api/command-builder":
+                self._send_json(200, api_command_build(body))
                 return
             if path == "/api/sync":
                 if "reseed" in body and body.get("reseed") not in (None, ""):
@@ -1463,6 +2690,7 @@ def serve(
         _STATIC_DIR = Path(static_dir)
     if not _STATIC_DIR.is_dir():
         fleet_mod.die(f"ui static directory missing: {_STATIC_DIR}")
+    migrate_users_cache()
     try:
         httpd = make_server(host, port)
     except ValueError as exc:
@@ -1508,6 +2736,7 @@ def serve_in_thread(
     global _STATIC_DIR
     if static_dir is not None:
         _STATIC_DIR = Path(static_dir)
+    migrate_users_cache()
     httpd = make_server(
         host, port, max_workers=max_workers, request_timeout=request_timeout
     )

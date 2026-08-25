@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.4.3"
+VCL_FLEET_VERSION = "0.4.4"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -372,6 +372,7 @@ load_workspace_view = _WS.load_workspace_view
 save_workspace_view = _WS.save_workspace_view
 remember_workspace_view = _WS.remember_workspace_view
 detect_workspace_conflict = _WS.detect_workspace_conflict
+read_only_workspace_surface = _WS.read_only_workspace_surface
 workspace_mutation = _WS.workspace_mutation
 in_workspace_mutation = _WS.in_workspace_mutation
 cas_mutate_workspace = _WS.cas_mutate_workspace
@@ -4294,6 +4295,8 @@ def run_user_list_payload() -> tuple[int, dict[str, Any]]:
                 grouped[key] = {
                     "tag": tag,
                     "user_id": uid,
+                    "display_name": user.get("display_name") or None,
+                    "department": user.get("department") or None,
                     "nodes": [],
                 }
                 order.append(key)
@@ -4302,6 +4305,10 @@ def run_user_list_payload() -> tuple[int, dict[str, Any]]:
                 rec["tag"] = f"{rec['tag']},{tag}"
             elif tag and not rec["tag"]:
                 rec["tag"] = tag
+            if not rec.get("display_name") and user.get("display_name"):
+                rec["display_name"] = user.get("display_name")
+            if not rec.get("department") and user.get("department"):
+                rec["department"] = user.get("department")
             rec["nodes"].append(
                 {
                     "name": node["name"],
@@ -4321,6 +4328,8 @@ def run_user_list_payload() -> tuple[int, dict[str, Any]]:
             {
                 "tag": grouped[key]["tag"],
                 "user_id": grouped[key]["user_id"],
+                "display_name": grouped[key].get("display_name"),
+                "department": grouped[key].get("department"),
                 "nodes": grouped[key]["nodes"],
             }
             for key in order
@@ -5794,6 +5803,9 @@ def query_fleet_audit(
     query_to: str,
     node_id: Optional[str] = None,
     destination_contains: Optional[str] = None,
+    destination_ip: Optional[str] = None,
+    destination_port: Optional[int] = None,
+    network: Optional[str] = None,
     limit: Optional[int] = None,
     after_started_at: Optional[str] = None,
     after_event_id: Optional[int] = None,
@@ -5805,9 +5817,8 @@ def query_fleet_audit(
     ``(after_started_at, after_event_id, after_node_id)`` matching
     ORDER BY started_at, event_id, node_id.
 
-    ``destination_contains`` is applied in SQL (same display as
-    ``destination_display``) *before* ORDER BY / LIMIT so pagination is not
-    a post-filter over a truncated page.
+    Destination / IP / port / network filters are applied in SQL *before*
+    ORDER BY / LIMIT so pagination is not a post-filter over a truncated page.
     """
     audit = load_audit_module()
     where = [
@@ -5823,6 +5834,17 @@ def query_fleet_audit(
     if dest:
         where.append(f"{AUDIT_DESTINATION_SQL} LIKE ? ESCAPE '\\'")
         params.append(_sql_like_contains(dest))
+    dip = (destination_ip or "").strip()
+    if dip:
+        where.append("destination_ip = ?")
+        params.append(dip)
+    if destination_port is not None:
+        where.append("destination_port = ?")
+        params.append(int(destination_port))
+    net = (network or "").strip().lower()
+    if net:
+        where.append("lower(COALESCE(network, '')) = ?")
+        params.append(net)
     if after_started_at is not None:
         if after_event_id is None or not after_node_id:
             die("audit cursor requires after_started_at, after_event_id, after_node_id")

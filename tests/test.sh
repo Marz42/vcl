@@ -231,6 +231,16 @@ assert_equal "parses bracketed VLESS host" "2001:db8::10" "$VLESS_HOST"
 assert_equal "parses bracketed VLESS port" "8443" "$VLESS_PORT"
 
 TEST_TMP=$(mktemp -d /tmp/vincula-tests.XXXXXXXX)
+SAVED_SUITE_HOME="${HOME:-}"
+SAVED_SUITE_XDG="${XDG_CONFIG_HOME:-}"
+export HOME="${TEST_TMP}/user-home"
+export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
+if [[ "${HOME}" == "${TEST_TMP}/user-home" ]]; then
+  pass "P1 gate: test.sh HOME isolated under TEST_TMP"
+else
+  fail "P1 gate: test.sh HOME isolated under TEST_TMP"
+fi
 # P1-06: do not flock /run/lock/vincula.lock during the suite.
 export VCL_LOCK_FILE="${TEST_TMP}/vincula.lock"
 readonly TEST_NODE_ID="6fc96a10-1111-4111-8111-111111111111"

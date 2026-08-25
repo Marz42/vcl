@@ -1,4 +1,4 @@
-# Fleet operator guide（控制器 0.4.3 · 节点 0.3.1）
+# Fleet operator guide（控制器 0.4.4 · 节点 0.3.1）
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, syncs audit into a local **fleet-cache/v4**
@@ -12,13 +12,15 @@ does not use `/etc/vincula`.
 `lib/vincula-fleet.py`）。SPEC `vcl fleet <sub>` **≡** `vcl-fleet <sub>`。节点
 helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
 
-**版本：** CTRL `VCL_FLEET_VERSION=0.4.3`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
+**版本：** CTRL `VCL_FLEET_VERSION=0.4.4`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
+**Local Audit UI v2 = 本戳 0.4.4**（六页 + Command Builder；见下节）。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-0.4.3 evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
+0.4.4 UI v2 evidence: [`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md) · rev1 roadmap [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md).
+0.4.3 adopt/provision: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
 Node-line gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md).
 B14 live two-VPS replace: **PASS (2026-08-18)** —
@@ -123,7 +125,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet workspace init\|show\|verify\|export\|import\|migrate` | portable workspace/v1 生命周期 |
 | `vcl-fleet access bind\|list\|verify` | 机器本地 credential bindings（D28） |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only 只读 Local Audit UI |
-| `vcl-fleet version` | `vcl-fleet 0.4.3` |
+| `vcl-fleet version` | `vcl-fleet 0.4.4` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`（legacy；优先 `adopt` / `register`）。
@@ -142,7 +144,8 @@ refused.
 Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 (`vcl-fleet ui`). **0.4.1+** adds workspace / access / cache-only status；
 **0.4.2** adds `sync --full` / audit archive / fleet-cache/v4；
-**0.4.3** adds `node adopt` / `provision` / `register`（`add` alias retained）.
+**0.4.3** adds `node adopt` / `provision` / `register`（`add` alias retained）；
+**0.4.4** Local Audit UI v2 (D53-rev1)：六页 Overview/Nodes/Users/Traffic/Audit/Operations；Probe 不写 cache；UI Sync=`sync --full`、recipes 对齐 CLI、严格只读 workspace 条。
 
 ## Adopt / Provision / Register（0.4.3）
 
@@ -156,10 +159,12 @@ Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 - **D35 非 air-gap：** controller zip 内嵌 digest-verified first-party payload（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。远端仍可需 apt / HTTPS / sing-box release / 公网 IP / Reality。**不要**称 provision 为 air-gap。`VCL_SERVER` / `--server` 跳过 ipify 并传给安装器。
 - **安装 SSH：** 人类模式 stderr 阶段行 + 心跳；reader 线程持续排空 stdout/stderr，只保留有界脱敏尾部（避免远端输出 >管道缓冲 被误报超时）。
 - **`REMOTE_READY_LOCAL_UNCOMMITTED`：** 远端已装好、本地 registry 提交失败 → **只** `node adopt` 修复，**禁止**重跑 installer。
-- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）；Controller 戳 `0.4.3`。
+- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）；Controller 戳随发行线（0.4.3+）。
 - Evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。
 
-## Local Audit UI (0.3.1 / B15)
+## Local Audit UI v2 (0.4.4 / D53-rev1)
+
+**归属：** UI v2 是 **控制器 0.4.4** 的交付内容（rev1 §16）；0.3.1 仅有 B15 三页雏形。
 
 ```bash
 python3 bin/vcl-fleet ui
@@ -169,21 +174,26 @@ python3 bin/vcl-fleet ui
 Listens on **`http://127.0.0.1:8765`** by default (`--host` / `--port`). Only
 loopback binds (`127.0.0.1`, `::1`); `0.0.0.0` / public listens are refused
 (AC-3.1-01). Stopping the UI process does **not** affect VPS nodes
-(AC-3.1-09).
+(AC-3.1-09). Spec: [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md).
 
-**Pages:** Overview / Audit / Health. Users and Nodes are **read-only
-drill-downs**, not admin editors. There are **no** UI identity mutations
+**Pages:** Overview / Nodes / Users / Traffic / Audit / Operations. **Probe**
+runs live SSH and renders results in the UI without writing `last-status.json`;
+**Verify** writes cache like CLI verify. There are **no** UI identity mutations
 (add/rotate/retire/replace/restore/import) and **no UI reseed** (CLI
-`vcl-fleet sync --reseed NAME` only). Recipes panel copies commands.
-`/api/*` requires loopback `Host` + process UI token; POST requires JSON
+`vcl-fleet sync --reseed NAME` only). **Sync** = CLI `vcl-fleet sync --full`
+(identity+health+users+audit → cache); PARTIAL / exit 2 → `ok=false`, never
+painted as SUCCESS. Recipes cover adopt / provision / register / workspace /
+audit archive / `user link`; `node add` remains a **legacy alias**. Overview /
+Nodes show a read-only workspace strip (`fleet_id` + conflict). `/api/*`
+requires loopback `Host` + process UI token; POST requires JSON
 `Content-Type` and, **when Origin is present**, a matching loopback Origin
 (missing Origin is allowed for same-machine tools). Default views never show Reality keys,
 Clash secret, or VLESS URI.
 
 **Data:** Local Read Plane from STATE cache（fleet-cache/v4 `fleet.db`、
-registry、`node_snapshot` / 可选 `users-cache`）。Buttons **Refresh status** /
-**Verify** / **Sync** call the same controller paths as the CLI（含 SSH 写入
-cache）。GET audit is local cache only (no implicit SSH). Audit uses the
+registry、`node_snapshot` / 可选 `users-cache`）。Buttons **Probe** /
+**Verify** / **Sync (--full)** call the same controller paths as the CLI（Probe 不写
+last-status；Verify/Sync 写 cache）。GET audit is local cache only (no implicit SSH). Audit uses the
 same interval-overlap query layer as `vcl-fleet audit user`, with a 31-day
 window cap and a 500-row default page. The HTTP server caps concurrent
 workers (503 when busy) and applies a per-request socket timeout.
@@ -192,8 +202,9 @@ Accounting is labeled **approximate**.
 Packaging: controller zip includes `lib/vincula-ui/server.py` and
 `lib/vincula-ui/static/*` (listed in `controller.lock`).
 
-操作员手测清单（Win11 / 浏览器 / AC-3.1 勾选）：见手册
+操作员手测清单（Win11 / 浏览器 / AC-3.1 + AC-4.4 勾选）：见手册
 [`docs/manual.md` § Local Audit UI 手动测试指南](manual.md#ui-manual-test)。
+Evidence: [`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md)。
 
 ## Rebind vs replace
 

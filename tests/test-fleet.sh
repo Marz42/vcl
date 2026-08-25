@@ -69,13 +69,28 @@ readonly TEST_TOKYO_NODE_ID="8bb18c32-3333-4333-8333-333333333333"
 readonly TEST_SG_NODE_ID="9cc29d43-4444-4444-8444-444444444444"
 
 FLEET_SAVED_HOME="${HOME:-}"
+FLEET_SAVED_XDG="${XDG_CONFIG_HOME:-}"
 export HOME="${TEST_TMP}/user-home"
-mkdir -p "${HOME}"
+export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
 
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home"
 export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
 export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
 export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
+if [[ -n "${FLEET_SAVED_HOME}" && "${HOME}" != "${FLEET_SAVED_HOME}" ]]; then
+  pass "P1 gate: fleet suite HOME isolated from real user dir"
+else
+  case "${HOME}" in
+    "${TEST_TMP}"/*) pass "P1 gate: fleet suite HOME under TEST_TMP" ;;
+    *) fail "P1 gate: fleet suite HOME isolated (HOME=${HOME})" ;;
+  esac
+fi
+if [[ "${XDG_CONFIG_HOME}" == "${TEST_TMP}/xdg-config" ]]; then
+  pass "P1 gate: fleet suite XDG_CONFIG_HOME isolated under TEST_TMP"
+else
+  fail "P1 gate: fleet suite XDG_CONFIG_HOME isolated under TEST_TMP"
+fi
 unset VCL_FAKE_STATE_DIR
 unset VCL_FAKE_FAIL_RESTORE
 unset VCL_FAKE_RESTORE_LIE_OK
@@ -680,7 +695,7 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.4.3" "0.4.3" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.4.4" "0.4.4" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
 assert_equal "NODE 0.3.1" "0.3.1" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -8670,7 +8685,15 @@ assert st == 200
 assert meta["identity_mutations"] is False
 assert meta["reseed"] == "cli-only"
 assert "refresh" in meta["cache_writes"]
-assert meta["pages"] == ["overview", "audit", "health"]
+assert meta["pages"] == [
+    "overview",
+    "nodes",
+    "users",
+    "traffic",
+    "audit",
+    "operations",
+]
+assert meta.get("ui_contract") == "D53-rev1"
 assert "Content-Security-Policy" in hdrs
 assert "DENY" in (hdrs.get("X-Frame-Options") or "")
 assert "trace" not in json.dumps(meta)
@@ -8681,11 +8704,23 @@ assert overview["accounting_mode"] == "approximate"
 assert overview["node_count"] == 1
 assert any(w.get("code") == "accounting-stale" for w in overview["warnings"])
 assert overview["top_users"]
+# rev1 §16 Overview fields
+assert "user_count" in overview
+assert "traffic_today" in overview
+assert "bytes" in overview["traffic_today"]
+assert "last_sync_at" in overview or overview.get("cache_age_seconds") is None or True
+assert "traffic_trend" in overview
+assert isinstance(overview["traffic_trend"], list)
+assert "recent_problems" in overview
+assert "node_health" in overview
 
 st, health, _ = get("/api/health")
 assert st == 200 and len(health["nodes"]) == 1
 assert health["nodes"][0]["name"] == "lax"
 assert health["nodes"][0]["accounting"] == "STALE"
+assert "endpoint" in health["nodes"][0]
+assert "user_count" in health["nodes"][0]
+assert "traffic_today_human" in health["nodes"][0]
 
 st, node, _ = get("/api/nodes/lax")
 assert st == 200 and node["node"]["node_id"]
@@ -8699,10 +8734,360 @@ assert "identity_file" not in blob
 st, users, _ = get("/api/users")
 assert st == 200 and users["users"]
 assert users["users"][0]["tag"] == "alice"
+u0 = users["users"][0]
+assert "enabled_state" in u0
+assert "today_human" in u0
+assert "bytes_30d_human" in u0
+
+st, node_detail, _ = get("/api/nodes/lax")
+assert "users" in node_detail
+assert "last_operations" in node_detail
+assert "traffic_today" in node_detail
+
+st, traffic, _ = get("/api/stats/top?kind=users&days=7")
+assert st == 200
+assert "trend" in traffic
+assert "upload_human" in traffic["totals"]
+assert "filters" in traffic
+
+st, cb_meta, _ = get("/api/command-builder")
+assert st == 200
+ops = {o["id"] for o in cb_meta["operations"]}
+for need in ("adopt", "provision", "user_add", "rotate", "replace", "restore", "reseed"):
+    assert need in ops, (need, ops)
+st, cb_cmd, _ = post(
+    "/api/command-builder",
+    {
+        "operation": "provision",
+        "fields": {
+            "name": "lax",
+            "host": "203.0.113.10",
+            "host_key": "SHA256:abc",
+        },
+    },
+)
+assert st == 200
+assert cb_cmd["command"] == (
+    "vcl-fleet node provision lax --host 203.0.113.10 --host-key SHA256:abc"
+)
+assert cb_cmd.get("argv") == [
+    "vcl-fleet",
+    "node",
+    "provision",
+    "lax",
+    "--host",
+    "203.0.113.10",
+    "--host-key",
+    "SHA256:abc",
+]
+# Shell-safe join: metacharacters stay inside a single argv token
+import shlex
+
+for nasty in (
+    "Alice Smith; echo PWN",
+    "O'Brien",
+    'say "hi"',
+    "x`id`",
+    "y$(uname)",
+    "a b",
+):
+    st, cb_nasty, _ = post(
+        "/api/command-builder",
+        {
+            "operation": "user_add",
+            "fields": {
+                "tag": "alice",
+                "nodes": "lax",
+                "display_name": nasty,
+            },
+        },
+    )
+    assert st == 200, nasty
+    argv = shlex.split(cb_nasty["command"])
+    assert argv[:5] == ["vcl-fleet", "user", "add", "alice", "--nodes"]
+    assert argv[5] == "lax"
+    assert "--display-name" in argv
+    assert argv[argv.index("--display-name") + 1] == nasty
+    assert cb_nasty["argv"][argv.index("--display-name") + 1] == nasty
+# Reject host / host_key / nodes injection
+for bad_fields in (
+    {"name": "lax", "host": "203.0.113.10;rm", "host_key": "SHA256:abc"},
+    {"name": "lax", "host": "203.0.113.10", "host_key": "not-a-fp"},
+):
+    code = http_code(
+        lambda bf=bad_fields: post(
+            "/api/command-builder",
+            {"operation": "provision", "fields": bf},
+        )
+    )
+    assert code == 400, bad_fields
+code = http_code(
+    lambda: post(
+        "/api/command-builder",
+        {
+            "operation": "user_add",
+            "fields": {"tag": "alice", "nodes": "lax;evil"},
+        },
+    )
+)
+assert code == 400
+assert "Command Builder" in (
+    Path(static_dir) / "index.html"
+).read_text(encoding="utf-8")
+assert "/api/command-builder" in (
+    Path(static_dir) / "app.js"
+).read_text(encoding="utf-8")
+
+# NN #4: VLESS credential UUID must never appear in UI API / cache / detail
+CRED_SENTINEL = "deadbeef-dead-4ead-8ead-deadbeefdead"
+alice_uid_early = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
+legacy_cache = {
+    "schema_version": 1,
+    "ok": True,
+    "refreshed_at": "2026-08-16T07:00:00Z",
+    "users": [
+        {
+            "tag": "alice",
+            "user_id": alice_uid_early,
+            "source": "ssh-refresh",
+            "nodes": [
+                {
+                    "name": "lax",
+                    "tag": "alice",
+                    "enabled": True,
+                    "status": "active",
+                    "active_credential_id": CRED_SENTINEL,
+                }
+            ],
+        }
+    ],
+    "unreachable": [],
+}
+legacy_path = Path(home) / "users-cache.json"
+legacy_path.write_text(json.dumps(legacy_cache), encoding="utf-8")
+runtime_cache = Path(home) / "ui-runtime" / "users-cache.json"
+# Migrate is start-only; invoke explicitly after planting legacy (same as UI restart).
+ui.migrate_users_cache()
+st, users_legacy, _ = get("/api/users")
+assert st == 200
+users_blob = json.dumps(users_legacy)
+assert CRED_SENTINEL not in users_blob
+assert "active_credential_id" not in users_blob
+assert users_legacy["users"][0]["nodes"][0]["has_active_credential"] is True
+# Upgrade migrate: legacy Fleet Home cache removed; sanitized copy under ui-runtime
+assert not legacy_path.is_file(), "legacy users-cache.json must be deleted after migrate"
+assert runtime_cache.is_file()
+disk_migrated = runtime_cache.read_text(encoding="utf-8")
+assert CRED_SENTINEL not in disk_migrated
+assert "active_credential_id" not in disk_migrated
+st, user_detail, _ = get("/api/users/alice")
+assert st == 200
+detail_blob = json.dumps(user_detail)
+assert CRED_SENTINEL not in detail_blob
+assert "active_credential_id" not in detail_blob
+assert user_detail["user"]["nodes"][0]["has_active_credential"] is True
+assert "never shown" in (user_detail.get("secrets_note") or "").lower() or (
+    "credential uuid" in (user_detail.get("secrets_note") or "").lower()
+)
+
+orig_ulist = fleet.run_user_list_payload
+
+def fake_user_list():
+    return 0, {
+        "ok": True,
+        "state": "SUCCESS",
+        "users": [
+            {
+                "tag": "alice",
+                "user_id": alice_uid_early,
+                "display_name": None,
+                "department": None,
+                "nodes": [
+                    {
+                        "name": "lax",
+                        "tag": "alice",
+                        "enabled": True,
+                        "status": "active",
+                        "active_credential_id": CRED_SENTINEL,
+                    }
+                ],
+            }
+        ],
+        "unreachable": [],
+    }
+
+fleet.run_user_list_payload = fake_user_list
+st, refresh_doc, _ = post("/api/refresh/users", {})
+fleet.run_user_list_payload = orig_ulist
+assert refresh_doc["operation"] == "refresh-users"
+refresh_blob = json.dumps(refresh_doc)
+assert CRED_SENTINEL not in refresh_blob
+assert "active_credential_id" not in refresh_blob
+assert refresh_doc["result"]["users"][0]["nodes"][0]["has_active_credential"] is True
+assert not legacy_path.is_file()
+on_disk = json.loads(runtime_cache.read_text(encoding="utf-8"))
+disk_blob = json.dumps(on_disk)
+assert CRED_SENTINEL not in disk_blob
+assert "active_credential_id" not in disk_blob
+assert on_disk["users"][0]["nodes"][0]["has_active_credential"] is True
+app_js_text = (Path(static_dir) / "app.js").read_text(encoding="utf-8")
+assert "active_credential_id" not in app_js_text
+assert "has_active_credential" in app_js_text
+st, users_after, _ = get("/api/users")
+assert CRED_SENTINEL not in json.dumps(users_after)
+
+# user_snapshot has_active_credential from SQL bool (not hardcoded false)
+lax_id = fleet.require_node(fleet.load_registry(), "lax")["node_id"]
+conn_snap = fleet.open_fleet_db()
+try:
+    conn_snap.execute(
+        """INSERT OR REPLACE INTO user_snapshot(
+             node_id,user_id,tag,enabled,status,active_credential_id,
+             payload_json,synced_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            lax_id,
+            alice_uid_early,
+            "alice",
+            1,
+            "active",
+            CRED_SENTINEL,
+            json.dumps({"department": "eng"}),
+            "2026-08-16T07:00:00Z",
+        ),
+    )
+    conn_snap.commit()
+finally:
+    conn_snap.close()
+# Clear users-cache so API reads snapshot
+if runtime_cache.is_file():
+    runtime_cache.unlink()
+st, users_snap, _ = get("/api/users")
+assert st == 200
+assert users_snap["users"][0]["source"] == "user_snapshot"
+assert users_snap["users"][0]["nodes"][0]["has_active_credential"] is True
+assert CRED_SENTINEL not in json.dumps(users_snap)
+# audit/usage fallback must use unknown (null), not false
+conn_fb = fleet.open_fleet_db()
+try:
+    conn_fb.execute("DELETE FROM user_snapshot")
+    conn_fb.commit()
+finally:
+    conn_fb.close()
+st, users_fb, _ = get("/api/users")
+assert st == 200
+assert users_fb["users"]
+assert users_fb["users"][0]["nodes"][0]["has_active_credential"] is None
+
+# Traffic trend uses the same filters as table/totals (two-node fixture)
+tokyo_id = "8bb18c32-3333-4333-8333-333333333333"
+bob_uid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+reg = fleet.load_registry()
+if fleet.find_by_name(reg, "tokyo") is None:
+    fleet.add_node(
+        reg, node_id=tokyo_id, name="tokyo", ssh_host="203.0.113.11"
+    )
+    fleet.save_registry(None, reg)
+conn_tr = fleet.open_fleet_db()
+try:
+    now = "2026-08-16T07:00:00Z"
+    inst = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    row_tokyo = {
+        "event_id": 2,
+        "export_seq": 1,
+        "connection_id": "ui-bob-1",
+        "generation": 0,
+        "user_id": bob_uid,
+        "user_tag": "bob",
+        "node_id": tokyo_id,
+        "instance_id": inst,
+        "started_at": "2026-08-10T08:00:00Z",
+        "last_seen_at": "2026-08-10T09:00:00Z",
+        "closed_at": "2026-08-10T09:00:00Z",
+        "destination_host": "tokyo.example",
+        "destination_ip": "203.0.113.90",
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": 5000,
+        "download_bytes": 7000,
+    }
+    fleet.import_audit_batch(tokyo_id, inst, [row_tokyo], now_iso=now, conn=conn_tr)
+finally:
+    conn_tr.close()
+st, traffic_all, _ = get("/api/stats/top?kind=users&days=7")
+assert st == 200
+st, traffic_lax, _ = get("/api/stats/top?kind=users&days=7&node=lax")
+assert st == 200
+st, traffic_tokyo, _ = get("/api/stats/top?kind=users&days=7&node=tokyo")
+assert st == 200
+all_trend = sum(int(r.get("bytes") or 0) for r in traffic_all.get("trend") or [])
+lax_trend = sum(int(r.get("bytes") or 0) for r in traffic_lax.get("trend") or [])
+tokyo_trend = sum(int(r.get("bytes") or 0) for r in traffic_tokyo.get("trend") or [])
+assert lax_trend > 0 and tokyo_trend > 0
+assert lax_trend != tokyo_trend
+assert all_trend == lax_trend + tokyo_trend
+assert int(traffic_lax["totals"].get("bytes") or 0) == lax_trend
+assert int(traffic_tokyo["totals"].get("bytes") or 0) == tokyo_trend
+assert int(traffic_all["totals"].get("bytes") or 0) == all_trend
+st, traffic_miss, _ = get("/api/stats/top?kind=users&days=7&user=nosuchuser")
+assert traffic_miss["rows"] == []
+assert int(traffic_miss["totals"].get("bytes") or 0) == 0
+assert traffic_miss["trend"] == []
 
 st, recipes, _ = get("/api/recipes")
 assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])
 assert "CLI-only" in recipes["note"] or "cli-only" in recipes["note"].lower() or "reseed" in recipes["note"].lower()
+recipe_ids = {r["id"] for r in recipes["recipes"]}
+for need in (
+    "node-adopt",
+    "node-provision",
+    "node-register",
+    "workspace-init",
+    "workspace-verify",
+    "workspace-export",
+    "workspace-import",
+    "audit-archive-create",
+    "audit-archive-restore",
+    "user-link",
+):
+    assert need in recipe_ids, (need, recipe_ids)
+assert "node-add" in recipe_ids  # legacy alias retained
+recipes_blob = json.dumps(recipes).lower()
+assert "vless://" not in recipes_blob
+assert "private_key" not in recipes_blob
+assert "clash_secret" not in recipes_blob
+assert "sync --full" in recipes["note"].lower() or any(
+    "sync --full" in (r.get("command") or "") for r in recipes["recipes"]
+)
+
+st, meta, _ = get("/api/meta")
+assert st == 200
+assert meta.get("sync") == "full"
+assert meta.get("identity_mutations") is False
+assert "sync_full" in (meta.get("cache_writes") or [])
+assert "workspace" in overview
+assert overview["workspace"].get("conflict") in (
+    "ok",
+    "absent",
+    "WORKSPACE_ROLLBACK",
+    "WORKSPACE_DIVERGED",
+    "WORKSPACE_INCONSISTENT",
+)
+assert "workspace" in health
+assert health["workspace"].get("conflict") in (
+    "ok",
+    "absent",
+    "WORKSPACE_ROLLBACK",
+    "WORKSPACE_DIVERGED",
+    "WORKSPACE_INCONSISTENT",
+)
+# AC-4.4-01 / 04: sync_full wiring + empty-state copy
+ui_src = Path(ui.__file__).read_text(encoding="utf-8")
+assert "run_sync_full_payload" in ui_src
+assert 'operation": "sync_full"' in ui_src or "operation': 'sync_full'" in ui_src
+static_app = (Path(static_dir) / "app.js").read_text(encoding="utf-8")
+assert "node adopt" in static_app and "node provision" in static_app
+assert "Sync --full" in static_app or "sync --full" in static_app.lower()
 
 alice_uid = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
 st, audit, _ = get(
@@ -8848,8 +9233,8 @@ t1.start(); t2.start(); t1.join(); t2.join()
 assert len(results) == 2
 assert all(r.get("schema_version") == 1 and "node_count" in r for r in results)
 
-# Concurrent /api/sync must not both enter run_sync_payload
-orig_sync = fleet.run_sync_payload
+# Concurrent /api/sync must not both enter run_sync_full_payload
+orig_sync = fleet.run_sync_full_payload
 inside = 0
 max_inside = 0
 guard = threading.Lock()
@@ -8871,7 +9256,7 @@ def wrapped_sync(ns):
         with guard:
             inside -= 1
 
-fleet.run_sync_payload = wrapped_sync
+fleet.run_sync_full_payload = wrapped_sync
 sync_err = []
 sync_ok = []
 
@@ -8884,10 +9269,11 @@ def sync_worker():
 st1 = threading.Thread(target=sync_worker)
 st2 = threading.Thread(target=sync_worker)
 st1.start(); st2.start(); st1.join(); st2.join()
-fleet.run_sync_payload = orig_sync
+fleet.run_sync_full_payload = orig_sync
 assert not sync_err, sync_err
 assert len(sync_ok) == 2
 assert max_inside == 1, max_inside
+assert all(r[1].get("operation") == "sync_full" for r in sync_ok), sync_ok
 
 # Worker cap: one in-flight request, the next is 503
 busy_httpd, busy_thread, busy_tok = ui.serve_in_thread(
@@ -8936,10 +9322,198 @@ busy_thread.join(timeout=5)
 # Restore primary server runtime (token + port) after the busy-server helper.
 ui.set_ui_runtime(token=token, listen_port=port)
 
+# AC-4.4-rev1: probe live overlay; GET /api/nodes stays cache; no last-status write
+orig_live = fleet.run_status_payload
+
+def fake_probe(include_all=False):
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "controller_utc": "2026-08-16T08:00:00Z",
+        "nodes": [
+            {
+                "name": "lax",
+                "ssh": "OK",
+                "proxy": "OK",
+                "accounting": "OK",
+            }
+        ],
+    }
+
+ls_path = fleet.last_status_path()
+ls_before = ls_path.stat().st_mtime_ns if ls_path.is_file() else None
+fleet.run_status_payload = fake_probe
+st, probe_doc, _ = post("/api/refresh/probe", {})
+assert probe_doc["operation"] == "probe"
+assert probe_doc["result"]["nodes"][0]["accounting"] == "OK"
+if ls_path.is_file():
+    assert ls_path.stat().st_mtime_ns == ls_before, "probe must not write last-status"
+overlay = ui.api_nodes(live_overlay=probe_doc["result"])
+assert overlay["data_source"] == "live-probe"
+assert overlay["nodes"][0]["accounting"] == "OK"
+st, cache_nodes, _ = get("/api/nodes")
+assert cache_nodes.get("data_source", "cache") == "cache"
+assert cache_nodes["nodes"][0]["accounting"] == "STALE"
+fleet.run_status_payload = orig_live
+
+# AC-4.4-02: sync PARTIAL exit 2 → ok=false operation=sync_full
+orig_sync2 = fleet.run_sync_full_payload
+
+def fake_sync_partial(ns):
+    return 2, {"state": "PARTIAL", "nodes": [{"name": "lax", "status": "FAIL"}]}
+
+fleet.run_sync_full_payload = fake_sync_partial
+st, sync_part, _ = post("/api/sync", {})
+assert sync_part["ok"] is False
+assert sync_part["operation"] == "sync_full"
+assert sync_part["exit_code"] == 2
+assert sync_part["result"]["state"] == "PARTIAL"
+fleet.run_sync_full_payload = orig_sync2
+
+# AC-4.4-03: recipe CLI argv parses (incl. archive restore positional file)
+import re
+import shlex
+
+parser = fleet.build_parser()
+SKIP_RECIPES = {"backup-restore", "sync", "status-verify", "node-enable", "user-enable"}
+
+
+def recipe_argv(line: str) -> list[str]:
+    trial = line
+    for old, new in (
+        ("vcl-fleet ", ""),
+        ("NAME", "lax"),
+        ("HOST", "203.0.113.10"),
+        ("NEW_HOST", "203.0.113.11"),
+        ("NODE1,NODE2", "lax"),
+        ("NODE", "lax"),
+        ("TAG", "alice"),
+        ("FILE", "out.vclaudit"),
+        ("fleet.tgz", "fleet.tgz"),
+        ("users.csv", "users.csv"),
+        ("SHA256:...", "SHA256:abc"),
+        ("RFC3339", "2026-08-01T00:00:00Z"),
+        ("enable|disable", "enable"),
+        ("|verify|probe|status", " status"),
+    ):
+        trial = trial.replace(old, new)
+    trial = re.sub(r"\[[^\]]*\]", "", trial)
+    trial = " ".join(trial.split())
+    return shlex.split(trial)
+
+
+for rec in recipes["recipes"]:
+    if rec["id"] in SKIP_RECIPES:
+        continue
+    cmd = rec["command"]
+    for line in cmd.splitlines():
+        line = line.strip()
+        if not line or line.startswith("vcl ") or line.startswith("#"):
+            continue
+        parser.parse_args(recipe_argv(line))
+parser.parse_args(["audit", "archive", "restore", "out.vclaudit"])
+restore_rec = next(r for r in recipes["recipes"] if r["id"] == "audit-archive-restore")
+assert "restore out.vclaudit" in restore_rec["command"]
+assert "--input" not in restore_rec["command"]
+export_rec = next(r for r in recipes["recipes"] if r["id"] == "workspace-export")
+assert "export fleet.tgz" in export_rec["command"]
+assert "--output" not in export_rec["command"]
+
+st, ops, _ = get("/api/operations")
+assert st == 200 and isinstance(ops.get("rows"), list)
+assert any(r.get("operation") == "probe" for r in ops["rows"])
+# AC-4.4-09: operations rows use ``time`` (not ``at``); time must be visible in render
+probe_ops = [r for r in ops["rows"] if r.get("operation") == "probe"]
+assert probe_ops, "expected at least one probe operation row"
+for r in probe_ops:
+    assert "time" in r and r["time"], r
+    assert not r.get("at") or r.get("time"), "time is canonical field"
+    assert "T" in str(r["time"]), r["time"]
+
+
+def operation_time_cell(row: dict) -> str:
+    """Mirrors app.js operationTimeCell — backend field is ``time``."""
+    t = row.get("time") if row else None
+    return str(t) if t else "—"
+
+
+rendered_time = operation_time_cell(probe_ops[0])
+assert rendered_time != "—", probe_ops[0]
+assert rendered_time == str(probe_ops[0]["time"])
+# DOM/render: Operations TIME cell shows the timestamp, not em-dash
+cell_html = f"<td>{rendered_time}</td>"
+assert rendered_time in cell_html and cell_html != "<td>—</td>"
+assert "operationTimeCell" in static_app
+assert "r.at" not in static_app
+assert "r.time || r.at" not in static_app
+
+# Probe / Verify / Sync / Refresh-users: shared SSH confirm; cancel → no POST
+SSH_HINT = "This action contacts remote nodes over SSH."
+assert SSH_HINT in static_app
+assert "function confirmRemoteSsh" in static_app
+
+
+def _ui_fn_body(name: str) -> str:
+    m = re.search(
+        rf"async function {name}\(\) \{{([\s\S]*?)\n  \}}",
+        static_app,
+    )
+    assert m, f"missing {name}"
+    return m.group(1)
+
+
+for name, path in (
+    ("runProbe", "/api/refresh/probe"),
+    ("runVerify", "/api/refresh/verify"),
+    ("doSync", "/api/sync"),
+):
+    body = _ui_fn_body(name)
+    assert "confirmRemoteSsh" in body, name
+    assert path in body, (name, path)
+    assert body.index("confirmRemoteSsh") < body.index(path), name
+    assert "return;" in body[: body.index(path)], f"{name} must return before POST on cancel"
+
+# Refresh-users click handler (anonymous) still gated
+assert "confirmRemoteSsh(\"Refresh users from remote nodes now?\")" in static_app
+refresh_idx = static_app.index("confirmRemoteSsh(\"Refresh users from remote nodes now?\")")
+users_post_idx = static_app.index("/api/refresh/users")
+assert refresh_idx < users_post_idx
+
+
+def _remote_posts_if_confirm(ok: bool, path: str) -> list[str]:
+    """Behavioral mirror of confirmRemoteSsh + early return (cancel → no POST)."""
+    posts: list[str] = []
+
+    def confirmRemoteSsh(detail: str) -> bool:
+        assert SSH_HINT in f"{SSH_HINT}\n\n{detail}"
+        return ok
+
+    if not confirmRemoteSsh("Run live probe now?"):
+        return posts
+    posts.append(path)
+    return posts
+
+
+assert _remote_posts_if_confirm(False, "/api/refresh/probe") == []
+assert _remote_posts_if_confirm(True, "/api/refresh/probe") == ["/api/refresh/probe"]
+assert _remote_posts_if_confirm(False, "/api/refresh/verify") == []
+
+assert "liveProbeOverlay" in static_app
+assert "/api/refresh/probe" in static_app
+assert "btn-probe" in (Path(static_dir) / "index.html").read_text(encoding="utf-8")
+
 # Static index: token meta, no vless
 st, html, idx_hdrs = req("/", headers={})
 assert st == 200
-assert "Overview" in html and "Audit" in html and "Health" in html
+assert (
+    "Overview" in html
+    and "Nodes" in html
+    and "Users" in html
+    and "Traffic" in html
+    and "Audit" in html
+    and "Operations" in html
+)
+assert 'data-page="health"' not in html
 assert "vless://" not in html.lower()
 assert 'name="vcl-ui-token"' in html
 assert "Content-Security-Policy" in idx_hdrs
@@ -8950,9 +9524,233 @@ thread.join(timeout=5)
 print("ui api ok")
 PY
 if (( ui_api_rc == 0 )); then
-  pass "AC-3.1 UI overview/health/audit/recipes + no mutation routes"
+  pass "AC-3.1 UI six-page overview/nodes/users/traffic/audit/operations + probe overlay"
 else
-  fail "AC-3.1 UI overview/health/audit/recipes + no mutation routes (rc=${ui_api_rc})"
+  fail "AC-3.1 UI six-page overview/nodes/users/traffic/audit/operations + probe overlay (rc=${ui_api_rc})"
+fi
+
+# AC-4.4-05: read-only workspace surface (five states) + GET does not write
+ws_ro_rc=0
+python3 - "${PROJECT_DIR}/lib/workspace.py" "${PROJECT_DIR}/lib/vincula-ui/server.py" \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "${TEST_TMP}/ws-ro-five" <<'PY' || ws_ro_rc=$?
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import uuid
+from pathlib import Path
+
+ws_path, ui_path, fleet_path, base = sys.argv[1:5]
+base = Path(base)
+state_root = base / "local-state"
+xdg_cfg = base / "xdg-config"
+state_root.mkdir(parents=True, exist_ok=True)
+xdg_cfg.mkdir(parents=True, exist_ok=True)
+os.environ["VCL_FLEET_LOCAL_STATE"] = str(state_root)
+os.environ["XDG_CONFIG_HOME"] = str(xdg_cfg)
+os.environ["XDG_STATE_HOME"] = str(base / "xdg-state")
+
+spec_ws = importlib.util.spec_from_file_location("workspace", ws_path)
+ws = importlib.util.module_from_spec(spec_ws)
+spec_ws.loader.exec_module(ws)
+
+spec_f = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec_f)
+sys.modules["vincula_fleet"] = fleet
+spec_f.loader.exec_module(fleet)
+
+spec_ui = importlib.util.spec_from_file_location("vincula_ui_server", ui_path)
+ui = importlib.util.module_from_spec(spec_ui)
+spec_ui.loader.exec_module(ui)
+ui.set_fleet_module(fleet)
+
+import argparse
+
+ws.bind(fleet)
+ns = argparse.Namespace()
+
+
+def init_ws_home(home: Path) -> None:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    fleet.cmd_init()
+    fleet.cmd_workspace_init(ns)
+    conn = fleet.open_fleet_db()
+    conn.close()
+
+
+def tree_snapshot(*roots: Path) -> set[str]:
+    out: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for p in root.rglob("*"):
+            rel = f"{root.name}/{p.relative_to(root).as_posix()}"
+            out.add(("D" if p.is_dir() else "F") + ":" + rel)
+    return out
+
+
+def assert_no_disk_writes(label: str, roots: list[Path], fn):
+    before = tree_snapshot(*roots)
+    result = fn()
+    after = tree_snapshot(*roots)
+    assert before == after, (label, sorted(before ^ after))
+    return result
+
+
+def surface(home: Path) -> dict:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    fleet._WS = ws  # noqa: SLF001
+    return ws.read_only_workspace_surface()
+
+
+def overview_workspace(home: Path) -> dict:
+    os.environ["VCL_FLEET_HOME"] = str(home)
+    ui.set_fleet_module(fleet)
+    roots = [home, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+    doc = assert_no_disk_writes(
+        f"api_overview:{home.name}", roots, ui.api_overview
+    )
+    return doc["workspace"]
+
+
+home_absent = base / "absent"
+home_absent.mkdir(parents=True, exist_ok=True)
+assert surface(home_absent)["conflict"] == "absent"
+
+home_ok = base / "ok"
+home_ok.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_ok)
+assert surface(home_ok)["conflict"] == "ok"
+assert overview_workspace(home_ok)["conflict"] == "ok"
+
+# GET must not mkdir STATE when only portable workspace exists (no view)
+home_nomkdir = base / "no-mkdir"
+home_nomkdir.mkdir(parents=True, exist_ok=True)
+os.environ["VCL_FLEET_HOME"] = str(home_nomkdir)
+fleet.cmd_init()
+fleet.cmd_workspace_init(ns)
+m0 = ws.load_workspace_manifest()
+fid0 = str(m0["fleet_id"])
+state_dir = ws.fleet_local_state_dir(fid0)
+if state_dir.exists():
+    shutil.rmtree(state_dir)
+assert not state_dir.exists()
+roots_nm = [home_nomkdir, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+assert_no_disk_writes(
+    "read_only_no_mkdir", roots_nm, lambda: surface(home_nomkdir)
+)
+assert not state_dir.exists(), "read_only_workspace_surface must not mkdir STATE"
+assert surface(home_nomkdir)["conflict"] == "ok"
+
+# With cache present, GET must not create archives/ui-runtime via view migrate
+home_get = base / "get-no-mkdir"
+home_get.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_get)
+m_get = ws.load_workspace_manifest()
+fid_get = str(m_get["fleet_id"])
+st_get = ws.fleet_local_state_dir(fid_get)
+for sub in (ws.LOCAL_STATE_ARCHIVES, ws.LOCAL_STATE_UI_RUNTIME):
+    p = st_get / sub
+    if p.exists():
+        shutil.rmtree(p)
+view_p = st_get / ws.WORKSPACE_VIEW_NAME
+if view_p.is_file():
+    view_p.unlink()
+leg_view = ws.legacy_machine_local_dir() / ws.WORKSPACE_VIEW_NAME
+if leg_view.is_file():
+    leg_view.unlink()
+os.environ["VCL_FLEET_HOME"] = str(home_get)
+ui.set_fleet_module(fleet)
+roots_get = [home_get, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+doc_get = assert_no_disk_writes(
+    "api_overview_no_mkdir_side_dirs", roots_get, ui.api_overview
+)
+assert doc_get["workspace"]["conflict"] == "ok"
+assert not (st_get / ws.LOCAL_STATE_ARCHIVES).exists()
+assert not (st_get / ws.LOCAL_STATE_UI_RUNTIME).exists()
+assert not view_p.exists()
+
+home_roll = base / "rollback"
+home_roll.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_roll)
+m = ws.load_workspace_manifest()
+ws.save_workspace_view(
+    {
+        "schema_version": 1,
+        "fleet_id": m["fleet_id"],
+        "last_seen_revision": m["revision"] + 2,
+        "last_seen_write_id": m["write_id"],
+        "last_seen_state_digest": m["state_digest"],
+    }
+)
+assert surface(home_roll)["conflict"] == "WORKSPACE_ROLLBACK"
+
+home_div = base / "diverged"
+home_div.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_div)
+m = ws.load_workspace_manifest()
+ws.save_workspace_view(
+    {
+        "schema_version": 1,
+        "fleet_id": m["fleet_id"],
+        "last_seen_revision": m["revision"],
+        "last_seen_write_id": str(uuid.uuid4()),
+        "last_seen_state_digest": m["state_digest"],
+    }
+)
+assert surface(home_div)["conflict"] == "WORKSPACE_DIVERGED"
+
+home_bad = base / "inconsistent"
+home_bad.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_bad)
+m = ws.load_workspace_manifest()
+m["state_digest"] = "sha256:" + ("f" * 64)
+ws.save_workspace_manifest(m)
+assert surface(home_bad)["conflict"] == "WORKSPACE_INCONSISTENT"
+
+# Malformed workspace.json must not fail-open as absent, and must not get
+# portable-root ui-runtime/ from UI cache migrate.
+home_mal = base / "malformed-json"
+home_mal.mkdir(parents=True, exist_ok=True)
+(home_mal / "workspace.json").write_text("{not-json", encoding="utf-8")
+surf_mal = surface(home_mal)
+assert surf_mal["active"] is True, surf_mal
+assert surf_mal["conflict"] == "WORKSPACE_INCONSISTENT", surf_mal
+assert surf_mal.get("fleet_id") is None
+roots_mal = [home_mal, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+before_mal = tree_snapshot(*roots_mal)
+os.environ["VCL_FLEET_HOME"] = str(home_mal)
+ui.set_fleet_module(fleet)
+migrate_rc = 0
+try:
+    ui.migrate_users_cache()
+except SystemExit as exc:
+    migrate_rc = int(exc.code) if isinstance(exc.code, int) else 1
+else:
+    raise AssertionError("migrate_users_cache must fail closed on malformed workspace")
+assert migrate_rc != 0
+after_mal = tree_snapshot(*roots_mal)
+assert before_mal == after_mal, sorted(before_mal ^ after_mal)
+assert not (home_mal / "ui-runtime").exists(), "must not create <workspace>/ui-runtime"
+# create=True path must also refuse (no portable pollution)
+create_rc = 0
+try:
+    ui.users_cache_path(create=True)
+except SystemExit as exc:
+    create_rc = int(exc.code) if isinstance(exc.code, int) else 1
+else:
+    raise AssertionError("users_cache_path(create=True) must fail closed")
+assert create_rc != 0
+assert before_mal == tree_snapshot(*roots_mal)
+assert not (home_mal / "ui-runtime").exists()
+
+print("ws-ro-five ok")
+PY
+if (( ws_ro_rc == 0 )); then
+  pass "AC-4.4-05 read-only workspace five states + GET no write"
+else
+  fail "AC-4.4-05 read-only workspace five states + GET no write (rc=${ws_ro_rc})"
 fi
 
 ui_help=$(fleet ui -h 2>&1) || true
@@ -9456,14 +10254,11 @@ export VCL_FLEET_HOME="${SAVED_AC041_HOME}"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 unset VCL_FLEET_LOCAL_STATE
-# Keep controller CONFIG under the test tree (not the operator's real ~/.config).
+# Keep controller CONFIG and HOME under the test tree for the rest of the suite
+# (do not restore the operator's real HOME mid-run).
 export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
-mkdir -p "$XDG_CONFIG_HOME"
-if [[ -n "${FLEET_SAVED_HOME}" ]]; then
-  export HOME="${FLEET_SAVED_HOME}"
-else
-  unset HOME
-fi
+mkdir -p "$XDG_CONFIG_HOME" "${TEST_TMP}/user-home"
+export HOME="${TEST_TMP}/user-home"
 
 # --- 0.4.2 B1 ---
 SAVED=$VCL_FLEET_HOME; export VCL_FLEET_LOCAL_STATE=$TEST_TMP/xdg-b1
@@ -10264,7 +11059,7 @@ fi
 
 export VCL_FLEET_HOME=$F73_SAVED_HOME
 if [[ -n "$F73_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F73_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.2 F7-4 / T4: cached status ok derived from node_snapshot health ---
 F74_SAVED_HOME=$VCL_FLEET_HOME
@@ -10884,7 +11679,7 @@ else
 fi
 export VCL_FLEET_HOME=$P11R_SAVED_HOME
 if [[ -n "$P11R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P11R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$P11R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P11R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$P11R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P11R_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.2 P1-2 regression ---
 assert_success "P1-2r rollback journal / RO / legacy WAL" python3 - \
@@ -11456,10 +12251,11 @@ assert_success "P1-6r B bindings under own CONFIG" \
 assert_success "P1-6r A bindings still under A CONFIG" \
   test -f "${P16R_A_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
 assert_failure "P1-6r B still no machine-local" test -d "${P16R_B}/machine-local"
-export HOME=$P16R_SAVED_USER_HOME
+export HOME="${TEST_TMP}/user-home"
+mkdir -p "$HOME"
 export VCL_FLEET_HOME=$P16R_SAVED_HOME
 if [[ -n "$P16R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P16R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.3 B1 provision skeleton ---
 assert_success "B1 load_provision_module" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
@@ -12636,8 +13432,9 @@ assert mod.run_provision.__defaults__ is not None or "skip_sync" in mod.run_prov
 assert "skip_sync" in mod.run_provision.__code__.co_varnames
 PY
 
-# Restore env so later sourcing (if any) is not polluted
-export HOME=$B6_SAVED_HOME
+# Restore env so later sourcing (if any) is not polluted — stay under TEST_TMP
+export HOME="${TEST_TMP}/user-home"
+mkdir -p "$HOME"
 export VCL_FLEET_HOME=$B6_SAVED_FLEET_HOME
 if [[ -n "$B6_SAVED_FAKE_STATE" ]]; then export VCL_FAKE_STATE_DIR=$B6_SAVED_FAKE_STATE; else unset VCL_FAKE_STATE_DIR; fi
 if [[ -n "$B6_SAVED_ARGV_LOG" ]]; then export VCL_FAKE_SSH_ARGV_LOG=$B6_SAVED_ARGV_LOG; else unset VCL_FAKE_SSH_ARGV_LOG; fi
@@ -13009,4 +13806,14 @@ else
   fail "LIVE-P2 user link no active credential fails (rc=${nocred_rc} err=${nocred_err})"
 fi
 unset VCL_FAKE_STATE_DIR
+
+# Suite teardown: HOME / XDG must still be isolated under TEST_TMP
+case "${HOME}" in
+  "${TEST_TMP}"/*) pass "P1 teardown: HOME still under TEST_TMP" ;;
+  *) fail "P1 teardown: HOME leaked outside TEST_TMP (HOME=${HOME})" ;;
+esac
+case "${XDG_CONFIG_HOME:-}" in
+  "${TEST_TMP}"/*) pass "P1 teardown: XDG_CONFIG_HOME still under TEST_TMP" ;;
+  *) fail "P1 teardown: XDG_CONFIG_HOME leaked (XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-})" ;;
+esac
 

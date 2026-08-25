@@ -1,4 +1,4 @@
-# vincula（节点 0.3.1 · 控制器 0.4.3）
+# vincula（节点 0.3.1 · 控制器 0.4.4）
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
@@ -6,7 +6,7 @@
 协议固定：VLESS + REALITY + xtls-rprx-vision + TCP
 sing-box 固定：1.13.18（不追 latest）
 节点戳：VINCULA_VERSION=0.3.1（CLI：vcl / vincula）
-控制器戳：VCL_FLEET_VERSION=0.4.3（CLI：vcl-fleet）
+控制器戳：VCL_FLEET_VERSION=0.4.4（CLI：vcl-fleet）
 ```
 
 一次安装得到可导入的 VLESS URI；用节点 `vcl user` 管理用户；用 `vcl stats` / `vcl audit` 查看近似流量（**approximate / Clash polling**，非计费级）。多节点工作站用 **`vcl-fleet`**（不是节点上的 `vcl`）。
@@ -23,8 +23,9 @@ sing-box 固定：1.13.18（不追 latest）
 | Accounting | **accounting-db/v4**（`export_seq`）；raw 90 天 / daily 90 天 |
 | Fleet registry / cache | **fleet-registry/v2** · **fleet-cache/v4**（控制器） |
 | Workspace / archive | **workspace/v1** · **audit-archive/v1**（控制器 0.4.1+ / 0.4.2） |
+| Local Audit UI | **UI v2 = 控制器 0.4.4**（六页 + Command Builder；见下） |
 
-Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · 0.4.3 证据：[`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)  
+Gate / 已知限制：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · **0.4.4 UI v2** 证据：[`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md) · spec：[`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md) · 命令手册：[`docs/manual.md`](docs/manual.md) · 备份：[`docs/backup.md`](docs/backup.md)
 历史冻结门禁：[`docs/legacy/`](docs/legacy/)
 
 ---
@@ -180,7 +181,7 @@ vcl user export --credentials --output credentials.csv
 vcl user verify
 ```
 
-导入 CSV 最少一列 `tag`，可选 `display_name,department`。全量校验后一次提交，失败则零变更。  
+导入 CSV 最少一列 `tag`，可选 `display_name,department`。全量校验后一次提交，失败则零变更。
 `user remove` / purge / delete **不支持**（请用 `disable`）。
 
 仅会影响代理配置的用户变更才会 **restart sing-box**（连接可能短暂中断）；仅改 metadata 的 `user set` 不重启。
@@ -217,9 +218,9 @@ vcl audit user alice --from 2026-08-10T09:00:00Z --to 2026-08-10T18:00:00Z
 vcl audit user alice --from 2026-08-10T09:00:00Z --to 2026-08-10T18:00:00Z --json
 ```
 
-`--month` 从 `billing_cycle_start_day` 起算（默认 1；用 `vcl accounting cycle` 查看/设置）。  
-部门按 **当前** `users.json` 归属（无历史部门维）。  
-`vcl audit` 是连接级 RFC3339 interval-overlap（不是 stats 的 UTC 日粒度）；无 `--csv`。  
+`--month` 从 `billing_cycle_start_day` 起算（默认 1；用 `vcl accounting cycle` 查看/设置）。
+部门按 **当前** `users.json` 归属（无历史部门维）。
+`vcl audit` 是连接级 RFC3339 interval-overlap（不是 stats 的 UTC 日粒度）；无 `--csv`。
 详见 [`docs/accounting-reliability.md`](docs/accounting-reliability.md)。
 
 ### 备份 / 恢复（0.3.0）
@@ -243,7 +244,7 @@ sudo vcl backup verify FILE.tar.age --age-identity /root/age-identity.txt
 sudo vcl restore FILE.tar.age --include-secrets --age-identity /root/age-identity.txt
 ```
 
-缺 age：`ERROR: Secret-bearing backup requires age.`  
+缺 age：`ERROR: Secret-bearing backup requires age.`
 物理换机：`vcl-fleet node replace NAME --host NEW --host-key SHA256:…`。新机先
 `sudo bash vincula.sh --runtime-only`（装运行时、**不**写 VERSION），再由控制器
 `vcl restore FILE --reissue-output FILE --server HOST`。不要用 `node set` 冒充换机。
@@ -272,7 +273,7 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 
 ---
 
-## Fleet Users & Audit（工作站控制器 · 0.4.3）
+## Fleet Users & Audit（工作站控制器 · 0.4.4）
 
 入口是 **`vcl-fleet`**（`bin/vcl-fleet` → `lib/vincula-fleet.py`；Windows：`bin/vcl-fleet.cmd`）。SPEC 里的 `vcl fleet <sub>` ≡ `vcl-fleet <sub>`。跑在管理员工作站上：无 root、无 systemd、无公网管理端口；用系统 OpenSSH 开通用户、同步审计、查询 stats、退役节点。节点 `vcl` **没有** `fleet` 子命令。
 
@@ -288,12 +289,12 @@ Fleet-global `user_id`：节点本地 `vcl user add` 仍生成 UUID；控制器�
 | Adopt / Provision | `node adopt`（已装）· `node provision`（fresh VPS，钉 Node 0.3.1）· `node register`（registry-only）；`add` 为 legacy alias |
 | Audit archive | `audit archive create\|verify\|inspect\|restore`（**audit-archive/v1** `.vclaudit`） |
 | Access | `access bind/list/verify`（机器本地 credential refs） |
-| UI | `vcl-fleet ui` localhost-only（Overview / Audit / Health；突变仍走 CLI） |
+| **UI v2（0.4.4）** | `vcl-fleet ui` localhost-only；六页 Overview/Nodes/Users/Traffic/Audit/Operations + Command Builder；突变仍走 CLI |
 
-完整 CLI：[`docs/fleet.md`](docs/fleet.md) · 手册：[`docs/manual.md`](docs/manual.md) · 0.4.3 证据：[`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。节点线 gate 仍见 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
+完整 CLI：[`docs/fleet.md`](docs/fleet.md) · 手册：[`docs/manual.md`](docs/manual.md) · **0.4.4 UI v2** 证据：[`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md) · 0.4.3 Adopt/Provision：[`docs/evidence/0.4.3/SUMMARY.md`](docs/evidence/0.4.3/SUMMARY.md)。节点线 gate 仍见 [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md)。
 
 ```bash
-python3 bin/vcl-fleet version                    # → vcl-fleet 0.4.3
+python3 bin/vcl-fleet version                    # → vcl-fleet 0.4.4
 python3 bin/vcl-fleet workspace init
 python3 bin/vcl-fleet access bind admin --identity-file ~/.ssh/id_ed25519
 # 已装节点：
@@ -317,7 +318,7 @@ python3 bin/vcl-fleet sync --reseed lax          # CURSOR_EXPIRED / unlabeled；
 python3 bin/vcl-fleet audit user alice --from 2026-08-10T00:00:00Z --to 2026-08-16T00:00:00Z
 python3 bin/vcl-fleet stats user alice --days 7
 python3 bin/vcl-fleet audit archive create --from … --to … --output out.vclaudit
-python3 bin/vcl-fleet ui                         # http://127.0.0.1:8765 ；仅 loopback
+python3 bin/vcl-fleet ui                         # UI v2 · http://127.0.0.1:8765 ；仅 loopback
 
 python3 bin/vcl-fleet node set lax --host 203.0.113.10   # rebind：同一实例，凭据保留
 python3 bin/vcl-fleet node replace lax --host 203.0.113.18 --host-key SHA256:...
@@ -338,7 +339,7 @@ python3 bin/vcl-fleet node retire lax                 # 先 final sync，再标 
 - `0.2.8` → **0.2.9**：保留 `user_id` / `node_id` / `instance_id`（不重 mint）；state/users/accounting schema 不变；工作站 `fleet.json` 1→2（加 `status`），新建 `fleet.db`
 - `0.2.9` → **0.3.0**：保留 `user_id` / `node_id` / `instance_id`（不重 mint，不旋转 Reality）；state/users/accounting/`fleet.json` schema 不变；工作站 `fleet.db` 1→2（`instance_history`）；新 backup schema 1。`instance_id` 仅在 `vcl restore` / `vcl-fleet node replace` 时新 mint
 - `0.3.0` / `0.3.1-dev` / `0.3.1-rc1` / `0.3.1-rc2` → **0.3.1**：同架构 milestone；保留 `user_id` / `node_id` / `instance_id` / Reality（不重 mint、不旋转凭据）；accounting-db 若仍为 v3 则开库 **v3→v4**。升级后若 Fleet 仍为 legacy `event_id` cursor：每节点一次 `vcl-fleet sync --reseed NAME`
-- 控制器 **0.4.x**：与节点解耦（`VCL_FLEET_VERSION`）；0.4.1 workspace/v1；0.4.2 fleet-cache/v4 + `sync --full` + audit-archive/v1；**0.4.3** Adopt & Provision（`node adopt` / `provision` / `register`）已关；Node 仍钉 0.3.1
+- 控制器 **0.4.x**：与节点解耦（`VCL_FLEET_VERSION`）；0.4.1 workspace/v1；0.4.2 fleet-cache/v4 + `sync --full` + audit-archive/v1；0.4.3 Adopt & Provision；**0.4.4 Local Audit UI v2**（六页 + Command Builder）；Node 仍钉 0.3.1
 
 不支持降级或跳未知版本。Fresh install 若已有 `/var/lib/vincula` 会拒绝（先卸载）。
 
@@ -389,5 +390,5 @@ Live `scripts/rc-live-upgrade-driver.sh` (real VPS / upgrade chain) stays **manu
 ## 明确不做
 
 Hysteria2/TUIC、公网 Web UI、订阅计费、HTTPS MITM、自动追 latest、Reliable/Billing-grade accounting、单文件 `curl|bash`、`vcl recover`、用户 purge/delete、tag rename。
-（工作站 **localhost-only** Local Audit UI 已在 0.3.1：`vcl-fleet ui`。）
+（工作站 **localhost-only Local Audit UI v2** 是 **控制器 0.4.4** 内容：`vcl-fleet ui`；六页 Overview/Nodes/Users/Traffic/Audit/Operations + Command Builder。0.3.1 仅引入 B15 三页雏形。）
 全新安装若发现残留路径会拒绝，并在报错中打印确切的 `rm -f` / `rmdir` 清理命令；仍然没有 `vcl recover`。

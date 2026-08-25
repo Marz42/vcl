@@ -10,19 +10,23 @@
   <header class="top">
     <div class="brand">
       <strong>Vincula Fleet</strong>
-      <span class="muted">Local Audit UI · localhost · no identity mutations</span>
+      <span class="muted">Local Audit UI v2 · localhost · no identity mutations</span>
       <span id="approx-badge" class="badge approx" title="Clash polling; not byte-identical with node stats">approximate accounting</span>
     </div>
     <nav class="tabs" aria-label="Main">
       <button type="button" class="tab active" data-page="overview">Overview</button>
+      <button type="button" class="tab" data-page="nodes">Nodes</button>
+      <button type="button" class="tab" data-page="users">Users</button>
+      <button type="button" class="tab" data-page="traffic">Traffic</button>
       <button type="button" class="tab" data-page="audit">Audit</button>
-      <button type="button" class="tab" data-page="health">Health</button>
+      <button type="button" class="tab" data-page="operations">Operations</button>
     </nav>
     <div class="actions">
-      <button type="button" id="btn-refresh-status" class="btn">Refresh status</button>
+      <button type="button" id="btn-probe" class="btn" title="Live SSH probe (does not write last-status.json)">Probe</button>
       <button type="button" id="btn-verify" class="btn">Verify</button>
       <button type="button" id="btn-sync" class="btn primary">Sync…</button>
-      <button type="button" id="btn-recipes" class="btn">CLI recipes ▾</button>
+      <button type="button" id="btn-recipes" class="btn">Recipes</button>
+      <button type="button" id="btn-command-builder" class="btn">Command Builder</button>
     </div>
   </header>
 
@@ -32,6 +36,18 @@
   <main>
     <section id="page-overview" class="page active">
       <div class="kpi-row" id="kpi-row"></div>
+      <p id="workspace-strip" class="hint" hidden></p>
+      <p id="live-probe-strip" class="hint" hidden></p>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Traffic trend <span class="muted">(7d, approximate)</span></h2>
+          <div id="traffic-trend" class="table-wrap"></div>
+        </div>
+        <div class="card">
+          <h2>Node health</h2>
+          <div id="node-health-table" class="table-wrap"></div>
+        </div>
+      </div>
       <div class="grid-2">
         <div class="card">
           <h2>Top users <span class="muted">(7d, approximate)</span></h2>
@@ -43,17 +59,83 @@
         </div>
       </div>
       <div class="card">
+        <h2>Recent problems</h2>
+        <div id="recent-problems"></div>
+      </div>
+      <div class="card">
         <h2>Warnings</h2>
         <div id="overview-warnings"></div>
         <p class="hint">
           Drill-down:
-          <button type="button" class="linkish" id="goto-health">Health</button>
+          <button type="button" class="linkish" id="goto-nodes">Nodes</button>
           ·
           <button type="button" class="linkish" id="goto-audit">Audit</button>
           ·
-          <button type="button" class="linkish" id="btn-refresh-users">Refresh users (SSH)</button>
+          <button type="button" class="linkish" id="goto-operations">Operations</button>
         </p>
-        <div id="users-summary" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-nodes" class="page">
+      <div class="card">
+        <h2>Nodes</h2>
+        <p class="hint">
+          Default: cache from <code>sync --full</code> → <code>node_snapshot</code>.
+          <strong>Probe</strong> runs live SSH (shown until next cache reload); does not write
+          <code>last-status.json</code>. Click a row for drill-down.
+        </p>
+        <p id="nodes-workspace-strip" class="hint" hidden></p>
+        <div id="nodes-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-users" class="page">
+      <div class="card">
+        <h2>Users</h2>
+        <p class="hint">
+          From local cache. <button type="button" class="linkish" id="btn-refresh-users">Refresh users (SSH)</button>
+          writes local <code>ui-runtime/users-cache.json</code> only.
+        </p>
+        <div id="users-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="page-traffic" class="page">
+      <div class="card">
+        <h2>Traffic <span class="muted">(approximate accounting)</span></h2>
+        <p class="hint">Aggregated from synced <code>daily_usage</code>. Not mixed with Audit connection rows.</p>
+        <form id="traffic-form" class="form-grid inline-form">
+          <label>Kind
+            <select name="kind" id="traffic-kind">
+              <option value="users">Top users</option>
+              <option value="nodes">Top nodes</option>
+              <option value="hosts">Top hosts</option>
+            </select>
+          </label>
+          <label>Days
+            <input name="days" id="traffic-days" type="number" min="1" max="90" value="7" />
+          </label>
+          <label>Node (optional)
+            <input name="node" id="traffic-node" placeholder="lax" autocomplete="off" />
+          </label>
+          <label>User (optional)
+            <input name="user" id="traffic-user" placeholder="alice" autocomplete="off" />
+          </label>
+          <label>Department (optional)
+            <input name="department" id="traffic-department" placeholder="eng" autocomplete="off" />
+          </label>
+          <label>Destination contains (optional)
+            <input name="destination" id="traffic-destination" placeholder="example.com" autocomplete="off" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Load</button>
+          </div>
+        </form>
+        <div id="traffic-totals" class="hint" hidden></div>
+        <div id="traffic-trend-panel" class="table-wrap" hidden></div>
+        <div id="traffic-results" class="table-wrap">
+          <p class="empty">Run Sync (--full) first, then Load.</p>
+        </div>
       </div>
     </section>
 
@@ -80,6 +162,15 @@
           <label>Destination contains (optional)
             <input name="destination" id="audit-dest" placeholder="example.com" />
           </label>
+          <label>Destination IP (optional)
+            <input name="destination_ip" id="audit-dest-ip" placeholder="203.0.113.10" />
+          </label>
+          <label>Port (optional)
+            <input name="port" id="audit-port" type="number" min="1" max="65535" placeholder="443" />
+          </label>
+          <label>Network (optional)
+            <input name="network" id="audit-network" placeholder="tcp" />
+          </label>
           <div class="form-actions">
             <button type="submit" class="btn primary">Search</button>
           </div>
@@ -90,14 +181,14 @@
       </div>
     </section>
 
-    <section id="page-health" class="page">
+    <section id="page-operations" class="page">
       <div class="card">
-        <h2>Node health</h2>
+        <h2>Operations history</h2>
         <p class="hint">
-          Cache from <code>last-status.json</code>. Use Refresh / Verify / Sync for SSH-backed updates.
-          Click a row for node drill-down.
+          Local record of UI-triggered sync / probe / verify / refresh-users.
+          High-risk mutations (adopt, provision, rotate, …) are CLI-only — use Recipes or Command Builder.
         </p>
-        <div id="health-table" class="table-wrap"></div>
+        <div id="operations-table" class="table-wrap"></div>
       </div>
     </section>
   </main>
@@ -120,9 +211,31 @@
     <div id="recipes-body"></div>
   </aside>
 
+  <aside id="command-builder" class="drawer recipes" hidden>
+    <div class="drawer-head">
+      <h2>Command Builder</h2>
+      <button type="button" id="command-builder-close" class="btn">Close</button>
+    </div>
+    <p class="hint">Generate CLI commands for mutations — copy only, no UI execution (D53).</p>
+    <div id="command-builder-body" class="drawer-body">
+      <label>Operation
+        <select id="cb-operation"></select>
+      </label>
+      <div id="cb-fields" class="form-grid"></div>
+      <div class="form-actions">
+        <button type="button" id="cb-generate" class="btn primary">Generate</button>
+      </div>
+      <div id="cb-output-wrap" hidden>
+        <h3>Generated command</h3>
+        <pre id="cb-output" class="block"></pre>
+        <button type="button" id="cb-copy" class="btn">Copy</button>
+      </div>
+    </div>
+  </aside>
+
   <footer class="foot">
     <span id="foot-version">vcl-fleet</span>
-    · Overview / Audit / Health · Sync/Refresh write local cache · reseed CLI-only · closing UI does not affect nodes
+    · Overview / Nodes / Users / Traffic / Audit / Operations · Sync = <code>sync --full</code> · reseed CLI-only
   </footer>
 
   <script src="/app.js"></script>
