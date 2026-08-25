@@ -8723,6 +8723,95 @@ st, users, _ = get("/api/users")
 assert st == 200 and users["users"]
 assert users["users"][0]["tag"] == "alice"
 
+# NN #4: VLESS credential UUID must never appear in UI API / cache / detail
+CRED_SENTINEL = "deadbeef-dead-4ead-8ead-deadbeefdead"
+alice_uid_early = (Path(home) / "alice_uid.txt").read_text(encoding="utf-8").strip()
+legacy_cache = {
+    "schema_version": 1,
+    "ok": True,
+    "refreshed_at": "2026-08-16T07:00:00Z",
+    "users": [
+        {
+            "tag": "alice",
+            "user_id": alice_uid_early,
+            "source": "ssh-refresh",
+            "nodes": [
+                {
+                    "name": "lax",
+                    "tag": "alice",
+                    "enabled": True,
+                    "status": "active",
+                    "active_credential_id": CRED_SENTINEL,
+                }
+            ],
+        }
+    ],
+    "unreachable": [],
+}
+(Path(home) / "users-cache.json").write_text(
+    json.dumps(legacy_cache), encoding="utf-8"
+)
+st, users_legacy, _ = get("/api/users")
+assert st == 200
+users_blob = json.dumps(users_legacy)
+assert CRED_SENTINEL not in users_blob
+assert "active_credential_id" not in users_blob
+assert users_legacy["users"][0]["nodes"][0]["has_active_credential"] is True
+st, user_detail, _ = get("/api/users/alice")
+assert st == 200
+detail_blob = json.dumps(user_detail)
+assert CRED_SENTINEL not in detail_blob
+assert "active_credential_id" not in detail_blob
+assert user_detail["user"]["nodes"][0]["has_active_credential"] is True
+assert "never shown" in (user_detail.get("secrets_note") or "").lower() or (
+    "credential uuid" in (user_detail.get("secrets_note") or "").lower()
+)
+
+orig_ulist = fleet.run_user_list_payload
+
+def fake_user_list():
+    return 0, {
+        "ok": True,
+        "state": "SUCCESS",
+        "users": [
+            {
+                "tag": "alice",
+                "user_id": alice_uid_early,
+                "display_name": None,
+                "department": None,
+                "nodes": [
+                    {
+                        "name": "lax",
+                        "tag": "alice",
+                        "enabled": True,
+                        "status": "active",
+                        "active_credential_id": CRED_SENTINEL,
+                    }
+                ],
+            }
+        ],
+        "unreachable": [],
+    }
+
+fleet.run_user_list_payload = fake_user_list
+st, refresh_doc, _ = post("/api/refresh/users", {})
+fleet.run_user_list_payload = orig_ulist
+assert refresh_doc["operation"] == "refresh-users"
+refresh_blob = json.dumps(refresh_doc)
+assert CRED_SENTINEL not in refresh_blob
+assert "active_credential_id" not in refresh_blob
+assert refresh_doc["result"]["users"][0]["nodes"][0]["has_active_credential"] is True
+on_disk = json.loads((Path(home) / "users-cache.json").read_text(encoding="utf-8"))
+disk_blob = json.dumps(on_disk)
+assert CRED_SENTINEL not in disk_blob
+assert "active_credential_id" not in disk_blob
+assert on_disk["users"][0]["nodes"][0]["has_active_credential"] is True
+app_js_text = (Path(static_dir) / "app.js").read_text(encoding="utf-8")
+assert "active_credential_id" not in app_js_text
+assert "has_active_credential" in app_js_text
+st, users_after, _ = get("/api/users")
+assert CRED_SENTINEL not in json.dumps(users_after)
+
 st, recipes, _ = get("/api/recipes")
 assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])
 assert "CLI-only" in recipes["note"] or "cli-only" in recipes["note"].lower() or "reseed" in recipes["note"].lower()

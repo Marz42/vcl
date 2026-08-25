@@ -208,6 +208,53 @@ def _status_cache_empty(doc: Optional[dict[str, Any]]) -> bool:
     return True
 
 
+def _node_has_active_credential(node: dict[str, Any]) -> bool:
+    if "has_active_credential" in node:
+        return bool(node.get("has_active_credential"))
+    cid = node.get("active_credential_id")
+    return bool(cid)
+
+
+def sanitize_user_node_for_ui(node: dict[str, Any]) -> dict[str, Any]:
+    """UI-safe node assignment: never expose VLESS credential UUID (NN #4)."""
+    out: dict[str, Any] = {
+        "name": node.get("name"),
+        "tag": node.get("tag"),
+        "enabled": node.get("enabled"),
+        "status": node.get("status"),
+        "has_active_credential": _node_has_active_credential(node),
+    }
+    if "node_id" in node:
+        out["node_id"] = node.get("node_id")
+    return out
+
+
+def sanitize_users_for_ui(users: Any) -> list[dict[str, Any]]:
+    """Strip credential UUIDs from user list (refresh write + legacy cache read)."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(users, list):
+        return out
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        nodes_raw = user.get("nodes") or []
+        nodes_out = [
+            sanitize_user_node_for_ui(n)
+            for n in nodes_raw
+            if isinstance(n, dict)
+        ]
+        rec: dict[str, Any] = {
+            "tag": user.get("tag"),
+            "user_id": user.get("user_id"),
+            "display_name": user.get("display_name"),
+            "department": user.get("department"),
+            "source": user.get("source"),
+            "nodes": nodes_out,
+        }
+        out.append(rec)
+    return out
+
+
 def load_users_cache() -> Optional[dict[str, Any]]:
     path = users_cache_path()
     if not path.is_file():
@@ -216,11 +263,18 @@ def load_users_cache() -> Optional[dict[str, Any]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    # Legacy users-cache.json may contain active_credential_id; never return it.
+    sanitized = dict(data)
+    sanitized["users"] = sanitize_users_for_ui(data.get("users"))
+    return sanitized
 
 
 def write_users_cache(payload: dict[str, Any]) -> None:
-    fleet()._atomic_write_json(users_cache_path(), payload)
+    safe = dict(payload)
+    safe["users"] = sanitize_users_for_ui(payload.get("users"))
+    fleet()._atomic_write_json(users_cache_path(), safe)
 
 
 def _human_bytes(n: int) -> str:
@@ -872,7 +926,7 @@ def _users_from_db(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
                     "tag": tag,
                     "enabled": None,
                     "status": "seen-in-sync",
-                    "active_credential_id": None,
+                    "has_active_credential": False,
                 }
             )
     return [grouped[k] for k in order]
@@ -892,7 +946,7 @@ def api_users() -> dict[str, Any]:
             "unreachable": cache.get("unreachable") or [],
             "note": (
                 "Cached from last Refresh users (SSH). "
-                "No VLESS URI or secrets."
+                "No VLESS URI, credential UUID, or secrets."
             ),
         }
     conn = f.open_cache_readonly()
@@ -909,8 +963,8 @@ def api_users() -> dict[str, Any]:
         "unreachable": [],
         "note": (
             "Derived from synced audit/daily_usage. "
-            "Refresh users over SSH for enabled/credential status. "
-            "No VLESS URI or secrets."
+            "Refresh users over SSH for enabled / has_active_credential. "
+            "No VLESS URI, credential UUID, or secrets."
         ),
     }
 
@@ -964,8 +1018,7 @@ def api_user(tag: str) -> dict[str, Any]:
         "recent_usage": recent,
         "stats_window": {"days": 7, "from": start, "to": end},
         "secrets_note": (
-            "credential_id may appear when users-cache was refreshed; "
-            "URI / Reality keys / Clash secret are never shown."
+            "URI / credential UUID / Reality keys / Clash secret are never shown."
         ),
     }
 
@@ -1259,7 +1312,7 @@ def api_refresh_users() -> dict[str, Any]:
     code, payload = f.run_user_list_payload()
     if not isinstance(payload, dict):
         raise RuntimeError("user list did not return JSON")
-    users_out: list[dict[str, Any]] = []
+    users_raw: list[dict[str, Any]] = []
     for user in payload.get("users") or []:
         if not isinstance(user, dict):
             continue
@@ -1267,6 +1320,7 @@ def api_refresh_users() -> dict[str, Any]:
         for n in user.get("nodes") or []:
             if not isinstance(n, dict):
                 continue
+            # Map SSH list → UI fields; sanitize drops active_credential_id.
             nodes_out.append(
                 {
                     "name": n.get("name"),
@@ -1276,7 +1330,7 @@ def api_refresh_users() -> dict[str, Any]:
                     "active_credential_id": n.get("active_credential_id"),
                 }
             )
-        users_out.append(
+        users_raw.append(
             {
                 "tag": user.get("tag"),
                 "user_id": user.get("user_id"),
@@ -1286,6 +1340,7 @@ def api_refresh_users() -> dict[str, Any]:
                 "nodes": nodes_out,
             }
         )
+    users_out = sanitize_users_for_ui(users_raw)
     cache = {
         "schema_version": UI_SCHEMA_VERSION,
         "ok": bool(payload.get("ok")),
