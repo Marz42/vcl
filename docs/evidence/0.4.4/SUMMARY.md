@@ -9,7 +9,7 @@
 | **4.4-02** | **PASS** | PARTIAL exit 2 → `ok=false`, `operation=sync_full` (UI API + toast) |
 | **4.4-03** | **PASS** | Recipes parse via `build_parser()`; archive restore positional `out.vclaudit`; workspace export positional `fleet.tgz` |
 | **4.4-04** | **PASS** | Empty Nodes/Overview copy → adopt/provision; static grep |
-| **4.4-05** | **PASS** | `read_only_workspace_surface` five states; GET `/api/overview` no file writes |
+| **4.4-05** | **PASS** | `read_only_workspace_surface` five states; GET never mkdir (no `ensure_fleet_local_state` / view migrate); snapshot home+STATE+XDG |
 | **4.4-06** | **PASS** | recipes/meta JSON grep: no `vless://`, `private_key`, `clash_secret`; UI never returns/caches `active_credential_id` (NN #4 → `has_active_credential`) |
 | **4.4-07** | **PASS** | AC-3.1 UI fixture block green (six-page nav) |
 | **4.4-08** | **PASS** | Probe live overlay; GET `/api/nodes` stays cache; no `last-status.json` write |

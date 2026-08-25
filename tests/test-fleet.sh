@@ -9239,12 +9239,20 @@ python3 - "${PROJECT_DIR}/lib/workspace.py" "${PROJECT_DIR}/lib/vincula-ui/serve
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import uuid
 from pathlib import Path
 
 ws_path, ui_path, fleet_path, base = sys.argv[1:5]
 base = Path(base)
+state_root = base / "local-state"
+xdg_cfg = base / "xdg-config"
+state_root.mkdir(parents=True, exist_ok=True)
+xdg_cfg.mkdir(parents=True, exist_ok=True)
+os.environ["VCL_FLEET_LOCAL_STATE"] = str(state_root)
+os.environ["XDG_CONFIG_HOME"] = str(xdg_cfg)
+os.environ["XDG_STATE_HOME"] = str(base / "xdg-state")
 
 spec_ws = importlib.util.spec_from_file_location("workspace", ws_path)
 ws = importlib.util.module_from_spec(spec_ws)
@@ -9274,13 +9282,23 @@ def init_ws_home(home: Path) -> None:
     conn.close()
 
 
-def snapshot(home: Path) -> set[str]:
-    out = set()
-    if home.is_dir():
-        for p in home.rglob("*"):
-            if p.is_file():
-                out.add(str(p.relative_to(home)))
+def tree_snapshot(*roots: Path) -> set[str]:
+    out: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for p in root.rglob("*"):
+            rel = f"{root.name}/{p.relative_to(root).as_posix()}"
+            out.add(("D" if p.is_dir() else "F") + ":" + rel)
     return out
+
+
+def assert_no_disk_writes(label: str, roots: list[Path], fn):
+    before = tree_snapshot(*roots)
+    result = fn()
+    after = tree_snapshot(*roots)
+    assert before == after, (label, sorted(before ^ after))
+    return result
 
 
 def surface(home: Path) -> dict:
@@ -9292,10 +9310,10 @@ def surface(home: Path) -> dict:
 def overview_workspace(home: Path) -> dict:
     os.environ["VCL_FLEET_HOME"] = str(home)
     ui.set_fleet_module(fleet)
-    before = snapshot(home)
-    doc = ui.api_overview()
-    after = snapshot(home)
-    assert before == after, (before ^ after, home)
+    roots = [home, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+    doc = assert_no_disk_writes(
+        f"api_overview:{home.name}", roots, ui.api_overview
+    )
     return doc["workspace"]
 
 
@@ -9308,6 +9326,53 @@ home_ok.mkdir(parents=True, exist_ok=True)
 init_ws_home(home_ok)
 assert surface(home_ok)["conflict"] == "ok"
 assert overview_workspace(home_ok)["conflict"] == "ok"
+
+# GET must not mkdir STATE when only portable workspace exists (no view)
+home_nomkdir = base / "no-mkdir"
+home_nomkdir.mkdir(parents=True, exist_ok=True)
+os.environ["VCL_FLEET_HOME"] = str(home_nomkdir)
+fleet.cmd_init()
+fleet.cmd_workspace_init(ns)
+m0 = ws.load_workspace_manifest()
+fid0 = str(m0["fleet_id"])
+state_dir = ws.fleet_local_state_dir(fid0)
+if state_dir.exists():
+    shutil.rmtree(state_dir)
+assert not state_dir.exists()
+roots_nm = [home_nomkdir, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+assert_no_disk_writes(
+    "read_only_no_mkdir", roots_nm, lambda: surface(home_nomkdir)
+)
+assert not state_dir.exists(), "read_only_workspace_surface must not mkdir STATE"
+assert surface(home_nomkdir)["conflict"] == "ok"
+
+# With cache present, GET must not create archives/ui-runtime via view migrate
+home_get = base / "get-no-mkdir"
+home_get.mkdir(parents=True, exist_ok=True)
+init_ws_home(home_get)
+m_get = ws.load_workspace_manifest()
+fid_get = str(m_get["fleet_id"])
+st_get = ws.fleet_local_state_dir(fid_get)
+for sub in (ws.LOCAL_STATE_ARCHIVES, ws.LOCAL_STATE_UI_RUNTIME):
+    p = st_get / sub
+    if p.exists():
+        shutil.rmtree(p)
+view_p = st_get / ws.WORKSPACE_VIEW_NAME
+if view_p.is_file():
+    view_p.unlink()
+leg_view = ws.legacy_machine_local_dir() / ws.WORKSPACE_VIEW_NAME
+if leg_view.is_file():
+    leg_view.unlink()
+os.environ["VCL_FLEET_HOME"] = str(home_get)
+ui.set_fleet_module(fleet)
+roots_get = [home_get, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+doc_get = assert_no_disk_writes(
+    "api_overview_no_mkdir_side_dirs", roots_get, ui.api_overview
+)
+assert doc_get["workspace"]["conflict"] == "ok"
+assert not (st_get / ws.LOCAL_STATE_ARCHIVES).exists()
+assert not (st_get / ws.LOCAL_STATE_UI_RUNTIME).exists()
+assert not view_p.exists()
 
 home_roll = base / "rollback"
 home_roll.mkdir(parents=True, exist_ok=True)

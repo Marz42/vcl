@@ -312,6 +312,32 @@ def migrate_legacy_workspace_view_if_needed(fleet_id: str) -> Path:
     return new_path
 
 
+def workspace_view_existing_path(fleet_id: str) -> Path | None:
+    """Return an existing workspace-view.json path. Never mkdir / migrate."""
+    for path in (
+        fleet_local_state_dir(fleet_id) / WORKSPACE_VIEW_NAME,
+        legacy_machine_local_dir() / WORKSPACE_VIEW_NAME,
+    ):
+        if path.is_file():
+            return path
+    return None
+
+
+def load_workspace_view_readonly(fleet_id: str) -> dict[str, Any] | None:
+    """Read workspace-view if present. Never mkdir, migrate, or write."""
+    path = workspace_view_existing_path(fleet_id)
+    if path is None:
+        return None
+    try:
+        with path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        _host.die(f"invalid workspace-view.json: {exc}")
+    except OSError as exc:
+        _host.die(f"cannot read {path}: {exc}")
+    return validate_workspace_view(data)
+
+
 def fleet_registry_path() -> Path:
     return fleet_home() / "fleet.json"
 
@@ -780,7 +806,8 @@ def remember_workspace_view(manifest: dict[str, Any]) -> dict[str, Any]:
 def read_only_workspace_surface() -> dict[str, Any]:
     """Strict read-only workspace strip for UI GET (D53 / 0.4.4).
 
-    Never mkdir, never remember_workspace_view, never workspace_mutation.
+    Never mkdir, never migrate_legacy_workspace_view, never
+    remember_workspace_view, never workspace_mutation.
     """
     path = workspace_manifest_path()
     if not path.is_file():
@@ -811,7 +838,10 @@ def read_only_workspace_surface() -> dict[str, Any]:
             "conflict": WS_ERR_INCONSISTENT,
         }
     try:
-        conflict = detect_workspace_conflict(manifest)
+        view = load_workspace_view_readonly(str(manifest["fleet_id"]))
+        conflict = detect_workspace_conflict(
+            manifest, view=view, load_view=False
+        )
     except SystemExit:
         conflict = WS_ERR_INCONSISTENT
     return {
@@ -823,11 +853,14 @@ def read_only_workspace_surface() -> dict[str, Any]:
 
 
 def detect_workspace_conflict(
-    manifest: dict[str, Any], view: dict[str, Any] | None = None
+    manifest: dict[str, Any],
+    view: dict[str, Any] | None = None,
+    *,
+    load_view: bool = True,
 ) -> str | None:
     if manifest.get("state_digest") != compute_state_digest():
         return WS_ERR_INCONSISTENT
-    if view is None:
+    if view is None and load_view:
         view = load_workspace_view()
     if view is None:
         return None
