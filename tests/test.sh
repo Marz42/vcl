@@ -55,6 +55,31 @@ assert_failure() {
 
 finish() {
   trap - EXIT
+  # §5: real HOME must be untouched (known_hosts fingerprint + no suite writes).
+  if [[ -n "${SAVED_SUITE_HOME:-}" ]]; then
+    local real_kh="${SAVED_SUITE_HOME}/.ssh/known_hosts"
+    if [[ -n "${SUITE_REAL_KH_FP:-}" ]]; then
+      if [[ -f "$real_kh" ]]; then
+        local after_fp
+        after_fp=$(sha256sum -- "$real_kh" 2>/dev/null | awk '{print $1}')
+        if [[ "$after_fp" == "$SUITE_REAL_KH_FP" ]]; then
+          pass "P1 §5: real HOME known_hosts fingerprint unchanged"
+        else
+          fail "P1 §5: real HOME known_hosts fingerprint changed"
+        fi
+      else
+        fail "P1 §5: real HOME known_hosts missing after suite (was present)"
+      fi
+    elif [[ -f "$real_kh" ]]; then
+      fail "P1 §5: suite created known_hosts under real HOME"
+    else
+      pass "P1 §5: real HOME had no known_hosts (still absent)"
+    fi
+    case "${HOME:-}" in
+      "${TEST_TMP}"/*) pass "P1 §5: suite HOME still under TEST_TMP" ;;
+      *) fail "P1 §5: suite HOME escaped TEST_TMP (HOME=${HOME:-})" ;;
+    esac
+  fi
   if [[ -n "${TEST_TMP:-}" && "$TEST_TMP" == /tmp/vincula-tests.* && -d "$TEST_TMP" ]]; then
     rm -rf --one-file-system -- "$TEST_TMP"
   fi
@@ -103,7 +128,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.3.1" \
+assert_equal "runs when read from standard input" "vincula 0.3.2" \
   "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -131,7 +156,8 @@ assert_success "migrates from 0.3.0" is_supported_upgrade_from 0.3.0
 assert_success "migrates from 0.3.1-dev" is_supported_upgrade_from 0.3.1-dev
 assert_success "migrates from 0.3.1-rc1" is_supported_upgrade_from 0.3.1-rc1
 assert_success "migrates from 0.3.1-rc2" is_supported_upgrade_from 0.3.1-rc2
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.1
+assert_success "migrates from 0.3.1" is_supported_upgrade_from 0.3.1
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.2
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -233,6 +259,10 @@ assert_equal "parses bracketed VLESS port" "8443" "$VLESS_PORT"
 TEST_TMP=$(mktemp -d /tmp/vincula-tests.XXXXXXXX)
 SAVED_SUITE_HOME="${HOME:-}"
 SAVED_SUITE_XDG="${XDG_CONFIG_HOME:-}"
+SUITE_REAL_KH_FP=""
+if [[ -n "${SAVED_SUITE_HOME}" && -f "${SAVED_SUITE_HOME}/.ssh/known_hosts" ]]; then
+  SUITE_REAL_KH_FP=$(sha256sum -- "${SAVED_SUITE_HOME}/.ssh/known_hosts" 2>/dev/null | awk '{print $1}')
+fi
 export HOME="${TEST_TMP}/user-home"
 export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
 mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
@@ -377,7 +407,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.3.1"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.3.2"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -705,9 +735,13 @@ assert_success "release.lock includes vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/release.lock"
 assert_success "release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/release.lock"
+assert_success "release.lock includes legacy_seed.py" \
+  grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/release.lock"
+assert_success "gen-release-lock includes legacy_seed.py" \
+  grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 10 first-party files" "10" \
+assert_equal "release.lock has 11 first-party files" "11" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -809,8 +843,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.3.1" \
-  grep -q 'Vincula-Version: 0.3.1' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.3.2" \
+  grep -q 'Vincula-Version: 0.3.2' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -1006,7 +1040,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 10 first-party files" "10" \
+assert_equal "dist node release.lock has 11 first-party files" "11" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"

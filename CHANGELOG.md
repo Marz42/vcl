@@ -2,6 +2,20 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.5 (2026-08-25)
+**Integration & Hardening** + **Legacy single-user seed**. Stamp: CTRL `0.4.5`; NODE payload pin **`0.3.2`** (Minimum Node remains `0.3.1`; existing 0.3.1 not forced).
+### Added
+- **Legacy single-user seed：** `vcl-fleet node provision … --legacy-vless-uri-file` / `--legacy-reality-private-key-file` / `--legacy-user-tag`（三项必须同时出现；argv 仅本地路径）。Installer `vincula.sh` file-based seed；X25519 pbk 校验；owner 新 UUID + legacy 保留原 UUID/Reality。
+- **Node 0.3.2：** 首个 payload bump（legacy seed / installer）；controller 内嵌 `vincula-node-0.3.2.tar.gz`。
+- **Shared operation journal：** CLI/UI 共用 `operations.jsonl`（retention、corrupt-tolerant、secret redaction）。
+- **UI PARTIAL close（AC-4.5-08）：** Node/User drawers + CLI operations history 收口 0.4.4 PARTIAL。
+### Fixed
+- Fleet suite **HOME / XDG isolation** 贯穿 teardown（防污染真实 `~/.ssh`）。
+### Notes
+- Spec: [`docs/specs/V0.4.5_Spec.md`](docs/specs/V0.4.5_Spec.md) · evidence：[`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md) · LIVE Matrix H：[`docs/evidence/0.4.5/LIVE.md`](docs/evidence/0.4.5/LIVE.md)。
+- `0.5.0` 仍是首个 **capability/telemetry** Node 升级；`0.3.2` 仅为 payload/legacy-seed 制品 bump。
+- `VCL_FLEET_VERSION=0.4.5`；`VINCULA_VERSION=0.3.2`。
+
 ## 0.4.4 (2026-08-25)
 **Controller-only** Local Audit UI **v2** (D53-rev1 / rev1 §16). This milestone **is** UI v2 — not a later add-on.
 Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).

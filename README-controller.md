@@ -10,12 +10,12 @@ Runtime siblings next to `lib/vincula-fleet.py` are `vincula-audit.py`,
 `trust.py`, and `vincula-ui/` (Local Audit UI static + stdlib HTTP).
 Required for `audit` / archive, local backup verify, workspace, and `vcl-fleet ui`.
 
-**Stamp (0.4.4 tree):** controller `VCL_FLEET_VERSION=0.4.4`; remote nodes remain
-`VINCULA_VERSION=0.3.1` (node helper is still `vcl`). **Local Audit UI v2 is this
-0.4.4 milestone** (D53-rev1 / §16): six pages Overview/Nodes/Users/Traffic/Audit/
-Operations + Command Builder; UI Sync = `sync --full`; recipes cover
-adopt/provision/workspace/archive; no identity mutations. Spec:
-`docs/specs/V0.4.4_ui_v2.md`. Hand-test: `docs/manual.md#ui-manual-test`.
+**Stamp (0.4.5 tree):** controller `VCL_FLEET_VERSION=0.4.5`; new provision
+payload pins Node `VINCULA_VERSION=0.3.2` (Minimum Node remains `0.3.1`; node
+helper is still `vcl`). **Local Audit UI v2** landed in 0.4.4 (D53-rev1 / §16);
+**0.4.5** closes drawer/journal PARTIAL and adds legacy single-user seed.
+Spec: `docs/specs/V0.4.5_Spec.md`. Hand-test: `docs/manual.md#ui-manual-test`.
+Evidence: `docs/evidence/0.4.5/SUMMARY.md`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
@@ -59,7 +59,7 @@ bin\vcl-fleet.cmd node instances lax
 
 `status` is **cache-only** (no SSH; health from `sync --full` →
 `node_snapshot`). Live health: `probe` (`status --live` is a deprecated alias).
-`ui` opens a **localhost-only** Local Audit UI **v2 (0.4.4)** — six pages +
+`ui` opens a **localhost-only** Local Audit UI **v2 (0.4.4+; 0.4.5 journal)** — six pages +
 Command Builder (default `http://127.0.0.1:8765`). Non-loopback binds are refused.
 Mutations stay on the CLI (recipes / Builder copy commands only).
 

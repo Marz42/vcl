@@ -1,4 +1,4 @@
-# Fleet operator guide（控制器 0.4.4 · 节点 0.3.1）
+# Fleet operator guide（控制器 0.4.5 · 节点 0.3.2 / 最低兼容 0.3.1）
 
 Workstation **Fleet Users & Audit** controller. It registers nodes, provisions
 the same logical user on many nodes, syncs audit into a local **fleet-cache/v4**
@@ -12,14 +12,15 @@ does not use `/etc/vincula`.
 `lib/vincula-fleet.py`）。SPEC `vcl fleet <sub>` **≡** `vcl-fleet <sub>`。节点
 helper `vcl` / `vincula` 有 **no** `fleet` 子命令。
 
-**版本：** CTRL `VCL_FLEET_VERSION=0.4.4`；NODE `VINCULA_VERSION=0.3.1`（解耦；0.4.x Node 仍钉 0.3.1）。
-**Local Audit UI v2 = 本戳 0.4.4**（六页 + Command Builder；见下节）。
+**版本：** CTRL `VCL_FLEET_VERSION=0.4.5`；NODE payload pin `VINCULA_VERSION=0.3.2`（最低兼容 Node `0.3.1`；已有 0.3.1 不强制升级）。
+**Local Audit UI v2 = 0.4.4**；**0.4.5** 收口 drawers / CLI operation journal + legacy seed。
 
 Backup format and fresh-node restore: [`backup.md`](backup.md).
 Command-by-command flags: [`manual.md`](manual.md).
 Full identity contract (including `--user-id` and intended replace semantics):
 [`identity.md`](identity.md).
-0.4.4 UI v2 evidence: [`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md) · rev1 roadmap [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md).
+0.4.5 evidence: [`evidence/0.4.5/SUMMARY.md`](evidence/0.4.5/SUMMARY.md) · spec [`specs/V0.4.5_Spec.md`](specs/V0.4.5_Spec.md) · rev1 roadmap [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md).
+0.4.4 UI v2 evidence: [`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md).
 0.4.3 adopt/provision: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md).
 Node-line gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
 [`known-issues-0.3.1.md`](known-issues-0.3.1.md).
@@ -100,7 +101,7 @@ python3 bin/vcl-fleet init
 | --- | --- |
 | `vcl-fleet init` | Create empty `fleet.json` (refuses to overwrite a non-empty registry) |
 | `vcl-fleet node adopt NAME --host HOST` | SSH `vcl identity --json` and register (已装节点) |
-| `vcl-fleet node provision NAME --host HOST` | Fresh VPS：install+verify+register+`sync --full`（钉 Node 0.3.1） |
+| `vcl-fleet node provision NAME --host HOST` | Fresh VPS：install+verify+register+`sync --full`（钉 Node **0.3.2**；可选 legacy seed） |
 | `vcl-fleet node register NAME --node-id UUID --host HOST` | Registry-only；无 SSH |
 | `vcl-fleet node add NAME --host HOST` | **Legacy alias** ≡ `adopt`；`--offline --node-id` ≡ `register` |
 | `vcl-fleet node list` | `NAME NODE_ID SSH_HOST USER ENABLED STATUS` |
@@ -125,7 +126,7 @@ python3 bin/vcl-fleet init
 | `vcl-fleet workspace init\|show\|verify\|export\|import\|migrate` | portable workspace/v1 生命周期 |
 | `vcl-fleet access bind\|list\|verify` | 机器本地 credential bindings（D28） |
 | `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` | Localhost-only 只读 Local Audit UI |
-| `vcl-fleet version` | `vcl-fleet 0.4.4` |
+| `vcl-fleet version` | `vcl-fleet 0.4.5` |
 | `vcl-fleet help` | Help |
 
 `node add` flags: `--user`, `--port`, `--host-key SHA256:...`, `--identity-file PATH`, `--offline --node-id UUID`（legacy；优先 `adopt` / `register`）。
@@ -159,7 +160,7 @@ Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 - **D35 非 air-gap：** controller zip 内嵌 digest-verified first-party payload（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。远端仍可需 apt / HTTPS / sing-box release / 公网 IP / Reality。**不要**称 provision 为 air-gap。`VCL_SERVER` / `--server` 跳过 ipify 并传给安装器。
 - **安装 SSH：** 人类模式 stderr 阶段行 + 心跳；reader 线程持续排空 stdout/stderr，只保留有界脱敏尾部（避免远端输出 >管道缓冲 被误报超时）。
 - **`REMOTE_READY_LOCAL_UNCOMMITTED`：** 远端已装好、本地 registry 提交失败 → **只** `node adopt` 修复，**禁止**重跑 installer。
-- **Pinned node 0.3.1：** provision 安装钉死 Node 0.3.1（不要求 Node 新 API）；Controller 戳随发行线（0.4.3+）。
+- **Pinned node 0.3.2：** provision 安装钉死 Node 0.3.2（legacy seed 需要）；最低兼容仍管理 Node 0.3.1。Controller 戳 0.4.5。
 - Evidence: [`evidence/0.4.3/SUMMARY.md`](evidence/0.4.3/SUMMARY.md)。
 
 ## Local Audit UI v2 (0.4.4 / D53-rev1)

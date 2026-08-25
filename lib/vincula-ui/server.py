@@ -101,50 +101,12 @@ def legacy_users_cache_path() -> Path:
 
 
 def _ui_runtime_dir(*, create: bool = False) -> Path:
-    """Resolve ui-runtime under machine-local STATE when workspace is active.
-
-    Fail closed: if ``workspace.json`` exists but cannot be loaded, never fall
-    back to ``fleet_home()/ui-runtime`` (that would pollute the portable root).
-    ``create=True`` dies; ``create=False`` raises ``RuntimeError`` so GET can
-    soft-fail without writing.
-    """
-    f = fleet()
-    if f.workspace_trust_active():
-        try:
-            manifest = f.load_workspace_manifest()
-        except SystemExit as exc:
-            msg = (
-                "WORKSPACE_INCONSISTENT: refuse ui-runtime under portable "
-                "workspace root (fix or recreate workspace.json)"
-            )
-            if create:
-                f.die(msg, int(exc.code) if isinstance(exc.code, int) else 2)
-            raise RuntimeError(msg) from exc
-        fid = str(manifest.get("fleet_id") or "").strip()
-        if not fid:
-            msg = (
-                "WORKSPACE_INCONSISTENT: workspace.json missing fleet_id; "
-                "refuse ui-runtime under portable workspace root"
-            )
-            if create:
-                f.die(msg, 2)
-            raise RuntimeError(msg)
-        root = f.fleet_local_state_dir(fid) / "ui-runtime"
-    else:
-        root = f.fleet_home() / "ui-runtime"
-    if create:
-        root.mkdir(parents=True, exist_ok=True)
-        try:
-            import os
-
-            os.chmod(root, 0o700)
-        except OSError:
-            pass
-    return root
+    """Resolve ui-runtime; delegates to fleet helper (workspace fail-closed)."""
+    return fleet().ui_runtime_dir(create=create)
 
 
 def operations_log_path(*, create: bool = False) -> Path:
-    return _ui_runtime_dir(create=create) / "operations.jsonl"
+    return fleet().operation_journal_path(create=create)
 
 
 def append_ui_operation(
@@ -156,50 +118,23 @@ def append_ui_operation(
     ok: bool,
     detail: str = "",
 ) -> None:
-    """Append one UI-triggered operation row (never stores secrets)."""
-    record = {
-        "time": fleet().format_utc(datetime.now(timezone.utc)),
-        "operation": operation,
-        "target": target,
-        "state": state,
-        "exit_code": int(exit_code),
-        "ok": bool(ok),
-    }
-    if detail:
-        record["detail"] = detail[:500]
-    path = operations_log_path(create=True)
-    line = json.dumps(record, ensure_ascii=False) + "\n"
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(line)
+    """Append one UI-triggered operation via the shared fleet journal."""
+    f = fleet()
+    now = f.format_utc(datetime.now(timezone.utc))
+    f.append_operation_journal(
+        operation=operation,
+        target=target,
+        state=state,
+        exit_code=int(exit_code),
+        started_at=now,
+        finished_at=now,
+        detail=detail,
+        ok=bool(ok),
+    )
 
 
 def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
-    try:
-        path = operations_log_path(create=False)
-    except RuntimeError:
-        return []
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    out: list[dict[str, Any]] = []
-    for line in lines[-limit:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            # Unify on ``time`` (legacy rows may have used ``at``).
-            if not item.get("time") and item.get("at"):
-                item = {**item, "time": item["at"]}
-            out.append(item)
-    out.reverse()
-    return out
+    return fleet().read_operation_journal(limit=limit)
 
 
 def load_last_status_doc() -> Optional[dict[str, Any]]:
@@ -1010,7 +945,7 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "node-provision",
-                "title": "Provision fresh VPS (pinned node 0.3.1)",
+                "title": "Provision fresh VPS (pinned node 0.3.2)",
                 "command": (
                     "vcl-fleet node provision NAME --host HOST "
                     "--host-key SHA256:..."
@@ -1519,7 +1454,7 @@ def api_operations(*, limit: int = 100) -> dict[str, Any]:
         "schema_version": UI_SCHEMA_VERSION,
         "limit": lim,
         "rows": rows,
-        "note": "Local UI/CLI operation history; secrets redacted.",
+        "note": "Local fleet operation journal (CLI + UI); secrets redacted.",
     }
 
 
@@ -1737,6 +1672,7 @@ def api_user(tag: str) -> dict[str, Any]:
         else:
             uid = resolve_user_id_for_ui(conn, registry, tag, allow_ssh=False)
         recent: list[dict[str, Any]] = []
+        destinations: list[dict[str, Any]] = []
         start = end = None
         if uid:
             start, end = f.stats_date_window(7)
@@ -1749,6 +1685,29 @@ def api_user(tag: str) -> dict[str, Any]:
                 extra_params=[uid],
             )
             recent = [f._stats_row_from_sql(registry, r) for r in raw]
+            dest_raw = f.query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("destination_host",),
+                extra_where=["user_id = ?"],
+                extra_params=[uid],
+            )
+            for row in dest_raw[:20]:
+                upload = int(row["upload_bytes"] or 0)
+                download = int(row["download_bytes"] or 0)
+                host = f._optional_text(row["destination_host"]) or "(unknown)"
+                destinations.append(
+                    {
+                        "destination_host": host,
+                        "network": "—",
+                        "upload_bytes": upload,
+                        "download_bytes": download,
+                        "bytes": upload + download,
+                        "connection_count": int(row["connection_count"] or 0),
+                        "bytes_human": _human_bytes(upload + download),
+                    }
+                )
     finally:
         conn.close()
     if match is None and uid is None:
@@ -1763,6 +1722,7 @@ def api_user(tag: str) -> dict[str, Any]:
             "source": "fleet.db",
         },
         "recent_usage": recent,
+        "destinations": destinations,
         "stats_window": {"days": 7, "from": start, "to": end},
         "secrets_note": (
             "URI / credential UUID / Reality keys / Clash secret are never shown."

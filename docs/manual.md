@@ -1,12 +1,12 @@
-# Vincula 命令手册（节点 0.3.1 · 控制器 0.4.4）
+# Vincula 命令手册（节点 0.3.2 · 控制器 0.4.5）
 
 面向操作员的 **完整 CLI 参考**：每条命令、每个参数、典型用法与失败语义。
 从零装两台节点并接入 Fleet 的逐步命令见
 [已验证部署：双 VPS + Fleet（全新）](#deploy-verified)。
 
-合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.4：[`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · UI spec [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
+合同与限制以 living-tree gate 为准：[`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · [`known-issues-0.3.1.md`](known-issues-0.3.1.md) · 控制器 0.4.5：[`evidence/0.4.5/SUMMARY.md`](evidence/0.4.5/SUMMARY.md) · UI：[`evidence/0.4.4/SUMMARY.md`](evidence/0.4.4/SUMMARY.md) · specs [`specs/V0.4.5_Spec.md`](specs/V0.4.5_Spec.md) / [`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md)。专题：身份 [`identity.md`](identity.md) · 备份/换机 [`backup.md`](backup.md) · 控制器运维 [`fleet.md`](fleet.md)。
 
-记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.4`）。**0.4.x** Node 仍钉 **0.3.1**；Controller 当前 **0.4.4**（Local Audit UI v2 / D53-rev1）。
+记账始终是 **approximate / Clash polling**，不能当发票。节点 `vcl` **没有** `fleet` 子命令；工作站用 `vcl-fleet`（戳 `VCL_FLEET_VERSION=0.4.5`）。**0.4.5** 新 provision 钉 Node **0.3.2**（最低兼容 **0.3.1**）；含 Legacy single-user seed。
 
 ---
 
@@ -766,9 +766,9 @@ python3 bin/vcl-fleet node adopt lax --host 203.0.113.10 --host-key SHA256:abcd�
 
 ### `vcl-fleet node provision NAME --host HOST [选项]`
 
-Fresh VPS：两阶段 preflight（SSH/OS/arch/权限/apt/冲突 → 自动安装缺失依赖含 python3 → 网络/端口/Reality）→ 推送 controller-carried node payload → 远端 `vincula.sh` 安装（钉 Node **0.3.1**）→ `vcl verify` / `identity` → 注册 → 默认 `sync --full`（D33/D35）。人类模式向 stderr 打阶段进度，安装阶段约每 20 秒心跳；`--json` 时 stdout 仍只有 JSON。安装 SSH 持续排空 stdout/stderr，只保留有界脱敏尾部，避免远端输出超过管道缓冲时被误报超时。
+Fresh VPS：两阶段 preflight（SSH/OS/arch/权限/apt/冲突 → 自动安装缺失依赖含 python3 → 网络/端口/Reality）→ 推送 controller-carried node payload → 远端 `vincula.sh` 安装（钉 Node **0.3.2**；可选 legacy seed）→ `vcl verify` / `identity` → 注册 → 默认 `sync --full`（D33/D35）。人类模式向 stderr 打阶段进度，安装阶段约每 20 秒心跳；`--json` 时 stdout 仍只有 JSON。安装 SSH 持续排空 stdout/stderr，只保留有界脱敏尾部，避免远端输出超过管道缓冲时被误报超时。
 
-**非 air-gap（D35）：** payload 是 controller 携带、两端 digest 校验的 first-party 包（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。**不是** air-gap：远端仍可需 apt、HTTPS、sing-box release、公网 IP、Reality。勿用「air-gap」描述 provision。sudo 路径把 `VCL_SERVER` 放在 sudo 之内：`sudo -n env VCL_SERVER=… bash vincula.sh`。
+**非 air-gap（D35）：** payload 是 controller 携带、两端 digest 校验的 first-party 包（`payload/vincula-node-0.3.2.tar.gz` + `.sha256` + `payload-manifest.json`）。**不是** air-gap：远端仍可需 apt、HTTPS、sing-box release、公网 IP、Reality。勿用「air-gap」描述 provision。sudo 路径把 `VCL_SERVER` 放在 sudo 之内：`sudo -n env VCL_SERVER=… bash vincula.sh`。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -779,14 +779,26 @@ Fresh VPS：两阶段 preflight（SSH/OS/arch/权限/apt/冲突 → 自动安装
 | `--host-key SHA256:…` | 建议；non-TTY 必填（D34） | 同 adopt；禁降低 SSH 校验 |
 | `--identity-file PATH` | 否 | 本机私钥路径 |
 | `--server ADDR` | 否 | 设 `VCL_SERVER`（传给安装器；preflight 跳过 ipify）。也可用环境变量 `VCL_SERVER` |
+| `--legacy-vless-uri-file PATH` | 与另两项同现 | Legacy seed：本地 URI 文件（`0600`；argv 仅路径） |
+| `--legacy-reality-private-key-file PATH` | 与另两项同现 | Legacy seed：本地 Reality 私钥文件 |
+| `--legacy-user-tag TAG` | 与另两项同现 | Legacy seed：导入用户 tag（**禁止** `owner`） |
 | `--no-sync` | 否 | 跳过成功后的 `sync --full` |
 | `--json` | 否 | stdout JSON |
+
+三项 legacy 参数必须同时出现。失败时不泄漏 URI/UUID/私钥。Seed 需要 Node **0.3.2** payload。
 
 已有 Vincula（远端 `/etc/vincula/VERSION`）→ 拒绝并提示 `use node adopt`。失败态 **`REMOTE_READY_LOCAL_UNCOMMITTED`**（远端已装好、本地 registry 未提交）→ **只**用 `node adopt` 修复，**禁止**重跑 installer。
 
 ```bash
 python3 bin/vcl-fleet node provision lax --host 203.0.113.10 \
   --host-key SHA256:abcd… --server 203.0.113.10
+
+# Legacy single-user seed（路径仅出现在 argv；勿把 URI/私钥当参数值）
+python3 bin/vcl-fleet node provision lax --host 203.0.113.10 \
+  --host-key SHA256:abcd… --server 203.0.113.10 \
+  --legacy-vless-uri-file ./legacy-user.uri \
+  --legacy-reality-private-key-file ./reality-private.key \
+  --legacy-user-tag existing-user
 ```
 
 ---
@@ -1720,7 +1732,7 @@ python3 bin/vcl-fleet ui
 
 ## Local Audit UI 手动测试指南 {#ui-manual-test}
 
-**范围：控制器 0.4.4 · Local Audit UI v2**（六页 + Command Builder）。
+**范围：控制器 0.4.4+ · Local Audit UI v2**（六页 + Command Builder；**0.4.5** drawers / operation journal）。
 面向管理员工作站（优先 **Windows 11**；Linux/macOS 同样适用）。自动化在
 `tests/test-fleet.sh`（AC-3.1 + AC-4.4 / D53-rev1）；本节是 **浏览器 + 真/假节点**
 手测清单。合同：[`specs/V0.4.4_ui_v2.md`](specs/V0.4.4_ui_v2.md) ·

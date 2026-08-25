@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.4.4"
+VCL_FLEET_VERSION = "0.4.5"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -200,9 +200,20 @@ CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
 FLEET_OP_LOCK_TIMEOUT = 30
 FLEET_BUSY_EXIT = 4
 FLEET_BUSY_MSG = "busy: another vincula operation in progress"
+OPERATION_JOURNAL_MAX_LINES = 2000
+OPERATION_JOURNAL_NAME = "operations.jsonl"
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+# Loose UUID match for journal detail redaction (not anchored).
+_JOURNAL_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_JOURNAL_VLESS_RE = re.compile(r"vless://\S+", re.IGNORECASE)
+_JOURNAL_AGE_RE = re.compile(
+    r"\bage1[a-z0-9]{20,}\b|\bage1public1[a-z0-9]+\b", re.IGNORECASE
 )
 # Same contract as is_valid_user_tag: lowercase alnum / . _ - ; max 32.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
@@ -2296,6 +2307,15 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
     vcl = _optional_text(getattr(args, "vcl_server", None)) or os.environ.get(
         "VCL_SERVER"
     )
+    legacy_uri = _optional_text(getattr(args, "legacy_uri_file", None))
+    legacy_key = _optional_text(getattr(args, "legacy_private_key_file", None))
+    legacy_tag = _optional_text(getattr(args, "legacy_user_tag", None))
+    legacy_n = sum(1 for x in (legacy_uri, legacy_key, legacy_tag) if x)
+    if legacy_n not in (0, 3):
+        die(
+            "legacy seed requires --legacy-vless-uri-file, "
+            "--legacy-reality-private-key-file, and --legacy-user-tag together"
+        )
     # identity_file is the SSH path; run_provision commits F7-3 correctly when
     # admin_credential_ref is set (plan's reg_identity-only pass would drop -i).
     doc = load_provision_module().run_provision(
@@ -2308,6 +2328,9 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
         admin_credential_ref=admin_ref,
         vcl_server=vcl,
         skip_sync=bool(getattr(args, "no_sync", False)),
+        legacy_uri_file=legacy_uri,
+        legacy_private_key_file=legacy_key,
+        legacy_user_tag=legacy_tag,
     )
     if getattr(args, "as_json", False):
         sys.stdout.write(json.dumps(doc, indent=2) + "\n")
@@ -2322,7 +2345,17 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
         return MUTATION_EXIT_PARTIAL
     if not doc.get("ok"):
         die(f"{doc.get('error')}: {doc.get('remedy') or doc.get('detail') or 'failed'}")
-    sys.stdout.write(f"Provisioned {args.name} node_id={doc['node_id']}\n")
+    if doc.get("legacy_seed"):
+        tag = doc.get("legacy_user_tag") or "legacy"
+        ver = doc.get("node_version") or "?"
+        sys.stdout.write(
+            f"Provisioned {args.name} (Node {ver}) node_id={doc['node_id']}\n"
+            f"Legacy user {tag} seeded successfully.\n"
+            f"Use `vcl-fleet user link {tag} --node {args.name}` "
+            f"to retrieve the URI.\n"
+        )
+    else:
+        sys.stdout.write(f"Provisioned {args.name} node_id={doc['node_id']}\n")
     return 0
 
 
@@ -3130,6 +3163,223 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def ui_runtime_dir(*, create: bool = False) -> Path:
+    """Resolve ui-runtime under machine-local STATE when workspace is active.
+
+    Fail closed: if ``workspace.json`` exists but cannot be loaded, never fall
+    back to ``fleet_home()/ui-runtime``. ``create=True`` dies; ``create=False``
+    raises ``RuntimeError`` so readers can soft-fail without writing.
+    """
+    if workspace_trust_active():
+        try:
+            manifest = load_workspace_manifest()
+        except SystemExit as exc:
+            msg = (
+                "WORKSPACE_INCONSISTENT: refuse ui-runtime under portable "
+                "workspace root (fix or recreate workspace.json)"
+            )
+            if create:
+                die(msg, int(exc.code) if isinstance(exc.code, int) else 2)
+            raise RuntimeError(msg) from exc
+        fid = str(manifest.get("fleet_id") or "").strip()
+        if not fid:
+            msg = (
+                "WORKSPACE_INCONSISTENT: workspace.json missing fleet_id; "
+                "refuse ui-runtime under portable workspace root"
+            )
+            if create:
+                die(msg, 2)
+            raise RuntimeError(msg)
+        root = fleet_local_state_dir(fid) / LOCAL_STATE_UI_RUNTIME
+    else:
+        root = fleet_home() / LOCAL_STATE_UI_RUNTIME
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    return root
+
+
+def operation_journal_path(*, create: bool = False) -> Path:
+    return ui_runtime_dir(create=create) / OPERATION_JOURNAL_NAME
+
+
+def sanitize_operation_detail(detail: str) -> str:
+    """Strip secrets from operation journal detail (never store argv/URI/keys)."""
+    text = str(detail or "")
+    text = _JOURNAL_VLESS_RE.sub("[redacted-uri]", text)
+    text = _JOURNAL_UUID_RE.sub("[redacted-uuid]", text)
+    text = _JOURNAL_AGE_RE.sub("[redacted-age]", text)
+    for needle in (
+        "private_key",
+        "reality",
+        "clash_secret",
+        "BEGIN OPENSSH",
+        "BEGIN PRIVATE",
+        "identity_file",
+    ):
+        if needle.lower() in text.lower():
+            text = "[redacted]"
+            break
+    return text[:500]
+
+
+def append_operation_journal(
+    *,
+    operation: str,
+    target: str = "",
+    state: str,
+    exit_code: int,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    detail: str = "",
+    operation_id: Optional[str] = None,
+    ok: Optional[bool] = None,
+) -> None:
+    """Append one fleet/UI operation row; bounded retention; never stores secrets."""
+    now = format_utc(datetime.now(timezone.utc))
+    finished = finished_at or now
+    started = started_at or finished
+    code = int(exit_code)
+    record: dict[str, Any] = {
+        "operation_id": operation_id or str(uuid.uuid4()),
+        "operation": str(operation or ""),
+        "target": str(target or ""),
+        "started_at": started,
+        "finished_at": finished,
+        "time": finished,  # backward-compatible with UI-only rows
+        "state": str(state or ""),
+        "exit_code": code,
+        "ok": bool(ok) if ok is not None else (code == 0),
+        "controller_version": VCL_FLEET_VERSION,
+    }
+    cleaned = sanitize_operation_detail(detail) if detail else ""
+    if cleaned:
+        record["detail"] = cleaned
+    try:
+        path = operation_journal_path(create=True)
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        if len(lines) > OPERATION_JOURNAL_MAX_LINES:
+            keep = lines[-OPERATION_JOURNAL_MAX_LINES:]
+            path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+    except (OSError, RuntimeError, SystemExit):
+        # Journal must never fail the operator command.
+        return
+
+
+def read_operation_journal(*, limit: int = 100) -> list[dict[str, Any]]:
+    """Read newest-first journal rows; skip corrupt lines."""
+    lim = max(1, min(int(limit), 5000))
+    try:
+        path = operation_journal_path(create=False)
+    except RuntimeError:
+        return []
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines[-lim:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        if not item.get("time"):
+            if item.get("finished_at"):
+                item = {**item, "time": item["finished_at"]}
+            elif item.get("at"):
+                item = {**item, "time": item["at"]}
+            elif item.get("started_at"):
+                item = {**item, "time": item["started_at"]}
+        out.append(item)
+    out.reverse()
+    return out
+
+
+@contextmanager
+def recording_operation(
+    operation: str,
+    *,
+    target: str = "",
+    detail: str = "",
+) -> Any:
+    """Journal one CLI/UI operation on exit (including ``die`` / SystemExit)."""
+    started = format_utc(datetime.now(timezone.utc))
+    op_id = str(uuid.uuid4())
+    meta: dict[str, Any] = {
+        "exit_code": 1,
+        "state": None,
+        "detail": detail,
+        "target": target,
+    }
+    try:
+        yield meta
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            meta["exit_code"] = 0
+        elif isinstance(code, int):
+            meta["exit_code"] = code
+        else:
+            meta["exit_code"] = 1
+        raise
+    finally:
+        code = int(meta["exit_code"] if meta.get("exit_code") is not None else 1)
+        state = meta.get("state")
+        if not state:
+            if code == 0:
+                state = OP_SUCCESS
+            elif code == MUTATION_EXIT_PARTIAL:
+                state = OP_PARTIAL
+            else:
+                state = "FAIL"
+        append_operation_journal(
+            operation_id=op_id,
+            operation=operation,
+            target=str(meta.get("target") or ""),
+            started_at=started,
+            finished_at=format_utc(datetime.now(timezone.utc)),
+            state=str(state),
+            exit_code=code,
+            detail=str(meta.get("detail") or ""),
+        )
+
+
+def run_journaled(
+    operation: str,
+    fn: Callable[[], int],
+    *,
+    target: str = "",
+    detail: str = "",
+) -> int:
+    """Run ``fn`` and append one operation journal row (CLI completion)."""
+    with recording_operation(operation, target=target, detail=detail) as op:
+        code = int(fn())
+        op["exit_code"] = code
+        if code == MUTATION_EXIT_PARTIAL:
+            op["state"] = OP_PARTIAL
+        return code
 
 
 def parse_rfc3339_utc(value: str) -> datetime:
@@ -6685,6 +6935,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_sync",
         help="skip post-provision sync --full",
     )
+    p_prov.add_argument(
+        "--legacy-vless-uri-file",
+        dest="legacy_uri_file",
+        help="local file with one VLESS Reality URI (legacy seed; path only)",
+    )
+    p_prov.add_argument(
+        "--legacy-reality-private-key-file",
+        dest="legacy_private_key_file",
+        help="local Reality private key file (legacy seed; path only)",
+    )
+    p_prov.add_argument(
+        "--legacy-user-tag",
+        dest="legacy_user_tag",
+        help="tag for seeded legacy user (not owner; requires other legacy flags)",
+    )
     _add_json_flag(p_prov)
 
     p_reg = node_sub.add_parser(
@@ -7367,14 +7632,38 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_init()
     if command == "status":
         if getattr(args, "live", False):
-            return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
+            return run_journaled(
+                "probe",
+                lambda: cmd_probe(
+                    as_json=bool(args.as_json), include_all=bool(args.all)
+                ),
+            )
         return cmd_status(as_json=bool(args.as_json), include_all=bool(args.all))
     if command == "probe":
-        return cmd_probe(as_json=bool(args.as_json), include_all=bool(args.all))
+        return run_journaled(
+            "probe",
+            lambda: cmd_probe(
+                as_json=bool(args.as_json), include_all=bool(args.all)
+            ),
+        )
     if command == "verify":
-        return cmd_verify(as_json=bool(args.as_json), include_all=bool(args.all))
+        return run_journaled(
+            "verify",
+            lambda: cmd_verify(
+                as_json=bool(args.as_json), include_all=bool(args.all)
+            ),
+        )
     if command == "sync":
-        return cmd_sync(args)
+        reseed_name = (getattr(args, "reseed", None) or "").strip()
+        if reseed_name:
+            return run_journaled(
+                "reseed",
+                lambda: cmd_sync(args),
+                target=reseed_name,
+            )
+        op_name = "sync_full" if getattr(args, "full", False) else "sync"
+        target = (getattr(args, "node", None) or "").strip()
+        return run_journaled(op_name, lambda: cmd_sync(args), target=target)
     if command == "audit":
         sub = args.audit_command
         if sub is None:
@@ -7387,11 +7676,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             if a is None:
                 parser.parse_args(["audit", "archive", "--help"])
                 return 2
+            if a == "create":
+                return run_journaled(
+                    "audit_archive",
+                    lambda: cmd_audit_archive_create(args),
+                    detail="create",
+                )
+            if a == "restore":
+                return run_journaled(
+                    "restore",
+                    lambda: cmd_audit_archive_restore(args),
+                    detail="audit_archive",
+                )
             return {
-                "create": cmd_audit_archive_create,
                 "verify": cmd_audit_archive_verify,
                 "inspect": cmd_audit_archive_inspect,
-                "restore": cmd_audit_archive_restore,
             }.get(
                 a, lambda _a: die(f"unknown audit archive command: {a}", 2)
             )(args)
@@ -7411,11 +7710,27 @@ def main(argv: Optional[list[str]] = None) -> int:
             parser.parse_args(["node", "--help"])
             return 2
         if sub == "add":
-            return cmd_node_add(args)
+            # Legacy alias: online adopt is journaled; offline register is not.
+            if getattr(args, "offline", False):
+                return cmd_node_add(args)
+            return run_journaled(
+                "adopt", lambda: cmd_node_add(args), target=str(args.name)
+            )
         if sub == "adopt":
-            return cmd_node_adopt(args)
+            return run_journaled(
+                "adopt", lambda: cmd_node_adopt(args), target=str(args.name)
+            )
         if sub == "provision":
-            return cmd_node_provision(args)
+            op = "provision"
+            if getattr(args, "legacy_uri_file", None) or getattr(
+                args, "legacy_private_key_file", None
+            ) or getattr(args, "legacy_user_tag", None):
+                op = "provision_legacy_seed"
+            return run_journaled(
+                op,
+                lambda: cmd_node_provision(args),
+                target=str(args.name),
+            )
         if sub == "register":
             return cmd_node_register(args)
         if sub == "list":
@@ -7431,7 +7746,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sub == "retire":
             return cmd_node_retire(args.name)
         if sub == "replace":
-            return cmd_node_replace(args)
+            return run_journaled(
+                "replace",
+                lambda: cmd_node_replace(args),
+                target=str(args.name),
+            )
         if sub == "instances":
             return cmd_node_instances(args.name, as_json=bool(getattr(args, "as_json", False)))
         die(f"unknown node command: {sub}", 2)
@@ -7441,7 +7760,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             parser.parse_args(["user", "--help"])
             return 2
         if sub == "add":
-            return cmd_user_add(args)
+            return run_journaled(
+                "user_add",
+                lambda: cmd_user_add(args),
+                target=str(args.tag),
+            )
         if sub == "list":
             return cmd_user_list(args)
         if sub == "show":
@@ -7453,7 +7776,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sub == "disable":
             return cmd_user_enable_disable(args, enabled=False)
         if sub == "rotate":
-            return cmd_user_rotate(args)
+            return run_journaled(
+                "user_rotate",
+                lambda: cmd_user_rotate(args),
+                target=str(args.tag),
+            )
         if sub == "import":
             return cmd_user_import(args)
         if sub == "export":

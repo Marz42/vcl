@@ -810,12 +810,12 @@ FLEET_DB_SCHEMA_VERSION = FLEET_CACHE_SCHEMA_VERSION
 允许：
 
 ```
-Controller 0.4.0–0.4.5  +  Node 0.3.1
+Controller 0.4.0–0.4.5  +  Node ≥ 0.3.1
 ```
 
-Provision 可 `Controller 0.4.3 → install pinned Node 0.3.1`（Controller feature，不要求 Node 新 API）。
+Provision 可 `Controller 0.4.5 → install pinned Node 0.3.2`（legacy seed 需要 0.3.2；已有 0.3.1 仍可管理）。
 
-**Node 首次因本路线图而升级：0.5.0**（`vcl telemetry snapshot --json`）。
+**Node 首次 capability/telemetry 升级：0.5.0**（`vcl telemetry snapshot --json`）。**0.3.2** 仅为 0.4.5 payload bump。
 
 兼容矩阵见 §54。长期能力探测：
 
@@ -2076,7 +2076,7 @@ v0.5 将 Fleet Controller 从：
 
 但不改变基本网络安全模型。
 
-Node **首次**为本路线图升级的版本： **0.5.0**。
+Node **首次 capability/telemetry 升级**版本： **0.5.0**（**0.3.2** 仅为 0.4.5 payload/legacy-seed 制品 bump）。
 
 ---
 
@@ -2601,7 +2601,7 @@ service API
 | 0.4.2 | 0.3.1 | 无 |
 | 0.4.3 | 0.3.1 | 无 |
 | 0.4.4 | 0.3.1 | 无 |
-| 0.4.5 | 0.3.1 | 无 |
+| 0.4.5 | 0.3.1 | 新 provision 钉 Node **0.3.2**（legacy seed）；已有 0.3.1 不强制升级 |
 | 0.5.0 | 0.3.1 basic / 0.5.0 telemetry | Telemetry |
 | 0.5.x | capability-based | Inspect/Tuning 按能力判断 |
 
@@ -2625,10 +2625,11 @@ capabilities:
 
 **【覆盖原 SPEC】** Controller 与 Node 版本解耦后：
 
-- `0.4.0–0.4.5` Controller **不要求** Node 升级；Minimum Node = 0.3.1。
-- Node 因本路线图首次升级：`0.5.0`（Telemetry）。
+- `0.4.0–0.4.5` Controller **Minimum Node = 0.3.1**（已有节点不强制升级）。
+- **0.4.5** 新 provision payload 钉 **Node 0.3.2**（legacy seed / installer）；这是首个 **payload** bump，不是 capability 升级。
+- 首个 **capability/telemetry** Node 升级仍为：`0.5.0`（Telemetry）。
 
-所有 `0.3.1 → 0.5.x`（以及未来同主线升级）：
+所有 `0.3.1 → 0.3.2` / `0.3.1 → 0.5.x`（以及未来同主线升级）：
 
 默认必须保持：
 
@@ -2761,10 +2762,12 @@ v0.4.4  Web UI v2
         │
         ▼
 v0.4.5  Integration & Hardening
-        live matrix · Replace Live Gate · docs/artifact/security review
+        live matrix · Replace Live Gate · legacy single-user seed ·
+        Node 0.3.2 payload pin · UI PARTIAL close · operation journal
         │
         ▼
 v0.5.0  Observation Protocol / Telemetry Snapshot / Observe Credential routing
+        （首个 **capability/telemetry** Node 升级；0.3.2 仅为 payload bump）
         │
         ▼
 v0.5.1  Monitoring
@@ -3056,7 +3059,8 @@ Controller 0.4.2  +  Node 0.3.1
 
 甚至 node provision 也完全可以 `Controller 0.4.3 → install pinned Node 0.3.1`——因为 provisioning 是 Controller feature，**不要求 Node 有新 API**。
 
-真正第一次需要升级 Node，等 **0.5.0**（`vcl telemetry snapshot --json`）出现之后。
+真正第一次需要 **capability/telemetry** Node 升级，等 **0.5.0**（`vcl telemetry snapshot --json`）出现之后。
+（**0.4.5** 已引入 Node **0.3.2** payload pin / legacy seed；Minimum Node 仍为 0.3.1。）
 
 #### 兼容矩阵改法（替代原 §54 表）
 
@@ -3067,6 +3071,7 @@ Controller 0.4.2  +  Node 0.3.1
 | 0.4.2 | 0.3.1 | 无 |
 | 0.4.3 | 0.3.1 | 无 |
 | 0.4.4 | 0.3.1 | 无 |
+| 0.4.5 | 0.3.1 | 新 provision 钉 Node **0.3.2**（legacy seed） |
 | 0.5.0 | 0.3.1 basic / 0.5.0 telemetry | Telemetry |
 | 0.5.x | capability-based | Inspect/Tuning 按能力判断 |
 

@@ -34,10 +34,23 @@ SING_BOX_VERSION = _sbr.SING_BOX_VERSION
 release_asset_name = _sbr.release_asset_name
 release_asset_url = _sbr.release_asset_url
 
+_ls_path = Path(__file__).resolve().parent / "legacy_seed.py"
+_ls_spec = importlib.util.spec_from_file_location("legacy_seed", _ls_path)
+if _ls_spec is None or _ls_spec.loader is None:
+    raise RuntimeError(f"cannot load {_ls_path}")
+_legacy_seed = importlib.util.module_from_spec(_ls_spec)
+# Python 3.13 dataclasses/typing need the module registered during exec.
+sys.modules.setdefault("legacy_seed", _legacy_seed)
+_ls_spec.loader.exec_module(_legacy_seed)
+LegacySeedError = _legacy_seed.LegacySeedError
+load_legacy_seed = _legacy_seed.load_legacy_seed
+LEGACY_URI_REMOTE = "legacy-user.uri"
+LEGACY_KEY_REMOTE = "reality-private.key"
+
 PrivilegeMode = Literal["root", "sudo"]
 
 # D51: single arch-neutral node payload pinned for 0.4.x provision.
-NODE_PAYLOAD_VERSION = "0.3.1"
+NODE_PAYLOAD_VERSION = "0.3.2"
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
@@ -240,13 +253,28 @@ def installer_remote_argv(
     *,
     privilege_mode: PrivilegeMode,
     vcl_server: Optional[str],
+    legacy_uri_remote: Optional[str] = None,
+    legacy_key_remote: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
 ) -> list[str]:
     """Build remote installer argv.
 
     sudo must wrap ``env`` so VCL_SERVER survives sudo's env reset:
     ``sudo -n env VCL_SERVER=... bash vincula.sh``.
+    Legacy seed paths are path-only argv (never URI/key contents).
     """
     argv: list[str] = ["bash", unpack_script]
+    if legacy_uri_remote and legacy_key_remote and legacy_user_tag:
+        argv.extend(
+            [
+                "--legacy-vless-uri-file",
+                legacy_uri_remote,
+                "--legacy-reality-private-key-file",
+                legacy_key_remote,
+                "--legacy-user-tag",
+                legacy_user_tag,
+            ]
+        )
     vcl = (vcl_server or "").strip()
     if vcl:
         argv = ["env", f"VCL_SERVER={vcl}", *argv]
@@ -674,8 +702,11 @@ def unpack_and_run_installer(
     vcl_server: Optional[str] = None,
     privilege_mode: PrivilegeMode = "root",
     remote_stage: str,
+    legacy_uri_remote: Optional[str] = None,
+    legacy_key_remote: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
 ) -> None:
-    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.1).
+    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.2).
 
     Host-key policy remains D34 (no StrictHostKeyChecking=no). Installer
     lands ``/usr/local/bin/vcl`` and ``/etc/vincula`` (not ``/opt``).
@@ -702,6 +733,9 @@ def unpack_and_run_installer(
         f"{paths['unpack']}/vincula.sh",
         privilege_mode=privilege_mode,
         vcl_server=vcl_server,
+        legacy_uri_remote=legacy_uri_remote,
+        legacy_key_remote=legacy_key_remote,
+        legacy_user_tag=legacy_user_tag,
     )
     heartbeat = _heartbeat_seconds()
     install_timeout = _install_timeout_seconds()
@@ -940,6 +974,10 @@ def run_provision(
     vcl_server: Optional[str] = None,
     skip_preflight: bool = False,
     skip_sync: bool = False,
+    legacy_uri_file: Optional[str] = None,
+    legacy_private_key_file: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
+    vcl_port: int = 443,
 ) -> dict[str, Any]:
     """Fresh VPS: preflight → payload → SCP → install → verify → commit → sync --full.
 
@@ -948,10 +986,41 @@ def run_provision(
     re-running the installer. Repair path: ``node adopt`` / register only.
     Initial sync is always ``sync --full`` (D25), never bare ``sync``.
     ``skip_sync=True`` skips the post-commit ``sync --full`` (``--no-sync``).
+
+    Legacy seed (0.4.5): all three ``legacy_*`` args must be set together.
+    Secrets stay in local files → SCP path-only → remote staging 0600.
     """
     host = _require_host()
     if vcl_server is None:
         vcl_server = os.environ.get("VCL_SERVER")
+
+    legacy_flags = (
+        legacy_uri_file,
+        legacy_private_key_file,
+        legacy_user_tag,
+    )
+    legacy_set = sum(1 for x in legacy_flags if (x or "").strip())
+    if legacy_set not in (0, 3):
+        host.die(
+            "legacy seed requires --legacy-vless-uri-file, "
+            "--legacy-reality-private-key-file, and --legacy-user-tag together"
+        )
+
+    legacy_seed = None
+    reality_host = select_reality_host()
+    if legacy_set == 3:
+        try:
+            legacy_seed = load_legacy_seed(
+                uri_file=Path(str(legacy_uri_file)),
+                private_key_file=Path(str(legacy_private_key_file)),
+                user_tag=str(legacy_user_tag),
+                advertised_server=(vcl_server or "").strip() or None,
+                install_port=int(vcl_port),
+            )
+        except LegacySeedError as exc:
+            host.die(f"legacy seed refused: {exc}")
+        reality_host = legacy_seed.sni
+        vcl_server = legacy_seed.server
 
     resolved = resolve_node_payload()
     manifest = verify_local_payload(resolved)
@@ -985,7 +1054,7 @@ def run_provision(
             host_key=host_key,
             manifest=manifest,
             vcl_server=vcl_server,
-            reality_host=select_reality_host(),
+            reality_host=reality_host,
         )
         _preflight_die_if_failed(preflight)
         checks = list(preflight.get("checks") or [])
@@ -1025,6 +1094,9 @@ def run_provision(
         identity_file=identity_file,
         extra=extra,
     )
+    legacy_uri_remote: Optional[str] = None
+    legacy_key_remote: Optional[str] = None
+    legacy_tag: Optional[str] = None
     try:
         upload_and_verify_remote_payload(
             resolved,
@@ -1035,6 +1107,31 @@ def run_provision(
             extra=extra,
             remote_stage=remote_stage,
         )
+        if legacy_seed is not None:
+            _progress("upload-legacy-seed")
+            node = _ssh_node_dict(ssh_host, ssh_user, ssh_port, identity_file)
+            legacy_uri_remote = f"{remote_stage}/{LEGACY_URI_REMOTE}"
+            legacy_key_remote = f"{remote_stage}/{LEGACY_KEY_REMOTE}"
+            host.scp_push(
+                node, Path(legacy_seed.uri_path), legacy_uri_remote, extra=extra
+            )
+            host.scp_push(
+                node,
+                Path(legacy_seed.private_key_path),
+                legacy_key_remote,
+                extra=extra,
+            )
+            host.ssh_run(
+                ssh_host,
+                ssh_user,
+                ssh_port,
+                ["chmod", "600", legacy_uri_remote, legacy_key_remote],
+                batch=True,
+                extra=extra,
+                identity_file=identity_file,
+            )
+            legacy_tag = legacy_seed.user_tag
+
         _progress("install")
         unpack_and_run_installer(
             ssh_host=ssh_host,
@@ -1045,6 +1142,9 @@ def run_provision(
             vcl_server=vcl_server,
             privilege_mode=privilege_mode,
             remote_stage=remote_stage,
+            legacy_uri_remote=legacy_uri_remote,
+            legacy_key_remote=legacy_key_remote,
+            legacy_user_tag=legacy_tag,
         )
 
         _progress("verify")
@@ -1125,14 +1225,20 @@ def run_provision(
                 "detail": str(exc),
             }
 
+        result: dict[str, Any] = {"ok": True, "node_id": node_id}
+        if legacy_seed is not None:
+            result["legacy_seed"] = True
+            result["legacy_user_tag"] = legacy_seed.user_tag
+            result["node_version"] = NODE_PAYLOAD_VERSION
+
         if skip_sync:
-            return {"ok": True, "node_id": node_id}
+            return result
         _progress("sync")
         _code, sync_doc = host.run_sync_full_payload(
             types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
         )
         if _code != 0 or sync_doc.get("state") != "SUCCESS":
-            return {
+            out = {
                 "ok": False,
                 "state": "PARTIAL",
                 "remote_ready": True,
@@ -1141,7 +1247,13 @@ def run_provision(
                 "sync": sync_doc,
                 "remedy": f"vcl-fleet sync --full --node {name}",
             }
-        return {"ok": True, "node_id": node_id, "sync": sync_doc}
+            if legacy_seed is not None:
+                out["legacy_seed"] = True
+                out["legacy_user_tag"] = legacy_seed.user_tag
+                out["node_version"] = NODE_PAYLOAD_VERSION
+            return out
+        result["sync"] = sync_doc
+        return result
     finally:
         _cleanup_remote_stage(
             remote_stage,

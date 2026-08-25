@@ -1,8 +1,8 @@
-# 身份合同（0.4.x / 节点 0.3.1）
+# 身份合同（0.4.x / 节点 0.3.2）
 
 `node_id` 是逻辑节点身份，永久冻结。`instance_id` 是一次物理安装。二者均为 UUID，且 **不得相等**。
 
-**版本解耦（0.4.x）：** 控制器戳 `VCL_FLEET_VERSION`（当前 **0.4.4**；入口 `vcl-fleet` / `bin/vcl-fleet` → `lib/vincula-fleet.py`）；节点戳 `VINCULA_VERSION`（仍为 **0.3.1**，节点 CLI 仍为 `vcl` / `vincula`）。二者独立 bump；控制器升级 **不**要求节点 allowlist / installer 变更。
+**版本解耦（0.4.x）：** 控制器戳 `VCL_FLEET_VERSION`（当前 **0.4.5**；入口 `vcl-fleet` / `bin/vcl-fleet` → `lib/vincula-fleet.py`）；节点戳 `VINCULA_VERSION`（当前 **0.3.2**，最低兼容 **0.3.1**；节点 CLI 仍为 `vcl` / `vincula`）。二者独立 bump；Controller 升级 **不**强制已有 Node 升级。
 
 ## `node_id` vs `instance_id`
 
@@ -36,7 +36,7 @@ accountd 通过 `VCL_STATE_FILE`（默认 `/etc/vincula/state.json`）读 `node.
 
 | 命名空间 | 含义 | 当前 |
 | --- | --- | --- |
-| **accounting-db/v4** | 节点 `accounting.db`（`export_seq`；Export Protocol v2） | 节点 0.3.1 |
+| **accounting-db/v4** | 节点 `accounting.db`（`export_seq`；Export Protocol v2） | 节点 0.3.1+ |
 | **fleet-registry/v2** | 工作站 `fleet.json`（含 `status`） | 控制器 0.4.x |
 | **fleet-cache/v4** | 工作站 `fleet.db`（`meta.fleet_id`；rollback journal） | 控制器 0.4.2 |
 | **workspace/v1** | 可移植 `workspace.json`（revision / write_id / digest / CAS） | 控制器 0.4.1+ |
