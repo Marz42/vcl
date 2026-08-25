@@ -8770,6 +8770,67 @@ assert st == 200
 assert cb_cmd["command"] == (
     "vcl-fleet node provision lax --host 203.0.113.10 --host-key SHA256:abc"
 )
+assert cb_cmd.get("argv") == [
+    "vcl-fleet",
+    "node",
+    "provision",
+    "lax",
+    "--host",
+    "203.0.113.10",
+    "--host-key",
+    "SHA256:abc",
+]
+# Shell-safe join: metacharacters stay inside a single argv token
+import shlex
+
+for nasty in (
+    "Alice Smith; echo PWN",
+    "O'Brien",
+    'say "hi"',
+    "x`id`",
+    "y$(uname)",
+    "a b",
+):
+    st, cb_nasty, _ = post(
+        "/api/command-builder",
+        {
+            "operation": "user_add",
+            "fields": {
+                "tag": "alice",
+                "nodes": "lax",
+                "display_name": nasty,
+            },
+        },
+    )
+    assert st == 200, nasty
+    argv = shlex.split(cb_nasty["command"])
+    assert argv[:5] == ["vcl-fleet", "user", "add", "alice", "--nodes"]
+    assert argv[5] == "lax"
+    assert "--display-name" in argv
+    assert argv[argv.index("--display-name") + 1] == nasty
+    assert cb_nasty["argv"][argv.index("--display-name") + 1] == nasty
+# Reject host / host_key / nodes injection
+for bad_fields in (
+    {"name": "lax", "host": "203.0.113.10;rm", "host_key": "SHA256:abc"},
+    {"name": "lax", "host": "203.0.113.10", "host_key": "not-a-fp"},
+):
+    code = http_code(
+        lambda bf=bad_fields: post(
+            "/api/command-builder",
+            {"operation": "provision", "fields": bf},
+        )
+    )
+    assert code == 400, bad_fields
+code = http_code(
+    lambda: post(
+        "/api/command-builder",
+        {
+            "operation": "user_add",
+            "fields": {"tag": "alice", "nodes": "lax;evil"},
+        },
+    )
+)
+assert code == 400
 assert "Command Builder" in (
     Path(static_dir) / "index.html"
 ).read_text(encoding="utf-8")
@@ -8802,15 +8863,21 @@ legacy_cache = {
     ],
     "unreachable": [],
 }
-(Path(home) / "users-cache.json").write_text(
-    json.dumps(legacy_cache), encoding="utf-8"
-)
+legacy_path = Path(home) / "users-cache.json"
+legacy_path.write_text(json.dumps(legacy_cache), encoding="utf-8")
+runtime_cache = Path(home) / "ui-runtime" / "users-cache.json"
 st, users_legacy, _ = get("/api/users")
 assert st == 200
 users_blob = json.dumps(users_legacy)
 assert CRED_SENTINEL not in users_blob
 assert "active_credential_id" not in users_blob
 assert users_legacy["users"][0]["nodes"][0]["has_active_credential"] is True
+# Upgrade migrate: legacy Fleet Home cache removed; sanitized copy under ui-runtime
+assert not legacy_path.is_file(), "legacy users-cache.json must be deleted after migrate"
+assert runtime_cache.is_file()
+disk_migrated = runtime_cache.read_text(encoding="utf-8")
+assert CRED_SENTINEL not in disk_migrated
+assert "active_credential_id" not in disk_migrated
 st, user_detail, _ = get("/api/users/alice")
 assert st == 200
 detail_blob = json.dumps(user_detail)
@@ -8855,7 +8922,8 @@ refresh_blob = json.dumps(refresh_doc)
 assert CRED_SENTINEL not in refresh_blob
 assert "active_credential_id" not in refresh_blob
 assert refresh_doc["result"]["users"][0]["nodes"][0]["has_active_credential"] is True
-on_disk = json.loads((Path(home) / "users-cache.json").read_text(encoding="utf-8"))
+assert not legacy_path.is_file()
+on_disk = json.loads(runtime_cache.read_text(encoding="utf-8"))
 disk_blob = json.dumps(on_disk)
 assert CRED_SENTINEL not in disk_blob
 assert "active_credential_id" not in disk_blob
@@ -8865,6 +8933,104 @@ assert "active_credential_id" not in app_js_text
 assert "has_active_credential" in app_js_text
 st, users_after, _ = get("/api/users")
 assert CRED_SENTINEL not in json.dumps(users_after)
+
+# user_snapshot has_active_credential from SQL bool (not hardcoded false)
+lax_id = fleet.require_node(fleet.load_registry(), "lax")["node_id"]
+conn_snap = fleet.open_fleet_db()
+try:
+    conn_snap.execute(
+        """INSERT OR REPLACE INTO user_snapshot(
+             node_id,user_id,tag,enabled,status,active_credential_id,
+             payload_json,synced_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            lax_id,
+            alice_uid_early,
+            "alice",
+            1,
+            "active",
+            CRED_SENTINEL,
+            json.dumps({"department": "eng"}),
+            "2026-08-16T07:00:00Z",
+        ),
+    )
+    conn_snap.commit()
+finally:
+    conn_snap.close()
+# Clear users-cache so API reads snapshot
+if runtime_cache.is_file():
+    runtime_cache.unlink()
+st, users_snap, _ = get("/api/users")
+assert st == 200
+assert users_snap["users"][0]["source"] == "user_snapshot"
+assert users_snap["users"][0]["nodes"][0]["has_active_credential"] is True
+assert CRED_SENTINEL not in json.dumps(users_snap)
+# audit/usage fallback must use unknown (null), not false
+conn_fb = fleet.open_fleet_db()
+try:
+    conn_fb.execute("DELETE FROM user_snapshot")
+    conn_fb.commit()
+finally:
+    conn_fb.close()
+st, users_fb, _ = get("/api/users")
+assert st == 200
+assert users_fb["users"]
+assert users_fb["users"][0]["nodes"][0]["has_active_credential"] is None
+
+# Traffic trend uses the same filters as table/totals (two-node fixture)
+tokyo_id = "8bb18c32-3333-4333-8333-333333333333"
+bob_uid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+reg = fleet.load_registry()
+if fleet.find_by_name(reg, "tokyo") is None:
+    fleet.add_node(
+        reg, node_id=tokyo_id, name="tokyo", ssh_host="203.0.113.11"
+    )
+    fleet.save_registry(None, reg)
+conn_tr = fleet.open_fleet_db()
+try:
+    now = "2026-08-16T07:00:00Z"
+    inst = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    row_tokyo = {
+        "event_id": 2,
+        "export_seq": 1,
+        "connection_id": "ui-bob-1",
+        "generation": 0,
+        "user_id": bob_uid,
+        "user_tag": "bob",
+        "node_id": tokyo_id,
+        "instance_id": inst,
+        "started_at": "2026-08-10T08:00:00Z",
+        "last_seen_at": "2026-08-10T09:00:00Z",
+        "closed_at": "2026-08-10T09:00:00Z",
+        "destination_host": "tokyo.example",
+        "destination_ip": "203.0.113.90",
+        "destination_port": 443,
+        "network": "tcp",
+        "upload_bytes": 5000,
+        "download_bytes": 7000,
+    }
+    fleet.import_audit_batch(tokyo_id, inst, [row_tokyo], now_iso=now, conn=conn_tr)
+finally:
+    conn_tr.close()
+st, traffic_all, _ = get("/api/stats/top?kind=users&days=7")
+assert st == 200
+st, traffic_lax, _ = get("/api/stats/top?kind=users&days=7&node=lax")
+assert st == 200
+st, traffic_tokyo, _ = get("/api/stats/top?kind=users&days=7&node=tokyo")
+assert st == 200
+all_trend = sum(int(r.get("bytes") or 0) for r in traffic_all.get("trend") or [])
+lax_trend = sum(int(r.get("bytes") or 0) for r in traffic_lax.get("trend") or [])
+tokyo_trend = sum(int(r.get("bytes") or 0) for r in traffic_tokyo.get("trend") or [])
+assert lax_trend > 0 and tokyo_trend > 0
+assert lax_trend != tokyo_trend
+assert all_trend == lax_trend + tokyo_trend
+assert int(traffic_lax["totals"].get("bytes") or 0) == lax_trend
+assert int(traffic_tokyo["totals"].get("bytes") or 0) == tokyo_trend
+assert int(traffic_all["totals"].get("bytes") or 0) == all_trend
+st, traffic_miss, _ = get("/api/stats/top?kind=users&days=7&user=nosuchuser")
+assert traffic_miss["rows"] == []
+assert int(traffic_miss["totals"].get("bytes") or 0) == 0
+assert traffic_miss["trend"] == []
 
 st, recipes, _ = get("/api/recipes")
 assert st == 200 and any(r["id"] == "node-replace" for r in recipes["recipes"])

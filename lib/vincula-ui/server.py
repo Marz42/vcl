@@ -15,6 +15,7 @@ import json
 import mimetypes
 import re
 import secrets
+import shlex
 import sys
 import threading
 import traceback
@@ -89,7 +90,13 @@ def assert_loopback_host(host: str) -> str:
     return raw
 
 
-def users_cache_path() -> Path:
+def users_cache_path(*, create: bool = False) -> Path:
+    """Local UI users cache — always under ui-runtime (never Fleet Home / workspace)."""
+    return _ui_runtime_dir(create=create) / "users-cache.json"
+
+
+def legacy_users_cache_path() -> Path:
+    """Pre-0.4.4 path (Fleet Home root). Must not remain after migrate."""
     return fleet().fleet_home() / "users-cache.json"
 
 
@@ -211,11 +218,16 @@ def _status_cache_empty(doc: Optional[dict[str, Any]]) -> bool:
     return True
 
 
-def _node_has_active_credential(node: dict[str, Any]) -> bool:
+def _node_has_active_credential(node: dict[str, Any]) -> Optional[bool]:
+    """Bool when known; None when credential state is unavailable (audit fallback)."""
     if "has_active_credential" in node:
-        return bool(node.get("has_active_credential"))
-    cid = node.get("active_credential_id")
-    return bool(cid)
+        val = node.get("has_active_credential")
+        if val is None:
+            return None
+        return bool(val)
+    if "active_credential_id" in node:
+        return bool(node.get("active_credential_id"))
+    return None
 
 
 def sanitize_user_node_for_ui(node: dict[str, Any]) -> dict[str, Any]:
@@ -258,8 +270,65 @@ def sanitize_users_for_ui(users: Any) -> list[dict[str, Any]]:
     return out
 
 
+def migrate_users_cache() -> None:
+    """Move Fleet Home users-cache.json → ui-runtime; rewrite sanitized; delete legacy.
+
+    Safe to call on every UI start. Never leaves credential UUID on disk.
+    """
+    f = fleet()
+    legacy = legacy_users_cache_path()
+    dest = users_cache_path(create=True)
+    payload: Optional[dict[str, Any]] = None
+    source: Optional[Path] = None
+    for candidate in (dest, legacy):
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            payload = data
+            source = candidate
+            break
+    if payload is None:
+        if legacy.is_file():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        return
+    safe = dict(payload)
+    safe["users"] = sanitize_users_for_ui(payload.get("users"))
+    f._atomic_write_json(dest, safe)
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    # Re-read dest and assert no credential UUID leaked (best-effort).
+    try:
+        disk = dest.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "active_credential_id" in disk:
+        # Force rewrite from sanitized structure only.
+        f._atomic_write_json(
+            dest,
+            {
+                "schema_version": int(safe.get("schema_version") or UI_SCHEMA_VERSION),
+                "ok": safe.get("ok"),
+                "refreshed_at": safe.get("refreshed_at"),
+                "users": safe.get("users") or [],
+                "unreachable": safe.get("unreachable") or [],
+            },
+        )
+    del source
+
+
 def load_users_cache() -> Optional[dict[str, Any]]:
-    path = users_cache_path()
+    migrate_users_cache()
+    path = users_cache_path(create=False)
     if not path.is_file():
         return None
     try:
@@ -268,7 +337,6 @@ def load_users_cache() -> Optional[dict[str, Any]]:
         return None
     if not isinstance(data, dict):
         return None
-    # Legacy users-cache.json may contain active_credential_id; never return it.
     sanitized = dict(data)
     sanitized["users"] = sanitize_users_for_ui(data.get("users"))
     return sanitized
@@ -277,7 +345,13 @@ def load_users_cache() -> Optional[dict[str, Any]]:
 def write_users_cache(payload: dict[str, Any]) -> None:
     safe = dict(payload)
     safe["users"] = sanitize_users_for_ui(payload.get("users"))
-    fleet()._atomic_write_json(users_cache_path(), safe)
+    fleet()._atomic_write_json(users_cache_path(create=True), safe)
+    legacy = legacy_users_cache_path()
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def _human_bytes(n: int) -> str:
@@ -351,10 +425,23 @@ def _traffic_totals_for_window(
     }
 
 
-def _traffic_trend(conn: Any, *, days: int = 7) -> list[dict[str, Any]]:
+def _traffic_trend(
+    conn: Any,
+    *,
+    days: int = 7,
+    extra_where: Optional[list[str]] = None,
+    extra_params: Optional[list[Any]] = None,
+) -> list[dict[str, Any]]:
     f = fleet()
     start, end = f.stats_date_window(days)
-    raw = f.query_daily_grouped(conn, start=start, end=end, group_by=("date",))
+    raw = f.query_daily_grouped(
+        conn,
+        start=start,
+        end=end,
+        group_by=("date",),
+        extra_where=extra_where,
+        extra_params=extra_params,
+    )
     out: list[dict[str, Any]] = []
     for row in raw:
         keys = set(row.keys())
@@ -436,7 +523,12 @@ def _users_from_snapshot(conn: Any, registry: dict[str, Any]) -> list[dict[str, 
     f = fleet()
     rows = conn.execute(
         """
-        SELECT node_id, user_id, tag, enabled, status, payload_json
+        SELECT node_id, user_id, tag, enabled, status, payload_json,
+          CASE
+            WHEN active_credential_id IS NOT NULL
+             AND active_credential_id != ''
+            THEN 1 ELSE 0
+          END AS has_active_credential
         FROM user_snapshot
         WHERE user_id IS NOT NULL AND user_id != ''
         ORDER BY tag, user_id, node_id
@@ -478,6 +570,7 @@ def _users_from_snapshot(conn: Any, registry: dict[str, Any]) -> list[dict[str, 
             rec["display_name"] = display
         node_name = f.node_display_name(registry, nid)
         enabled = bool(int(row["enabled"] or 0))
+        has_cred = bool(int(row["has_active_credential"] or 0))
         if not any(n.get("node_id") == nid for n in rec["nodes"]):
             rec["nodes"].append(
                 {
@@ -487,7 +580,7 @@ def _users_from_snapshot(conn: Any, registry: dict[str, Any]) -> list[dict[str, 
                     "enabled": enabled,
                     "status": f._optional_text(row["status"])
                     or ("active" if enabled else "disabled"),
-                    "has_active_credential": False,
+                    "has_active_credential": has_cred,
                 }
             )
     return [grouped[k] for k in order]
@@ -603,6 +696,61 @@ COMMAND_BUILDER_OPS: dict[str, dict[str, Any]] = {
 }
 
 
+def _builder_validate_name(kind: str, raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError(f"missing required field: {kind}")
+    if not NAME_RE.fullmatch(text):
+        raise ValueError(f"invalid {kind}: {text}")
+    return text
+
+
+def _builder_validate_host(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: host")
+    f = fleet()
+    try:
+        return f.validate_ssh_host(text)
+    except SystemExit as exc:
+        raise ValueError(f"invalid host: {text}") from exc
+
+
+def _builder_validate_host_key(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: host_key")
+    f = fleet()
+    try:
+        return f.normalize_fingerprint(text)
+    except SystemExit as exc:
+        raise ValueError(f"invalid host_key: {text}") from exc
+
+
+def _builder_validate_nodes_csv(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: nodes")
+    parts = [p.strip() for p in text.split(",")]
+    names: list[str] = []
+    for part in parts:
+        if not part:
+            raise ValueError("invalid nodes: empty entry")
+        if not NAME_RE.fullmatch(part):
+            raise ValueError(f"invalid node name: {part}")
+        names.append(part)
+    return ",".join(names)
+
+
+def _builder_validate_file(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("missing required field: file")
+    if "\x00" in text or "\n" in text or "\r" in text:
+        raise ValueError("invalid file path")
+    return text
+
+
 def api_command_builder_meta() -> dict[str, Any]:
     return {
         "schema_version": UI_SCHEMA_VERSION,
@@ -616,12 +764,13 @@ def api_command_builder_meta() -> dict[str, Any]:
         ],
         "note": (
             "Command Builder copies CLI only — no UI mutations (D53). "
-            "Fill fields to generate a complete command."
+            "Fill fields to generate a complete command (shell-safe via shlex)."
         ),
     }
 
 
 def api_command_build(body: dict[str, Any]) -> dict[str, Any]:
+    """Build a shell-safe CLI string from an argv list (never raw concat)."""
     op = str((body or {}).get("operation") or "").strip()
     if op not in COMMAND_BUILDER_OPS:
         raise ValueError(f"unknown operation: {op or '(empty)'}")
@@ -635,25 +784,99 @@ def api_command_build(body: dict[str, Any]) -> dict[str, Any]:
         raw = str(fields_in.get(name) or "").strip()
         if field.get("required") and not raw:
             raise ValueError(f"missing required field: {name}")
-        if raw and name in ("name", "tag", "node") and not NAME_RE.fullmatch(raw):
-            raise ValueError(f"invalid {name}: {raw}")
-        values[name] = raw
-    cmd = str(spec["template"])
-    if op == "user_add":
-        cmd = f"vcl-fleet user add {values['tag']} --nodes {values['nodes']}"
+        if not raw:
+            values[name] = ""
+            continue
+        if name in ("name", "tag", "node"):
+            values[name] = _builder_validate_name(name, raw)
+        elif name == "host":
+            values[name] = _builder_validate_host(raw)
+        elif name == "host_key":
+            values[name] = _builder_validate_host_key(raw)
+        elif name == "nodes":
+            values[name] = _builder_validate_nodes_csv(raw)
+        elif name == "file":
+            values[name] = _builder_validate_file(raw)
+        else:
+            # display_name / department — free text; escaped by shlex.join
+            if "\x00" in raw or "\n" in raw or "\r" in raw:
+                raise ValueError(f"invalid {name}")
+            values[name] = raw
+
+    argv: list[str]
+    if op == "adopt":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "adopt",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "provision":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "provision",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "user_add":
+        argv = [
+            "vcl-fleet",
+            "user",
+            "add",
+            values["tag"],
+            "--nodes",
+            values["nodes"],
+        ]
         if values.get("display_name"):
-            cmd += f" --display-name {values['display_name']}"
+            argv.extend(["--display-name", values["display_name"]])
         if values.get("department"):
-            cmd += f" --department {values['department']}"
+            argv.extend(["--department", values["department"]])
+    elif op == "rotate":
+        argv = [
+            "vcl-fleet",
+            "user",
+            "rotate",
+            values["tag"],
+            "--node",
+            values["node"],
+        ]
+    elif op == "replace":
+        argv = [
+            "vcl-fleet",
+            "node",
+            "replace",
+            values["name"],
+            "--host",
+            values["host"],
+            "--host-key",
+            values["host_key"],
+        ]
+    elif op == "restore":
+        argv = [
+            "vcl-fleet",
+            "audit",
+            "archive",
+            "restore",
+            values["file"],
+        ]
+    elif op == "reseed":
+        argv = ["vcl-fleet", "sync", "--reseed", values["name"]]
     else:
-        try:
-            cmd = cmd.format(**values)
-        except KeyError as exc:
-            raise ValueError(f"missing field: {exc}") from exc
+        raise ValueError(f"unknown operation: {op}")
+
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "operation": op,
-        "command": cmd,
+        "command": shlex.join(argv),
+        "argv": argv,
         "copy_ready": True,
     }
 
@@ -1410,7 +1633,7 @@ def _users_from_db(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
                     "tag": tag,
                     "enabled": None,
                     "status": "seen-in-sync",
-                    "has_active_credential": False,
+                    "has_active_credential": None,
                 }
             )
     return [grouped[k] for k in order]
@@ -1772,7 +1995,7 @@ def api_stats_top(
                 if u.get("user_id"):
                     allowed_uids.add(str(u["user_id"]))
             if not allowed_uids:
-                trend = _traffic_trend(conn, days=days)
+                # No matching users → empty table/totals/trend (same filter plane).
                 return {
                     "schema_version": UI_SCHEMA_VERSION,
                     "mode": f"top-{kind}",
@@ -1793,7 +2016,7 @@ def api_stats_top(
                         "download_human": _human_bytes(0),
                         "bytes_human": _human_bytes(0),
                     },
-                    "trend": trend,
+                    "trend": [],
                 }
         if allowed_uids is not None:
             placeholders = ",".join("?" for _ in allowed_uids)
@@ -1809,7 +2032,12 @@ def api_stats_top(
         )
         rows = [f._stats_row_from_sql(registry, r) for r in raw]
         totals = f._stats_totals(rows)
-        trend = _traffic_trend(conn, days=days)
+        trend = _traffic_trend(
+            conn,
+            days=days,
+            extra_where=extra_where or None,
+            extra_params=list(extra_params) if extra_params else None,
+        )
     finally:
         conn.close()
     return {
@@ -2427,6 +2655,7 @@ def serve(
         _STATIC_DIR = Path(static_dir)
     if not _STATIC_DIR.is_dir():
         fleet_mod.die(f"ui static directory missing: {_STATIC_DIR}")
+    migrate_users_cache()
     try:
         httpd = make_server(host, port)
     except ValueError as exc:
@@ -2472,6 +2701,7 @@ def serve_in_thread(
     global _STATIC_DIR
     if static_dir is not None:
         _STATIC_DIR = Path(static_dir)
+    migrate_users_cache()
     httpd = make_server(
         host, port, max_workers=max_workers, request_timeout=request_timeout
     )
