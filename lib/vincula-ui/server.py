@@ -101,17 +101,36 @@ def legacy_users_cache_path() -> Path:
 
 
 def _ui_runtime_dir(*, create: bool = False) -> Path:
+    """Resolve ui-runtime under machine-local STATE when workspace is active.
+
+    Fail closed: if ``workspace.json`` exists but cannot be loaded, never fall
+    back to ``fleet_home()/ui-runtime`` (that would pollute the portable root).
+    ``create=True`` dies; ``create=False`` raises ``RuntimeError`` so GET can
+    soft-fail without writing.
+    """
     f = fleet()
-    root: Path | None = None
-    try:
-        if f.workspace_trust_active():
+    if f.workspace_trust_active():
+        try:
             manifest = f.load_workspace_manifest()
-            fid = str(manifest.get("fleet_id") or "").strip()
-            if fid:
-                root = f.fleet_local_state_dir(fid) / "ui-runtime"
-    except SystemExit:
-        root = None
-    if root is None:
+        except SystemExit as exc:
+            msg = (
+                "WORKSPACE_INCONSISTENT: refuse ui-runtime under portable "
+                "workspace root (fix or recreate workspace.json)"
+            )
+            if create:
+                f.die(msg, int(exc.code) if isinstance(exc.code, int) else 2)
+            raise RuntimeError(msg) from exc
+        fid = str(manifest.get("fleet_id") or "").strip()
+        if not fid:
+            msg = (
+                "WORKSPACE_INCONSISTENT: workspace.json missing fleet_id; "
+                "refuse ui-runtime under portable workspace root"
+            )
+            if create:
+                f.die(msg, 2)
+            raise RuntimeError(msg)
+        root = f.fleet_local_state_dir(fid) / "ui-runtime"
+    else:
         root = f.fleet_home() / "ui-runtime"
     if create:
         root.mkdir(parents=True, exist_ok=True)
@@ -155,7 +174,10 @@ def append_ui_operation(
 
 
 def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
-    path = operations_log_path(create=False)
+    try:
+        path = operations_log_path(create=False)
+    except RuntimeError:
+        return []
     if not path.is_file():
         return []
     try:
@@ -273,13 +295,19 @@ def sanitize_users_for_ui(users: Any) -> list[dict[str, Any]]:
 def migrate_users_cache() -> None:
     """Move Fleet Home users-cache.json → ui-runtime; rewrite sanitized; delete legacy.
 
-    Safe to call on every UI start. Never leaves credential UUID on disk.
+    Call **only** from UI serve/start (not from GET ``load_users_cache``).
+    Never leaves credential UUID on disk. Does not mkdir when there is nothing
+    to migrate. Fail closed if workspace.json is unusable (via ``_ui_runtime_dir``).
     """
     f = fleet()
     legacy = legacy_users_cache_path()
-    dest = users_cache_path(create=True)
+    try:
+        dest = users_cache_path(create=False)
+    except RuntimeError as exc:
+        f.die(str(exc), 2)
+    if not legacy.is_file() and not dest.is_file():
+        return
     payload: Optional[dict[str, Any]] = None
-    source: Optional[Path] = None
     for candidate in (dest, legacy):
         if not candidate.is_file():
             continue
@@ -289,7 +317,6 @@ def migrate_users_cache() -> None:
             continue
         if isinstance(data, dict):
             payload = data
-            source = candidate
             break
     if payload is None:
         if legacy.is_file():
@@ -300,21 +327,20 @@ def migrate_users_cache() -> None:
         return
     safe = dict(payload)
     safe["users"] = sanitize_users_for_ui(payload.get("users"))
-    f._atomic_write_json(dest, safe)
+    dest_write = users_cache_path(create=True)
+    f._atomic_write_json(dest_write, safe)
     if legacy.is_file():
         try:
             legacy.unlink()
         except OSError:
             pass
-    # Re-read dest and assert no credential UUID leaked (best-effort).
     try:
-        disk = dest.read_text(encoding="utf-8")
+        disk = dest_write.read_text(encoding="utf-8")
     except OSError:
         return
     if "active_credential_id" in disk:
-        # Force rewrite from sanitized structure only.
         f._atomic_write_json(
-            dest,
+            dest_write,
             {
                 "schema_version": int(safe.get("schema_version") or UI_SCHEMA_VERSION),
                 "ok": safe.get("ok"),
@@ -323,23 +349,32 @@ def migrate_users_cache() -> None:
                 "unreachable": safe.get("unreachable") or [],
             },
         )
-    del source
 
 
 def load_users_cache() -> Optional[dict[str, Any]]:
-    migrate_users_cache()
-    path = users_cache_path(create=False)
-    if not path.is_file():
-        return None
+    """Read users cache (sanitized). Does not migrate or mkdir.
+
+    Prefer ui-runtime path; fall back to legacy Fleet Home file read-only so
+    GET works until the next UI start migrates it.
+    """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    sanitized = dict(data)
-    sanitized["users"] = sanitize_users_for_ui(data.get("users"))
-    return sanitized
+        runtime = users_cache_path(create=False)
+    except RuntimeError:
+        runtime = None
+    candidates = [p for p in (runtime, legacy_users_cache_path()) if p is not None]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        sanitized = dict(data)
+        sanitized["users"] = sanitize_users_for_ui(data.get("users"))
+        return sanitized
+    return None
 
 
 def write_users_cache(payload: dict[str, Any]) -> None:

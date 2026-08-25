@@ -820,11 +820,19 @@ def read_only_workspace_surface() -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
+        # Present but unreadable / corrupt → inconsistent (never fail-open as absent).
         return {
-            "active": False,
+            "active": True,
             "fleet_id": None,
             "revision": None,
-            "conflict": "absent",
+            "conflict": WS_ERR_INCONSISTENT,
+        }
+    if not isinstance(raw, dict):
+        return {
+            "active": True,
+            "fleet_id": None,
+            "revision": None,
+            "conflict": WS_ERR_INCONSISTENT,
         }
     try:
         manifest = validate_workspace_manifest(raw)

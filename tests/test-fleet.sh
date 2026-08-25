@@ -8866,6 +8866,8 @@ legacy_cache = {
 legacy_path = Path(home) / "users-cache.json"
 legacy_path.write_text(json.dumps(legacy_cache), encoding="utf-8")
 runtime_cache = Path(home) / "ui-runtime" / "users-cache.json"
+# Migrate is start-only; invoke explicitly after planting legacy (same as UI restart).
+ui.migrate_users_cache()
 st, users_legacy, _ = get("/api/users")
 assert st == 200
 users_blob = json.dumps(users_legacy)
@@ -9706,6 +9708,43 @@ m = ws.load_workspace_manifest()
 m["state_digest"] = "sha256:" + ("f" * 64)
 ws.save_workspace_manifest(m)
 assert surface(home_bad)["conflict"] == "WORKSPACE_INCONSISTENT"
+
+# Malformed workspace.json must not fail-open as absent, and must not get
+# portable-root ui-runtime/ from UI cache migrate.
+home_mal = base / "malformed-json"
+home_mal.mkdir(parents=True, exist_ok=True)
+(home_mal / "workspace.json").write_text("{not-json", encoding="utf-8")
+surf_mal = surface(home_mal)
+assert surf_mal["active"] is True, surf_mal
+assert surf_mal["conflict"] == "WORKSPACE_INCONSISTENT", surf_mal
+assert surf_mal.get("fleet_id") is None
+roots_mal = [home_mal, state_root, xdg_cfg, Path(os.environ["XDG_STATE_HOME"])]
+before_mal = tree_snapshot(*roots_mal)
+os.environ["VCL_FLEET_HOME"] = str(home_mal)
+ui.set_fleet_module(fleet)
+migrate_rc = 0
+try:
+    ui.migrate_users_cache()
+except SystemExit as exc:
+    migrate_rc = int(exc.code) if isinstance(exc.code, int) else 1
+else:
+    raise AssertionError("migrate_users_cache must fail closed on malformed workspace")
+assert migrate_rc != 0
+after_mal = tree_snapshot(*roots_mal)
+assert before_mal == after_mal, sorted(before_mal ^ after_mal)
+assert not (home_mal / "ui-runtime").exists(), "must not create <workspace>/ui-runtime"
+# create=True path must also refuse (no portable pollution)
+create_rc = 0
+try:
+    ui.users_cache_path(create=True)
+except SystemExit as exc:
+    create_rc = int(exc.code) if isinstance(exc.code, int) else 1
+else:
+    raise AssertionError("users_cache_path(create=True) must fail closed")
+assert create_rc != 0
+assert before_mal == tree_snapshot(*roots_mal)
+assert not (home_mal / "ui-runtime").exists()
+
 print("ws-ro-five ok")
 PY
 if (( ws_ro_rc == 0 )); then
