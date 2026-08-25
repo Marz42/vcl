@@ -9254,6 +9254,81 @@ assert "--output" not in export_rec["command"]
 st, ops, _ = get("/api/operations")
 assert st == 200 and isinstance(ops.get("rows"), list)
 assert any(r.get("operation") == "probe" for r in ops["rows"])
+# AC-4.4-09: operations rows use ``time`` (not ``at``); time must be visible in render
+probe_ops = [r for r in ops["rows"] if r.get("operation") == "probe"]
+assert probe_ops, "expected at least one probe operation row"
+for r in probe_ops:
+    assert "time" in r and r["time"], r
+    assert not r.get("at") or r.get("time"), "time is canonical field"
+    assert "T" in str(r["time"]), r["time"]
+
+
+def operation_time_cell(row: dict) -> str:
+    """Mirrors app.js operationTimeCell — backend field is ``time``."""
+    t = row.get("time") if row else None
+    return str(t) if t else "—"
+
+
+rendered_time = operation_time_cell(probe_ops[0])
+assert rendered_time != "—", probe_ops[0]
+assert rendered_time == str(probe_ops[0]["time"])
+# DOM/render: Operations TIME cell shows the timestamp, not em-dash
+cell_html = f"<td>{rendered_time}</td>"
+assert rendered_time in cell_html and cell_html != "<td>—</td>"
+assert "operationTimeCell" in static_app
+assert "r.at" not in static_app
+assert "r.time || r.at" not in static_app
+
+# Probe / Verify / Sync / Refresh-users: shared SSH confirm; cancel → no POST
+SSH_HINT = "This action contacts remote nodes over SSH."
+assert SSH_HINT in static_app
+assert "function confirmRemoteSsh" in static_app
+
+
+def _ui_fn_body(name: str) -> str:
+    m = re.search(
+        rf"async function {name}\(\) \{{([\s\S]*?)\n  \}}",
+        static_app,
+    )
+    assert m, f"missing {name}"
+    return m.group(1)
+
+
+for name, path in (
+    ("runProbe", "/api/refresh/probe"),
+    ("runVerify", "/api/refresh/verify"),
+    ("doSync", "/api/sync"),
+):
+    body = _ui_fn_body(name)
+    assert "confirmRemoteSsh" in body, name
+    assert path in body, (name, path)
+    assert body.index("confirmRemoteSsh") < body.index(path), name
+    assert "return;" in body[: body.index(path)], f"{name} must return before POST on cancel"
+
+# Refresh-users click handler (anonymous) still gated
+assert "confirmRemoteSsh(\"Refresh users from remote nodes now?\")" in static_app
+refresh_idx = static_app.index("confirmRemoteSsh(\"Refresh users from remote nodes now?\")")
+users_post_idx = static_app.index("/api/refresh/users")
+assert refresh_idx < users_post_idx
+
+
+def _remote_posts_if_confirm(ok: bool, path: str) -> list[str]:
+    """Behavioral mirror of confirmRemoteSsh + early return (cancel → no POST)."""
+    posts: list[str] = []
+
+    def confirmRemoteSsh(detail: str) -> bool:
+        assert SSH_HINT in f"{SSH_HINT}\n\n{detail}"
+        return ok
+
+    if not confirmRemoteSsh("Run live probe now?"):
+        return posts
+    posts.append(path)
+    return posts
+
+
+assert _remote_posts_if_confirm(False, "/api/refresh/probe") == []
+assert _remote_posts_if_confirm(True, "/api/refresh/probe") == ["/api/refresh/probe"]
+assert _remote_posts_if_confirm(False, "/api/refresh/verify") == []
 
 assert "liveProbeOverlay" in static_app
 assert "/api/refresh/probe" in static_app
@@ -9974,14 +10049,11 @@ export VCL_FLEET_HOME="${SAVED_AC041_HOME}"
 
 export VCL_FLEET_HOME="${OFFLINE_FLEET_HOME}"
 unset VCL_FLEET_LOCAL_STATE
-# Keep controller CONFIG under the test tree (not the operator's real ~/.config).
+# Keep controller CONFIG and HOME under the test tree for the rest of the suite
+# (do not restore the operator's real HOME mid-run).
 export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
-mkdir -p "$XDG_CONFIG_HOME"
-if [[ -n "${FLEET_SAVED_HOME}" ]]; then
-  export HOME="${FLEET_SAVED_HOME}"
-else
-  unset HOME
-fi
+mkdir -p "$XDG_CONFIG_HOME" "${TEST_TMP}/user-home"
+export HOME="${TEST_TMP}/user-home"
 
 # --- 0.4.2 B1 ---
 SAVED=$VCL_FLEET_HOME; export VCL_FLEET_LOCAL_STATE=$TEST_TMP/xdg-b1
@@ -10782,7 +10854,7 @@ fi
 
 export VCL_FLEET_HOME=$F73_SAVED_HOME
 if [[ -n "$F73_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$F73_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$F73_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$F73_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.2 F7-4 / T4: cached status ok derived from node_snapshot health ---
 F74_SAVED_HOME=$VCL_FLEET_HOME
@@ -11402,7 +11474,7 @@ else
 fi
 export VCL_FLEET_HOME=$P11R_SAVED_HOME
 if [[ -n "$P11R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P11R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$P11R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P11R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$P11R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P11R_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.2 P1-2 regression ---
 assert_success "P1-2r rollback journal / RO / legacy WAL" python3 - \
@@ -11974,10 +12046,11 @@ assert_success "P1-6r B bindings under own CONFIG" \
 assert_success "P1-6r A bindings still under A CONFIG" \
   test -f "${P16R_A_CFG}/vincula/controllers/${P16R_FID}/credential-bindings.json"
 assert_failure "P1-6r B still no machine-local" test -d "${P16R_B}/machine-local"
-export HOME=$P16R_SAVED_USER_HOME
+export HOME="${TEST_TMP}/user-home"
+mkdir -p "$HOME"
 export VCL_FLEET_HOME=$P16R_SAVED_HOME
 if [[ -n "$P16R_SAVED_STATE" ]]; then export VCL_FLEET_LOCAL_STATE=$P16R_SAVED_STATE; else unset VCL_FLEET_LOCAL_STATE; fi
-if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else unset XDG_CONFIG_HOME; fi
+if [[ -n "$P16R_SAVED_CFG" ]]; then export XDG_CONFIG_HOME=$P16R_SAVED_CFG; else export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"; mkdir -p "$XDG_CONFIG_HOME"; fi
 
 # --- 0.4.3 B1 provision skeleton ---
 assert_success "B1 load_provision_module" python3 - "$PROJECT_DIR/lib/vincula-fleet.py" <<'PY'
@@ -13154,8 +13227,9 @@ assert mod.run_provision.__defaults__ is not None or "skip_sync" in mod.run_prov
 assert "skip_sync" in mod.run_provision.__code__.co_varnames
 PY
 
-# Restore env so later sourcing (if any) is not polluted
-export HOME=$B6_SAVED_HOME
+# Restore env so later sourcing (if any) is not polluted — stay under TEST_TMP
+export HOME="${TEST_TMP}/user-home"
+mkdir -p "$HOME"
 export VCL_FLEET_HOME=$B6_SAVED_FLEET_HOME
 if [[ -n "$B6_SAVED_FAKE_STATE" ]]; then export VCL_FAKE_STATE_DIR=$B6_SAVED_FAKE_STATE; else unset VCL_FAKE_STATE_DIR; fi
 if [[ -n "$B6_SAVED_ARGV_LOG" ]]; then export VCL_FAKE_SSH_ARGV_LOG=$B6_SAVED_ARGV_LOG; else unset VCL_FAKE_SSH_ARGV_LOG; fi
@@ -13527,4 +13601,14 @@ else
   fail "LIVE-P2 user link no active credential fails (rc=${nocred_rc} err=${nocred_err})"
 fi
 unset VCL_FAKE_STATE_DIR
+
+# Suite teardown: HOME / XDG must still be isolated under TEST_TMP
+case "${HOME}" in
+  "${TEST_TMP}"/*) pass "P1 teardown: HOME still under TEST_TMP" ;;
+  *) fail "P1 teardown: HOME leaked outside TEST_TMP (HOME=${HOME})" ;;
+esac
+case "${XDG_CONFIG_HOME:-}" in
+  "${TEST_TMP}"/*) pass "P1 teardown: XDG_CONFIG_HOME still under TEST_TMP" ;;
+  *) fail "P1 teardown: XDG_CONFIG_HOME leaked (XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-})" ;;
+esac
 

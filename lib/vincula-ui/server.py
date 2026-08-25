@@ -165,6 +165,9 @@ def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict):
+            # Unify on ``time`` (legacy rows may have used ``at``).
+            if not item.get("time") and item.get("at"):
+                item = {**item, "time": item["at"]}
             out.append(item)
     out.reverse()
     return out
