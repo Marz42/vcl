@@ -288,6 +288,373 @@ def _human_bytes(n: int) -> str:
     return f"{int(n)} B"
 
 
+def _parse_rfc3339_utc(value: Optional[str]) -> Optional[datetime]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _cache_age_seconds(last_iso: Optional[str]) -> Optional[int]:
+    dt = _parse_rfc3339_utc(last_iso)
+    if dt is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0, int((now - dt).total_seconds()))
+
+
+def _usage_aggregate(
+    conn: Any,
+    *,
+    start: str,
+    end: str,
+    group_by: tuple[str, ...],
+    extra_where: Optional[list[str]] = None,
+    extra_params: Optional[list[Any]] = None,
+) -> list[dict[str, Any]]:
+    f = fleet()
+    registry = f.load_registry()
+    raw = f.query_daily_grouped(
+        conn,
+        start=start,
+        end=end,
+        group_by=group_by,
+        extra_where=extra_where,
+        extra_params=extra_params,
+    )
+    return [f._stats_row_from_sql(registry, r) for r in raw]
+
+
+def _traffic_totals_for_window(
+    conn: Any, *, start: str, end: str
+) -> dict[str, Any]:
+    rows = _usage_aggregate(conn, start=start, end=end, group_by=("node_id",))
+    upload = sum(int(r.get("upload_bytes") or 0) for r in rows)
+    download = sum(int(r.get("download_bytes") or 0) for r in rows)
+    conns = sum(int(r.get("connection_count") or 0) for r in rows)
+    return {
+        "upload_bytes": upload,
+        "download_bytes": download,
+        "bytes": upload + download,
+        "connection_count": conns,
+        "upload_human": _human_bytes(upload),
+        "download_human": _human_bytes(download),
+        "bytes_human": _human_bytes(upload + download),
+    }
+
+
+def _traffic_trend(conn: Any, *, days: int = 7) -> list[dict[str, Any]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(conn, start=start, end=end, group_by=("date",))
+    out: list[dict[str, Any]] = []
+    for row in raw:
+        keys = set(row.keys())
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        date = str(row["date"]) if "date" in keys else ""
+        out.append(
+            {
+                "date": date,
+                "upload_bytes": upload,
+                "download_bytes": download,
+                "bytes": upload + download,
+                "connection_count": f._row_int(row, "connection_count"),
+                "bytes_human": _human_bytes(upload + download),
+            }
+        )
+    out.sort(key=lambda r: r["date"])
+    return out
+
+
+def _user_bytes_map(conn: Any, *, days: int) -> dict[str, dict[str, int]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(
+        conn, start=start, end=end, group_by=("user_id",)
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in raw:
+        uid = str(row["user_id"] or "")
+        if not uid:
+            continue
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        out[uid] = {
+            "upload_bytes": upload,
+            "download_bytes": download,
+            "bytes": upload + download,
+            "connection_count": f._row_int(row, "connection_count"),
+        }
+    return out
+
+
+def _node_bytes_map(conn: Any, *, days: int) -> dict[str, dict[str, int]]:
+    f = fleet()
+    start, end = f.stats_date_window(days)
+    raw = f.query_daily_grouped(
+        conn, start=start, end=end, group_by=("node_id",)
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in raw:
+        nid = str(row["node_id"] or "")
+        if not nid:
+            continue
+        upload = f._row_int(row, "upload_bytes")
+        download = f._row_int(row, "download_bytes")
+        out[nid] = {
+            "upload_bytes": upload,
+            "download_bytes": download,
+            "bytes": upload + download,
+            "connection_count": f._row_int(row, "connection_count"),
+        }
+    return out
+
+
+def _node_user_counts(conn: Any) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT node_id, COUNT(DISTINCT user_id) AS n
+        FROM user_snapshot
+        WHERE user_id IS NOT NULL AND user_id != ''
+        GROUP BY node_id
+        """
+    ).fetchall()
+    return {str(r["node_id"]): int(r["n"]) for r in rows}
+
+
+def _users_from_snapshot(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prefer user_snapshot (sync --full) for department / enabled."""
+    f = fleet()
+    rows = conn.execute(
+        """
+        SELECT node_id, user_id, tag, enabled, status, payload_json
+        FROM user_snapshot
+        WHERE user_id IS NOT NULL AND user_id != ''
+        ORDER BY tag, user_id, node_id
+        """
+    ).fetchall()
+    if not rows:
+        return _users_from_db(conn, registry)
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        uid = str(row["user_id"])
+        tag = f._optional_text(row["tag"]) or uid
+        nid = str(row["node_id"])
+        dept = None
+        display = None
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+            if isinstance(payload, dict):
+                dept = payload.get("department") or None
+                display = payload.get("display_name") or None
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if uid not in grouped:
+            grouped[uid] = {
+                "tag": tag,
+                "user_id": uid,
+                "display_name": display,
+                "department": dept,
+                "source": "user_snapshot",
+                "nodes": [],
+            }
+            order.append(uid)
+        rec = grouped[uid]
+        if tag and rec["tag"] == uid:
+            rec["tag"] = tag
+        if not rec.get("department") and dept:
+            rec["department"] = dept
+        if not rec.get("display_name") and display:
+            rec["display_name"] = display
+        node_name = f.node_display_name(registry, nid)
+        enabled = bool(int(row["enabled"] or 0))
+        if not any(n.get("node_id") == nid for n in rec["nodes"]):
+            rec["nodes"].append(
+                {
+                    "name": node_name,
+                    "node_id": nid,
+                    "tag": tag,
+                    "enabled": enabled,
+                    "status": f._optional_text(row["status"])
+                    or ("active" if enabled else "disabled"),
+                    "has_active_credential": False,
+                }
+            )
+    return [grouped[k] for k in order]
+
+
+def _enabled_state_summary(nodes: list[dict[str, Any]]) -> str:
+    if not nodes:
+        return "—"
+    flags = [n.get("enabled") for n in nodes]
+    if all(f is True for f in flags):
+        return "enabled"
+    if all(f is False for f in flags):
+        return "disabled"
+    if any(f is None for f in flags):
+        known = [f for f in flags if f is not None]
+        if not known:
+            return "unknown"
+        return "mixed"
+    return "mixed"
+
+
+def _enrich_users_traffic(
+    users: list[dict[str, Any]], conn: Any
+) -> list[dict[str, Any]]:
+    today = _user_bytes_map(conn, days=1)
+    month = _user_bytes_map(conn, days=30)
+    out: list[dict[str, Any]] = []
+    for u in users:
+        rec = dict(u)
+        uid = str(u.get("user_id") or "")
+        t = today.get(uid) or {}
+        m = month.get(uid) or {}
+        rec["today_bytes"] = int(t.get("bytes") or 0)
+        rec["today_human"] = _human_bytes(rec["today_bytes"])
+        rec["bytes_30d"] = int(m.get("bytes") or 0)
+        rec["bytes_30d_human"] = _human_bytes(rec["bytes_30d"])
+        rec["enabled_state"] = _enabled_state_summary(list(u.get("nodes") or []))
+        nodes = list(u.get("nodes") or [])
+        rec["node_count"] = len(nodes)
+        rec["node_names"] = ", ".join(
+            str(n.get("name") or "") for n in nodes if n.get("name")
+        )
+        out.append(rec)
+    return out
+
+
+COMMAND_BUILDER_OPS: dict[str, dict[str, Any]] = {
+    "adopt": {
+        "title": "Adopt node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "Host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node adopt {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "provision": {
+        "title": "Provision node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "Host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node provision {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "user_add": {
+        "title": "Add user",
+        "fields": [
+            {"name": "tag", "label": "User tag", "required": True},
+            {"name": "nodes", "label": "Nodes (comma-separated)", "required": True},
+            {"name": "display_name", "label": "Display name", "required": False},
+            {"name": "department", "label": "Department", "required": False},
+        ],
+        "template": "vcl-fleet user add {tag} --nodes {nodes}",
+    },
+    "rotate": {
+        "title": "Rotate credential",
+        "fields": [
+            {"name": "tag", "label": "User tag", "required": True},
+            {"name": "node", "label": "Node", "required": True},
+        ],
+        "template": "vcl-fleet user rotate {tag} --node {node}",
+    },
+    "replace": {
+        "title": "Replace node",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+            {"name": "host", "label": "New host", "required": True},
+            {"name": "host_key", "label": "Host key (SHA256:…)", "required": True},
+        ],
+        "template": (
+            "vcl-fleet node replace {name} --host {host} --host-key {host_key}"
+        ),
+    },
+    "restore": {
+        "title": "Restore audit archive",
+        "fields": [
+            {"name": "file", "label": "Archive file (.vclaudit)", "required": True},
+        ],
+        "template": "vcl-fleet audit archive restore {file}",
+    },
+    "reseed": {
+        "title": "Reseed sync cursor (CLI-only)",
+        "fields": [
+            {"name": "name", "label": "Node name", "required": True},
+        ],
+        "template": "vcl-fleet sync --reseed {name}",
+    },
+}
+
+
+def api_command_builder_meta() -> dict[str, Any]:
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operations": [
+            {
+                "id": oid,
+                "title": spec["title"],
+                "fields": spec["fields"],
+            }
+            for oid, spec in COMMAND_BUILDER_OPS.items()
+        ],
+        "note": (
+            "Command Builder copies CLI only — no UI mutations (D53). "
+            "Fill fields to generate a complete command."
+        ),
+    }
+
+
+def api_command_build(body: dict[str, Any]) -> dict[str, Any]:
+    op = str((body or {}).get("operation") or "").strip()
+    if op not in COMMAND_BUILDER_OPS:
+        raise ValueError(f"unknown operation: {op or '(empty)'}")
+    spec = COMMAND_BUILDER_OPS[op]
+    fields_in = (body or {}).get("fields") or {}
+    if not isinstance(fields_in, dict):
+        raise ValueError("fields must be an object")
+    values: dict[str, str] = {}
+    for field in spec["fields"]:
+        name = str(field["name"])
+        raw = str(fields_in.get(name) or "").strip()
+        if field.get("required") and not raw:
+            raise ValueError(f"missing required field: {name}")
+        if raw and name in ("name", "tag", "node") and not NAME_RE.fullmatch(raw):
+            raise ValueError(f"invalid {name}: {raw}")
+        values[name] = raw
+    cmd = str(spec["template"])
+    if op == "user_add":
+        cmd = f"vcl-fleet user add {values['tag']} --nodes {values['nodes']}"
+        if values.get("display_name"):
+            cmd += f" --display-name {values['display_name']}"
+        if values.get("department"):
+            cmd += f" --department {values['department']}"
+    else:
+        try:
+            cmd = cmd.format(**values)
+        except KeyError as exc:
+            raise ValueError(f"missing field: {exc}") from exc
+    return {
+        "schema_version": UI_SCHEMA_VERSION,
+        "operation": op,
+        "command": cmd,
+        "copy_ready": True,
+    }
+
+
 def _parse_host_header(host_header: str) -> tuple[str, Optional[int]]:
     raw = (host_header or "").strip()
     if not raw:
@@ -628,6 +995,9 @@ def _node_health_rows(
     registry: dict[str, Any],
     status_doc: Optional[dict[str, Any]],
     cursors: list[dict[str, Any]],
+    *,
+    user_counts: Optional[dict[str, int]] = None,
+    traffic_today: Optional[dict[str, dict[str, int]]] = None,
 ) -> list[dict[str, Any]]:
     by_name: dict[str, dict[str, Any]] = {}
     for node in status_doc.get("nodes") or [] if status_doc else []:
@@ -642,6 +1012,12 @@ def _node_health_rows(
         nid = str(node.get("node_id") or "")
         probe = by_name.get(name) or {}
         cur = by_id.get(nid) or {}
+        host = str(node.get("ssh_host") or "")
+        user = str(node.get("ssh_user") or "root")
+        port = int(node.get("ssh_port") or 22)
+        endpoint = f"{user}@{host}:{port}" if host else "—"
+        today = (traffic_today or {}).get(nid) or {}
+        today_bytes = int(today.get("bytes") or 0)
         rows.append(
             {
                 "name": name,
@@ -651,9 +1027,19 @@ def _node_health_rows(
                 "ssh_host": node.get("ssh_host"),
                 "ssh_user": node.get("ssh_user"),
                 "ssh_port": node.get("ssh_port"),
+                "endpoint": endpoint,
                 "ssh": probe.get("ssh", "-"),
                 "proxy": probe.get("proxy", "-"),
                 "accounting": probe.get("accounting", "-"),
+                "health": (
+                    "FAIL"
+                    if probe.get("ssh") == "FAIL"
+                    or probe.get("proxy") == "FAIL"
+                    or probe.get("accounting") == "FAIL"
+                    else probe.get("ssh")
+                    or probe.get("proxy")
+                    or "—"
+                ),
                 "version": probe.get("vincula_version"),
                 "clock": probe.get("clock"),
                 "clock_skew_seconds": probe.get("clock_skew_seconds"),
@@ -662,6 +1048,9 @@ def _node_health_rows(
                 "cursor_status": cur.get("cursor_status"),
                 "last_event_id": cur.get("last_event_id"),
                 "registry": probe.get("registry"),
+                "user_count": int((user_counts or {}).get(nid) or 0),
+                "traffic_today_bytes": today_bytes,
+                "traffic_today_human": _human_bytes(today_bytes),
                 "warnings": list(probe.get("warnings") or []),
                 "checks": list(probe.get("checks") or []),
             }
@@ -677,6 +1066,7 @@ def api_overview() -> dict[str, Any]:
     try:
         cursors = _sync_cursors(conn, registry)
         start, end = f.stats_date_window(7)
+        today_start, today_end = f.stats_date_window(1)
         top_users_raw = f.query_daily_grouped(
             conn,
             start=start,
@@ -695,10 +1085,25 @@ def api_overview() -> dict[str, Any]:
         top_hosts = [
             f._stats_row_from_sql(registry, r) for r in top_hosts_raw[:10]
         ]
+        traffic_today = _traffic_totals_for_window(
+            conn, start=today_start, end=today_end
+        )
+        traffic_trend = _traffic_trend(conn, days=7)
+        user_counts = _node_user_counts(conn)
+        node_today = _node_bytes_map(conn, days=1)
+        snap_users = _users_from_snapshot(conn, registry)
+        user_count = len(snap_users)
+        recent_conns = int(traffic_today.get("connection_count") or 0)
     finally:
         conn.close()
 
-    health_rows = _node_health_rows(registry, status_doc, cursors)
+    health_rows = _node_health_rows(
+        registry,
+        status_doc,
+        cursors,
+        user_counts=user_counts,
+        traffic_today=node_today,
+    )
     active = [
         r
         for r in health_rows
@@ -748,6 +1153,19 @@ def api_overview() -> dict[str, Any]:
             }
         ]
 
+    last_sync_candidates = [
+        c.get("last_sync_at")
+        for c in cursors
+        if c.get("last_sync_at")
+    ]
+    last_sync_at = None
+    if last_sync_candidates:
+        last_sync_at = max(str(x) for x in last_sync_candidates)
+    cache_age = _cache_age_seconds(last_sync_at)
+    recent_problems = [
+        w for w in warnings if w.get("level") in ("red", "amber")
+    ][:12]
+
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "version": f.VCL_FLEET_VERSION,
@@ -756,15 +1174,27 @@ def api_overview() -> dict[str, Any]:
             "Fleet accounting is approximate (Clash polling). "
             "Totals are not byte-identical with node vcl stats."
         ),
+        "fleet_health": "OK" if unhealthy == 0 and active else (
+            "DEGRADED" if active else "EMPTY"
+        ),
         "node_count": len(registry.get("nodes") or []),
         "active_node_count": len(active),
         "healthy": healthy,
         "unhealthy": unhealthy,
+        "offline": unhealthy,
+        "user_count": user_count,
+        "active_connections_today": recent_conns,
+        "traffic_today": traffic_today,
+        "last_sync_at": last_sync_at,
+        "cache_age_seconds": cache_age,
         "last_status_at": (status_doc or {}).get("controller_utc"),
         "last_status_ok": (status_doc or {}).get("ok"),
         "cursors": cursors,
+        "traffic_trend": traffic_trend,
+        "node_health": health_rows,
         "top_users": top_users,
         "top_hosts": top_hosts,
+        "recent_problems": recent_problems,
         "stats_window": {"days": 7, "from": start, "to": end},
         "warnings": warnings,
         "workspace": workspace,
@@ -781,6 +1211,8 @@ def api_nodes(*, live_overlay: Optional[dict[str, Any]] = None) -> dict[str, Any
     conn = f.open_cache_readonly()
     try:
         cursors = _sync_cursors(conn, registry)
+        user_counts = _node_user_counts(conn)
+        node_today = _node_bytes_map(conn, days=1)
     finally:
         conn.close()
     workspace = _workspace_surface()
@@ -802,7 +1234,13 @@ def api_nodes(*, live_overlay: Optional[dict[str, Any]] = None) -> dict[str, Any
         "data_source": "live-probe" if live_overlay else "cache",
         "last_status_at": (status_doc or {}).get("controller_utc"),
         "last_status_ok": (status_doc or {}).get("ok"),
-        "nodes": _node_health_rows(registry, status_doc, cursors),
+        "nodes": _node_health_rows(
+            registry,
+            status_doc,
+            cursors,
+            user_counts=user_counts,
+            traffic_today=node_today,
+        ),
         "warnings": warnings,
         "workspace": workspace,
     }
@@ -850,6 +1288,31 @@ def api_node(name: str) -> dict[str, Any]:
             extra_params=[node["node_id"]],
         )
         usage = [f._stats_row_from_sql(registry, r) for r in usage_raw[:20]]
+        users_on_node = []
+        for u in _users_from_snapshot(conn, registry):
+            for n in u.get("nodes") or []:
+                if n.get("node_id") == node["node_id"] or n.get("name") == name:
+                    users_on_node.append(
+                        {
+                            "tag": u.get("tag"),
+                            "user_id": u.get("user_id"),
+                            "department": u.get("department"),
+                            "enabled": n.get("enabled"),
+                            "status": n.get("status"),
+                            "has_active_credential": n.get(
+                                "has_active_credential"
+                            ),
+                        }
+                    )
+                    break
+        node_today = _node_bytes_map(conn, days=1).get(str(node["node_id"])) or {}
+        traffic_today = {
+            "upload_bytes": int(node_today.get("upload_bytes") or 0),
+            "download_bytes": int(node_today.get("download_bytes") or 0),
+            "bytes": int(node_today.get("bytes") or 0),
+            "connection_count": int(node_today.get("connection_count") or 0),
+            "bytes_human": _human_bytes(int(node_today.get("bytes") or 0)),
+        }
     finally:
         conn.close()
     cursor_doc = None
@@ -860,6 +1323,18 @@ def api_node(name: str) -> dict[str, Any]:
             "last_sync_at": cursor["last_sync_at"],
             "status": cursor["status"],
         }
+    host = str(node.get("ssh_host") or "")
+    endpoint = (
+        f"{node.get('ssh_user') or 'root'}@{host}:{int(node.get('ssh_port') or 22)}"
+        if host
+        else "—"
+    )
+    last_ops = [
+        r
+        for r in read_ui_operations(limit=50)
+        if str(r.get("target") or "") in ("", name)
+        or name in str(r.get("target") or "")
+    ][:20]
     return {
         "schema_version": UI_SCHEMA_VERSION,
         "node": {
@@ -868,15 +1343,21 @@ def api_node(name: str) -> dict[str, Any]:
             "ssh_host": node["ssh_host"],
             "ssh_user": node["ssh_user"],
             "ssh_port": node["ssh_port"],
+            "endpoint": endpoint,
             "enabled": node["enabled"],
             "status": f.node_lifecycle_status(node),
         },
         "probe": probe,
         "cursor": cursor_doc,
         "instances": instances,
+        "users": users_on_node,
+        "traffic_today": traffic_today,
         "recent_usage": usage,
+        "last_operations": last_ops,
         "stats_window": {"days": 7, "from": start, "to": end},
-        "secrets_note": "URI / Reality keys / Clash secret are never shown.",
+        "secrets_note": (
+            "URI / credential UUID / Reality keys / Clash secret are never shown."
+        ),
     }
 
 
@@ -936,36 +1417,41 @@ def api_users() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     cache = load_users_cache()
-    if cache and isinstance(cache.get("users"), list):
-        return {
-            "schema_version": UI_SCHEMA_VERSION,
-            "source": "users-cache",
-            "ok": cache.get("ok"),
-            "refreshed_at": cache.get("refreshed_at"),
-            "users": cache["users"],
-            "unreachable": cache.get("unreachable") or [],
-            "note": (
-                "Cached from last Refresh users (SSH). "
-                "No VLESS URI, credential UUID, or secrets."
-            ),
-        }
     conn = f.open_cache_readonly()
     try:
-        users = _users_from_db(conn, registry)
+        if cache and isinstance(cache.get("users"), list) and cache["users"]:
+            users = sanitize_users_for_ui(cache["users"])
+            source = "users-cache"
+            note = (
+                "Cached from last Refresh users (SSH). "
+                "No VLESS URI, credential UUID, or secrets."
+            )
+            ok = cache.get("ok")
+            refreshed_at = cache.get("refreshed_at")
+            unreachable = cache.get("unreachable") or []
+        else:
+            users = _users_from_snapshot(conn, registry)
+            source = users[0]["source"] if users else "fleet.db"
+            note = (
+                "From user_snapshot / synced audit. "
+                "Refresh users over SSH for latest enabled state. "
+                "No VLESS URI, credential UUID, or secrets."
+            )
+            ok = True
+            refreshed_at = None
+            unreachable = []
+        users = _enrich_users_traffic(users, conn)
     finally:
         conn.close()
     return {
         "schema_version": UI_SCHEMA_VERSION,
-        "source": "fleet.db",
-        "ok": True,
-        "refreshed_at": None,
+        "source": source,
+        "ok": ok,
+        "refreshed_at": refreshed_at,
         "users": users,
-        "unreachable": [],
-        "note": (
-            "Derived from synced audit/daily_usage. "
-            "Refresh users over SSH for enabled / has_active_credential. "
-            "No VLESS URI, credential UUID, or secrets."
-        ),
+        "unreachable": unreachable,
+        "note": note,
+        "accounting_mode": "approximate",
     }
 
 
@@ -1075,6 +1561,17 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         )
     node_name = (params.get("node") or "").strip() or None
     destination = (params.get("destination") or "").strip().lower() or None
+    destination_ip = (params.get("destination_ip") or "").strip() or None
+    network = (params.get("network") or "").strip().lower() or None
+    port_raw = (params.get("port") or "").strip()
+    destination_port: Optional[int] = None
+    if port_raw:
+        try:
+            destination_port = int(port_raw)
+        except ValueError as exc:
+            raise ValueError("port must be an integer") from exc
+        if destination_port < 1 or destination_port > 65535:
+            raise ValueError("port must be 1..65535")
     limit_raw = (params.get("limit") or "").strip()
     if limit_raw:
         try:
@@ -1119,6 +1616,9 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
             query_to=query_to,
             node_id=node_id,
             destination_contains=destination,
+            destination_ip=destination_ip,
+            destination_port=destination_port,
+            network=network,
             limit=limit + 1,
             after_started_at=after_started,
             after_event_id=after_event_id,
@@ -1147,6 +1647,10 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
                     f._optional_text(raw["instance_id"])
                 ),
                 "destination": dest,
+                "destination_host": f._optional_text(raw["destination_host"]),
+                "destination_ip": f._optional_text(raw["destination_ip"]),
+                "destination_port": raw["destination_port"],
+                "network": f._optional_text(raw["network"]),
                 "upload_bytes": upload,
                 "download_bytes": download,
                 "traffic": traffic,
@@ -1178,6 +1682,9 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
         "to": query_to,
         "node": node_name,
         "destination": destination,
+        "destination_ip": destination_ip,
+        "port": destination_port,
+        "network": network,
         "limit": limit,
         "truncated": truncated,
         "next_cursor": next_cursor,
@@ -1190,7 +1697,15 @@ def api_audit(params: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def api_stats_top(kind: str, days: int) -> dict[str, Any]:
+def api_stats_top(
+    kind: str,
+    days: int,
+    *,
+    node: Optional[str] = None,
+    user: Optional[str] = None,
+    department: Optional[str] = None,
+    destination: Optional[str] = None,
+) -> dict[str, Any]:
     f = fleet()
     if kind not in ("users", "hosts", "nodes"):
         raise ValueError("kind must be users, hosts, or nodes")
@@ -1199,18 +1714,99 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
     registry = f.load_registry()
     start, end = f.stats_date_window(days)
     if kind == "nodes":
-        group_by = ("node_id",)
+        group_by: tuple[str, ...] = ("node_id",)
     elif kind == "users":
         group_by = ("user_id", "node_id")
     else:
         group_by = ("destination_host", "node_id")
+    extra_where: list[str] = []
+    extra_params: list[Any] = []
+    if node:
+        f.validate_name(node)
+        nid = f.require_node(registry, node)["node_id"]
+        extra_where.append("node_id = ?")
+        extra_params.append(nid)
+    if destination:
+        extra_where.append("lower(destination_host) LIKE ? ESCAPE '\\'")
+        extra_params.append(f._sql_like_contains(destination.lower()))
     conn = f.open_cache_readonly()
     try:
+        allowed_uids: Optional[set[str]] = None
+        if user or department:
+            snap_users = _users_from_snapshot(conn, registry)
+            # Also merge department from users-cache when present.
+            cache = load_users_cache()
+            by_uid: dict[str, dict[str, Any]] = {
+                str(u.get("user_id")): u
+                for u in snap_users
+                if u.get("user_id")
+            }
+            if cache and isinstance(cache.get("users"), list):
+                for u in sanitize_users_for_ui(cache["users"]):
+                    uid = str(u.get("user_id") or "")
+                    if not uid:
+                        continue
+                    if uid in by_uid:
+                        if u.get("department") and not by_uid[uid].get(
+                            "department"
+                        ):
+                            by_uid[uid]["department"] = u.get("department")
+                        if u.get("tag"):
+                            by_uid[uid]["tag"] = u.get("tag")
+                    else:
+                        by_uid[uid] = u
+            allowed_uids = set()
+            for u in by_uid.values():
+                if user:
+                    tag = str(u.get("tag") or "")
+                    uid = str(u.get("user_id") or "")
+                    if user not in (tag, uid):
+                        continue
+                if department:
+                    dept = str(u.get("department") or "")
+                    if dept.lower() != department.lower():
+                        continue
+                if u.get("user_id"):
+                    allowed_uids.add(str(u["user_id"]))
+            if not allowed_uids:
+                trend = _traffic_trend(conn, days=days)
+                return {
+                    "schema_version": UI_SCHEMA_VERSION,
+                    "mode": f"top-{kind}",
+                    "days": days,
+                    "from": start,
+                    "to": end,
+                    "accounting_mode": "approximate",
+                    "filters": {
+                        "node": node,
+                        "user": user,
+                        "department": department,
+                        "destination": destination,
+                    },
+                    "rows": [],
+                    "totals": {
+                        **f._stats_totals([]),
+                        "upload_human": _human_bytes(0),
+                        "download_human": _human_bytes(0),
+                        "bytes_human": _human_bytes(0),
+                    },
+                    "trend": trend,
+                }
+        if allowed_uids is not None:
+            placeholders = ",".join("?" for _ in allowed_uids)
+            extra_where.append(f"user_id IN ({placeholders})")
+            extra_params.extend(sorted(allowed_uids))
         raw = f.query_daily_grouped(
-            conn, start=start, end=end, group_by=group_by
+            conn,
+            start=start,
+            end=end,
+            group_by=group_by,
+            extra_where=extra_where or None,
+            extra_params=extra_params or None,
         )
         rows = [f._stats_row_from_sql(registry, r) for r in raw]
         totals = f._stats_totals(rows)
+        trend = _traffic_trend(conn, days=days)
     finally:
         conn.close()
     return {
@@ -1220,8 +1816,20 @@ def api_stats_top(kind: str, days: int) -> dict[str, Any]:
         "from": start,
         "to": end,
         "accounting_mode": "approximate",
+        "filters": {
+            "node": node,
+            "user": user,
+            "department": department,
+            "destination": destination,
+        },
         "rows": rows,
-        "totals": totals,
+        "totals": {
+            **totals,
+            "upload_human": _human_bytes(int(totals.get("upload_bytes") or 0)),
+            "download_human": _human_bytes(int(totals.get("download_bytes") or 0)),
+            "bytes_human": _human_bytes(int(totals.get("bytes") or 0)),
+        },
+        "trend": trend,
     }
 
 
@@ -1549,6 +2157,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                             "to": one("to"),
                             "node": one("node"),
                             "destination": one("destination"),
+                            "destination_ip": one("destination_ip"),
+                            "port": one("port"),
+                            "network": one("network"),
                             "limit": one("limit"),
                             "after_started_at": one("after_started_at"),
                             "after_event_id": one("after_event_id"),
@@ -1564,7 +2175,20 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                     days = int(days_raw)
                 except ValueError as exc:
                     raise ValueError("days must be an integer") from exc
-                self._send_json(200, api_stats_top(kind, days))
+                self._send_json(
+                    200,
+                    api_stats_top(
+                        kind,
+                        days,
+                        node=one("node") or None,
+                        user=one("user") or None,
+                        department=one("department") or None,
+                        destination=one("destination") or None,
+                    ),
+                )
+                return
+            if path == "/api/command-builder":
+                self._send_json(200, api_command_builder_meta())
                 return
             if path == "/api/meta":
                 self._send_json(
@@ -1643,6 +2267,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/refresh/users":
                 self._send_json(200, api_refresh_users())
+                return
+            if path == "/api/command-builder":
+                self._send_json(200, api_command_build(body))
                 return
             if path == "/api/sync":
                 if "reseed" in body and body.get("reseed") not in (None, ""):

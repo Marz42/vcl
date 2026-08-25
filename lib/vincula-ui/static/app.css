@@ -156,7 +156,7 @@ tr.clickable:hover { background: var(--panel2); }
   margin-bottom: 0.85rem;
 }
 label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
-input {
+input, select {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -164,6 +164,8 @@ input {
   padding: 0.45rem 0.55rem;
   font: inherit;
 }
+select { cursor: pointer; }
+tr.live-row { background: rgba(61, 139, 253, 0.06); }
 .form-actions { display: flex; align-items: end; }
 
 .drawer {

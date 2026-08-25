@@ -6,11 +6,12 @@
 **Controller-only** Local Audit UI v2 (D53). Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
 ### Added
 - **UI Sync → `sync --full`：** Local Audit UI POST `/api/sync` 走 identity+health+users+audit → cache（与 CLI `vcl-fleet sync --full` 同路径）；reseed 仍 CLI-only。
-- **D53-rev1 六页 UI：** Overview / Nodes / Users / Traffic / Audit / Operations；**Probe**  live SSH 不写 `last-status.json`；Operations 本地历史。
+- **D53-rev1 / §16 六页 UI：** Overview KPIs（含 User Count / Traffic Today / Last Sync / Cache Age / Traffic Trend）、Nodes（Users / Traffic Today / Endpoint + detail）、Users（Department / Enabled / Today / 30D）、Traffic（过滤+趋势+上下行）、Audit（IP/port/network）、Operations；**Command Builder** 生成完整 CLI。
 - **Recipes / 空态对齐 CLI：** adopt / provision / register、workspace、audit archive restore（positional file）、`user link TAG --node NAME`；`node add` 保留为 legacy alias。
 - **严格只读 workspace 条：** GET 走 `read_only_workspace_surface`（五态 conflict）；无 mkdir / 无 `remember_workspace_view`。
+- **NN #4：** UI 不暴露/缓存 `active_credential_id`（VLESS UUID）→ `has_active_credential`。
 ### Notes
-- Spec: [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md) · rev1 [`docs/specs/vcl-spec-v0.4-v0.5-rev1.md`](docs/specs/vcl-spec-v0.4-v0.5-rev1.md)。Evidence: [`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md)。
+- Spec: [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md) · rev1 [`docs/specs/vcl-spec-v0.4-v0.5-rev1.md`](docs/specs/vcl-spec-v0.4-v0.5-rev1.md) §16。Evidence: [`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md)。
 - D57 observe≠admin、`node add` runtime warning 仍属 0.5+。`VCL_FLEET_VERSION=0.4.4`。
 
 ## 0.4.3 (2026-08-21)

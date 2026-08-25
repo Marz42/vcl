@@ -14,6 +14,8 @@
 | **4.4-07** | **PASS** | AC-3.1 UI fixture block green (six-page nav) |
 | **4.4-08** | **PASS** | Probe live overlay; GET `/api/nodes` stays cache; no `last-status.json` write |
 | **4.4-09** | **PASS** | GET `/api/operations` lists probe/sync entries |
+| **4.3-05** | **PASS** | Overview KPIs/trend; Nodes users/traffic/endpoint; Users dept/enabled/today/30d; Traffic filters+trend; Audit IP/port/network |
+| **4.3-06** | **PASS** | Command Builder POST generates complete provision/adopt/… CLI |
 
 ## Notes
 

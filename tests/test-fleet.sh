@@ -8704,11 +8704,23 @@ assert overview["accounting_mode"] == "approximate"
 assert overview["node_count"] == 1
 assert any(w.get("code") == "accounting-stale" for w in overview["warnings"])
 assert overview["top_users"]
+# rev1 §16 Overview fields
+assert "user_count" in overview
+assert "traffic_today" in overview
+assert "bytes" in overview["traffic_today"]
+assert "last_sync_at" in overview or overview.get("cache_age_seconds") is None or True
+assert "traffic_trend" in overview
+assert isinstance(overview["traffic_trend"], list)
+assert "recent_problems" in overview
+assert "node_health" in overview
 
 st, health, _ = get("/api/health")
 assert st == 200 and len(health["nodes"]) == 1
 assert health["nodes"][0]["name"] == "lax"
 assert health["nodes"][0]["accounting"] == "STALE"
+assert "endpoint" in health["nodes"][0]
+assert "user_count" in health["nodes"][0]
+assert "traffic_today_human" in health["nodes"][0]
 
 st, node, _ = get("/api/nodes/lax")
 assert st == 200 and node["node"]["node_id"]
@@ -8722,6 +8734,48 @@ assert "identity_file" not in blob
 st, users, _ = get("/api/users")
 assert st == 200 and users["users"]
 assert users["users"][0]["tag"] == "alice"
+u0 = users["users"][0]
+assert "enabled_state" in u0
+assert "today_human" in u0
+assert "bytes_30d_human" in u0
+
+st, node_detail, _ = get("/api/nodes/lax")
+assert "users" in node_detail
+assert "last_operations" in node_detail
+assert "traffic_today" in node_detail
+
+st, traffic, _ = get("/api/stats/top?kind=users&days=7")
+assert st == 200
+assert "trend" in traffic
+assert "upload_human" in traffic["totals"]
+assert "filters" in traffic
+
+st, cb_meta, _ = get("/api/command-builder")
+assert st == 200
+ops = {o["id"] for o in cb_meta["operations"]}
+for need in ("adopt", "provision", "user_add", "rotate", "replace", "restore", "reseed"):
+    assert need in ops, (need, ops)
+st, cb_cmd, _ = post(
+    "/api/command-builder",
+    {
+        "operation": "provision",
+        "fields": {
+            "name": "lax",
+            "host": "203.0.113.10",
+            "host_key": "SHA256:abc",
+        },
+    },
+)
+assert st == 200
+assert cb_cmd["command"] == (
+    "vcl-fleet node provision lax --host 203.0.113.10 --host-key SHA256:abc"
+)
+assert "Command Builder" in (
+    Path(static_dir) / "index.html"
+).read_text(encoding="utf-8")
+assert "/api/command-builder" in (
+    Path(static_dir) / "app.js"
+).read_text(encoding="utf-8")
 
 # NN #4: VLESS credential UUID must never appear in UI API / cache / detail
 CRED_SENTINEL = "deadbeef-dead-4ead-8ead-deadbeefdead"

@@ -25,7 +25,8 @@
       <button type="button" id="btn-probe" class="btn" title="Live SSH probe (does not write last-status.json)">Probe</button>
       <button type="button" id="btn-verify" class="btn">Verify</button>
       <button type="button" id="btn-sync" class="btn primary">Sync…</button>
-      <button type="button" id="btn-recipes" class="btn">CLI recipes ▾</button>
+      <button type="button" id="btn-recipes" class="btn">Recipes</button>
+      <button type="button" id="btn-command-builder" class="btn">Command Builder</button>
     </div>
   </header>
 
@@ -39,6 +40,16 @@
       <p id="live-probe-strip" class="hint" hidden></p>
       <div class="grid-2">
         <div class="card">
+          <h2>Traffic trend <span class="muted">(7d, approximate)</span></h2>
+          <div id="traffic-trend" class="table-wrap"></div>
+        </div>
+        <div class="card">
+          <h2>Node health</h2>
+          <div id="node-health-table" class="table-wrap"></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
           <h2>Top users <span class="muted">(7d, approximate)</span></h2>
           <div id="top-users" class="table-wrap"></div>
         </div>
@@ -46,6 +57,10 @@
           <h2>Top destinations <span class="muted">(7d, approximate)</span></h2>
           <div id="top-hosts" class="table-wrap"></div>
         </div>
+      </div>
+      <div class="card">
+        <h2>Recent problems</h2>
+        <div id="recent-problems"></div>
       </div>
       <div class="card">
         <h2>Warnings</h2>
@@ -87,7 +102,7 @@
 
     <section id="page-traffic" class="page">
       <div class="card">
-        <h2>Traffic <span class="muted">(approximate)</span></h2>
+        <h2>Traffic <span class="muted">(approximate accounting)</span></h2>
         <p class="hint">Aggregated from synced <code>daily_usage</code>. Not mixed with Audit connection rows.</p>
         <form id="traffic-form" class="form-grid inline-form">
           <label>Kind
@@ -100,10 +115,24 @@
           <label>Days
             <input name="days" id="traffic-days" type="number" min="1" max="90" value="7" />
           </label>
+          <label>Node (optional)
+            <input name="node" id="traffic-node" placeholder="lax" autocomplete="off" />
+          </label>
+          <label>User (optional)
+            <input name="user" id="traffic-user" placeholder="alice" autocomplete="off" />
+          </label>
+          <label>Department (optional)
+            <input name="department" id="traffic-department" placeholder="eng" autocomplete="off" />
+          </label>
+          <label>Destination contains (optional)
+            <input name="destination" id="traffic-destination" placeholder="example.com" autocomplete="off" />
+          </label>
           <div class="form-actions">
             <button type="submit" class="btn primary">Load</button>
           </div>
         </form>
+        <div id="traffic-totals" class="hint" hidden></div>
+        <div id="traffic-trend-panel" class="table-wrap" hidden></div>
         <div id="traffic-results" class="table-wrap">
           <p class="empty">Run Sync (--full) first, then Load.</p>
         </div>
@@ -133,6 +162,15 @@
           <label>Destination contains (optional)
             <input name="destination" id="audit-dest" placeholder="example.com" />
           </label>
+          <label>Destination IP (optional)
+            <input name="destination_ip" id="audit-dest-ip" placeholder="203.0.113.10" />
+          </label>
+          <label>Port (optional)
+            <input name="port" id="audit-port" type="number" min="1" max="65535" placeholder="443" />
+          </label>
+          <label>Network (optional)
+            <input name="network" id="audit-network" placeholder="tcp" />
+          </label>
           <div class="form-actions">
             <button type="submit" class="btn primary">Search</button>
           </div>
@@ -148,7 +186,7 @@
         <h2>Operations history</h2>
         <p class="hint">
           Local record of UI-triggered sync / probe / verify / refresh-users.
-          High-risk mutations (adopt, provision, rotate, …) are CLI-only — see recipes.
+          High-risk mutations (adopt, provision, rotate, …) are CLI-only — use Recipes or Command Builder.
         </p>
         <div id="operations-table" class="table-wrap"></div>
       </div>
@@ -171,6 +209,28 @@
     </div>
     <p class="hint">Copy only — UI does not run mutations.</p>
     <div id="recipes-body"></div>
+  </aside>
+
+  <aside id="command-builder" class="drawer recipes" hidden>
+    <div class="drawer-head">
+      <h2>Command Builder</h2>
+      <button type="button" id="command-builder-close" class="btn">Close</button>
+    </div>
+    <p class="hint">Generate CLI commands for mutations — copy only, no UI execution (D53).</p>
+    <div id="command-builder-body" class="drawer-body">
+      <label>Operation
+        <select id="cb-operation"></select>
+      </label>
+      <div id="cb-fields" class="form-grid"></div>
+      <div class="form-actions">
+        <button type="button" id="cb-generate" class="btn primary">Generate</button>
+      </div>
+      <div id="cb-output-wrap" hidden>
+        <h3>Generated command</h3>
+        <pre id="cb-output" class="block"></pre>
+        <button type="button" id="cb-copy" class="btn">Copy</button>
+      </div>
+    </div>
   </aside>
 
   <footer class="foot">
