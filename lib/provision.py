@@ -1861,17 +1861,28 @@ def run_provision_preflight(
         if not rh:
             add(_skipped("reality", "reality_host not configured"))
         else:
+            # Match installer https_reachable: TLS/HTTP reachability without
+            # curl -f (SNI targets often return 403/404/503; Reality only needs
+            # a working handshake destination).
             proc = _ssh(
                 ssh_host,
                 ssh_user,
                 ssh_port,
                 [
                     "curl",
-                    "-fsS",
+                    "-sS",
+                    "--noproxy",
+                    "*",
+                    "--proto",
+                    "=https",
+                    "--tlsv1.2",
+                    "--connect-timeout",
+                    "5",
                     "--max-time",
                     "10",
                     "-o",
                     "/dev/null",
+                    "--head",
                     f"https://{rh}/",
                 ],
                 identity_file=identity_file,

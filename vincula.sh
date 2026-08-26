@@ -781,7 +781,7 @@ run_reality_self_test() {
       --socks5-hostname "127.0.0.1:${socks_port}" \
       --proto '=https' --tlsv1.2 \
       --head "https://${reality_host}/" || true)
-    if [[ "$http_code" =~ ^[23][0-9][0-9]$ || "$http_code" == "403" || "$http_code" == "404" ]]; then
+    if [[ "$http_code" =~ ^[23][0-9][0-9]$ || "$http_code" == "403" || "$http_code" == "404" || "$http_code" == "503" ]]; then
       exit 0
     fi
     printf 'ERROR: REALITY end-to-end self-test failed for %s (HTTP status %s).\n' "$reality_host" "${http_code:-none}" >&2

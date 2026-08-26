@@ -14,11 +14,13 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 - Chosen `--legacy-user-tag` **≠** `owner`.
 - URI may omit `sid` / use empty `sid=` (empty Reality short ID).
 - Listen port is taken from the URI (not assumed 443).
+- Remove leftover non-VCL `sing-box` unit/binary/`/etc/sing-box/config.json` before provision (clean-host refuse otherwise).
+- Reality SNI may return HTTP 503; preflight/self-test accept 503 when TLS succeeds.
 
 ## Steps
 
 1. Save the old client URI and Reality private key to local files (`0600`). Do not commit them.
-2. Confirm URI authority matches the intended `--server` / advertised host. Stop any existing proxy so the URI port is free (and remove any pre-existing `sing-box.service` unit if present).
+2. Confirm URI authority matches the intended `--server` / advertised host. Stop any existing proxy so the URI port is free (and remove any pre-existing `sing-box.service` unit / config if present).
 3. Run provision with **all three** legacy flags (paths only):
 
    ```bash
@@ -38,6 +40,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 8. Confirm public listeners are only original SSH + expected VLESS port from the URI (no new management port).
 9. Confirm Clash API remains loopback-only on the node.
 10. Confirm remote staging and local temp secret copies are cleaned up after success/failure.
+11. (Optional) Adopt the same node into a **second** `VCL_FLEET_HOME` via `node adopt` (do not re-provision).
 
 ## Fail-close spot checks (optional; no secrets in notes)
 
@@ -46,18 +49,19 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 - `--legacy-user-tag owner` → refuse.
 - Evidence notes may record **path + error type only**.
 
-## Record template (SUMMARY / operator log)
+## Operator record (Matrix H — PASS LIVE)
 
 | Field | Value |
 | --- | --- |
-| Date | YYYY-MM-DD |
-| Code HEAD | (short sha) |
-| VPS OS / arch | (e.g. Debian 13 amd64) |
-| Privilege | root / sudo |
-| Old client reconnect | PASS / FAIL |
-| New owner link | PASS / FAIL |
-| probe / verify / sync | PASS / FAIL |
-| Public listen check | PASS / FAIL |
-| Clash loopback | PASS / FAIL |
-| Staging cleanup | PASS / FAIL |
+| Date | 2026-08-26 |
+| Code HEAD | (set at commit; includes empty-sid / URI port + Reality 503 accept) |
+| VPS OS / arch | Debian amd64 |
+| Privilege | root |
+| Old client reconnect | PASS |
+| New owner link | PASS |
+| probe / verify / sync | PASS |
+| Second fleet-home adopt | PASS |
+| Public listen check | PASS (SSH + URI VLESS port only; no new public management port) |
+| Clash loopback | PASS |
+| Staging cleanup | PASS |
 | Not recorded | IP, URI, UUID, Reality key, Clash secret |
