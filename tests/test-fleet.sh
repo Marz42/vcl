@@ -9385,6 +9385,10 @@ assert "traffic_trend" in overview
 assert isinstance(overview["traffic_trend"], list)
 assert "recent_problems" in overview
 assert "node_health" in overview
+assert any(w.get("code") == "accounting-stale" for w in overview["warnings"])
+assert not any(
+    w.get("code") == "accounting-stale" for w in overview["recent_problems"]
+), "STALE belongs in Warnings only, not Recent problems"
 
 st, health, _ = get("/api/health")
 assert st == 200 and len(health["nodes"]) == 1
@@ -9619,9 +9623,45 @@ assert "active_credential_id" not in app_js_text
 assert "has_active_credential" in app_js_text
 st, users_after, _ = get("/api/users")
 assert CRED_SENTINEL not in json.dumps(users_after)
+# users-cache alone must not hide snapshot users (merge snapshot + cache)
+lax_id = fleet.require_node(fleet.load_registry(), "lax")["node_id"]
+legacy_uid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+conn_merge = fleet.open_fleet_db()
+try:
+    conn_merge.execute(
+        """INSERT OR REPLACE INTO user_snapshot(
+             node_id,user_id,tag,enabled,status,active_credential_id,
+             payload_json,synced_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            lax_id,
+            legacy_uid,
+            "urgentfury-legacy-test",
+            1,
+            "active",
+            None,
+            json.dumps({"department": "legacy"}),
+            "2026-08-16T07:00:00Z",
+        ),
+    )
+    conn_merge.commit()
+finally:
+    conn_merge.close()
+st, users_merged, _ = get("/api/users")
+assert st == 200
+merged_tags = {u.get("tag") for u in users_merged["users"]}
+assert "alice" in merged_tags
+assert "urgentfury-legacy-test" in merged_tags
+assert users_merged["source"] == "user_snapshot+users-cache"
+alice_merged = next(
+    u for u in users_merged["users"] if u.get("tag") == "alice"
+)
+assert alice_merged["nodes"][0]["has_active_credential"] is True
+app_css_text = (Path(static_dir) / "app.css").read_text(encoding="utf-8")
+assert "drawer[hidden]" in app_css_text
+assert "display: none !important" in app_css_text
 
 # user_snapshot has_active_credential from SQL bool (not hardcoded false)
-lax_id = fleet.require_node(fleet.load_registry(), "lax")["node_id"]
 conn_snap = fleet.open_fleet_db()
 try:
     conn_snap.execute(

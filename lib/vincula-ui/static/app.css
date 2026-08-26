@@ -181,6 +181,10 @@ tr.live-row { background: rgba(61, 139, 253, 0.06); }
   flex-direction: column;
   box-shadow: -8px 0 24px rgba(0,0,0,0.35);
 }
+.drawer[hidden],
+.backdrop[hidden] {
+  display: none !important;
+}
 .drawer.recipes { width: min(560px, 100%); z-index: 45; }
 .drawer-head {
   display: flex;

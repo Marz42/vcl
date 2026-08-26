@@ -1187,6 +1187,31 @@ def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]
     return warnings
 
 
+_RECENT_PROBLEM_CODES = frozenset(
+    {
+        "fleet-not-ok",
+        "workspace-conflict",
+        "ssh-fail",
+        "proxy-fail",
+        "accounting-fail",
+        "clock-fail",
+    }
+)
+
+
+def _recent_problems_from_warnings(
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Actionable FAIL / red items only — not the full warning strip."""
+    out: list[dict[str, Any]] = []
+    for w in warnings:
+        code = str(w.get("code") or "")
+        level = str(w.get("level") or "")
+        if level == "red" or code in _RECENT_PROBLEM_CODES:
+            out.append(w)
+    return out[:12]
+
+
 def _node_health_rows(
     registry: dict[str, Any],
     status_doc: Optional[dict[str, Any]],
@@ -1358,9 +1383,7 @@ def api_overview() -> dict[str, Any]:
     if last_sync_candidates:
         last_sync_at = max(str(x) for x in last_sync_candidates)
     cache_age = _cache_age_seconds(last_sync_at)
-    recent_problems = [
-        w for w in warnings if w.get("level") in ("red", "amber")
-    ][:12]
+    recent_problems = _recent_problems_from_warnings(warnings)
 
     return {
         "schema_version": UI_SCHEMA_VERSION,
@@ -1609,29 +1632,119 @@ def _users_from_db(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
     return [grouped[k] for k in order]
 
 
+def _merge_users_snapshot_cache(
+    snapshot: list[dict[str, Any]],
+    cache: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Snapshot is authoritative for who exists; cache overlays live enabled state."""
+    if not snapshot:
+        return cache
+    if not cache:
+        return snapshot
+    by_uid: dict[str, dict[str, Any]] = {}
+    by_tag: dict[str, dict[str, Any]] = {}
+    for u in cache:
+        uid = str(u.get("user_id") or "")
+        tag = str(u.get("tag") or "")
+        if uid:
+            by_uid[uid] = u
+        if tag:
+            by_tag[tag] = u
+    out: list[dict[str, Any]] = []
+    seen_uids: set[str] = set()
+    for su in snapshot:
+        rec = dict(su)
+        uid = str(su.get("user_id") or "")
+        tag = str(su.get("tag") or "")
+        cu = by_uid.get(uid) or by_tag.get(tag)
+        if cu:
+            if not rec.get("department") and cu.get("department"):
+                rec["department"] = cu["department"]
+            if not rec.get("display_name") and cu.get("display_name"):
+                rec["display_name"] = cu["display_name"]
+            cache_nodes = {
+                str(n.get("name") or ""): n
+                for n in (cu.get("nodes") or [])
+                if isinstance(n, dict) and n.get("name")
+            }
+            merged_nodes: list[dict[str, Any]] = []
+            for sn in rec.get("nodes") or []:
+                if not isinstance(sn, dict):
+                    continue
+                mn = dict(sn)
+                cn = cache_nodes.get(str(sn.get("name") or ""))
+                if cn:
+                    if cn.get("enabled") is not None:
+                        mn["enabled"] = cn["enabled"]
+                    if cn.get("status"):
+                        mn["status"] = cn["status"]
+                    if cn.get("has_active_credential") is not None:
+                        mn["has_active_credential"] = cn["has_active_credential"]
+                merged_nodes.append(mn)
+            rec["nodes"] = merged_nodes
+            rec["source"] = "user_snapshot+refresh"
+        out.append(rec)
+        if uid:
+            seen_uids.add(uid)
+    for cu in cache:
+        uid = str(cu.get("user_id") or "")
+        if uid and uid not in seen_uids:
+            extra = dict(cu)
+            extra["source"] = cu.get("source") or "users-cache"
+            out.append(extra)
+    return out
+
+
 def api_users() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     cache = load_users_cache()
     conn = f.open_cache_readonly()
     try:
-        if cache and isinstance(cache.get("users"), list) and cache["users"]:
-            users = sanitize_users_for_ui(cache["users"])
+        snapshot_users = _users_from_snapshot(conn, registry)
+        cache_users = (
+            sanitize_users_for_ui(cache["users"])
+            if cache and isinstance(cache.get("users"), list) and cache["users"]
+            else []
+        )
+        if snapshot_users:
+            users = _merge_users_snapshot_cache(snapshot_users, cache_users)
+            if cache_users:
+                source = "user_snapshot+users-cache"
+                note = (
+                    "User list from sync snapshot; enabled state merged from last "
+                    "Refresh users (SSH). No VLESS URI, credential UUID, or secrets."
+                )
+                ok = cache.get("ok")
+                refreshed_at = cache.get("refreshed_at")
+                unreachable = cache.get("unreachable") or []
+            else:
+                source = snapshot_users[0].get("source") or "user_snapshot"
+                note = (
+                    "From user_snapshot / synced audit. "
+                    "Refresh users over SSH for latest enabled state. "
+                    "No VLESS URI, credential UUID, or secrets."
+                )
+                ok = True
+                refreshed_at = None
+                unreachable = []
+        elif cache_users:
+            users = cache_users
             source = "users-cache"
             note = (
                 "Cached from last Refresh users (SSH). "
+                "Run sync --full for full user list. "
                 "No VLESS URI, credential UUID, or secrets."
             )
             ok = cache.get("ok")
             refreshed_at = cache.get("refreshed_at")
             unreachable = cache.get("unreachable") or []
         else:
-            users = _users_from_snapshot(conn, registry)
-            source = users[0]["source"] if users else "fleet.db"
+            users = []
+            source = "fleet.db"
             note = (
-                "From user_snapshot / synced audit. "
-                "Refresh users over SSH for latest enabled state. "
-                "No VLESS URI, credential UUID, or secrets."
+                "No users in snapshot or cache. "
+                "Run sync --full or Refresh users."
             )
             ok = True
             refreshed_at = None
