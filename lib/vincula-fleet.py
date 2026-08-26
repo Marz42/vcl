@@ -2858,7 +2858,21 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         )
         local_archive = Path(from_backup)
         if not local_archive.is_file():
+            append_operation_journal(
+                operation="backup",
+                target=str(args.name),
+                state="FAILED",
+                exit_code=1,
+                detail="from-backup missing",
+            )
             die(f"backup file not found: {local_archive}")
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="SUCCESS",
+            exit_code=0,
+            detail="from-backup",
+        )
     else:
         ssh_state, ident, ident_detail = ssh_remote_json(
             old_node, ["vcl", "identity", "--json"]
@@ -2898,10 +2912,24 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             or not isinstance(backup_doc, dict)
             or backup_doc.get("ok") is not True
         ):
+            append_operation_journal(
+                operation="backup",
+                target=str(args.name),
+                state="FAILED",
+                exit_code=1,
+                detail="remote backup create failed",
+            )
             die(
                 f"cannot replace {args.name}: backup create failed "
                 f"({backup_detail or 'remote backup failed'})"
             )
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="SUCCESS",
+            exit_code=0,
+            detail="remote backup create",
+        )
         remote_path = str(backup_doc.get("path") or REMOTE_BACKUP_TAR)
         backups = fleet_home() / "backups"
         backups.mkdir(parents=True, exist_ok=True)
@@ -2938,10 +2966,24 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
         or not isinstance(restore_doc, dict)
         or restore_doc.get("ok") is not True
     ):
+        append_operation_journal(
+            operation="restore",
+            target=str(args.name),
+            state="FAILED",
+            exit_code=1,
+            detail="remote restore failed",
+        )
         die(
             f"cannot replace {args.name}: restore failed on {new_host} "
             f"({restore_detail or 'restore failed'})"
         )
+    append_operation_journal(
+        operation="restore",
+        target=str(args.name),
+        state="SUCCESS",
+        exit_code=0,
+        detail="remote restore",
+    )
 
     ssh_state, new_ident, ident_detail = ssh_remote_json(
         new_node, ["vcl", "identity", "--json"], extra=extra
@@ -3240,7 +3282,11 @@ def append_operation_journal(
     operation_id: Optional[str] = None,
     ok: Optional[bool] = None,
 ) -> None:
-    """Append one fleet/UI operation row; bounded retention; never stores secrets."""
+    """Append one fleet/UI operation row; bounded retention; never stores secrets.
+
+    Uses an exclusive lock and atomic replace when trimming so concurrent
+    CLI/UI writers cannot lose lines.
+    """
     now = format_utc(datetime.now(timezone.utc))
     finished = finished_at or now
     started = started_at or finished
@@ -3262,20 +3308,40 @@ def append_operation_journal(
         record["detail"] = cleaned
     try:
         path = operation_journal_path(create=True)
+        lock_path = path.with_suffix(path.suffix + ".lock")
         line = json.dumps(record, ensure_ascii=False) + "\n"
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        lock_fh = lock_path.open("a+b")
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return
-        if len(lines) > OPERATION_JOURNAL_MAX_LINES:
-            keep = lines[-OPERATION_JOURNAL_MAX_LINES:]
-            path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            if not _flock_exclusive(lock_fh.fileno(), 5.0):
+                return
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
             try:
-                os.chmod(path, 0o600)
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return
+            if len(lines) > OPERATION_JOURNAL_MAX_LINES:
+                keep = lines[-OPERATION_JOURNAL_MAX_LINES:]
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                os.replace(tmp, path)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        finally:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
             except OSError:
                 pass
+            lock_fh.close()
     except (OSError, RuntimeError, SystemExit):
         # Journal must never fail the operator command.
         return
@@ -3290,10 +3356,32 @@ def read_operation_journal(*, limit: int = 100) -> list[dict[str, Any]]:
         return []
     if not path.is_file():
         return []
+    lines: list[str] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        lock_fh = lock_path.open("a+b")
+        try:
+            locked = _flock_exclusive(lock_fh.fileno(), 5.0)
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if locked:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+        finally:
+            lock_fh.close()
     except OSError:
-        return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
     out: list[dict[str, Any]] = []
     for line in lines[-lim:]:
         line = line.strip()
@@ -7684,7 +7772,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             if a == "restore":
                 return run_journaled(
-                    "restore",
+                    "audit_archive_restore",
                     lambda: cmd_audit_archive_restore(args),
                     detail="audit_archive",
                 )

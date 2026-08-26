@@ -157,7 +157,7 @@ Not in 0.3.0: age passphrase, `vcl snapshot export`. Localhost UI is **0.3.1+**
 | `node register` | registry-only；无 SSH | `node add --offline --node-id` |
 
 - **D34 `--host-key`：** non-interactive（无 TTY）必须 `--host-key SHA256:…`；禁 `StrictHostKeyChecking=no`。
-- **D35 非 air-gap：** controller zip 内嵌 digest-verified first-party payload（`payload/vincula-node-0.3.1.tar.gz` + `.sha256` + `payload-manifest.json`）。远端仍可需 apt / HTTPS / sing-box release / 公网 IP / Reality。**不要**称 provision 为 air-gap。`VCL_SERVER` / `--server` 跳过 ipify 并传给安装器。
+- **D35 非 air-gap：** controller zip 内嵌 digest-verified first-party payload（`payload/vincula-node-0.3.2.tar.gz` + `.sha256` + `payload-manifest.json`）。远端仍可需 apt / HTTPS / sing-box release / 公网 IP / Reality。**不要**称 provision 为 air-gap。`VCL_SERVER` / `--server` 跳过 ipify 并传给安装器。
 - **安装 SSH：** 人类模式 stderr 阶段行 + 心跳；reader 线程持续排空 stdout/stderr，只保留有界脱敏尾部（避免远端输出 >管道缓冲 被误报超时）。
 - **`REMOTE_READY_LOCAL_UNCOMMITTED`：** 远端已装好、本地 registry 提交失败 → **只** `node adopt` 修复，**禁止**重跑 installer。
 - **Pinned node 0.3.2：** provision 安装钉死 Node 0.3.2（legacy seed 需要）；最低兼容仍管理 Node 0.3.1。Controller 戳 0.4.5。

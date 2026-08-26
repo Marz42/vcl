@@ -1029,6 +1029,100 @@ assert "--legacy-vless-uri-file" in help_out
 assert "--legacy-reality-private-key-file" in help_out
 assert "--legacy-user-tag" in help_out
 
+# Tag contract: lowercase + length ≤32; refuse quotes / control chars
+for bad_tag in ("Legacy-User", "a" * 33, 'bad"tag', "bad\ntag", "bad tag"):
+    try:
+        ls.load_legacy_seed(
+            uri_file=uri_file,
+            private_key_file=key_file,
+            user_tag=bad_tag,
+            advertised_server=server,
+        )
+        raise SystemExit(f"expected tag refuse for {bad_tag!r}")
+    except ls.LegacySeedError:
+        pass
+
+# Duplicate critical query keys refused
+dup_uri = write_secret(
+    tmp / "dup-sni.uri",
+    good_uri() + "&sni=www.example.com\n",
+)
+try:
+    ls.load_legacy_seed(
+        uri_file=dup_uri,
+        private_key_file=key_file,
+        user_tag="legacy-user",
+        advertised_server=server,
+    )
+    raise SystemExit("expected duplicate sni refuse")
+except ls.LegacySeedError as exc:
+    assert "duplicate" in str(exc).lower()
+
+dup_sec = write_secret(
+    tmp / "dup-sec.uri",
+    (
+        f"vless://{uuid_ok}@{server}:443"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&security=tls&sni=www.cloudflare.com&fp=chrome&pbk={pbk}"
+        f"&sid=abcd&type=tcp\n"
+    ),
+)
+try:
+    ls.load_legacy_seed(
+        uri_file=dup_sec,
+        private_key_file=key_file,
+        user_tag="legacy-user",
+        advertised_server=server,
+    )
+    raise SystemExit("expected duplicate security refuse")
+except ls.LegacySeedError as exc:
+    assert "duplicate" in str(exc).lower()
+
+# Illegal host / SNI
+bad_host = write_secret(
+    tmp / "bad-host.uri",
+    good_uri(host="999.999.999.999") + "\n",
+)
+try:
+    ls.load_legacy_seed(
+        uri_file=bad_host,
+        private_key_file=key_file,
+        user_tag="legacy-user",
+        advertised_server=None,
+    )
+    raise SystemExit("expected bad host refuse")
+except ls.LegacySeedError:
+    pass
+
+bad_sni_uri = (
+    f"vless://{uuid_ok}@{server}:443"
+    f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+    f"&sni=not_a_dns&fp=chrome&pbk={pbk}&sid=abcd&type=tcp\n"
+)
+bad_sni = write_secret(tmp / "bad-sni.uri", bad_sni_uri)
+try:
+    ls.load_legacy_seed(
+        uri_file=bad_sni,
+        private_key_file=key_file,
+        user_tag="legacy-user",
+        advertised_server=server,
+    )
+    raise SystemExit("expected bad SNI refuse")
+except ls.LegacySeedError:
+    pass
+
+# Harden / privilege: sudo wraps installer; harden helper is present
+assert hasattr(prov, "_harden_remote_legacy_secrets")
+sudo_argv = prov.installer_remote_argv(
+    "/tmp/stage/vincula.sh",
+    privilege_mode="sudo",
+    vcl_server=server,
+    legacy_uri_remote="/tmp/stage/legacy-user.uri",
+    legacy_key_remote="/tmp/stage/legacy-reality.key",
+    legacy_user_tag="legacy-user",
+)
+assert sudo_argv[:2] == ["sudo", "-n"], sudo_argv
+
 print("ok")
 PY
 
@@ -9225,7 +9319,9 @@ assert "never shown" in (user_detail.get("secrets_note") or "").lower() or (
 assert "destinations" in user_detail
 assert isinstance(user_detail["destinations"], list)
 for d in user_detail["destinations"]:
-    assert "destination_host" in d and "network" in d
+    assert "destination_host" in d
+    assert "bytes" in d and "connection_count" in d
+    assert "network" not in d  # 0.4.5: network column removed (no daily_usage field)
     assert "bytes" in d and "connection_count" in d
     assert "credential" not in d and "uuid" not in d
 
@@ -13593,6 +13689,367 @@ assert raised, "expected die on remote verify failure"
 assert "remote vcl verify failed" in buf.getvalue()
 assert_no_staging_strays()
 PY
+
+# --- 0.4.5 legacy seed E2E (root/sudo harden + dual-user + clean-host) ---
+SEED_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
+SEED_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.3.2.tar.gz"
+if [[ ! -f "$SEED_PAYLOAD_SRC" ]]; then
+  assert_success "0.4.5 seed E2E build node release" \
+    bash "${PROJECT_DIR}/scripts/build-release.sh"
+fi
+seed_stage_payload() {
+  local root=$1
+  mkdir -p "$root"
+  cp -f "$SEED_PAYLOAD_SRC" "$root/vincula-node-0.3.2.tar.gz"
+  python3 - "$root" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+tar = root / "vincula-node-0.3.2.tar.gz"
+digest = hashlib.sha256(tar.read_bytes()).hexdigest()
+(root / "vincula-node-0.3.2.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.3.2.tar.gz\n", encoding="utf-8"
+)
+(root / "payload-manifest.json").write_text(
+    json.dumps(
+        {
+            "controller_version": "0.4.5",
+            "node_payload_version": "0.3.2",
+            "sha256": digest,
+            "supported_os": [
+                "debian12",
+                "debian13",
+                "ubuntu22.04",
+                "ubuntu24.04",
+                "ubuntu26.04",
+            ],
+            "supported_arch": ["amd64", "arm64"],
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+# Prepare local secret files once (0600) for seed E2E
+SEED_SECRETS="${TEST_TMP}/seed-e2e-secrets"
+mkdir -p "$SEED_SECRETS"
+python3 - "$SEED_SECRETS" "${PROJECT_DIR}/lib/legacy_seed.py" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+tmp, legacy_path = Path(sys.argv[1]), sys.argv[2]
+spec = importlib.util.spec_from_file_location("legacy_seed", legacy_path)
+ls = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ls)
+priv = "SMXODnHSZ3UNCPUmHo9dwS5U_hskgxLnEtE4-gEsYWg"
+pbk = ls.derive_reality_public_key(priv)
+uuid_ok = "11111111-1111-4111-8111-111111111111"
+server = "203.0.113.50"
+uri = (
+    f"vless://{uuid_ok}@{server}:443"
+    f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+    f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=abcd&type=tcp\n"
+)
+(tmp / "good.uri").write_text(uri, encoding="utf-8")
+(tmp / "good.key").write_text(priv + "\n", encoding="utf-8")
+os.chmod(tmp / "good.uri", 0o600)
+os.chmod(tmp / "good.key", 0o600)
+PY
+
+seed_stage_payload "${TEST_TMP}/seed-root-payload"
+mkdir -p "${TEST_TMP}/seed-root-state" "${TEST_TMP}/seed-root-home"
+: >"${TEST_TMP}/seed-root.argv"
+assert_success "0.4.5 seed E2E root harden + dual-user" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=0 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-root-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-root.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/seed-root-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-root-payload/vincula-node-0.3.2.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
+    "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
+import importlib.util, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key, uri_file, key_file = sys.argv[1:5]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+fleet.run_sync_full_payload = lambda args: (
+    0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []}
+)
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    skip_preflight=True,
+    vcl_server="203.0.113.50",
+    legacy_uri_file=uri_file,
+    legacy_private_key_file=key_file,
+    legacy_user_tag="legacy-user",
+)
+assert doc.get("ok") is True, doc
+assert doc.get("legacy_seed") is True, doc
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+chown_lines = [ln for ln in log.splitlines() if "chown" in ln]
+assert chown_lines, log
+assert all('"sudo"' not in ln for ln in chown_lines), chown_lines
+assert any("chmod" in ln for ln in chown_lines), chown_lines
+assert "--legacy-vless-uri-file" in log, log
+assert "vless://" not in log, log
+state = Path(os.environ["VCL_FAKE_STATE_DIR"]) / "lax"
+users = json.loads((state / "users.json").read_text(encoding="utf-8"))
+tags = {u["tag"] for u in users["users"]}
+assert tags == {"owner", "legacy-user"}, tags
+uuids = {
+    c["uuid"]
+    for u in users["users"]
+    for c in u.get("credentials") or []
+}
+assert len(uuids) == 2, uuids
+cfg = json.loads((state / "config.json").read_text(encoding="utf-8"))
+cfg_uuids = {u["uuid"] for u in cfg["inbounds"][0]["users"]}
+assert cfg_uuids == uuids, (cfg_uuids, uuids)
+owner_u = next(u for u in users["users"] if u["tag"] == "owner")
+legacy_u = next(u for u in users["users"] if u["tag"] == "legacy-user")
+assert owner_u["credentials"][0]["uuid"] != legacy_u["credentials"][0]["uuid"]
+active = state / "provision_staging.json"
+if active.is_file():
+    assert not json.loads(active.read_text(encoding="utf-8"))
+remote_tmp = state / "remote_tmp"
+if remote_tmp.is_dir():
+    assert not list(remote_tmp.glob("vincula-provision.*"))
+reg = fleet.load_registry()
+assert "lax" in [x.get("name") for x in (reg.get("nodes") or [])]
+PY
+
+seed_stage_payload "${TEST_TMP}/seed-sudo-payload"
+mkdir -p "${TEST_TMP}/seed-sudo-state" "${TEST_TMP}/seed-sudo-home"
+: >"${TEST_TMP}/seed-sudo.argv"
+assert_success "0.4.5 seed E2E sudo harden chown/chmod" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=1000 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-sudo-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-sudo.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/seed-sudo-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-sudo-payload/vincula-node-0.3.2.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
+    "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
+import importlib.util, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key, uri_file, key_file = sys.argv[1:5]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+fleet.run_sync_full_payload = lambda args: (
+    0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []}
+)
+prov = fleet.load_provision_module()
+doc = prov.run_provision(
+    name="lax",
+    ssh_host="203.0.113.10",
+    ssh_user="deploy",
+    host_key=host_key,
+    skip_preflight=True,
+    vcl_server="203.0.113.50",
+    legacy_uri_file=uri_file,
+    legacy_private_key_file=key_file,
+    legacy_user_tag="legacy-user",
+)
+assert doc.get("ok") is True, doc
+log = Path(os.environ["VCL_FAKE_SSH_ARGV_LOG"]).read_text(encoding="utf-8")
+chown_lines = [ln for ln in log.splitlines() if "chown" in ln]
+assert chown_lines, log
+assert all('"sudo"' in ln and '"-n"' in ln for ln in chown_lines), chown_lines
+assert any("chmod" in ln for ln in chown_lines), chown_lines
+assert "vless://" not in log, log
+PY
+
+seed_stage_payload "${TEST_TMP}/seed-chown-fail-payload"
+mkdir -p "${TEST_TMP}/seed-chown-fail-state" "${TEST_TMP}/seed-chown-fail-home"
+: >"${TEST_TMP}/seed-chown-fail.argv"
+assert_success "0.4.5 seed E2E chown fail is zero-install" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=1000 \
+    VCL_FAKE_CHOWN_FAIL=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chown-fail-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-chown-fail.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/seed-chown-fail-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chown-fail-payload/vincula-node-0.3.2.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
+    "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
+import importlib.util, io, json, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key, uri_file, key_file = sys.argv[1:5]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        ssh_user="deploy",
+        host_key=host_key,
+        skip_preflight=True,
+        vcl_server="203.0.113.50",
+        legacy_uri_file=uri_file,
+        legacy_private_key_file=key_file,
+        legacy_user_tag="legacy-user",
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on chown fail"
+err = buf.getvalue()
+assert "legacy seed remote secret harden failed" in err, err
+assert "vless://" not in err
+assert "SMXODnHSZ3UNCPUmHo9dwS5U_hskgxLnEtE4-gEsYWg" not in err
+state = Path(os.environ["VCL_FAKE_STATE_DIR"]) / "lax"
+assert not (state / "VERSION").is_file(), "install must not run after harden fail"
+assert not (state / "users.json").is_file()
+reg = fleet.load_registry()
+assert not any(x.get("name") == "lax" for x in (reg.get("nodes") or []))
+active = state / "provision_staging.json"
+if active.is_file():
+    assert not json.loads(active.read_text(encoding="utf-8"))
+remote_tmp = state / "remote_tmp"
+if remote_tmp.is_dir():
+    assert not list(remote_tmp.glob("vincula-provision.*")), list(remote_tmp.iterdir())
+PY
+
+seed_stage_payload "${TEST_TMP}/seed-chmod-fail-payload"
+mkdir -p "${TEST_TMP}/seed-chmod-fail-state" "${TEST_TMP}/seed-chmod-fail-home"
+assert_success "0.4.5 seed E2E chmod fail is zero-install" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_UID=0 \
+    VCL_FAKE_CHMOD_FAIL=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chmod-fail-state" \
+    VCL_FLEET_HOME="${TEST_TMP}/seed-chmod-fail-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chmod-fail-payload/vincula-node-0.3.2.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
+    "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
+import importlib.util, io, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key, uri_file, key_file = sys.argv[1:5]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf = io.StringIO()
+old = sys.stderr
+sys.stderr = buf
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+        vcl_server="203.0.113.50",
+        legacy_uri_file=uri_file,
+        legacy_private_key_file=key_file,
+        legacy_user_tag="legacy-user",
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr = old
+assert raised, "expected die on chmod fail"
+assert "legacy seed remote secret harden failed" in buf.getvalue()
+assert not (Path(os.environ["VCL_FAKE_STATE_DIR"]) / "lax" / "VERSION").is_file()
+assert not any(
+    x.get("name") == "lax" for x in (fleet.load_registry().get("nodes") or [])
+)
+PY
+
+seed_stage_payload "${TEST_TMP}/seed-existing-payload"
+mkdir -p "${TEST_TMP}/seed-existing-state/lax" "${TEST_TMP}/seed-existing-home"
+echo "0.3.1" >"${TEST_TMP}/seed-existing-state/lax/VERSION"
+: >"${TEST_TMP}/seed-existing.argv"
+assert_success "0.4.5 seed E2E refuse existing VERSION clean host" \
+  env \
+    VCL_FAKE_PROVISION=1 \
+    VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-existing-state" \
+    VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-existing.argv" \
+    VCL_FLEET_HOME="${TEST_TMP}/seed-existing-home" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-existing-payload/vincula-node-0.3.2.tar.gz" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
+    "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
+import importlib.util, io, os, subprocess, sys
+from pathlib import Path
+
+fleet_path, host_key, uri_file, key_file = sys.argv[1:5]
+subprocess.check_call([sys.executable, fleet_path, "init"], stdout=subprocess.DEVNULL)
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+buf_err, buf_out = io.StringIO(), io.StringIO()
+old_e, old_o = sys.stderr, sys.stdout
+sys.stderr, sys.stdout = buf_err, buf_out
+raised = False
+try:
+    prov.run_provision(
+        name="lax",
+        ssh_host="203.0.113.10",
+        host_key=host_key,
+        skip_preflight=True,
+        vcl_server="203.0.113.50",
+        legacy_uri_file=uri_file,
+        legacy_private_key_file=key_file,
+        legacy_user_tag="legacy-user",
+    )
+except SystemExit:
+    raised = True
+finally:
+    sys.stderr, sys.stdout = old_e, old_o
+assert raised, "expected die when VERSION already present"
+combined = buf_err.getvalue() + buf_out.getvalue()
+assert "clean host" in combined.lower() or "Legacy seed requires a clean host" in combined, combined
+assert "vless://" not in combined
+assert "11111111-1111-4111-8111-111111111111" not in combined
+assert not any(
+    x.get("name") == "lax" for x in (fleet.load_registry().get("nodes") or [])
+)
+PY
+
+# Installer source guard + 0.3.1→0.3.2 migrate pin (identity preserve)
+assert_success "0.4.5 vincula.sh refuses seed when VERSION exists" \
+  grep -Fq 'Legacy seed requires a clean host.' "${PROJECT_DIR}/vincula.sh"
+assert_success "0.4.5 is_supported_upgrade_from 0.3.1 (pin 0.3.2)" \
+  bash -c '
+    set -euo pipefail
+    # shellcheck disable=SC1091
+    source "'"${PROJECT_DIR}"'/vincula.sh"
+    [[ "$VINCULA_VERSION" == "0.3.2" ]]
+    is_supported_upgrade_from 0.3.1
+  '
+assert_success "0.4.5 migrate preserves UUID/Reality guards present" \
+  bash -c '
+    grep -Fq "Migration attempted to change the UUID" "'"${PROJECT_DIR}"'/vincula.sh" &&
+    grep -Fq "Migration attempted to change the REALITY private key" "'"${PROJECT_DIR}"'/vincula.sh" &&
+    grep -Fq "Migration attempted to change the REALITY public key" "'"${PROJECT_DIR}"'/vincula.sh"
+  '
 
 # --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
 B6_SAVED_HOME=$HOME

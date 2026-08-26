@@ -248,6 +248,46 @@ def _priv_argv(privilege_mode: PrivilegeMode, argv: list[str]) -> list[str]:
     return argv
 
 
+def _harden_remote_legacy_secrets(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+    privilege_mode: PrivilegeMode,
+    uri_remote: str,
+    key_remote: str,
+) -> None:
+    """chown root:root + chmod 600 secret files; fail-closed on nonzero SSH rc.
+
+    SSH user may own the SCP'd files; installer (often via sudo) requires
+    owner == EUID (root) and mode 0600.
+    """
+    host = _require_host()
+    # One remote shell so chown+chmod are atomic from the caller's perspective.
+    script = (
+        f"chown root:root -- {shlex.quote(uri_remote)} {shlex.quote(key_remote)} "
+        f"&& chmod 600 -- {shlex.quote(uri_remote)} {shlex.quote(key_remote)}"
+    )
+    argv = _priv_argv(privilege_mode, ["sh", "-c", script])
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        argv,
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if proc.returncode != 0:
+        detail = sanitize_operator_text(
+            (proc.stderr or proc.stdout or "").strip()
+            or f"exit {proc.returncode}"
+        )
+        host.die(f"legacy seed remote secret harden failed: {detail}")
+
+
 def installer_remote_argv(
     unpack_script: str,
     *,
@@ -1121,14 +1161,15 @@ def run_provision(
                 legacy_key_remote,
                 extra=extra,
             )
-            host.ssh_run(
-                ssh_host,
-                ssh_user,
-                ssh_port,
-                ["chmod", "600", legacy_uri_remote, legacy_key_remote],
-                batch=True,
-                extra=extra,
+            _harden_remote_legacy_secrets(
+                ssh_host=ssh_host,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
                 identity_file=identity_file,
+                extra=extra,
+                privilege_mode=privilege_mode,
+                uri_remote=legacy_uri_remote,
+                key_remote=legacy_key_remote,
             )
             legacy_tag = legacy_seed.user_tag
 

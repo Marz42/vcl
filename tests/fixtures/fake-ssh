@@ -1306,6 +1306,15 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             os_ver = os.environ.get("VCL_FAKE_OS_VERSION", "12").strip() or "12"
             sys.stdout.write(f"{os_id}:{os_ver}\n")
             return 0
+        # Legacy seed harden: chown root:root && chmod 600 (path-only; no secrets).
+        if "chown" in script and "chmod" in script:
+            if os.environ.get("VCL_FAKE_CHOWN_FAIL", "").strip() == "1":
+                sys.stderr.write("chown: fake permission denied\n")
+                return 1
+            if os.environ.get("VCL_FAKE_CHMOD_FAIL", "").strip() == "1":
+                sys.stderr.write("chmod: fake permission denied\n")
+                return 1
+            return 0
         return None
 
     if cmd == "tar" and "-xzf" in argv[1:]:
@@ -1336,7 +1345,16 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         sys.stdout.write(stage + "\n")
         return 0
 
+    if cmd == "chown":
+        if os.environ.get("VCL_FAKE_CHOWN_FAIL", "").strip() == "1":
+            sys.stderr.write("chown: fake permission denied\n")
+            return 1
+        return 0
+
     if cmd == "chmod":
+        if os.environ.get("VCL_FAKE_CHMOD_FAIL", "").strip() == "1":
+            sys.stderr.write("chmod: fake permission denied\n")
+            return 1
         return 0
 
     if cmd == "rm" and any(a in ("-rf", "-fr") or a.startswith("-") and "r" in a and "f" in a for a in argv[1:]):
@@ -1379,9 +1397,12 @@ def _parse_legacy_seed_argv(argv: list[str]) -> tuple[str | None, str | None, st
 
 
 def _seed_owner_and_legacy_users(alias: str, legacy_tag: str) -> None:
-    """Write fake users.json with owner + legacy tag (no secret material)."""
+    """Write dual-user users.json + config with two distinct UUIDs (no secrets)."""
     now = _utc_now()
     node_id = _node_id(alias)
+    owner_uuid = str(uuid.uuid4())
+    legacy_uuid = str(uuid.uuid4())
+    assert owner_uuid != legacy_uuid
     data = {
         "schema_version": 2,
         "users": [
@@ -1396,7 +1417,7 @@ def _seed_owner_and_legacy_users(alias: str, legacy_tag: str) -> None:
                     {
                         "credential_id": str(uuid.uuid4()),
                         "node_id": node_id,
-                        "uuid": str(uuid.uuid4()),
+                        "uuid": owner_uuid,
                         "status": "active",
                         "created_at": now,
                         "revoked_at": None,
@@ -1414,7 +1435,7 @@ def _seed_owner_and_legacy_users(alias: str, legacy_tag: str) -> None:
                     {
                         "credential_id": str(uuid.uuid4()),
                         "node_id": node_id,
-                        "uuid": str(uuid.uuid4()),
+                        "uuid": legacy_uuid,
                         "status": "active",
                         "created_at": now,
                         "revoked_at": None,
@@ -1423,7 +1444,23 @@ def _seed_owner_and_legacy_users(alias: str, legacy_tag: str) -> None:
             },
         ],
     }
-    _write_json(_alias_dir(alias) / "users.json", data)
+    node_dir = _alias_dir(alias)
+    _write_json(node_dir / "users.json", data)
+    # Minimal sing-box-like config so E2E can assert two UUID identities.
+    _write_json(
+        node_dir / "config.json",
+        {
+            "inbounds": [
+                {
+                    "type": "vless",
+                    "users": [
+                        {"name": "owner", "uuid": owner_uuid},
+                        {"name": legacy_tag, "uuid": legacy_uuid},
+                    ],
+                }
+            ]
+        },
+    )
 
 
 def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
@@ -1466,13 +1503,26 @@ def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
         return 1
     node_dir = _alias_dir(alias)
     node_dir.mkdir(parents=True, exist_ok=True)
+    if legacy_present == 3 and (node_dir / "VERSION").is_file():
+        sys.stderr.write("Legacy seed requires a clean host.\n")
+        return 1
     (node_dir / "VERSION").write_text("0.3.2\n", encoding="utf-8")
     (node_dir / ".provisioned").write_text("1\n", encoding="utf-8")
     if legacy_present == 3:
         # Path-only argv; never log URI/key contents. Tag is non-secret.
         assert legacy_tag is not None
+        import re
+
         if legacy_tag == "owner":
             sys.stderr.write("fake-ssh: legacy user tag must not be owner\n")
+            return 1
+        if not re.match(r"^[a-z0-9][a-z0-9._-]{0,31}$", legacy_tag):
+            sys.stderr.write("fake-ssh: invalid legacy user tag\n")
+            return 1
+        # Paths must be path-like (never embed URI/key body in argv).
+        assert uri_path is not None and key_path is not None
+        if "vless://" in uri_path or "vless://" in key_path:
+            sys.stderr.write("fake-ssh: legacy argv must be paths only\n")
             return 1
         _seed_owner_and_legacy_users(alias, legacy_tag)
     return 0

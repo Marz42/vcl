@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import base64
 import hmac
+import ipaddress
+import json
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 from typing import NamedTuple, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -23,10 +26,20 @@ UUID_RE = re.compile(
 SHORT_ID_RE = re.compile(r"^[0-9a-f]{1,16}$", re.IGNORECASE)
 # sing-box Reality keys: URL-safe base64 of 32 bytes (43–44 chars, optional =).
 REALITY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}={0,2}$")
-TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+# Same contract as is_valid_user_tag / vincula-common.sh.
+TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+# DNS label rules aligned with vincula.sh is_dns_name (simplified, no underscore).
+DNS_NAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+)
 
 # VCL-compatible Reality fingerprints (normalize to chrome on install).
 COMPAT_FP = frozenset({"", "chrome", "chrome_auto", "randomized"})
+# Reject duplicate values for these query keys.
+CRITICAL_QS_KEYS = frozenset(
+    {"encryption", "flow", "security", "type", "sni", "fp", "pbk", "sid"}
+)
 
 P = 2**255 - 19
 A24 = 121665
@@ -118,6 +131,46 @@ def constant_time_equal(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
+def validate_user_tag(tag: str) -> str:
+    """Return normalized tag or raise LegacySeedError."""
+    t = (tag or "").strip()
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in t):
+        raise LegacySeedError("invalid legacy user tag")
+    if not TAG_RE.match(t):
+        raise LegacySeedError("invalid legacy user tag")
+    if t == "owner":
+        raise LegacySeedError("legacy user tag must not be owner")
+    return t
+
+
+def validate_server_host(value: str) -> bool:
+    """IPv4, unbracketed IPv6, or DNS name (matches vincula.sh validate_server)."""
+    v = (value or "").strip()
+    if not v or any(ord(ch) < 32 for ch in v):
+        return False
+    if ":" in v:
+        try:
+            ipaddress.IPv6Address(v)
+            return True
+        except ValueError:
+            return False
+    if re.match(r"^[0-9.]+$", v):
+        try:
+            ipaddress.IPv4Address(v)
+            return True
+        except ValueError:
+            return False
+    return bool(DNS_NAME_RE.match(v))
+
+
+def validate_sni_host(value: str) -> bool:
+    """Reality SNI must be a DNS name (matches select_reality_host)."""
+    v = (value or "").strip()
+    if not v or any(ord(ch) < 32 for ch in v):
+        return False
+    return bool(DNS_NAME_RE.match(v))
+
+
 def validate_secret_file(path: Path, *, label: str) -> Path:
     """Fail-closed local secret file checks (V0.4.5 §3.3).
 
@@ -176,9 +229,18 @@ def _read_single_key_line(path: Path) -> str:
     return key
 
 
-def _qs_one(qs: dict[str, list[str]], key: str) -> str:
-    vals = qs.get(key) or []
-    return vals[0] if vals else ""
+def _parse_query_no_dup(query: str) -> dict[str, str]:
+    """Parse query string; refuse duplicate critical keys."""
+    seen: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        k = key.lower()
+        counts[k] = counts.get(k, 0) + 1
+        if k in CRITICAL_QS_KEYS and counts[k] > 1:
+            raise LegacySeedError(f"duplicate query parameter: {k}")
+        if k not in seen:
+            seen[k] = value
+    return seen
 
 
 def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
@@ -188,7 +250,6 @@ def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
         raise LegacySeedError("URI must be a single line")
     if not raw.lower().startswith("vless://"):
         raise LegacySeedError("scheme must be vless")
-    # urlparse handles userinfo@host:port
     parsed = urlparse(raw)
     if parsed.scheme.lower() != "vless":
         raise LegacySeedError("scheme must be vless")
@@ -198,22 +259,24 @@ def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
     host = parsed.hostname or ""
     if not host:
         raise LegacySeedError("missing server host")
+    if not validate_server_host(host):
+        raise LegacySeedError("invalid server host")
     if parsed.port is None:
         raise LegacySeedError("missing port")
     port = int(parsed.port)
     if not (1 <= port <= 65535):
         raise LegacySeedError("invalid port")
-    qs = parse_qs(parsed.query, keep_blank_values=True)
-    encryption = _qs_one(qs, "encryption").lower()
-    flow = _qs_one(qs, "flow")
-    security = _qs_one(qs, "security").lower()
-    transport = _qs_one(qs, "type").lower() or "tcp"
-    sni = _qs_one(qs, "sni")
-    pbk = _qs_one(qs, "pbk")
-    sid = _qs_one(qs, "sid")
-    fp = _qs_one(qs, "fp").lower()
+    qs = _parse_query_no_dup(parsed.query)
+    encryption = (qs.get("encryption") or "none").lower()
+    flow = qs.get("flow") or ""
+    security = (qs.get("security") or "").lower()
+    transport = (qs.get("type") or "tcp").lower()
+    sni = qs.get("sni") or ""
+    pbk = qs.get("pbk") or ""
+    sid = qs.get("sid") or ""
+    fp = (qs.get("fp") or "").lower()
 
-    if encryption and encryption != "none":
+    if encryption != "none":
         raise LegacySeedError("encryption must be none")
     if flow != "xtls-rprx-vision":
         raise LegacySeedError("incompatible flow")
@@ -223,6 +286,8 @@ def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
         raise LegacySeedError("transport must be tcp")
     if not sni:
         raise LegacySeedError("missing sni")
+    if not validate_sni_host(sni):
+        raise LegacySeedError("invalid sni")
     if not pbk:
         raise LegacySeedError("missing pbk")
     if not sid:
@@ -254,11 +319,7 @@ def load_legacy_seed(
     install_port: int = 443,
 ) -> LegacySeedInput:
     """Validate files + URI + key match. Safe for controller pre-upload checks."""
-    tag = (user_tag or "").strip()
-    if not TAG_RE.match(tag):
-        raise LegacySeedError("invalid legacy user tag")
-    if tag == "owner":
-        raise LegacySeedError("legacy user tag must not be owner")
+    tag = validate_user_tag(user_tag)
 
     uri_path = validate_secret_file(Path(uri_file), label="legacy URI file")
     key_path = validate_secret_file(
@@ -275,7 +336,6 @@ def load_legacy_seed(
     adv = (advertised_server or "").strip()
     if not adv:
         raise LegacySeedError("advertised server required for legacy seed")
-    # Compare authority host (case-insensitive for DNS names)
     uri_server = str(fields["server"])
     if uri_server.lower() != adv.lower() and uri_server != adv:
         raise LegacySeedError("URI authority must match --server")
@@ -312,10 +372,33 @@ def redact_seed_text(text: str) -> str:
     return out
 
 
-if __name__ == "__main__":
-    # CLI for installer: derive-public <private-key-file>
-    import sys
+def _cli_validate_uri(uri: str) -> None:
+    fields = parse_legacy_vless_uri(uri)
+    # Machine-readable one-liner for installer (no secrets beyond parsed fields).
+    sys.stdout.write(
+        json.dumps(
+            {
+                "uuid": fields["uuid"],
+                "server": fields["server"],
+                "port": fields["port"],
+                "sni": fields["sni"],
+                "pbk": fields["public_key"],
+                "sid": fields["short_id"],
+                "fp": fields["fingerprint"],
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
 
+
+def _cli_validate_tag(tag: str) -> None:
+    validate_user_tag(tag)
+    sys.stdout.write("ok\n")
+
+
+if __name__ == "__main__":
+    # CLI for installer: derive-public | compare-pbk | validate-uri | validate-tag
     if len(sys.argv) == 3 and sys.argv[1] == "derive-public":
         key = _read_single_key_line(Path(sys.argv[2]))
         sys.stdout.write(derive_reality_public_key(key) + "\n")
@@ -325,7 +408,22 @@ if __name__ == "__main__":
         pbk = sys.argv[3].strip()
         derived = derive_reality_public_key(key)
         raise SystemExit(0 if constant_time_equal(derived, pbk) else 1)
+    if len(sys.argv) == 3 and sys.argv[1] == "validate-uri":
+        try:
+            _cli_validate_uri(sys.argv[2])
+        except LegacySeedError as exc:
+            sys.stderr.write(f"ERROR: {exc}\n")
+            raise SystemExit(1) from exc
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == "validate-tag":
+        try:
+            _cli_validate_tag(sys.argv[2])
+        except LegacySeedError as exc:
+            sys.stderr.write(f"ERROR: {exc}\n")
+            raise SystemExit(1) from exc
+        raise SystemExit(0)
     sys.stderr.write(
-        "usage: legacy_seed.py derive-public KEYFILE | compare-pbk KEYFILE PBK\n"
+        "usage: legacy_seed.py derive-public KEYFILE | compare-pbk KEYFILE PBK | "
+        "validate-uri URI | validate-tag TAG\n"
     )
     raise SystemExit(2)

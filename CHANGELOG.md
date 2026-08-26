@@ -7,10 +7,11 @@
 ### Added
 - **Legacy single-user seed：** `vcl-fleet node provision … --legacy-vless-uri-file` / `--legacy-reality-private-key-file` / `--legacy-user-tag`（三项必须同时出现；argv 仅本地路径）。Installer `vincula.sh` file-based seed；X25519 pbk 校验；owner 新 UUID + legacy 保留原 UUID/Reality。
 - **Node 0.3.2：** 首个 payload bump（legacy seed / installer）；controller 内嵌 `vincula-node-0.3.2.tar.gz`。
-- **Shared operation journal：** CLI/UI 共用 `operations.jsonl`（retention、corrupt-tolerant、secret redaction）。
-- **UI PARTIAL close（AC-4.5-08）：** Node/User drawers + CLI operations history 收口 0.4.4 PARTIAL。
+- **Shared operation journal：** CLI/UI 共用 `operations.jsonl`（retention、corrupt-tolerant、secret redaction；file lock + atomic trim）。
+- **UI PARTIAL close（AC-4.5-08）：** Node/User drawers + CLI operations history 收口 0.4.4 PARTIAL；User destinations = host/bytes/connections（无 network）。
 ### Fixed
 - Fleet suite **HOME / XDG isolation** 贯穿 teardown（防污染真实 `~/.ssh`）。
+- **Review-fix：** sudo/root legacy seed remote `chown`/`chmod` fail-closed；tag/URI 与 `is_valid_user_tag` 对齐并拒重复 query 键；existing VERSION + seed 拒绝；replace journal 记 backup/restore 子步骤；audit archive restore 记为 `audit_archive_restore`。
 ### Notes
 - Spec: [`docs/specs/V0.4.5_Spec.md`](docs/specs/V0.4.5_Spec.md) · evidence：[`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md) · LIVE Matrix H：[`docs/evidence/0.4.5/LIVE.md`](docs/evidence/0.4.5/LIVE.md)。
 - `0.5.0` 仍是首个 **capability/telemetry** Node 升级；`0.3.2` 仅为 payload/legacy-seed 制品 bump。

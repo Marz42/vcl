@@ -1700,7 +1700,6 @@ def api_user(tag: str) -> dict[str, Any]:
                 destinations.append(
                     {
                         "destination_host": host,
-                        "network": "—",
                         "upload_bytes": upload,
                         "download_bytes": download,
                         "bytes": upload + download,

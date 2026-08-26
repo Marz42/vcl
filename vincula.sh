@@ -2231,6 +2231,9 @@ legacy_seed_require_all_or_none() {
   if (( n != 3 )); then
     die "Legacy seed requires --legacy-vless-uri-file, --legacy-reality-private-key-file, and --legacy-user-tag together."
   fi
+  # Same contract as is_valid_user_tag (before python3 is guaranteed).
+  [[ "${LEGACY_USER_TAG}" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]] \
+    || die "invalid legacy user tag"
   if [[ "${LEGACY_USER_TAG}" == "owner" ]]; then
     die "Legacy user tag must not be owner."
   fi
@@ -2256,7 +2259,7 @@ load_legacy_seed_into_env() {
   # Sets: LEGACY_UUID LEGACY_SERVER LEGACY_PORT LEGACY_SNI LEGACY_PBK LEGACY_SID
   #        LEGACY_PRIVATE_KEY LEGACY_PUBLIC_KEY (derived)
   # Does not print secrets.
-  local root uri_line key_line derived
+  local root uri_line key_line derived parsed
   legacy_seed_validate_local_file "$LEGACY_URI_FILE" "legacy URI file"
   legacy_seed_validate_local_file "$LEGACY_PRIVATE_KEY_FILE" "legacy Reality private key file"
   uri_line=$(grep -E '[[:graph:]]' "$LEGACY_URI_FILE" | head -n 1 || true)
@@ -2266,34 +2269,23 @@ load_legacy_seed_into_env() {
   if [[ $(grep -E '[[:graph:]]' "$LEGACY_PRIVATE_KEY_FILE" | wc -l) -ne 1 ]]; then
     die "legacy Reality private key file: must contain exactly one key"
   fi
-  parse_vless_uri "$uri_line" || die "legacy URI file: invalid VLESS URI"
-  [[ "$VLESS_FLOW" == "xtls-rprx-vision" ]] || die "legacy URI: incompatible flow"
-  local enc sec typ
-  enc=$(python3 -c 'import sys; from urllib.parse import urlparse,parse_qs; q=parse_qs(urlparse(sys.argv[1]).query); print((q.get("encryption") or ["none"])[0])' "$uri_line")
-  sec=$(python3 -c 'import sys; from urllib.parse import urlparse,parse_qs; q=parse_qs(urlparse(sys.argv[1]).query); print((q.get("security") or [""])[0])' "$uri_line")
-  typ=$(python3 -c 'import sys; from urllib.parse import urlparse,parse_qs; q=parse_qs(urlparse(sys.argv[1]).query); print((q.get("type") or ["tcp"])[0])' "$uri_line")
-  [[ "${enc,,}" == "none" ]] || die "legacy URI: encryption must be none"
-  [[ "${sec,,}" == "reality" ]] || die "legacy URI: security must be reality"
-  [[ "${typ,,}" == "tcp" ]] || die "legacy URI: transport must be tcp"
-  [[ -n "$VLESS_SNI" ]] || die "legacy URI: missing sni"
-  [[ -n "$VLESS_PBK" ]] || die "legacy URI: missing pbk"
-  [[ -n "$VLESS_SID" ]] || die "legacy URI: missing sid"
-  [[ "$VLESS_UUID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
-    || die "legacy URI: invalid UUID"
-  [[ "$VLESS_SID" =~ ^[0-9a-fA-F]{1,16}$ ]] || die "legacy URI: invalid short ID"
-  [[ "$key_line" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "legacy Reality private key: invalid format"
   root=$(installer_root) || die "Cannot locate installer directory for legacy_seed.py."
   [[ -f "${root}/lib/legacy_seed.py" ]] || die "missing lib/legacy_seed.py in installer payload"
+  python3 "${root}/lib/legacy_seed.py" validate-tag "$LEGACY_USER_TAG" >/dev/null \
+    || die "invalid legacy user tag"
+  parsed=$(python3 "${root}/lib/legacy_seed.py" validate-uri "$uri_line") \
+    || die "legacy URI file: invalid or unsupported VLESS URI"
+  LEGACY_UUID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["uuid"])' "$parsed")
+  LEGACY_SERVER=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["server"])' "$parsed")
+  LEGACY_PORT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["port"])' "$parsed")
+  LEGACY_SNI=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sni"])' "$parsed")
+  LEGACY_PBK=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pbk"])' "$parsed")
+  LEGACY_SID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sid"])' "$parsed")
+  [[ "$key_line" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "legacy Reality private key: invalid format"
   derived=$(python3 "${root}/lib/legacy_seed.py" derive-public "$LEGACY_PRIVATE_KEY_FILE") \
     || die "legacy Reality private key: could not derive public key"
-  python3 "${root}/lib/legacy_seed.py" compare-pbk "$LEGACY_PRIVATE_KEY_FILE" "$VLESS_PBK" \
+  python3 "${root}/lib/legacy_seed.py" compare-pbk "$LEGACY_PRIVATE_KEY_FILE" "$LEGACY_PBK" \
     || die "legacy Reality private key does not match URI pbk (zero-install)"
-  LEGACY_UUID=$(printf '%s\n' "$VLESS_UUID" | tr 'A-F' 'a-f')
-  LEGACY_SERVER=$VLESS_HOST
-  LEGACY_PORT=$VLESS_PORT
-  LEGACY_SNI=$VLESS_SNI
-  LEGACY_PBK=$VLESS_PBK
-  LEGACY_SID=$(printf '%s\n' "$VLESS_SID" | tr 'A-F' 'a-f')
   LEGACY_PRIVATE_KEY=$key_line
   LEGACY_PUBLIC_KEY=$derived
   # Authority must match VCL_SERVER when set; port must match VCL_PORT.
@@ -2316,49 +2308,68 @@ render_users_owner_and_legacy() {
   legacy_user_id=$(generate_uuid_v4)
   legacy_cred_id=$(generate_uuid_v4)
   [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
-  cat > "$output" <<EOF
-{
-  "schema_version": 2,
-  "users": [
-    {
-      "user_id": "${owner_user_id}",
-      "tag": "owner",
-      "display_name": "Owner",
-      "department": "",
-      "enabled": true,
-      "created_at": "${installed_at}",
-      "credentials": [
+  # JSON serializer — never interpolate tag into a shell HEREDOC.
+  python3 - "$output" "$owner_user_id" "$owner_cred_id" "$owner_uuid" \
+    "$legacy_user_id" "$legacy_cred_id" "$legacy_uuid" "$legacy_tag" \
+    "$installed_at" "$node_id" <<'PY'
+import json, sys
+(
+    output,
+    owner_user_id,
+    owner_cred_id,
+    owner_uuid,
+    legacy_user_id,
+    legacy_cred_id,
+    legacy_uuid,
+    legacy_tag,
+    installed_at,
+    node_id,
+) = sys.argv[1:11]
+doc = {
+    "schema_version": 2,
+    "users": [
         {
-          "credential_id": "${owner_cred_id}",
-          "node_id": "${node_id}",
-          "uuid": "${owner_uuid}",
-          "status": "active",
-          "created_at": "${installed_at}",
-          "revoked_at": null
-        }
-      ]
-    },
-    {
-      "user_id": "${legacy_user_id}",
-      "tag": "${legacy_tag}",
-      "display_name": "${legacy_tag}",
-      "department": "",
-      "enabled": true,
-      "created_at": "${installed_at}",
-      "credentials": [
+            "user_id": owner_user_id,
+            "tag": "owner",
+            "display_name": "Owner",
+            "department": "",
+            "enabled": True,
+            "created_at": installed_at,
+            "credentials": [
+                {
+                    "credential_id": owner_cred_id,
+                    "node_id": node_id,
+                    "uuid": owner_uuid,
+                    "status": "active",
+                    "created_at": installed_at,
+                    "revoked_at": None,
+                }
+            ],
+        },
         {
-          "credential_id": "${legacy_cred_id}",
-          "node_id": "${node_id}",
-          "uuid": "${legacy_uuid}",
-          "status": "active",
-          "created_at": "${installed_at}",
-          "revoked_at": null
-        }
-      ]
-    }
-  ]
+            "user_id": legacy_user_id,
+            "tag": legacy_tag,
+            "display_name": legacy_tag,
+            "department": "",
+            "enabled": True,
+            "created_at": installed_at,
+            "credentials": [
+                {
+                    "credential_id": legacy_cred_id,
+                    "node_id": node_id,
+                    "uuid": legacy_uuid,
+                    "status": "active",
+                    "created_at": installed_at,
+                    "revoked_at": None,
+                }
+            ],
+        },
+    ],
 }
-EOF
+with open(output, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+PY
 }
 
 
@@ -2604,6 +2615,10 @@ main() {
   is_supported_os "$OS_ID" "$OS_VERSION" || die "Unsupported platform: ${OS_ID} ${OS_VERSION}. Supported: Debian 12/13 and Ubuntu 22.04/24.04/26.04."
   ensure_dependencies
   check_systemd
+
+  if [[ -f "$VERSION_FILE" ]] && legacy_seed_requested; then
+    die "Legacy seed requires a clean host."
+  fi
 
   if [[ -f "$VERSION_FILE" ]]; then
     if (( runtime_only )); then
