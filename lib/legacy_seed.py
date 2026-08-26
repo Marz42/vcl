@@ -4,9 +4,12 @@
 Stdlib only. Validates local secret files, VLESS Reality URI constraints,
 and derives Reality public keys (X25519) for constant-time pbk checks.
 Never logs URI, UUID, or private key material — errors cite path + type only.
+
+Installer entry: ``validate-seed URI_FILE KEY_FILE TAG`` (path-only argv).
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import hmac
 import ipaddress
@@ -28,10 +31,10 @@ SHORT_ID_RE = re.compile(r"^[0-9a-f]{1,16}$", re.IGNORECASE)
 REALITY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}={0,2}$")
 # Same contract as is_valid_user_tag / vincula-common.sh.
 TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
-# DNS label rules aligned with vincula.sh is_dns_name (simplified, no underscore).
+# DNS label rules aligned with vincula.sh is_dns_name (requires a dot / multi-label).
 DNS_NAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
-    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
 )
 
 # VCL-compatible Reality fingerprints (normalize to chrome on install).
@@ -160,22 +163,45 @@ def validate_server_host(value: str) -> bool:
             return True
         except ValueError:
             return False
+    # Multi-label DNS (same as is_dns_name: requires a dot).
+    if "." not in v or ".." in v:
+        return False
     return bool(DNS_NAME_RE.match(v))
 
 
 def validate_sni_host(value: str) -> bool:
-    """Reality SNI must be a DNS name (matches select_reality_host)."""
+    """Reality SNI must be a multi-label DNS name (matches is_dns_name)."""
     v = (value or "").strip()
     if not v or any(ord(ch) < 32 for ch in v):
         return False
+    if "." not in v or ".." in v:
+        return False
     return bool(DNS_NAME_RE.match(v))
+
+
+def allowed_secret_owners() -> set[int]:
+    """UIDs allowed to own secret files.
+
+    When running as root under sudo, accept the invoking user's SUDO_UID
+    (and root) so ``sudo bash vincula.sh --legacy-*-file …`` works on 0600
+    caller-owned files. Non-root ignores forged SUDO_UID.
+    """
+    if not hasattr(os, "geteuid"):
+        return set()
+    euid = os.geteuid()
+    allowed = {euid}
+    if euid == 0:
+        raw = (os.environ.get("SUDO_UID") or "").strip()
+        if raw.isdigit():
+            allowed.add(int(raw))
+    return allowed
 
 
 def validate_secret_file(path: Path, *, label: str) -> Path:
     """Fail-closed local secret file checks (V0.4.5 §3.3).
 
-    Regular file, owned by current user, not group/world readable,
-    no symlink (fail-close), not dir/FIFO/socket.
+    Regular file, owned by current user (or verified SUDO_UID when root),
+    not group/world readable, no symlink (fail-close), not dir/FIFO/socket.
     """
     raw = Path(path)
     try:
@@ -188,7 +214,7 @@ def validate_secret_file(path: Path, *, label: str) -> Path:
     if not stat.S_ISREG(st.st_mode):
         raise LegacySeedError(f"{label}: not a regular file")
     if hasattr(os, "getuid"):
-        if st.st_uid != os.getuid():
+        if st.st_uid not in allowed_secret_owners():
             raise LegacySeedError(f"{label}: not owned by current user")
         # Unix permission bits are meaningful on POSIX only (Windows chmod is ACL-mapped).
         mode = stat.S_IMODE(st.st_mode)
@@ -250,20 +276,38 @@ def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
         raise LegacySeedError("URI must be a single line")
     if not raw.lower().startswith("vless://"):
         raise LegacySeedError("scheme must be vless")
-    parsed = urlparse(raw)
+    try:
+        parsed = urlparse(raw)
+    except ValueError as exc:
+        raise LegacySeedError("invalid URI") from exc
     if parsed.scheme.lower() != "vless":
         raise LegacySeedError("scheme must be vless")
+    if parsed.password is not None:
+        raise LegacySeedError("URI userinfo must not include a password")
+    path = parsed.path or ""
+    if path not in ("", "/"):
+        raise LegacySeedError("URI must not include a path")
     uuid = unquote(parsed.username or "")
     if not UUID_RE.match(uuid):
         raise LegacySeedError("invalid UUID")
-    host = parsed.hostname or ""
+    try:
+        host = parsed.hostname or ""
+    except ValueError as exc:
+        raise LegacySeedError("invalid server host") from exc
     if not host:
         raise LegacySeedError("missing server host")
     if not validate_server_host(host):
         raise LegacySeedError("invalid server host")
-    if parsed.port is None:
+    try:
+        port_val = parsed.port
+    except ValueError as exc:
+        raise LegacySeedError("invalid port") from exc
+    if port_val is None:
         raise LegacySeedError("missing port")
-    port = int(parsed.port)
+    try:
+        port = int(port_val)
+    except ValueError as exc:
+        raise LegacySeedError("invalid port") from exc
     if not (1 <= port <= 65535):
         raise LegacySeedError("invalid port")
     qs = _parse_query_no_dup(parsed.query)
@@ -317,8 +361,9 @@ def load_legacy_seed(
     user_tag: str,
     advertised_server: Optional[str],
     install_port: int = 443,
+    require_advertised_server: bool = True,
 ) -> LegacySeedInput:
-    """Validate files + URI + key match. Safe for controller pre-upload checks."""
+    """Validate files + URI + key match. Safe for controller / installer checks."""
     tag = validate_user_tag(user_tag)
 
     uri_path = validate_secret_file(Path(uri_file), label="legacy URI file")
@@ -333,11 +378,11 @@ def load_legacy_seed(
     if not constant_time_equal(derived, str(fields["public_key"])):
         raise LegacySeedError("Reality private key does not match URI pbk")
 
-    adv = (advertised_server or "").strip()
-    if not adv:
-        raise LegacySeedError("advertised server required for legacy seed")
     uri_server = str(fields["server"])
-    if uri_server.lower() != adv.lower() and uri_server != adv:
+    adv = (advertised_server or "").strip()
+    if require_advertised_server and not adv:
+        raise LegacySeedError("advertised server required for legacy seed")
+    if adv and uri_server.lower() != adv.lower() and uri_server != adv:
         raise LegacySeedError("URI authority must match --server")
     if int(fields["port"]) != int(install_port):
         raise LegacySeedError("URI port must match install port")
@@ -374,7 +419,7 @@ def redact_seed_text(text: str) -> str:
 
 def _cli_validate_uri(uri: str) -> None:
     fields = parse_legacy_vless_uri(uri)
-    # Machine-readable one-liner for installer (no secrets beyond parsed fields).
+    # Machine-readable one-liner (test/debug only; installer must use validate-seed).
     sys.stdout.write(
         json.dumps(
             {
@@ -397,17 +442,68 @@ def _cli_validate_tag(tag: str) -> None:
     sys.stdout.write("ok\n")
 
 
+def _cli_validate_seed(argv: list[str]) -> int:
+    """Path-only installer entry. Stdout: KEY=value lines (no JSON blob)."""
+    parser = argparse.ArgumentParser(prog="legacy_seed.py validate-seed", add_help=False)
+    parser.add_argument("uri_file")
+    parser.add_argument("key_file")
+    parser.add_argument("tag")
+    parser.add_argument("--server", default="")
+    parser.add_argument("--port", type=int, default=443)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 2
+    try:
+        seed = load_legacy_seed(
+            uri_file=Path(args.uri_file),
+            private_key_file=Path(args.key_file),
+            user_tag=args.tag,
+            advertised_server=(args.server or "").strip() or None,
+            install_port=int(args.port),
+            require_advertised_server=False,
+        )
+    except LegacySeedError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 1
+    # KEY=value for bash while-read; values may contain secrets — pipe only, never argv.
+    lines = [
+        f"UUID={seed.uuid}",
+        f"SERVER={seed.server}",
+        f"PORT={seed.port}",
+        f"SNI={seed.sni}",
+        f"PBK={seed.public_key}",
+        f"SID={seed.short_id}",
+        f"FP={seed.fingerprint}",
+        f"PRIVATE_KEY={seed.private_key}",
+        f"PUBLIC_KEY={seed.public_key}",
+        f"TAG={seed.user_tag}",
+    ]
+    sys.stdout.write("\n".join(lines) + "\n")
+    return 0
+
+
 if __name__ == "__main__":
-    # CLI for installer: derive-public | compare-pbk | validate-uri | validate-tag
+    # CLI: validate-seed (installer) | derive-public | compare-pbk | validate-uri | validate-tag
+    if len(sys.argv) >= 2 and sys.argv[1] == "validate-seed":
+        raise SystemExit(_cli_validate_seed(sys.argv[2:]))
     if len(sys.argv) == 3 and sys.argv[1] == "derive-public":
-        key = _read_single_key_line(Path(sys.argv[2]))
-        sys.stdout.write(derive_reality_public_key(key) + "\n")
+        try:
+            key = _read_single_key_line(Path(sys.argv[2]))
+            sys.stdout.write(derive_reality_public_key(key) + "\n")
+        except LegacySeedError as exc:
+            sys.stderr.write(f"ERROR: {exc}\n")
+            raise SystemExit(1) from exc
         raise SystemExit(0)
     if len(sys.argv) == 4 and sys.argv[1] == "compare-pbk":
-        key = _read_single_key_line(Path(sys.argv[2]))
-        pbk = sys.argv[3].strip()
-        derived = derive_reality_public_key(key)
-        raise SystemExit(0 if constant_time_equal(derived, pbk) else 1)
+        try:
+            key = _read_single_key_line(Path(sys.argv[2]))
+            pbk = sys.argv[3].strip()
+            derived = derive_reality_public_key(key)
+            raise SystemExit(0 if constant_time_equal(derived, pbk) else 1)
+        except LegacySeedError as exc:
+            sys.stderr.write(f"ERROR: {exc}\n")
+            raise SystemExit(1) from exc
     if len(sys.argv) == 3 and sys.argv[1] == "validate-uri":
         try:
             _cli_validate_uri(sys.argv[2])
@@ -423,7 +519,9 @@ if __name__ == "__main__":
             raise SystemExit(1) from exc
         raise SystemExit(0)
     sys.stderr.write(
-        "usage: legacy_seed.py derive-public KEYFILE | compare-pbk KEYFILE PBK | "
+        "usage: legacy_seed.py validate-seed URI_FILE KEY_FILE TAG "
+        "[--server HOST] [--port N]\n"
+        "       legacy_seed.py derive-public KEYFILE | compare-pbk KEYFILE PBK | "
         "validate-uri URI | validate-tag TAG\n"
     )
     raise SystemExit(2)

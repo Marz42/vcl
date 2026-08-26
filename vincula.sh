@@ -2239,6 +2239,18 @@ legacy_seed_require_all_or_none() {
   fi
 }
 
+legacy_seed_owner_allowed() {
+  # Args: owner_uid. Accept EUID; when root under sudo also accept SUDO_UID.
+  local owner=$1 euid
+  euid=$(id -u)
+  [[ -n "$owner" ]] || return 1
+  [[ "$owner" == "$euid" ]] && return 0
+  if [[ "$euid" == "0" && -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
+    [[ "$owner" == "$SUDO_UID" || "$owner" == "0" ]] && return 0
+  fi
+  return 1
+}
+
 legacy_seed_validate_local_file() {
   local path=$1 label=$2
   local mode owner
@@ -2246,7 +2258,7 @@ legacy_seed_validate_local_file() {
   [[ ! -L "$path" ]] || die "${label}: symlink refused"
   [[ -f "$path" ]] || die "${label}: not a regular file"
   owner=$(stat -c '%u' "$path" 2>/dev/null || true)
-  [[ -n "$owner" && "$owner" == "$(id -u)" ]] || die "${label}: not owned by current user"
+  legacy_seed_owner_allowed "$owner" || die "${label}: not owned by current user"
   mode=$(stat -c '%a' "$path" 2>/dev/null || true)
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "${label}: cannot read mode"
   # Refuse group/world readable bits.
@@ -2258,63 +2270,85 @@ legacy_seed_validate_local_file() {
 load_legacy_seed_into_env() {
   # Sets: LEGACY_UUID LEGACY_SERVER LEGACY_PORT LEGACY_SNI LEGACY_PBK LEGACY_SID
   #        LEGACY_PRIVATE_KEY LEGACY_PUBLIC_KEY (derived)
-  # Does not print secrets.
-  local root uri_line key_line derived parsed
+  # Path-only python argv (validate-seed); fields arrive via stdout pipe — never argv.
+  local root line key value want_server want_port seed_tmp
+  local -a vs_argv
   legacy_seed_validate_local_file "$LEGACY_URI_FILE" "legacy URI file"
   legacy_seed_validate_local_file "$LEGACY_PRIVATE_KEY_FILE" "legacy Reality private key file"
-  uri_line=$(grep -E '[[:graph:]]' "$LEGACY_URI_FILE" | head -n 1 || true)
-  [[ -n "$uri_line" ]] || die "legacy URI file: empty"
-  key_line=$(grep -E '[[:graph:]]' "$LEGACY_PRIVATE_KEY_FILE" | head -n 1 || true)
-  [[ -n "$key_line" ]] || die "legacy Reality private key file: empty"
-  if [[ $(grep -E '[[:graph:]]' "$LEGACY_PRIVATE_KEY_FILE" | wc -l) -ne 1 ]]; then
-    die "legacy Reality private key file: must contain exactly one key"
-  fi
   root=$(installer_root) || die "Cannot locate installer directory for legacy_seed.py."
   [[ -f "${root}/lib/legacy_seed.py" ]] || die "missing lib/legacy_seed.py in installer payload"
-  python3 "${root}/lib/legacy_seed.py" validate-tag "$LEGACY_USER_TAG" >/dev/null \
-    || die "invalid legacy user tag"
-  parsed=$(python3 "${root}/lib/legacy_seed.py" validate-uri "$uri_line") \
-    || die "legacy URI file: invalid or unsupported VLESS URI"
-  LEGACY_UUID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["uuid"])' "$parsed")
-  LEGACY_SERVER=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["server"])' "$parsed")
-  LEGACY_PORT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["port"])' "$parsed")
-  LEGACY_SNI=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sni"])' "$parsed")
-  LEGACY_PBK=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pbk"])' "$parsed")
-  LEGACY_SID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sid"])' "$parsed")
-  [[ "$key_line" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "legacy Reality private key: invalid format"
-  derived=$(python3 "${root}/lib/legacy_seed.py" derive-public "$LEGACY_PRIVATE_KEY_FILE") \
-    || die "legacy Reality private key: could not derive public key"
-  python3 "${root}/lib/legacy_seed.py" compare-pbk "$LEGACY_PRIVATE_KEY_FILE" "$LEGACY_PBK" \
-    || die "legacy Reality private key does not match URI pbk (zero-install)"
-  LEGACY_PRIVATE_KEY=$key_line
-  LEGACY_PUBLIC_KEY=$derived
-  # Authority must match VCL_SERVER when set; port must match VCL_PORT.
-  local want_server want_port
   want_server=${VCL_SERVER:-}
   want_port=${VCL_PORT:-443}
+  vs_argv=(
+    python3 "${root}/lib/legacy_seed.py" validate-seed
+    "$LEGACY_URI_FILE" "$LEGACY_PRIVATE_KEY_FILE" "$LEGACY_USER_TAG"
+    --port "$want_port"
+  )
   if [[ -n "$want_server" ]]; then
-    if [[ "${LEGACY_SERVER,,}" != "${want_server,,}" && "$LEGACY_SERVER" != "$want_server" ]]; then
-      die "legacy URI authority must match VCL_SERVER / --server"
-    fi
+    vs_argv+=(--server "$want_server")
   fi
-  [[ "$LEGACY_PORT" == "$want_port" ]] || die "legacy URI port must match install port"
+  seed_tmp=$(mktemp)
+  chmod 600 "$seed_tmp" 2>/dev/null || true
+  if ! "${vs_argv[@]}" >"$seed_tmp"; then
+    rm -f -- "$seed_tmp"
+    die "legacy seed refused (zero-install)"
+  fi
+  LEGACY_UUID="" LEGACY_SERVER="" LEGACY_PORT="" LEGACY_SNI="" LEGACY_PBK="" LEGACY_SID=""
+  LEGACY_PRIVATE_KEY="" LEGACY_PUBLIC_KEY=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      UUID) LEGACY_UUID=$value ;;
+      SERVER) LEGACY_SERVER=$value ;;
+      PORT) LEGACY_PORT=$value ;;
+      SNI) LEGACY_SNI=$value ;;
+      PBK) LEGACY_PBK=$value ;;
+      SID) LEGACY_SID=$value ;;
+      PRIVATE_KEY) LEGACY_PRIVATE_KEY=$value ;;
+      PUBLIC_KEY) LEGACY_PUBLIC_KEY=$value ;;
+      TAG) ;; # already validated via argv tag
+      *) ;;
+    esac
+  done <"$seed_tmp"
+  rm -f -- "$seed_tmp"
+  [[ -n "$LEGACY_UUID" && -n "$LEGACY_SERVER" && -n "$LEGACY_PORT" ]] \
+    || die "legacy seed refused (zero-install)"
+  [[ -n "$LEGACY_SNI" && -n "$LEGACY_PBK" && -n "$LEGACY_SID" ]] \
+    || die "legacy seed refused (zero-install)"
+  [[ -n "$LEGACY_PRIVATE_KEY" && -n "$LEGACY_PUBLIC_KEY" ]] \
+    || die "legacy seed refused (zero-install)"
 }
 
 render_users_owner_and_legacy() {
   local output=$1 owner_uuid=$2 legacy_uuid=$3 legacy_tag=$4 installed_at=$5 node_id=$6
-  local owner_user_id owner_cred_id legacy_user_id legacy_cred_id
+  local owner_user_id owner_cred_id legacy_user_id legacy_cred_id params
   owner_user_id=$(generate_uuid_v4)
   owner_cred_id=$(generate_uuid_v4)
   legacy_user_id=$(generate_uuid_v4)
   legacy_cred_id=$(generate_uuid_v4)
   [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
-  # JSON serializer — never interpolate tag into a shell HEREDOC.
-  python3 - "$output" "$owner_user_id" "$owner_cred_id" "$owner_uuid" \
-    "$legacy_user_id" "$legacy_cred_id" "$legacy_uuid" "$legacy_tag" \
-    "$installed_at" "$node_id" <<'PY'
+  # Line file keeps UUIDs/tag out of python argv (path-only).
+  params=$(mktemp)
+  chmod 600 "$params" 2>/dev/null || true
+  {
+    printf '%s\n' "$owner_user_id"
+    printf '%s\n' "$owner_cred_id"
+    printf '%s\n' "$owner_uuid"
+    printf '%s\n' "$legacy_user_id"
+    printf '%s\n' "$legacy_cred_id"
+    printf '%s\n' "$legacy_uuid"
+    printf '%s\n' "$legacy_tag"
+    printf '%s\n' "$installed_at"
+    printf '%s\n' "$node_id"
+  } >"$params"
+  python3 - "$params" "$output" <<'PY'
 import json, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if len(lines) != 9:
+    raise SystemExit("render_users_owner_and_legacy: bad params")
 (
-    output,
     owner_user_id,
     owner_cred_id,
     owner_uuid,
@@ -2324,7 +2358,8 @@ import json, sys
     legacy_tag,
     installed_at,
     node_id,
-) = sys.argv[1:11]
+) = lines
+output = sys.argv[2]
 doc = {
     "schema_version": 2,
     "users": [
@@ -2370,6 +2405,7 @@ with open(output, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2, ensure_ascii=False)
     fh.write("\n")
 PY
+  rm -f -- "$params"
 }
 
 
@@ -2457,9 +2493,9 @@ install_new_node() {
     [[ "$legacy_uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the legacy UUID."
   else
     [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Could not validate the generated REALITY short ID."
+    log_info "Assigned node_id ${node_id}"
+    log_info "Assigned instance_id ${instance_id}"
   fi
-  log_info "Assigned node_id ${node_id}"
-  log_info "Assigned instance_id ${instance_id}"
 
   # Self-test uses imported keypair + legacy UUID when seeding so the old client path is proven.
   local selftest_uuid=$uuid

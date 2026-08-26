@@ -12,6 +12,7 @@
 ### Fixed
 - Fleet suite **HOME / XDG isolation** 贯穿 teardown（防污染真实 `~/.ssh`）。
 - **Review-fix：** sudo/root legacy seed remote `chown`/`chmod` fail-closed；tag/URI 与 `is_valid_user_tag` 对齐并拒重复 query 键；existing VERSION + seed 拒绝；replace journal 记 backup/restore 子步骤；audit archive restore 记为 `audit_archive_restore`。
+- **Review-fix round 2：** installer `validate-seed` path-only（URI/UUID/pbk 不再进子进程 argv）；直装 `sudo` 接受经验证 `SUDO_UID` 属主；parser 拒 password userinfo / URI path / 单标签 SNI；`--from-backup` 仅在 verify 后记 SUCCESS；legacy seed 成功输出对齐 Spec §3.8。
 ### Notes
 - Spec: [`docs/specs/V0.4.5_Spec.md`](docs/specs/V0.4.5_Spec.md) · evidence：[`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md) · LIVE Matrix H：[`docs/evidence/0.4.5/LIVE.md`](docs/evidence/0.4.5/LIVE.md)。
 - `0.5.0` 仍是首个 **capability/telemetry** Node 升级；`0.3.2` 仅为 payload/legacy-seed 制品 bump。

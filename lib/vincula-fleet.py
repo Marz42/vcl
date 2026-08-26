@@ -2866,13 +2866,7 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
                 detail="from-backup missing",
             )
             die(f"backup file not found: {local_archive}")
-        append_operation_journal(
-            operation="backup",
-            target=str(args.name),
-            state="SUCCESS",
-            exit_code=0,
-            detail="from-backup",
-        )
+        # Journal SUCCESS only after verify_archive (+ secretless / source checks).
     else:
         ssh_state, ident, ident_detail = ssh_remote_json(
             old_node, ["vcl", "identity", "--json"]
@@ -2941,14 +2935,43 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     backup_mod = load_backup_module()
     verified = backup_mod.verify_archive(local_archive)
     if not verified.get("ok"):
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="FAILED",
+            exit_code=1,
+            detail="from-backup verify failed" if from_backup else "backup verify failed",
+        )
         die(f"backup verify failed: {verified.get('error') or 'failed'}")
     if verified.get("secret_bearing"):
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="FAILED",
+            exit_code=1,
+            detail="secret-bearing backup refused",
+        )
         die("node replace requires a secretless backup")
     source_id = verified.get("source_node_id")
     if source_id != node["node_id"]:
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="FAILED",
+            exit_code=1,
+            detail="backup source_node_id mismatch",
+        )
         die(
             f"cannot replace {args.name}: backup source_node_id {source_id} "
             f"does not match registry {node['node_id']}"
+        )
+    if from_backup:
+        append_operation_journal(
+            operation="backup",
+            target=str(args.name),
+            state="SUCCESS",
+            exit_code=0,
+            detail="from-backup",
         )
 
     preflight_replace_target(new_node, extra=extra)

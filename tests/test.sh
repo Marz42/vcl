@@ -389,6 +389,113 @@ if [[ "$verify_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
 else
   pass "verify_existing_install does not remint instance_id"
 fi
+
+# 0.3.1→0.3.2 shaped migration fixture: preserve UUID / Reality / users / accounting
+assert_success "0.3.1→0.3.2 shaped migrate fixture preserves identity" python3 - \
+  "${TEST_TMP}/migrate-031-032" \
+  "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" \
+  "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+uuid, priv, pub, sid, node_id, instance_id = sys.argv[2:8]
+src = root / "src-0.3.1"
+dst = root / "dst-0.3.2"
+src.mkdir(parents=True)
+(src / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+state = {
+    "schema_version": 2,
+    "server": "203.0.113.10",
+    "port": 443,
+    "reality_host": "www.cloudflare.com",
+    "uuid": uuid,
+    "private_key": priv,
+    "public_key": pub,
+    "short_id": sid,
+    "node_id": node_id,
+    "instance_id": instance_id,
+    "project_version": "0.3.1",
+}
+(src / "state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+users = {
+    "schema_version": 2,
+    "users": [
+        {
+            "user_id": "uuuuuuuu-uuuu-4uuu-8uuu-uuuuuuuuuuuu",
+            "tag": "owner",
+            "display_name": "Owner",
+            "department": "",
+            "enabled": True,
+            "created_at": "2026-01-01T00:00:00Z",
+            "credentials": [
+                {
+                    "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "node_id": node_id,
+                    "uuid": uuid,
+                    "status": "active",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "revoked_at": None,
+                }
+            ],
+        }
+    ],
+}
+(src / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+(src / "config.toml").write_text(
+    f'project_version = "0.3.1"\nnode_id = "{node_id}"\n',
+    encoding="utf-8",
+)
+db = src / "accounting.db"
+conn = sqlite3.connect(str(db))
+conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','4')")
+conn.execute(
+    "CREATE TABLE connections (event_id INTEGER PRIMARY KEY, user_tag TEXT, upload_bytes INTEGER)"
+)
+conn.execute(
+    "INSERT INTO connections(event_id,user_tag,upload_bytes) VALUES (1,'owner',42)"
+)
+conn.commit()
+conn.close()
+acct_bytes = db.read_bytes()
+
+# Simulated migrate: copy tree, bump VERSION / project_version only — identity must match.
+import shutil
+
+shutil.copytree(src, dst)
+(dst / "VERSION").write_text("0.3.2\n", encoding="utf-8")
+dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
+dst_state["project_version"] = "0.3.2"
+(dst / "state.json").write_text(json.dumps(dst_state, indent=2) + "\n", encoding="utf-8")
+toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.3.2")
+(dst / "config.toml").write_text(toml, encoding="utf-8")
+
+# Preserve assertions (same invariants migrate_existing_install guards).
+src_state = json.loads((src / "state.json").read_text(encoding="utf-8"))
+dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
+for key in ("uuid", "private_key", "public_key", "short_id", "node_id", "instance_id"):
+    assert src_state[key] == dst_state[key], key
+assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.3.2"
+src_users = json.loads((src / "users.json").read_text(encoding="utf-8"))
+dst_users = json.loads((dst / "users.json").read_text(encoding="utf-8"))
+assert src_users == dst_users
+assert (dst / "accounting.db").read_bytes() == acct_bytes
+conn = sqlite3.connect(str(dst / "accounting.db"))
+row = conn.execute("SELECT upload_bytes FROM connections WHERE event_id=1").fetchone()
+conn.close()
+assert row == (42,)
+print("ok")
+PY
+
+# SUDO_UID owner allowance (bash helper; function already sourced from vincula.sh)
+assert_success "legacy_seed_owner_allowed accepts EUID" \
+  legacy_seed_owner_allowed "$(id -u)"
+if [[ "$(id -u)" != "0" ]]; then
+  assert_failure "legacy_seed_owner_allowed rejects unrelated UID without sudo" \
+    legacy_seed_owner_allowed 0
+  pass "SUDO_UID owner rule covered in legacy_seed.py unit tests"
+fi
 runtime_src=$(sed -n '/^install_runtime_only()/,/^install_new_node()/p' "${PROJECT_DIR}/vincula.sh")
 if [[ "$runtime_src" == *'RUNTIME_ONLY_MARKER'* ]] \
   && [[ "$runtime_src" != *'atomic_install "$staged_version" "$VERSION_FILE"'* ]] \

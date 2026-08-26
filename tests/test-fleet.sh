@@ -1111,6 +1111,117 @@ try:
 except ls.LegacySeedError:
     pass
 
+# Password userinfo / URI path / single-label SNI / invalid port → LegacySeedError
+try:
+    ls.parse_legacy_vless_uri(
+        f"vless://{uuid_ok}:secret@{server}:443"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=abcd&type=tcp"
+    )
+    raise SystemExit("expected password userinfo refuse")
+except ls.LegacySeedError as exc:
+    assert "password" in str(exc).lower()
+
+try:
+    ls.parse_legacy_vless_uri(
+        f"vless://{uuid_ok}@{server}:443/extra"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=abcd&type=tcp"
+    )
+    raise SystemExit("expected URI path refuse")
+except ls.LegacySeedError as exc:
+    assert "path" in str(exc).lower()
+
+try:
+    ls.parse_legacy_vless_uri(
+        f"vless://{uuid_ok}@{server}:443"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni=localhost&fp=chrome&pbk={pbk}&sid=abcd&type=tcp"
+    )
+    raise SystemExit("expected localhost SNI refuse")
+except ls.LegacySeedError as exc:
+    assert "sni" in str(exc).lower()
+
+try:
+    ls.parse_legacy_vless_uri(
+        f"vless://{uuid_ok}@{server}:99999"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=abcd&type=tcp"
+    )
+    raise SystemExit("expected invalid port refuse")
+except ls.LegacySeedError as exc:
+    assert "port" in str(exc).lower()
+except ValueError:
+    raise SystemExit("invalid port must be LegacySeedError, not bare ValueError")
+
+# validate-seed: path-only argv; secrets only on stdout
+import subprocess as sp
+
+argv_log = tmp / "validate-seed.argv"
+wrapper = tmp / "python3-argv-wrap"
+wrapper.write_text(
+    "#!/usr/bin/env bash\n"
+    f'echo "$@" >> {argv_log}\n'
+    f'exec {sys.executable} "$@"\n',
+    encoding="utf-8",
+)
+os.chmod(wrapper, 0o755)
+if argv_log.exists():
+    argv_log.unlink()
+proc = sp.run(
+    [
+        str(wrapper),
+        str(legacy_path),
+        "validate-seed",
+        str(uri_file),
+        str(key_file),
+        "legacy-user",
+        "--server",
+        server,
+        "--port",
+        "443",
+    ],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+)
+assert proc.returncode == 0, proc.stderr
+out = proc.stdout
+assert f"UUID={uuid_ok}" in out
+assert f"PBK={pbk}" in out
+assert priv in out
+logged = argv_log.read_text(encoding="utf-8")
+assert "vless://" not in logged, logged
+assert uuid_ok not in logged, logged
+assert priv not in logged, logged
+assert pbk not in logged, logged
+assert '"uuid"' not in logged and "json.loads" not in logged
+
+# SUDO_UID: root accepts caller-owned file; forged SUDO_UID ignored when non-root
+if hasattr(os, "geteuid") and os.geteuid() != 0:
+    # Non-root: forged SUDO_UID must not expand allow-list beyond geteuid
+    os.environ["SUDO_UID"] = "0"
+    try:
+        owners = ls.allowed_secret_owners()
+        assert owners == {os.geteuid()}, owners
+    finally:
+        os.environ.pop("SUDO_UID", None)
+
+# Installer must use validate-seed (no URI/pbk in argv)
+vincula_src = Path(fleet_path).resolve().parent.parent / "vincula.sh"
+vs_src = vincula_src.read_text(encoding="utf-8")
+load_fn = vs_src.split("load_legacy_seed_into_env()")[1].split("render_users_owner_and_legacy()")[0]
+assert "validate-seed" in load_fn
+assert "validate-uri" not in load_fn
+assert "compare-pbk" not in load_fn
+assert "json.loads" not in load_fn
+# Legacy branch must not log Assigned node_id (Spec §3.8 whitelist).
+idx = vs_src.index('die "Could not validate the imported REALITY short ID."')
+snippet = vs_src[idx : idx + 450]
+assert "else" in snippet
+assert snippet.index("else") < snippet.index("Assigned node_id")
+
 # Harden / privilege: sudo wraps installer; harden helper is present
 assert hasattr(prov, "_harden_remote_legacy_secrets")
 sudo_argv = prov.installer_remote_argv(
@@ -8646,6 +8757,33 @@ if assert_replace_aborted "after verify fail"; then
 else
   fail "verify-fail --from-backup does not change registry or old node"
 fi
+# --from-backup must not journal backup SUCCESS before verify fails
+assert_success "0.4.5 from-backup verify fail journals FAILED not SUCCESS" \
+  env VCL_FLEET_HOME="${VCL_FLEET_HOME}" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+fleet_path = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+rows = fleet.read_operation_journal(limit=200)
+backup_rows = [r for r in rows if r.get("operation") == "backup"]
+assert backup_rows, f"expected backup journal rows; got {len(rows)} total"
+# Prefer the most recent from-backup verify failure if present.
+failed = [
+    r
+    for r in backup_rows
+    if r.get("state") == "FAILED"
+    and "verify" in str(r.get("detail") or "").lower()
+]
+assert failed, backup_rows[-5:]
+assert not any(
+    r.get("state") == "SUCCESS" and r.get("detail") == "from-backup"
+    for r in backup_rows
+), backup_rows
+PY
 
 fail_wrong_rc=0
 fail_wrong_err=$(fleet node replace lax --host 203.0.113.18 --host-key "$LAX2_HOST_KEY" \
