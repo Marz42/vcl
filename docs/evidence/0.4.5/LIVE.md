@@ -54,7 +54,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Field | Value |
 | --- | --- |
 | Date | 2026-08-26 |
-| Code HEAD | (set at commit; includes empty-sid / URI port + Reality 503 accept) |
+| Code HEAD | 6fe226d |
 | VPS OS / arch | Debian amd64 |
 | Privilege | root |
 | Old client reconnect | PASS |
