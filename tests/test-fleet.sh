@@ -1013,6 +1013,18 @@ assert priv not in joined
 assert pbk not in joined
 assert uuid_ok not in joined
 
+argv_port = prov.installer_remote_argv(
+    "/tmp/stage/vincula.sh",
+    privilege_mode="root",
+    vcl_server=server,
+    vcl_port=20687,
+    legacy_uri_remote="/tmp/stage/legacy-user.uri",
+    legacy_key_remote="/tmp/stage/legacy-reality.key",
+    legacy_user_tag="legacy-user",
+)
+assert "VCL_PORT=20687" in argv_port
+assert f"VCL_SERVER={server}" in argv_port
+
 # help documents the three flags on the provision subparser
 prov_parser = None
 root = fleet.build_parser()
@@ -1153,6 +1165,47 @@ except ls.LegacySeedError as exc:
     assert "port" in str(exc).lower()
 except ValueError:
     raise SystemExit("invalid port must be LegacySeedError, not bare ValueError")
+
+# Missing / empty sid → empty short_id (accepted)
+no_sid = ls.parse_legacy_vless_uri(
+    f"vless://{uuid_ok}@{server}:20687"
+    f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+    f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&type=tcp"
+)
+assert no_sid["short_id"] == ""
+assert no_sid["port"] == 20687
+empty_sid = ls.parse_legacy_vless_uri(
+    f"vless://{uuid_ok}@{server}:443"
+    f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+    f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=&type=tcp"
+)
+assert empty_sid["short_id"] == ""
+try:
+    ls.parse_legacy_vless_uri(
+        f"vless://{uuid_ok}@{server}:443"
+        f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+        f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&sid=zz&type=tcp"
+    )
+    raise SystemExit("expected invalid short ID refuse")
+except ls.LegacySeedError as exc:
+    assert "short" in str(exc).lower()
+
+# load_legacy_seed: install_port=None accepts URI port; empty sid OK
+no_sid_uri = write_secret(
+    tmp / "no-sid.uri",
+    f"vless://{uuid_ok}@{server}:20687"
+    f"?encryption=none&flow=xtls-rprx-vision&security=reality"
+    f"&sni=www.cloudflare.com&fp=chrome&pbk={pbk}&type=tcp\n",
+)
+seed_nosid = ls.load_legacy_seed(
+    uri_file=no_sid_uri,
+    private_key_file=key_file,
+    user_tag="legacy-user",
+    advertised_server=server,
+    install_port=None,
+)
+assert seed_nosid.short_id == ""
+assert seed_nosid.port == 20687
 
 # validate-seed: path-only argv; secrets only on stdout
 import subprocess as sp

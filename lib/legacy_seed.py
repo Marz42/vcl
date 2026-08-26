@@ -26,7 +26,8 @@ UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-SHORT_ID_RE = re.compile(r"^[0-9a-f]{1,16}$", re.IGNORECASE)
+# Empty short ID is valid Reality (URI may omit sid or use sid=).
+SHORT_ID_RE = re.compile(r"^[0-9a-f]{0,16}$", re.IGNORECASE)
 # sing-box Reality keys: URL-safe base64 of 32 bytes (43–44 chars, optional =).
 REALITY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}={0,2}$")
 # Same contract as is_valid_user_tag / vincula-common.sh.
@@ -334,10 +335,9 @@ def parse_legacy_vless_uri(uri: str) -> dict[str, str | int]:
         raise LegacySeedError("invalid sni")
     if not pbk:
         raise LegacySeedError("missing pbk")
-    if not sid:
-        raise LegacySeedError("missing sid")
     if not REALITY_KEY_RE.match(pbk):
         raise LegacySeedError("invalid pbk")
+    # Missing or empty sid → empty short ID (common on older single-user boxes).
     if not SHORT_ID_RE.match(sid):
         raise LegacySeedError("invalid short ID")
     if fp not in COMPAT_FP:
@@ -360,10 +360,14 @@ def load_legacy_seed(
     private_key_file: Path,
     user_tag: str,
     advertised_server: Optional[str],
-    install_port: int = 443,
+    install_port: Optional[int] = 443,
     require_advertised_server: bool = True,
 ) -> LegacySeedInput:
-    """Validate files + URI + key match. Safe for controller / installer checks."""
+    """Validate files + URI + key match. Safe for controller / installer checks.
+
+    ``install_port=None`` skips the port match (caller takes the URI port as
+    the install listen port — used by controller legacy provision).
+    """
     tag = validate_user_tag(user_tag)
 
     uri_path = validate_secret_file(Path(uri_file), label="legacy URI file")
@@ -384,7 +388,7 @@ def load_legacy_seed(
         raise LegacySeedError("advertised server required for legacy seed")
     if adv and uri_server.lower() != adv.lower() and uri_server != adv:
         raise LegacySeedError("URI authority must match --server")
-    if int(fields["port"]) != int(install_port):
+    if install_port is not None and int(fields["port"]) != int(install_port):
         raise LegacySeedError("URI port must match install port")
 
     return LegacySeedInput(

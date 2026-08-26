@@ -12,11 +12,13 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
   - legacy VLESS URI file (single line)
   - Reality private key file (single key line)
 - Chosen `--legacy-user-tag` **≠** `owner`.
+- URI may omit `sid` / use empty `sid=` (empty Reality short ID).
+- Listen port is taken from the URI (not assumed 443).
 
 ## Steps
 
 1. Save the old client URI and Reality private key to local files (`0600`). Do not commit them.
-2. Confirm URI authority matches the intended `--server` / advertised host; port matches install port (usually 443).
+2. Confirm URI authority matches the intended `--server` / advertised host. Stop any existing proxy so the URI port is free (and remove any pre-existing `sing-box.service` unit if present).
 3. Run provision with **all three** legacy flags (paths only):
 
    ```bash
@@ -33,7 +35,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 5. Verify old client reaches the public internet successfully.
 6. Fetch a **new owner** link (`vcl-fleet user link owner --node NAME`) and verify that client path works.
 7. Run `vcl-fleet probe` / `verify` / `sync` (or `sync --full`) successfully.
-8. Confirm public listeners are only original SSH + expected VLESS port (no new management port).
+8. Confirm public listeners are only original SSH + expected VLESS port from the URI (no new management port).
 9. Confirm Clash API remains loopback-only on the node.
 10. Confirm remote staging and local temp secret copies are cleaned up after success/failure.
 

@@ -2315,7 +2315,8 @@ load_legacy_seed_into_env() {
   rm -f -- "$seed_tmp"
   [[ -n "$LEGACY_UUID" && -n "$LEGACY_SERVER" && -n "$LEGACY_PORT" ]] \
     || die "legacy seed refused (zero-install)"
-  [[ -n "$LEGACY_SNI" && -n "$LEGACY_PBK" && -n "$LEGACY_SID" ]] \
+  # SID may be empty (URI omitted sid / empty Reality short ID).
+  [[ -n "$LEGACY_SNI" && -n "$LEGACY_PBK" ]] \
     || die "legacy seed refused (zero-install)"
   [[ -n "$LEGACY_PRIVATE_KEY" && -n "$LEGACY_PUBLIC_KEY" ]] \
     || die "legacy seed refused (zero-install)"
@@ -2489,7 +2490,8 @@ install_new_node() {
   [[ "$node_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated node_id."
   [[ "$instance_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated instance_id."
   if (( legacy_mode )); then
-    [[ "$short_id" =~ ^[0-9a-f]{1,16}$ ]] || die "Could not validate the imported REALITY short ID."
+    # Empty short ID allowed (legacy URI may omit sid).
+    [[ "$short_id" =~ ^[0-9a-f]{0,16}$ ]] || die "Could not validate the imported REALITY short ID."
     [[ "$legacy_uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the legacy UUID."
   else
     [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Could not validate the generated REALITY short ID."

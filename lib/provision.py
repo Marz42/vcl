@@ -293,14 +293,15 @@ def installer_remote_argv(
     *,
     privilege_mode: PrivilegeMode,
     vcl_server: Optional[str],
+    vcl_port: Optional[int] = None,
     legacy_uri_remote: Optional[str] = None,
     legacy_key_remote: Optional[str] = None,
     legacy_user_tag: Optional[str] = None,
 ) -> list[str]:
     """Build remote installer argv.
 
-    sudo must wrap ``env`` so VCL_SERVER survives sudo's env reset:
-    ``sudo -n env VCL_SERVER=... bash vincula.sh``.
+    sudo must wrap ``env`` so VCL_SERVER / VCL_PORT survive sudo's env reset:
+    ``sudo -n env VCL_SERVER=... VCL_PORT=... bash vincula.sh``.
     Legacy seed paths are path-only argv (never URI/key contents).
     """
     argv: list[str] = ["bash", unpack_script]
@@ -315,9 +316,14 @@ def installer_remote_argv(
                 legacy_user_tag,
             ]
         )
+    env_assigns: list[str] = []
     vcl = (vcl_server or "").strip()
     if vcl:
-        argv = ["env", f"VCL_SERVER={vcl}", *argv]
+        env_assigns.append(f"VCL_SERVER={vcl}")
+    if vcl_port is not None:
+        env_assigns.append(f"VCL_PORT={int(vcl_port)}")
+    if env_assigns:
+        argv = ["env", *env_assigns, *argv]
     return _priv_argv(privilege_mode, argv)
 
 
@@ -740,6 +746,7 @@ def unpack_and_run_installer(
     identity_file: Optional[str] = None,
     extra: Optional[list[str]] = None,
     vcl_server: Optional[str] = None,
+    vcl_port: Optional[int] = None,
     privilege_mode: PrivilegeMode = "root",
     remote_stage: str,
     legacy_uri_remote: Optional[str] = None,
@@ -773,6 +780,7 @@ def unpack_and_run_installer(
         f"{paths['unpack']}/vincula.sh",
         privilege_mode=privilege_mode,
         vcl_server=vcl_server,
+        vcl_port=vcl_port,
         legacy_uri_remote=legacy_uri_remote,
         legacy_key_remote=legacy_key_remote,
         legacy_user_tag=legacy_user_tag,
@@ -1050,17 +1058,19 @@ def run_provision(
     reality_host = select_reality_host()
     if legacy_set == 3:
         try:
+            # Install listen port comes from the URI (preserve old client port).
             legacy_seed = load_legacy_seed(
                 uri_file=Path(str(legacy_uri_file)),
                 private_key_file=Path(str(legacy_private_key_file)),
                 user_tag=str(legacy_user_tag),
                 advertised_server=(vcl_server or "").strip() or None,
-                install_port=int(vcl_port),
+                install_port=None,
             )
         except LegacySeedError as exc:
             host.die(f"legacy seed refused: {exc}")
         reality_host = legacy_seed.sni
         vcl_server = legacy_seed.server
+        vcl_port = int(legacy_seed.port)
 
     resolved = resolve_node_payload()
     manifest = verify_local_payload(resolved)
@@ -1181,6 +1191,7 @@ def run_provision(
             identity_file=identity_file,
             extra=extra,
             vcl_server=vcl_server,
+            vcl_port=int(vcl_port) if legacy_seed is not None else None,
             privilege_mode=privilege_mode,
             remote_stage=remote_stage,
             legacy_uri_remote=legacy_uri_remote,

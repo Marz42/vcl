@@ -168,7 +168,8 @@ verify_identity_consistency() {
     printf '✗ Reality key consistent\n'
     fail=1
   fi
-  if [[ -n "$sid_state" && "$sid_state" == "$sid_config" && "$sid_config" == "$VLESS_SID" ]]; then
+  # Empty short ID is valid (all three sides empty still consistent).
+  if [[ "$sid_state" == "$sid_config" && "$sid_config" == "$VLESS_SID" ]]; then
     printf '✓ short ID consistent\n'
   else
     printf '✗ short ID consistent\n'
@@ -1312,7 +1313,8 @@ with open(out_users_json, "w", encoding="utf-8") as f:
     f.write("\n")
 
 if out_cred_csv:
-    if not all([server, port, reality_host, public_key, short_id]):
+    # short_id may be empty (empty Reality short ID).
+    if not all([server, port, reality_host, public_key]):
         print("ERROR: URI parameters required for credential CSV", file=sys.stderr)
         raise SystemExit(1)
     fieldnames = ["tag", "display_name", "department", "user_id", "credential_id", "vless_uri"]
@@ -1376,7 +1378,7 @@ if credentials:
     if not output:
         print("ERROR: credential export requires an output path", file=sys.stderr)
         raise SystemExit(1)
-    if not all([server, port, reality_host, public_key, short_id]):
+    if not all([server, port, reality_host, public_key]):
         print("ERROR: URI parameters required for credential export", file=sys.stderr)
         raise SystemExit(1)
     fieldnames = ["tag", "display_name", "department", "user_id", "credential_id", "vless_uri"]
