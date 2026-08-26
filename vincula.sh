@@ -194,6 +194,17 @@ cleanup_temp() {
   fi
 }
 
+# Install / migrate staging root (0700). Create early so legacy seed secret
+# temps live under it and the EXIT trap always removes them.
+ensure_install_tmp_dir() {
+  if [[ -n "${TMP_DIR:-}" && "$TMP_DIR" == /tmp/vincula.* && -d "$TMP_DIR" ]]; then
+    chmod 700 "$TMP_DIR" 2>/dev/null || true
+    return 0
+  fi
+  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+  chmod 700 "$TMP_DIR" || die "Could not chmod install temp directory."
+}
+
 rollback_install() {
   log_warn "Installation failed; removing files created by this transaction."
   systemctl disable --now sing-box.service >/dev/null 2>&1 || true
@@ -2271,8 +2282,10 @@ load_legacy_seed_into_env() {
   # Sets: LEGACY_UUID LEGACY_SERVER LEGACY_PORT LEGACY_SNI LEGACY_PBK LEGACY_SID
   #        LEGACY_PRIVATE_KEY LEGACY_PUBLIC_KEY (derived)
   # Path-only python argv (validate-seed); fields arrive via stdout pipe — never argv.
+  # Secret stdout lands under $TMP_DIR (EXIT trap / cleanup_temp).
   local root line key value want_server want_port seed_tmp
   local -a vs_argv
+  ensure_install_tmp_dir
   legacy_seed_validate_local_file "$LEGACY_URI_FILE" "legacy URI file"
   legacy_seed_validate_local_file "$LEGACY_PRIVATE_KEY_FILE" "legacy Reality private key file"
   root=$(installer_root) || die "Cannot locate installer directory for legacy_seed.py."
@@ -2287,7 +2300,7 @@ load_legacy_seed_into_env() {
   if [[ -n "$want_server" ]]; then
     vs_argv+=(--server "$want_server")
   fi
-  seed_tmp=$(mktemp)
+  seed_tmp=$(mktemp "${TMP_DIR}/legacy-seed.XXXXXX")
   chmod 600 "$seed_tmp" 2>/dev/null || true
   if ! "${vs_argv[@]}" >"$seed_tmp"; then
     rm -f -- "$seed_tmp"
@@ -2330,8 +2343,9 @@ render_users_owner_and_legacy() {
   legacy_user_id=$(generate_uuid_v4)
   legacy_cred_id=$(generate_uuid_v4)
   [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
-  # Line file keeps UUIDs/tag out of python argv (path-only).
-  params=$(mktemp)
+  # Line file keeps UUIDs/tag out of python argv (path-only); under TMP_DIR for EXIT cleanup.
+  ensure_install_tmp_dir
+  params=$(mktemp "${TMP_DIR}/legacy-users.XXXXXX")
   chmod 600 "$params" 2>/dev/null || true
   {
     printf '%s\n' "$owner_user_id"
@@ -2418,6 +2432,8 @@ install_new_node() {
   local node_id node_name instance_id clash_port
 
   acquire_vincula_op_lock
+  # Staging root before any legacy secret tempfile (EXIT trap cleans it).
+  ensure_install_tmp_dir
   os_arch=$(uname -m)
   arch=$(map_arch "$os_arch") || die "Unsupported architecture: ${os_arch}. Only amd64 and arm64 are supported."
   port=${VCL_PORT:-443}
@@ -2450,7 +2466,6 @@ install_new_node() {
   log_ok "Client address resolved as ${server}"
   preflight_reality_target "$reality_host"
 
-  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
   binary=$(download_sing_box "$arch" "$TMP_DIR")
 
   local legacy_mode=0

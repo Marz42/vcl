@@ -1207,6 +1207,22 @@ seed_nosid = ls.load_legacy_seed(
 assert seed_nosid.short_id == ""
 assert seed_nosid.port == 20687
 
+# Multi-URI file refused (exactly one non-empty line)
+multi = write_secret(
+    tmp / "multi.uri",
+    good_uri() + "\n" + good_uri().replace(uuid_ok, "22222222-2222-4222-8222-222222222222") + "\n",
+)
+try:
+    ls.load_legacy_seed(
+        uri_file=multi,
+        private_key_file=key_file,
+        user_tag="legacy-user",
+        advertised_server=server,
+    )
+    raise SystemExit("expected multi-URI refuse")
+except ls.LegacySeedError as exc:
+    assert "one URI" in str(exc).lower() or "exactly one" in str(exc).lower()
+
 # validate-seed: path-only argv; secrets only on stdout
 import subprocess as sp
 
@@ -1269,11 +1285,24 @@ assert "validate-seed" in load_fn
 assert "validate-uri" not in load_fn
 assert "compare-pbk" not in load_fn
 assert "json.loads" not in load_fn
+assert "ensure_install_tmp_dir" in load_fn
+assert 'mktemp "${TMP_DIR}/legacy-seed.' in load_fn
+import re as _re
+assert not _re.search(r"\$\(mktemp\)", load_fn), load_fn
+render_fn = vs_src.split("render_users_owner_and_legacy()")[1].split("install_new_node()")[0]
+assert 'mktemp "${TMP_DIR}/legacy-users.' in render_fn
+install_head = vs_src.split("install_new_node()")[1][:1200]
+assert "ensure_install_tmp_dir" in install_head
 # Legacy branch must not log Assigned node_id (Spec §3.8 whitelist).
 idx = vs_src.index('die "Could not validate the imported REALITY short ID."')
 snippet = vs_src[idx : idx + 450]
 assert "else" in snippet
 assert snippet.index("else") < snippet.index("Assigned node_id")
+# Controller human success for legacy omits node_id=
+fleet_src = Path(fleet_path).read_text(encoding="utf-8")
+assert "Provisioned {args.name} (Node {ver})." in fleet_src
+legacy_out = fleet_src.split('if doc.get("legacy_seed"):')[1].split("else:")[0]
+assert "node_id=" not in legacy_out
 
 # Harden / privilege: sudo wraps installer; harden helper is present
 assert hasattr(prov, "_harden_remote_legacy_secrets")
@@ -1286,6 +1315,35 @@ sudo_argv = prov.installer_remote_argv(
     legacy_user_tag="legacy-user",
 )
 assert sudo_argv[:2] == ["sudo", "-n"], sudo_argv
+
+# EXIT trap cleans TMP_DIR (contract for INT/TERM / serializer die)
+import subprocess as _sp
+cleanup_rc = _sp.run(
+    ["bash", "-c", r'''
+set -euo pipefail
+TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+chmod 700 "$TMP_DIR"
+printf 'PRIVATE_KEY=secret\n' >"$TMP_DIR/legacy-seed.XXXXXX"
+chmod 600 "$TMP_DIR/legacy-seed.XXXXXX"
+cleanup_temp() {
+  if [[ -n "${TMP_DIR:-}" && "$TMP_DIR" == /tmp/vincula.* && -d "$TMP_DIR" ]]; then
+    rm -rf --one-file-system -- "$TMP_DIR"
+  fi
+}
+on_exit() { cleanup_temp; exit "$1"; }
+trap 'on_exit $?' EXIT
+trap 'exit 130' INT
+# Simulate serializer failure then INT-style exit
+false || exit 130
+'''],
+    capture_output=True,
+    text=True,
+)
+assert cleanup_rc.returncode == 130, cleanup_rc
+# Directory from the subshell is gone; no leftover vincula dirs from this pid pattern check:
+leftovers = list(Path("/tmp").glob("vincula.*"))
+# Only assert our contract: child cleaned its own dir (return 130 with cleanup). OK if unrelated dirs exist.
+assert "PRIVATE_KEY" not in (cleanup_rc.stdout + cleanup_rc.stderr)
 
 print("ok")
 PY
@@ -13134,6 +13192,69 @@ assert result["ok"] is False, result
 reality = [c for c in result["checks"] if c["id"] == "reality"]
 assert reality and reality[0]["status"] == "fail", result["checks"]
 assert reality[0]["status"] != "skip", reality[0]
+PY
+
+assert_success "0.4.5 listen_port preflight free for non-443" \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    vcl_listen_port=20687,
+)
+assert result["ok"] is True, result
+rows = [c for c in result["checks"] if c["id"] == "listen_port"]
+assert rows and rows[0]["status"] == "pass", result["checks"]
+assert "20687" in rows[0]["detail"], rows[0]
+PY
+
+assert_success "0.4.5 listen_port preflight fails when URI port busy" \
+  env VCL_FAKE_LISTEN_PORTS=20687 \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    vcl_listen_port=20687,
+)
+assert result["ok"] is False, result
+rows = [c for c in result["checks"] if c["id"] == "listen_port"]
+assert rows and rows[0]["status"] == "fail", result["checks"]
+assert "20687" in rows[0]["detail"], rows[0]
+# 443 free must not matter when listen port is 20687
+assert not any(
+    c["id"] == "listen_port" and "443" in (c.get("detail") or "") and c["status"] == "fail"
+    for c in result["checks"]
+)
+PY
+
+assert_success "0.4.5 listen_port 443 busy does not block URI port 20687" \
+  env VCL_FAKE_PORT_443=1 \
+  python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B2_HK" <<'PY'
+import importlib.util, sys
+path, host_key = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("vincula_fleet", path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+prov = fleet.load_provision_module()
+result = prov.run_provision_preflight(
+    ssh_host="203.0.113.10",
+    host_key=host_key,
+    vcl_listen_port=20687,
+)
+assert result["ok"] is True, result
+rows = [c for c in result["checks"] if c["id"] == "listen_port"]
+assert rows and rows[0]["status"] == "pass" and "20687" in rows[0]["detail"], rows
 PY
 
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---

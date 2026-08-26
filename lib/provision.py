@@ -144,7 +144,7 @@ REMOTE_CHECK_IDS = (
     "disk",
     "already_vincula",
     "bootstrap",
-    "port_443",
+    "listen_port",
     "sing_box_unit",
     "https_out",
     "singbox_release",
@@ -164,7 +164,7 @@ STAGE1_CHECK_IDS = (
 )
 
 STAGE2_CHECK_IDS = (
-    "port_443",
+    "listen_port",
     "https_out",
     "singbox_release",
     "public_ip",
@@ -1105,6 +1105,7 @@ def run_provision(
             manifest=manifest,
             vcl_server=vcl_server,
             reality_host=reality_host,
+            vcl_listen_port=int(vcl_port),
         )
         _preflight_die_if_failed(preflight)
         checks = list(preflight.get("checks") or [])
@@ -1381,6 +1382,7 @@ def run_provision_preflight(
     manifest: Optional[dict[str, Any]] = None,
     reality_host: Optional[str] = None,
     vcl_server: Optional[str] = None,
+    vcl_listen_port: int = 443,
     skip: Optional[set[str]] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -1389,6 +1391,8 @@ def run_provision_preflight(
     Returns ``{"ok": bool, "checks": [{"id","status","detail","remedy"?}, ...]}``.
     Does not install payload (B3+) or write registry. Non-interactive without
     ``host_key`` dies via trust.NONINTERACTIVE_HOST_KEY_MSG.
+
+    ``vcl_listen_port`` is the planned VLESS listen port (legacy seed: URI port).
     """
     if _host is None:
         raise RuntimeError("provision.bind(host) required before run_provision_preflight")
@@ -1397,6 +1401,12 @@ def run_provision_preflight(
     if vcl_server is None:
         vcl_server = os.environ.get("VCL_SERVER")
     vcl_server_set = bool((vcl_server or "").strip())
+    try:
+        listen_port = int(vcl_listen_port)
+    except (TypeError, ValueError):
+        listen_port = 443
+    if not (1 <= listen_port <= 65535):
+        listen_port = 443
 
     supported_arch: list[str] = list(DEFAULT_SUPPORTED_ARCH)
     if manifest is not None:
@@ -1755,22 +1765,29 @@ def run_provision_preflight(
             _skip_stage2("bootstrap skipped")
             return _finish(False)
 
-    if want("port_443"):
+    if want("listen_port"):
         proc = _ssh(
             ssh_host,
             ssh_user,
             ssh_port,
-            ["ss", "-lntH", "sport = :443"],
+            ["ss", "-lntH", f"sport = :{listen_port}"],
             identity_file=identity_file,
             extra=extra,
         )
         out = (proc.stdout or "").strip()
         if out:
-            add(_check("port_443", "fail", "port 443 in use"))
+            add(
+                _check(
+                    "listen_port",
+                    "fail",
+                    f"port {listen_port} in use",
+                    remedy="free the URI/install listen port before provision",
+                )
+            )
         else:
-            add(_check("port_443", "pass", "port 443 free"))
+            add(_check("listen_port", "pass", f"port {listen_port} free"))
     else:
-        add(_skipped("port_443"))
+        add(_skipped("listen_port"))
 
     # --- Stage 2: outbound / public IP / Reality ---
     if want("https_out"):

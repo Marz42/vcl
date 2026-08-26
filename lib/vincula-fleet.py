@@ -2348,8 +2348,10 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
     if doc.get("legacy_seed"):
         tag = doc.get("legacy_user_tag") or "legacy"
         ver = doc.get("node_version") or "?"
+        # Spec §3.8 whitelist: name, Node version, legacy tag, status, link hint.
+        # Do not print node_id / URI / UUID.
         sys.stdout.write(
-            f"Provisioned {args.name} (Node {ver}) node_id={doc['node_id']}\n"
+            f"Provisioned {args.name} (Node {ver}).\n"
             f"Legacy user {tag} seeded successfully.\n"
             f"Use `vcl-fleet user link {tag} --node {args.name}` "
             f"to retrieve the URI.\n"

@@ -15,6 +15,7 @@
 - **Review-fix round 2：** installer `validate-seed` path-only（URI/UUID/pbk 不再进子进程 argv）；直装 `sudo` 接受经验证 `SUDO_UID` 属主；parser 拒 password userinfo / URI path / 单标签 SNI；`--from-backup` 仅在 verify 后记 SUCCESS；legacy seed 成功输出对齐 Spec §3.8。
 - **Legacy seed empty sid / URI port：** URI 可缺省或空 `sid`（空 Reality short ID）；安装监听端口取自 URI 并经 `VCL_PORT` 传入 installer。
 - **Reality preflight / self-test：** SNI 目标 HTTP 503 不再误杀（与 installer TLS 探测一致；self-test 接受 503）。
+- **Legacy seed harden：** controller preflight 检查 URI 实际监听端口（非硬编码 443）；legacy 密钥临时文件纳入早期 `0700` `$TMP_DIR` + EXIT 清理；URI 文件拒绝多行；legacy 成功输出对齐 Spec §3.8（无 `node_id=`）。
 ### Notes
 - Spec: [`docs/specs/V0.4.5_Spec.md`](docs/specs/V0.4.5_Spec.md) · evidence：[`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md) · LIVE Matrix H：[`docs/evidence/0.4.5/LIVE.md`](docs/evidence/0.4.5/LIVE.md)。
 - `0.5.0` 仍是首个 **capability/telemetry** Node 升级；`0.3.2` 仅为 payload/legacy-seed 制品 bump。

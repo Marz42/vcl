@@ -13,9 +13,10 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
   - Reality private key file (single key line)
 - Chosen `--legacy-user-tag` **≠** `owner`.
 - URI may omit `sid` / use empty `sid=` (empty Reality short ID).
-- Listen port is taken from the URI (not assumed 443).
+- Listen port is taken from the URI (not assumed 443); controller preflight checks that same port.
 - Remove leftover non-VCL `sing-box` unit/binary/`/etc/sing-box/config.json` before provision (clean-host refuse otherwise).
 - Reality SNI may return HTTP 503; preflight/self-test accept 503 when TLS succeeds.
+- Legacy secret temps live under early `0700` `$TMP_DIR` (EXIT trap cleanup).
 
 ## Steps
 

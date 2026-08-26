@@ -224,18 +224,20 @@ def validate_secret_file(path: Path, *, label: str) -> Path:
     return raw.resolve(strict=True)
 
 
-def _read_first_nonempty_line(path: Path) -> str:
+def _read_uri_file_single_line(path: Path) -> str:
+    """Read exactly one non-empty URI line (refuse multi-user / multi-URI files)."""
     try:
         text = path.read_text(encoding="utf-8", errors="strict")
     except OSError as exc:
         raise LegacySeedError(f"cannot read file ({exc.errno})") from exc
     except UnicodeError as exc:
         raise LegacySeedError("file is not valid UTF-8") from exc
-    for line in text.splitlines():
-        s = line.strip()
-        if s:
-            return s
-    raise LegacySeedError("file is empty")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        raise LegacySeedError("file is empty")
+    if len(lines) != 1:
+        raise LegacySeedError("URI file must contain exactly one URI")
+    return lines[0]
 
 
 def _read_single_key_line(path: Path) -> str:
@@ -374,7 +376,7 @@ def load_legacy_seed(
     key_path = validate_secret_file(
         Path(private_key_file), label="legacy Reality private key file"
     )
-    uri_line = _read_first_nonempty_line(uri_path)
+    uri_line = _read_uri_file_single_line(uri_path)
     private_key = _read_single_key_line(key_path)
     fields = parse_legacy_vless_uri(uri_line)
 
