@@ -11,6 +11,6 @@
 
 Artifacts at run time: `dist/vincula-node-0.3.1-dev.tar.gz` + `dist/vincula-controller-0.3.1-dev.zip`. Living tree is now **`0.3.1`**; B14 status remains **PASS**.
 
-Operator runbook: [`../../live-replace-checklist.md`](../../live-replace-checklist.md).  
+Operator runbook: [`../../operations/node-replace-runbook.md`](../../operations/node-replace-runbook.md).  
 See [`SUMMARY.md`](SUMMARY.md). Full host logs may live under `/root/vcl-rc-evidence/0.3.1-live/` (not mirrored).  
 Do **not** commit VLESS URIs, reissue CSV, age identity files, or SSH private keys.

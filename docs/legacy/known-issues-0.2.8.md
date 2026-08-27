@@ -49,7 +49,7 @@
 ## Related docs
 
 - [`release-readiness-0.2.8.md`](release-readiness-0.2.8.md)
-- [`fleet.md`](../fleet.md)
-- [`identity.md`](../identity.md)
-- [`accounting-reliability.md`](../accounting-reliability.md)
+- [`fleet.md`](../technical-guide.md)
+- [`identity.md`](../technical-guide.md)
+- [`accounting-reliability.md`](../technical-guide.md)
 - [`known-issues-0.2.7.md`](known-issues-0.2.7.md)

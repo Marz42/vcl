@@ -20,9 +20,9 @@
 **Addendum:** 2026-08-17 — B12 / P2-02: streaming backup verify and size caps.  
 **Addendum:** 2026-08-17 — B13 / P2-03: controller sha256 manifest and fail-closed bootstrap pin.  
 **Addendum:** 2026-08-17 — B16 / REQ-CI: GitHub Actions merge gate (`.github/workflows/ci.yml`).  
-**Addendum:** 2026-08-17 — B14 deferred: live VPS evidence pending; recommendation stays **NOT READY**. Operator checklist: [`live-replace-checklist.md`](../live-replace-checklist.md).  
+**Addendum:** 2026-08-17 — B14 deferred: live VPS evidence pending; recommendation stays **NOT READY**. Operator checklist: [`live-replace-checklist.md`](../operations/node-replace-runbook.md).  
 **Focus:** Backup / Replace / Restore (secretless default backup, age `--include-secrets`, `vcl restore` fresh-node, reissue CSV, `vcl-fleet node replace` vs `node set`, `fleet.db` schema 2 `instance_history`)  
-**Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](../backup.md) · [`fleet.md`](../fleet.md) · Live replace runbook: [`live-replace-checklist.md`](../live-replace-checklist.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](../specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
+**Companion:** [`known-issues-0.3.0.md`](known-issues-0.3.0.md) · Operator: [`backup.md`](../technical-guide.md) · [`fleet.md`](../technical-guide.md) · Live replace runbook: [`live-replace-checklist.md`](../operations/node-replace-runbook.md) · Spec: [`specs/V0.2.7-V0.3.1_spec.md`](../specs/V0.2.7-V0.3.1_spec.md) §7 / §9.3 / §10 / §11 / §13 / D17 / INV-02 / INV-05 / INV-06.
 
 Product freeze dropped `-dev` in Batch 17-freeze. This file remains the 0.3.0 freeze record plus the contract-audit addendum. It is **not** a 0.3.1-dev gate document.
 
@@ -30,7 +30,7 @@ Product freeze dropped `-dev` in Batch 17-freeze. This file remains the 0.3.0 fr
 
 **NOT READY**
 
-(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). **B3 closed P0-02** and **B10 closed P0-01** on the living tree; B4–B13 and B16 closed the remaining P1/P2 and REQ-CI items. **Known P0: 0** on the living tree. Remaining NOT READY is **B14 live VPS evidence** (deferred; runbook [`live-replace-checklist.md`](../live-replace-checklist.md)) plus deferred B15 UI — not a replace argv mismatch. Fixture-green replace is not live PASS. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
+(Spec bucket: `NOT READY FOR RC`.) Supersedes freeze-era **READY WITH DOCUMENTED LIMITATIONS**. That grade treated P0-01 / P0-02 as documented limitations. An external contract audit classified both as **P0 blockers** (contract mismatch, not missing live evidence). **B3 closed P0-02** and **B10 closed P0-01** on the living tree; B4–B13 and B16 closed the remaining P1/P2 and REQ-CI items. **Known P0: 0** on the living tree. Remaining NOT READY is **B14 live VPS evidence** (deferred; runbook [`live-replace-checklist.md`](../operations/node-replace-runbook.md)) plus deferred B15 UI — not a replace argv mismatch. Fixture-green replace is not live PASS. Details: addendum below and [`known-issues-0.3.0.md`](known-issues-0.3.0.md).
 
 ## Addendum (2026-08-16) — external contract audit (P2-04)
 
@@ -141,7 +141,7 @@ Living-tree test counts after B16: `bash tests/test.sh` **1199**; standalone `ba
 
 Living tree (`0.3.1-dev`): product remediations for the external-audit plan are on the tree (B0–B13, B16). **B14** (live two-VPS secretless replace + AC-3.0-11 handshake + real `age` + Win11 `vcl-fleet.cmd`) is **deferred** by operator decision. **B15** (localhost UI) is also deferred.
 
-This freeze record’s recommendation stays **NOT READY**. Do not raise it on fixture PASS. The executable runbook is [`live-replace-checklist.md`](../live-replace-checklist.md). Evidence destination: [`evidence/0.3.1-live/`](../evidence/0.3.1-live/) (`README.md` + `SUMMARY.md`; currently **NOT RUN**).
+This freeze record’s recommendation stays **NOT READY**. Do not raise it on fixture PASS. The executable runbook is [`live-replace-checklist.md`](../operations/node-replace-runbook.md). Evidence destination: [`evidence/0.3.1-live/`](../evidence/0.3.1-live/) (`README.md` + `SUMMARY.md`; currently **NOT RUN**).
 
 What flips **NOT READY** → **READY FOR RC** (发行门禁清单 READY FOR RC rows; previous fixture/CI rows must already hold):
 
@@ -270,7 +270,7 @@ localhost UI (0.3.1), age passphrase, `vcl snapshot export`, routine `scp accoun
 
 ## Policy after freeze
 
-After tag `v0.3.0`, prefer P0/P1 fixes only. The living tree is `0.3.1-dev` (Batch B0). P0-01 and P0-02 are **closed** on that tree (B10 / B3). A live VPS secretless replace, live `age` on a real node, Win11 `vcl-fleet.cmd`, and AC-3.0-11 live handshake remain required before `READY FOR RC` (B14 deferred; runbook [`live-replace-checklist.md`](../live-replace-checklist.md)). This freeze record stays **NOT READY** until that live log exists. UI belongs in 0.3.1 Phase B (B15, also deferred).
+After tag `v0.3.0`, prefer P0/P1 fixes only. The living tree is `0.3.1-dev` (Batch B0). P0-01 and P0-02 are **closed** on that tree (B10 / B3). A live VPS secretless replace, live `age` on a real node, Win11 `vcl-fleet.cmd`, and AC-3.0-11 live handshake remain required before `READY FOR RC` (B14 deferred; runbook [`live-replace-checklist.md`](../operations/node-replace-runbook.md)). This freeze record stays **NOT READY** until that live log exists. UI belongs in 0.3.1 Phase B (B15, also deferred).
 
 ## Completion report (SPEC §19)
 

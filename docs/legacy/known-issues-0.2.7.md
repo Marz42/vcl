@@ -43,5 +43,5 @@
 ## Related docs
 
 - [`release-readiness-0.2.7.md`](release-readiness-0.2.7.md)
-- [`accounting-reliability.md`](../accounting-reliability.md)
+- [`accounting-reliability.md`](../technical-guide.md)
 - [`known-issues-0.2.6.md`](known-issues-0.2.6.md)

@@ -8934,25 +8934,25 @@ unset VCL_FAKE_FAIL_BACKUP
 unset VCL_FAKE_FAIL_SCP
 unset VCL_FAKE_FAIL_RESTORE
 
-assert_success "docs/fleet.md exists" test -f "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md documents vcl-fleet.cmd" \
-  grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md documents --host-key" \
-  grep -q -- '--host-key' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md names CLOCK_SKEW_WARN_SECONDS 30" \
-  grep -q 'CLOCK_SKEW_WARN_SECONDS = 30' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md names CLOCK_SKEW_FAIL_SECONDS 300" \
-  grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md has AC-2.9-01" \
-  grep -q 'AC-2.9-01' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md has AC-2.9-10" \
-  grep -q 'AC-2.9-10' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md documents runtime-only replace" \
-  grep -q 'runtime-only' "${PROJECT_DIR}/docs/fleet.md"
-assert_failure "docs/fleet.md does not teach restore --replace-node" \
-  grep -q -- '--replace-node' "${PROJECT_DIR}/docs/fleet.md"
-assert_success "docs/fleet.md names --reissue-output" \
-  grep -q -- '--reissue-output' "${PROJECT_DIR}/docs/fleet.md"
+assert_success "docs/technical-guide.md exists" test -f "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md documents vcl-fleet.cmd" \
+  grep -q 'vcl-fleet.cmd' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md documents --host-key" \
+  grep -q -- '--host-key' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md names CLOCK_SKEW_WARN_SECONDS 30" \
+  grep -q 'CLOCK_SKEW_WARN_SECONDS = 30' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md names CLOCK_SKEW_FAIL_SECONDS 300" \
+  grep -q 'CLOCK_SKEW_FAIL_SECONDS = 300' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md has AC-2.9-01" \
+  grep -q 'AC-2.9-01' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md has AC-2.9-10" \
+  grep -q 'AC-2.9-10' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md documents runtime-only replace" \
+  grep -q 'runtime-only' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_failure "docs/technical-guide.md does not teach restore --replace-node" \
+  grep -q -- '--replace-node' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md names --reissue-output" \
+  grep -q -- '--reissue-output' "${PROJECT_DIR}/docs/technical-guide.md"
 assert_failure "README does not mark node replace NOT IMPLEMENTED" \
   grep -q 'NOT IMPLEMENTED against real vcl' "${PROJECT_DIR}/README.md"
 

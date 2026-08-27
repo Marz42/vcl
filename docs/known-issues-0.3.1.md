@@ -71,5 +71,5 @@ Companion: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) · Evidenc
 ## Related
 
 - [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md)
-- [`fleet.md`](fleet.md) · [`backup.md`](backup.md) · [`manual.md`](manual.md) · [`identity.md`](identity.md)
+- [`user-guide.md`](user-guide.md) · [`technical-guide.md`](technical-guide.md) · [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md)
 - [`legacy/`](legacy/) (read-only historical gates)

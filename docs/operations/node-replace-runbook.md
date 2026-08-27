@@ -1,7 +1,13 @@
 # B14 live replace operator checklist (0.3.1)
 
+> **Historical B14 runbook** (moved from `docs/live-replace-checklist.md`).
+> Do not rewrite step content for style. Current operator entry points:
+> [`../user-guide.md`](../user-guide.md) · [`../technical-guide.md`](../technical-guide.md).
+> Living tree versions: Controller **0.4.5** / Node **0.3.2** (this checklist
+> records the **0.3.1-era** live PASS of 2026-08-18).
+
 **Status: PASS (2026-08-18).** Operator runbook for live VPS evidence.
-Evidence: [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
+Evidence: [`docs/evidence/0.3.1-live/`](../evidence/0.3.1-live/) (`SUMMARY.md` overall **PASS**).
 Fixture-green `node replace` (B10) alone is **not** that evidence.
 
 **命令名：** 下文在 VPS 上的 `vcl …` 是**节点** helper（仍为 `vcl`）；工作站
@@ -13,10 +19,10 @@ B14 live replace is **executed** (**PASS 2026-08-18**). B15 (localhost UI) is
 (rc2/0.3.1 replace smoke) is deferred as a Known Issue — do not treat that
 deferral as “B14 not run”.
 
-Gate: [`release-readiness-0.3.1.md`](release-readiness-0.3.1.md) ·
-limitations: [`known-issues-0.3.1.md`](known-issues-0.3.1.md) ·
-operator: [`fleet.md`](fleet.md) · [`backup.md`](backup.md).
-0.3.0 freeze record (read-only): [`legacy/release-readiness-0.3.0.md`](legacy/release-readiness-0.3.0.md).
+Gate: [`release-readiness-0.3.1.md`](../release-readiness-0.3.1.md) ·
+limitations: [`known-issues-0.3.1.md`](../known-issues-0.3.1.md) ·
+operator: [`technical-guide.md`](../technical-guide.md) · [`user-guide.md`](../user-guide.md).
+0.3.0 freeze record (read-only): [`legacy/release-readiness-0.3.0.md`](../legacy/release-readiness-0.3.0.md).
 
 ## What this pass proves
 
@@ -55,8 +61,8 @@ private keys. Redact them in the evidence files.
 
 ## Evidence layout
 
-Save every step under [`docs/evidence/0.3.1-live/`](evidence/0.3.1-live/)
-(same pattern as [`docs/evidence/0.2.4-0.2.6-live/`](evidence/0.2.4-0.2.6-live/)):
+Save every step under [`docs/evidence/0.3.1-live/`](../evidence/0.3.1-live/)
+(same pattern as [`docs/evidence/0.2.4-0.2.6-live/`](../evidence/0.2.4-0.2.6-live/)):
 
 | File | What to put there |
 | --- | --- |
@@ -292,8 +298,8 @@ step proves it on live data).
 
 ### (9) Evidence collection
 
-Fill [`docs/evidence/0.3.1-live/README.md`](evidence/0.3.1-live/README.md)
-and [`SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md). Minimum fields per
+Fill [`docs/evidence/0.3.1-live/README.md`](../evidence/0.3.1-live/README.md)
+and [`SUMMARY.md`](../evidence/0.3.1-live/SUMMARY.md). Minimum fields per
 step: host, `vcl version` / `vcl-fleet version`, command, exit code, key
 output lines (redacted). Attach Win11 and real-age rows to the same pass.
 
@@ -315,7 +321,7 @@ Client, and at least `version` + one live SSH command (`status` or
 ## Acceptance — historical (B14)
 
 This checklist’s live evidence is already **PASS** (2026-08-18). See
-[`evidence/0.3.1-live/SUMMARY.md`](evidence/0.3.1-live/SUMMARY.md).
+[`evidence/0.3.1-live/SUMMARY.md`](../evidence/0.3.1-live/SUMMARY.md).
 
 Living-tree remediations (B0–B13, B16) and later B18–B23 / B25–B28 are on the
 `0.3.1` tree. Known P0 = **0**. D20 24h soak still binds **0.2.7 only**.
@@ -332,4 +338,4 @@ Do **not** document or send node restore `--replace-node`.
 Do **not** install a finished bootstrap on NEW_HOST and then replace.
 
 For a post-`0.3.1` replace smoke re-run, see deferred **B24**
-([`evidence/0.3.1-rc2/B24-replace-deferred.md`](evidence/0.3.1-rc2/B24-replace-deferred.md)).
+([`evidence/0.3.1-rc2/B24-replace-deferred.md`](../evidence/0.3.1-rc2/B24-replace-deferred.md)).
