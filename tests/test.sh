@@ -55,6 +55,31 @@ assert_failure() {
 
 finish() {
   trap - EXIT
+  # §5: real HOME must be untouched (known_hosts fingerprint + no suite writes).
+  if [[ -n "${SAVED_SUITE_HOME:-}" ]]; then
+    local real_kh="${SAVED_SUITE_HOME}/.ssh/known_hosts"
+    if [[ -n "${SUITE_REAL_KH_FP:-}" ]]; then
+      if [[ -f "$real_kh" ]]; then
+        local after_fp
+        after_fp=$(sha256sum -- "$real_kh" 2>/dev/null | awk '{print $1}')
+        if [[ "$after_fp" == "$SUITE_REAL_KH_FP" ]]; then
+          pass "P1 §5: real HOME known_hosts fingerprint unchanged"
+        else
+          fail "P1 §5: real HOME known_hosts fingerprint changed"
+        fi
+      else
+        fail "P1 §5: real HOME known_hosts missing after suite (was present)"
+      fi
+    elif [[ -f "$real_kh" ]]; then
+      fail "P1 §5: suite created known_hosts under real HOME"
+    else
+      pass "P1 §5: real HOME had no known_hosts (still absent)"
+    fi
+    case "${HOME:-}" in
+      "${TEST_TMP}"/*) pass "P1 §5: suite HOME still under TEST_TMP" ;;
+      *) fail "P1 §5: suite HOME escaped TEST_TMP (HOME=${HOME:-})" ;;
+    esac
+  fi
   if [[ -n "${TEST_TMP:-}" && "$TEST_TMP" == /tmp/vincula-tests.* && -d "$TEST_TMP" ]]; then
     rm -rf --one-file-system -- "$TEST_TMP"
   fi
@@ -103,7 +128,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.3.1" \
+assert_equal "runs when read from standard input" "vincula 0.3.2" \
   "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -131,7 +156,8 @@ assert_success "migrates from 0.3.0" is_supported_upgrade_from 0.3.0
 assert_success "migrates from 0.3.1-dev" is_supported_upgrade_from 0.3.1-dev
 assert_success "migrates from 0.3.1-rc1" is_supported_upgrade_from 0.3.1-rc1
 assert_success "migrates from 0.3.1-rc2" is_supported_upgrade_from 0.3.1-rc2
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.1
+assert_success "migrates from 0.3.1" is_supported_upgrade_from 0.3.1
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.2
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -233,6 +259,10 @@ assert_equal "parses bracketed VLESS port" "8443" "$VLESS_PORT"
 TEST_TMP=$(mktemp -d /tmp/vincula-tests.XXXXXXXX)
 SAVED_SUITE_HOME="${HOME:-}"
 SAVED_SUITE_XDG="${XDG_CONFIG_HOME:-}"
+SUITE_REAL_KH_FP=""
+if [[ -n "${SAVED_SUITE_HOME}" && -f "${SAVED_SUITE_HOME}/.ssh/known_hosts" ]]; then
+  SUITE_REAL_KH_FP=$(sha256sum -- "${SAVED_SUITE_HOME}/.ssh/known_hosts" 2>/dev/null | awk '{print $1}')
+fi
 export HOME="${TEST_TMP}/user-home"
 export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
 mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
@@ -359,6 +389,113 @@ if [[ "$verify_mint_src" == *'mint_or_preserve_instance_id'* ]]; then
 else
   pass "verify_existing_install does not remint instance_id"
 fi
+
+# 0.3.1→0.3.2 shaped migration fixture: preserve UUID / Reality / users / accounting
+assert_success "0.3.1→0.3.2 shaped migrate fixture preserves identity" python3 - \
+  "${TEST_TMP}/migrate-031-032" \
+  "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" \
+  "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+uuid, priv, pub, sid, node_id, instance_id = sys.argv[2:8]
+src = root / "src-0.3.1"
+dst = root / "dst-0.3.2"
+src.mkdir(parents=True)
+(src / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+state = {
+    "schema_version": 2,
+    "server": "203.0.113.10",
+    "port": 443,
+    "reality_host": "www.cloudflare.com",
+    "uuid": uuid,
+    "private_key": priv,
+    "public_key": pub,
+    "short_id": sid,
+    "node_id": node_id,
+    "instance_id": instance_id,
+    "project_version": "0.3.1",
+}
+(src / "state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+users = {
+    "schema_version": 2,
+    "users": [
+        {
+            "user_id": "uuuuuuuu-uuuu-4uuu-8uuu-uuuuuuuuuuuu",
+            "tag": "owner",
+            "display_name": "Owner",
+            "department": "",
+            "enabled": True,
+            "created_at": "2026-01-01T00:00:00Z",
+            "credentials": [
+                {
+                    "credential_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "node_id": node_id,
+                    "uuid": uuid,
+                    "status": "active",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "revoked_at": None,
+                }
+            ],
+        }
+    ],
+}
+(src / "users.json").write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
+(src / "config.toml").write_text(
+    f'project_version = "0.3.1"\nnode_id = "{node_id}"\n',
+    encoding="utf-8",
+)
+db = src / "accounting.db"
+conn = sqlite3.connect(str(db))
+conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','4')")
+conn.execute(
+    "CREATE TABLE connections (event_id INTEGER PRIMARY KEY, user_tag TEXT, upload_bytes INTEGER)"
+)
+conn.execute(
+    "INSERT INTO connections(event_id,user_tag,upload_bytes) VALUES (1,'owner',42)"
+)
+conn.commit()
+conn.close()
+acct_bytes = db.read_bytes()
+
+# Simulated migrate: copy tree, bump VERSION / project_version only — identity must match.
+import shutil
+
+shutil.copytree(src, dst)
+(dst / "VERSION").write_text("0.3.2\n", encoding="utf-8")
+dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
+dst_state["project_version"] = "0.3.2"
+(dst / "state.json").write_text(json.dumps(dst_state, indent=2) + "\n", encoding="utf-8")
+toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.3.2")
+(dst / "config.toml").write_text(toml, encoding="utf-8")
+
+# Preserve assertions (same invariants migrate_existing_install guards).
+src_state = json.loads((src / "state.json").read_text(encoding="utf-8"))
+dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
+for key in ("uuid", "private_key", "public_key", "short_id", "node_id", "instance_id"):
+    assert src_state[key] == dst_state[key], key
+assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.3.2"
+src_users = json.loads((src / "users.json").read_text(encoding="utf-8"))
+dst_users = json.loads((dst / "users.json").read_text(encoding="utf-8"))
+assert src_users == dst_users
+assert (dst / "accounting.db").read_bytes() == acct_bytes
+conn = sqlite3.connect(str(dst / "accounting.db"))
+row = conn.execute("SELECT upload_bytes FROM connections WHERE event_id=1").fetchone()
+conn.close()
+assert row == (42,)
+print("ok")
+PY
+
+# SUDO_UID owner allowance (bash helper; function already sourced from vincula.sh)
+assert_success "legacy_seed_owner_allowed accepts EUID" \
+  legacy_seed_owner_allowed "$(id -u)"
+if [[ "$(id -u)" != "0" ]]; then
+  assert_failure "legacy_seed_owner_allowed rejects unrelated UID without sudo" \
+    legacy_seed_owner_allowed 0
+  pass "SUDO_UID owner rule covered in legacy_seed.py unit tests"
+fi
 runtime_src=$(sed -n '/^install_runtime_only()/,/^install_new_node()/p' "${PROJECT_DIR}/vincula.sh")
 if [[ "$runtime_src" == *'RUNTIME_ONLY_MARKER'* ]] \
   && [[ "$runtime_src" != *'atomic_install "$staged_version" "$VERSION_FILE"'* ]] \
@@ -377,7 +514,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.3.1"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.3.2"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -705,9 +842,13 @@ assert_success "release.lock includes vincula-audit.py" \
   grep -q 'lib/vincula-audit.py' "${PROJECT_DIR}/release.lock"
 assert_success "release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/release.lock"
+assert_success "release.lock includes legacy_seed.py" \
+  grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/release.lock"
+assert_success "gen-release-lock includes legacy_seed.py" \
+  grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 10 first-party files" "10" \
+assert_equal "release.lock has 11 first-party files" "11" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -809,8 +950,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.3.1" \
-  grep -q 'Vincula-Version: 0.3.1' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.3.2" \
+  grep -q 'Vincula-Version: 0.3.2' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -1006,7 +1147,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 10 first-party files" "10" \
+assert_equal "dist node release.lock has 11 first-party files" "11" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"

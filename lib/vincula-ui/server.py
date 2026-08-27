@@ -101,50 +101,12 @@ def legacy_users_cache_path() -> Path:
 
 
 def _ui_runtime_dir(*, create: bool = False) -> Path:
-    """Resolve ui-runtime under machine-local STATE when workspace is active.
-
-    Fail closed: if ``workspace.json`` exists but cannot be loaded, never fall
-    back to ``fleet_home()/ui-runtime`` (that would pollute the portable root).
-    ``create=True`` dies; ``create=False`` raises ``RuntimeError`` so GET can
-    soft-fail without writing.
-    """
-    f = fleet()
-    if f.workspace_trust_active():
-        try:
-            manifest = f.load_workspace_manifest()
-        except SystemExit as exc:
-            msg = (
-                "WORKSPACE_INCONSISTENT: refuse ui-runtime under portable "
-                "workspace root (fix or recreate workspace.json)"
-            )
-            if create:
-                f.die(msg, int(exc.code) if isinstance(exc.code, int) else 2)
-            raise RuntimeError(msg) from exc
-        fid = str(manifest.get("fleet_id") or "").strip()
-        if not fid:
-            msg = (
-                "WORKSPACE_INCONSISTENT: workspace.json missing fleet_id; "
-                "refuse ui-runtime under portable workspace root"
-            )
-            if create:
-                f.die(msg, 2)
-            raise RuntimeError(msg)
-        root = f.fleet_local_state_dir(fid) / "ui-runtime"
-    else:
-        root = f.fleet_home() / "ui-runtime"
-    if create:
-        root.mkdir(parents=True, exist_ok=True)
-        try:
-            import os
-
-            os.chmod(root, 0o700)
-        except OSError:
-            pass
-    return root
+    """Resolve ui-runtime; delegates to fleet helper (workspace fail-closed)."""
+    return fleet().ui_runtime_dir(create=create)
 
 
 def operations_log_path(*, create: bool = False) -> Path:
-    return _ui_runtime_dir(create=create) / "operations.jsonl"
+    return fleet().operation_journal_path(create=create)
 
 
 def append_ui_operation(
@@ -156,50 +118,23 @@ def append_ui_operation(
     ok: bool,
     detail: str = "",
 ) -> None:
-    """Append one UI-triggered operation row (never stores secrets)."""
-    record = {
-        "time": fleet().format_utc(datetime.now(timezone.utc)),
-        "operation": operation,
-        "target": target,
-        "state": state,
-        "exit_code": int(exit_code),
-        "ok": bool(ok),
-    }
-    if detail:
-        record["detail"] = detail[:500]
-    path = operations_log_path(create=True)
-    line = json.dumps(record, ensure_ascii=False) + "\n"
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(line)
+    """Append one UI-triggered operation via the shared fleet journal."""
+    f = fleet()
+    now = f.format_utc(datetime.now(timezone.utc))
+    f.append_operation_journal(
+        operation=operation,
+        target=target,
+        state=state,
+        exit_code=int(exit_code),
+        started_at=now,
+        finished_at=now,
+        detail=detail,
+        ok=bool(ok),
+    )
 
 
 def read_ui_operations(*, limit: int = 100) -> list[dict[str, Any]]:
-    try:
-        path = operations_log_path(create=False)
-    except RuntimeError:
-        return []
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    out: list[dict[str, Any]] = []
-    for line in lines[-limit:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            # Unify on ``time`` (legacy rows may have used ``at``).
-            if not item.get("time") and item.get("at"):
-                item = {**item, "time": item["at"]}
-            out.append(item)
-    out.reverse()
-    return out
+    return fleet().read_operation_journal(limit=limit)
 
 
 def load_last_status_doc() -> Optional[dict[str, Any]]:
@@ -1010,7 +945,7 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "node-provision",
-                "title": "Provision fresh VPS (pinned node 0.3.1)",
+                "title": "Provision fresh VPS (pinned node 0.3.2)",
                 "command": (
                     "vcl-fleet node provision NAME --host HOST "
                     "--host-key SHA256:..."
@@ -1252,6 +1187,31 @@ def _warnings_from_status(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]
     return warnings
 
 
+_RECENT_PROBLEM_CODES = frozenset(
+    {
+        "fleet-not-ok",
+        "workspace-conflict",
+        "ssh-fail",
+        "proxy-fail",
+        "accounting-fail",
+        "clock-fail",
+    }
+)
+
+
+def _recent_problems_from_warnings(
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Actionable FAIL / red items only — not the full warning strip."""
+    out: list[dict[str, Any]] = []
+    for w in warnings:
+        code = str(w.get("code") or "")
+        level = str(w.get("level") or "")
+        if level == "red" or code in _RECENT_PROBLEM_CODES:
+            out.append(w)
+    return out[:12]
+
+
 def _node_health_rows(
     registry: dict[str, Any],
     status_doc: Optional[dict[str, Any]],
@@ -1423,9 +1383,7 @@ def api_overview() -> dict[str, Any]:
     if last_sync_candidates:
         last_sync_at = max(str(x) for x in last_sync_candidates)
     cache_age = _cache_age_seconds(last_sync_at)
-    recent_problems = [
-        w for w in warnings if w.get("level") in ("red", "amber")
-    ][:12]
+    recent_problems = _recent_problems_from_warnings(warnings)
 
     return {
         "schema_version": UI_SCHEMA_VERSION,
@@ -1519,7 +1477,7 @@ def api_operations(*, limit: int = 100) -> dict[str, Any]:
         "schema_version": UI_SCHEMA_VERSION,
         "limit": lim,
         "rows": rows,
-        "note": "Local UI/CLI operation history; secrets redacted.",
+        "note": "Local fleet operation journal (CLI + UI); secrets redacted.",
     }
 
 
@@ -1674,29 +1632,119 @@ def _users_from_db(conn: Any, registry: dict[str, Any]) -> list[dict[str, Any]]:
     return [grouped[k] for k in order]
 
 
+def _merge_users_snapshot_cache(
+    snapshot: list[dict[str, Any]],
+    cache: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Snapshot is authoritative for who exists; cache overlays live enabled state."""
+    if not snapshot:
+        return cache
+    if not cache:
+        return snapshot
+    by_uid: dict[str, dict[str, Any]] = {}
+    by_tag: dict[str, dict[str, Any]] = {}
+    for u in cache:
+        uid = str(u.get("user_id") or "")
+        tag = str(u.get("tag") or "")
+        if uid:
+            by_uid[uid] = u
+        if tag:
+            by_tag[tag] = u
+    out: list[dict[str, Any]] = []
+    seen_uids: set[str] = set()
+    for su in snapshot:
+        rec = dict(su)
+        uid = str(su.get("user_id") or "")
+        tag = str(su.get("tag") or "")
+        cu = by_uid.get(uid) or by_tag.get(tag)
+        if cu:
+            if not rec.get("department") and cu.get("department"):
+                rec["department"] = cu["department"]
+            if not rec.get("display_name") and cu.get("display_name"):
+                rec["display_name"] = cu["display_name"]
+            cache_nodes = {
+                str(n.get("name") or ""): n
+                for n in (cu.get("nodes") or [])
+                if isinstance(n, dict) and n.get("name")
+            }
+            merged_nodes: list[dict[str, Any]] = []
+            for sn in rec.get("nodes") or []:
+                if not isinstance(sn, dict):
+                    continue
+                mn = dict(sn)
+                cn = cache_nodes.get(str(sn.get("name") or ""))
+                if cn:
+                    if cn.get("enabled") is not None:
+                        mn["enabled"] = cn["enabled"]
+                    if cn.get("status"):
+                        mn["status"] = cn["status"]
+                    if cn.get("has_active_credential") is not None:
+                        mn["has_active_credential"] = cn["has_active_credential"]
+                merged_nodes.append(mn)
+            rec["nodes"] = merged_nodes
+            rec["source"] = "user_snapshot+refresh"
+        out.append(rec)
+        if uid:
+            seen_uids.add(uid)
+    for cu in cache:
+        uid = str(cu.get("user_id") or "")
+        if uid and uid not in seen_uids:
+            extra = dict(cu)
+            extra["source"] = cu.get("source") or "users-cache"
+            out.append(extra)
+    return out
+
+
 def api_users() -> dict[str, Any]:
     f = fleet()
     registry = f.load_registry()
     cache = load_users_cache()
     conn = f.open_cache_readonly()
     try:
-        if cache and isinstance(cache.get("users"), list) and cache["users"]:
-            users = sanitize_users_for_ui(cache["users"])
+        snapshot_users = _users_from_snapshot(conn, registry)
+        cache_users = (
+            sanitize_users_for_ui(cache["users"])
+            if cache and isinstance(cache.get("users"), list) and cache["users"]
+            else []
+        )
+        if snapshot_users:
+            users = _merge_users_snapshot_cache(snapshot_users, cache_users)
+            if cache_users:
+                source = "user_snapshot+users-cache"
+                note = (
+                    "User list from sync snapshot; enabled state merged from last "
+                    "Refresh users (SSH). No VLESS URI, credential UUID, or secrets."
+                )
+                ok = cache.get("ok")
+                refreshed_at = cache.get("refreshed_at")
+                unreachable = cache.get("unreachable") or []
+            else:
+                source = snapshot_users[0].get("source") or "user_snapshot"
+                note = (
+                    "From user_snapshot / synced audit. "
+                    "Refresh users over SSH for latest enabled state. "
+                    "No VLESS URI, credential UUID, or secrets."
+                )
+                ok = True
+                refreshed_at = None
+                unreachable = []
+        elif cache_users:
+            users = cache_users
             source = "users-cache"
             note = (
                 "Cached from last Refresh users (SSH). "
+                "Run sync --full for full user list. "
                 "No VLESS URI, credential UUID, or secrets."
             )
             ok = cache.get("ok")
             refreshed_at = cache.get("refreshed_at")
             unreachable = cache.get("unreachable") or []
         else:
-            users = _users_from_snapshot(conn, registry)
-            source = users[0]["source"] if users else "fleet.db"
+            users = []
+            source = "fleet.db"
             note = (
-                "From user_snapshot / synced audit. "
-                "Refresh users over SSH for latest enabled state. "
-                "No VLESS URI, credential UUID, or secrets."
+                "No users in snapshot or cache. "
+                "Run sync --full or Refresh users."
             )
             ok = True
             refreshed_at = None
@@ -1737,6 +1785,7 @@ def api_user(tag: str) -> dict[str, Any]:
         else:
             uid = resolve_user_id_for_ui(conn, registry, tag, allow_ssh=False)
         recent: list[dict[str, Any]] = []
+        destinations: list[dict[str, Any]] = []
         start = end = None
         if uid:
             start, end = f.stats_date_window(7)
@@ -1749,6 +1798,28 @@ def api_user(tag: str) -> dict[str, Any]:
                 extra_params=[uid],
             )
             recent = [f._stats_row_from_sql(registry, r) for r in raw]
+            dest_raw = f.query_daily_grouped(
+                conn,
+                start=start,
+                end=end,
+                group_by=("destination_host",),
+                extra_where=["user_id = ?"],
+                extra_params=[uid],
+            )
+            for row in dest_raw[:20]:
+                upload = int(row["upload_bytes"] or 0)
+                download = int(row["download_bytes"] or 0)
+                host = f._optional_text(row["destination_host"]) or "(unknown)"
+                destinations.append(
+                    {
+                        "destination_host": host,
+                        "upload_bytes": upload,
+                        "download_bytes": download,
+                        "bytes": upload + download,
+                        "connection_count": int(row["connection_count"] or 0),
+                        "bytes_human": _human_bytes(upload + download),
+                    }
+                )
     finally:
         conn.close()
     if match is None and uid is None:
@@ -1763,6 +1834,7 @@ def api_user(tag: str) -> dict[str, Any]:
             "source": "fleet.db",
         },
         "recent_usage": recent,
+        "destinations": destinations,
         "stats_window": {"days": 7, "from": start, "to": end},
         "secrets_note": (
             "URI / credential UUID / Reality keys / Clash secret are never shown."

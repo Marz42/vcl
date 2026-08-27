@@ -1248,8 +1248,23 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         return 0
 
     if cmd == "ss" and len(argv) >= 2 and argv[1] == "-lntH":
+        # Match: ss -lntH sport = :443  (legacy seed may use non-443).
+        import re as _re
+
+        port = None
+        joined = " ".join(argv)
+        m = _re.search(r"sport\s*=\s*:(\d+)", joined)
+        if m:
+            port = m.group(1)
+        busy: set[str] = set()
         if os.environ.get("VCL_FAKE_PORT_443", "").strip() == "1":
-            sys.stdout.write("LISTEN 0 128 0.0.0.0:443 0.0.0.0:*\n")
+            busy.add("443")
+        for part in os.environ.get("VCL_FAKE_LISTEN_PORTS", "").split(","):
+            p = part.strip()
+            if p.isdigit():
+                busy.add(p)
+        if port and port in busy:
+            sys.stdout.write(f"LISTEN 0 128 0.0.0.0:{port} 0.0.0.0:*\n")
         return 0
 
     if cmd == "systemctl" and argv[1:3] == ["cat", "sing-box.service"]:
@@ -1290,7 +1305,7 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         if os.environ.get("VCL_FAKE_REMOTE_DIGEST_FAIL", "").strip() == "1":
             sys.stderr.write("sha256sum: FAILED\n")
             return 1
-        sys.stdout.write("vincula-node-0.3.1.tar.gz: OK\n")
+        sys.stdout.write("vincula-node-0.3.2.tar.gz: OK\n")
         return 0
 
     if cmd == "sh" and len(argv) >= 3 and argv[1] == "-c":
@@ -1299,12 +1314,21 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
             if os.environ.get("VCL_FAKE_REMOTE_DIGEST_FAIL", "").strip() == "1":
                 sys.stderr.write("sha256sum: FAILED\n")
                 return 1
-            sys.stdout.write("vincula-node-0.3.1.tar.gz: OK\n")
+            sys.stdout.write("vincula-node-0.3.2.tar.gz: OK\n")
             return 0
         if "os-release" in script:
             os_id = os.environ.get("VCL_FAKE_OS_ID", "debian").strip() or "debian"
             os_ver = os.environ.get("VCL_FAKE_OS_VERSION", "12").strip() or "12"
             sys.stdout.write(f"{os_id}:{os_ver}\n")
+            return 0
+        # Legacy seed harden: chown root:root && chmod 600 (path-only; no secrets).
+        if "chown" in script and "chmod" in script:
+            if os.environ.get("VCL_FAKE_CHOWN_FAIL", "").strip() == "1":
+                sys.stderr.write("chown: fake permission denied\n")
+                return 1
+            if os.environ.get("VCL_FAKE_CHMOD_FAIL", "").strip() == "1":
+                sys.stderr.write("chmod: fake permission denied\n")
+                return 1
             return 0
         return None
 
@@ -1336,7 +1360,16 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         sys.stdout.write(stage + "\n")
         return 0
 
+    if cmd == "chown":
+        if os.environ.get("VCL_FAKE_CHOWN_FAIL", "").strip() == "1":
+            sys.stderr.write("chown: fake permission denied\n")
+            return 1
+        return 0
+
     if cmd == "chmod":
+        if os.environ.get("VCL_FAKE_CHMOD_FAIL", "").strip() == "1":
+            sys.stderr.write("chmod: fake permission denied\n")
+            return 1
         return 0
 
     if cmd == "rm" and any(a in ("-rf", "-fr") or a.startswith("-") and "r" in a and "f" in a for a in argv[1:]):
@@ -1352,6 +1385,97 @@ def _handle_provision_remote(alias: str, argv: list[str]) -> int | None:
         return _fake_run_vincula_installer(alias, argv)
 
     return None
+
+
+def _parse_legacy_seed_argv(argv: list[str]) -> tuple[str | None, str | None, str | None]:
+    """Extract path-only legacy seed flags from installer argv (no file reads)."""
+    uri_path: str | None = None
+    key_path: str | None = None
+    user_tag: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--legacy-vless-uri-file" and i + 1 < len(argv):
+            uri_path = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--legacy-reality-private-key-file" and i + 1 < len(argv):
+            key_path = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--legacy-user-tag" and i + 1 < len(argv):
+            user_tag = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    return uri_path, key_path, user_tag
+
+
+def _seed_owner_and_legacy_users(alias: str, legacy_tag: str) -> None:
+    """Write dual-user users.json + config with two distinct UUIDs (no secrets)."""
+    now = _utc_now()
+    node_id = _node_id(alias)
+    owner_uuid = str(uuid.uuid4())
+    legacy_uuid = str(uuid.uuid4())
+    assert owner_uuid != legacy_uuid
+    data = {
+        "schema_version": 2,
+        "users": [
+            {
+                "user_id": str(uuid.uuid4()),
+                "tag": "owner",
+                "display_name": "Owner",
+                "department": "",
+                "enabled": True,
+                "created_at": now,
+                "credentials": [
+                    {
+                        "credential_id": str(uuid.uuid4()),
+                        "node_id": node_id,
+                        "uuid": owner_uuid,
+                        "status": "active",
+                        "created_at": now,
+                        "revoked_at": None,
+                    }
+                ],
+            },
+            {
+                "user_id": str(uuid.uuid4()),
+                "tag": legacy_tag,
+                "display_name": legacy_tag,
+                "department": "",
+                "enabled": True,
+                "created_at": now,
+                "credentials": [
+                    {
+                        "credential_id": str(uuid.uuid4()),
+                        "node_id": node_id,
+                        "uuid": legacy_uuid,
+                        "status": "active",
+                        "created_at": now,
+                        "revoked_at": None,
+                    }
+                ],
+            },
+        ],
+    }
+    node_dir = _alias_dir(alias)
+    _write_json(node_dir / "users.json", data)
+    # Minimal sing-box-like config so E2E can assert two UUID identities.
+    _write_json(
+        node_dir / "config.json",
+        {
+            "inbounds": [
+                {
+                    "type": "vless",
+                    "users": [
+                        {"name": "owner", "uuid": owner_uuid},
+                        {"name": legacy_tag, "uuid": legacy_uuid},
+                    ],
+                }
+            ]
+        },
+    )
 
 
 def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
@@ -1384,9 +1508,38 @@ def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
     if _state_root() is None:
         sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR required for provision install\n")
         return 1
+    uri_path, key_path, legacy_tag = _parse_legacy_seed_argv(argv)
+    legacy_present = sum(1 for x in (uri_path, key_path, legacy_tag) if x)
+    if legacy_present not in (0, 3):
+        sys.stderr.write(
+            "fake-ssh: legacy seed requires --legacy-vless-uri-file, "
+            "--legacy-reality-private-key-file, and --legacy-user-tag together\n"
+        )
+        return 1
     node_dir = _alias_dir(alias)
-    (node_dir / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+    node_dir.mkdir(parents=True, exist_ok=True)
+    if legacy_present == 3 and (node_dir / "VERSION").is_file():
+        sys.stderr.write("Legacy seed requires a clean host.\n")
+        return 1
+    (node_dir / "VERSION").write_text("0.3.2\n", encoding="utf-8")
     (node_dir / ".provisioned").write_text("1\n", encoding="utf-8")
+    if legacy_present == 3:
+        # Path-only argv; never log URI/key contents. Tag is non-secret.
+        assert legacy_tag is not None
+        import re
+
+        if legacy_tag == "owner":
+            sys.stderr.write("fake-ssh: legacy user tag must not be owner\n")
+            return 1
+        if not re.match(r"^[a-z0-9][a-z0-9._-]{0,31}$", legacy_tag):
+            sys.stderr.write("fake-ssh: invalid legacy user tag\n")
+            return 1
+        # Paths must be path-like (never embed URI/key body in argv).
+        assert uri_path is not None and key_path is not None
+        if "vless://" in uri_path or "vless://" in key_path:
+            sys.stderr.write("fake-ssh: legacy argv must be paths only\n")
+            return 1
+        _seed_owner_and_legacy_users(alias, legacy_tag)
     return 0
 
 

@@ -60,10 +60,12 @@
       </div>
       <div class="card">
         <h2>Recent problems</h2>
+        <p class="hint muted">FAIL / not-OK states that need attention now.</p>
         <div id="recent-problems"></div>
       </div>
       <div class="card">
         <h2>Warnings</h2>
+        <p class="hint muted">STALE, setup hints, and other non-critical notices.</p>
         <div id="overview-warnings"></div>
         <p class="hint">
           Drill-down:
@@ -185,8 +187,9 @@
       <div class="card">
         <h2>Operations history</h2>
         <p class="hint">
-          Local record of UI-triggered sync / probe / verify / refresh-users.
-          High-risk mutations (adopt, provision, rotate, …) are CLI-only — use Recipes or Command Builder.
+          Shared fleet operation journal (CLI + UI): sync / probe / verify / refresh-users
+          and CLI mutations such as provision, adopt, replace, user add/rotate, archive restore.
+          High-risk mutations remain CLI-only in the UI — use Recipes or Command Builder.
         </p>
         <div id="operations-table" class="table-wrap"></div>
       </div>
@@ -216,7 +219,11 @@
       <h2>Command Builder</h2>
       <button type="button" id="command-builder-close" class="btn">Close</button>
     </div>
-    <p class="hint">Generate CLI commands for mutations — copy only, no UI execution (D53).</p>
+    <p class="hint">
+      Pick an operation, fill in the fields, click <strong>Generate</strong>, then
+      <strong>Copy</strong>. Paste and run the command in your terminal — the UI never
+      executes mutations (D53).
+    </p>
     <div id="command-builder-body" class="drawer-body">
       <label>Operation
         <select id="cb-operation"></select>

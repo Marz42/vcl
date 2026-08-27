@@ -34,10 +34,23 @@ SING_BOX_VERSION = _sbr.SING_BOX_VERSION
 release_asset_name = _sbr.release_asset_name
 release_asset_url = _sbr.release_asset_url
 
+_ls_path = Path(__file__).resolve().parent / "legacy_seed.py"
+_ls_spec = importlib.util.spec_from_file_location("legacy_seed", _ls_path)
+if _ls_spec is None or _ls_spec.loader is None:
+    raise RuntimeError(f"cannot load {_ls_path}")
+_legacy_seed = importlib.util.module_from_spec(_ls_spec)
+# Python 3.13 dataclasses/typing need the module registered during exec.
+sys.modules.setdefault("legacy_seed", _legacy_seed)
+_ls_spec.loader.exec_module(_legacy_seed)
+LegacySeedError = _legacy_seed.LegacySeedError
+load_legacy_seed = _legacy_seed.load_legacy_seed
+LEGACY_URI_REMOTE = "legacy-user.uri"
+LEGACY_KEY_REMOTE = "reality-private.key"
+
 PrivilegeMode = Literal["root", "sudo"]
 
 # D51: single arch-neutral node payload pinned for 0.4.x provision.
-NODE_PAYLOAD_VERSION = "0.3.1"
+NODE_PAYLOAD_VERSION = "0.3.2"
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
@@ -131,7 +144,7 @@ REMOTE_CHECK_IDS = (
     "disk",
     "already_vincula",
     "bootstrap",
-    "port_443",
+    "listen_port",
     "sing_box_unit",
     "https_out",
     "singbox_release",
@@ -151,7 +164,7 @@ STAGE1_CHECK_IDS = (
 )
 
 STAGE2_CHECK_IDS = (
-    "port_443",
+    "listen_port",
     "https_out",
     "singbox_release",
     "public_ip",
@@ -235,21 +248,82 @@ def _priv_argv(privilege_mode: PrivilegeMode, argv: list[str]) -> list[str]:
     return argv
 
 
+def _harden_remote_legacy_secrets(
+    *,
+    ssh_host: str,
+    ssh_user: str,
+    ssh_port: int,
+    identity_file: Optional[str],
+    extra: Optional[list[str]],
+    privilege_mode: PrivilegeMode,
+    uri_remote: str,
+    key_remote: str,
+) -> None:
+    """chown root:root + chmod 600 secret files; fail-closed on nonzero SSH rc.
+
+    SSH user may own the SCP'd files; installer (often via sudo) requires
+    owner == EUID (root) and mode 0600.
+    """
+    host = _require_host()
+    # One remote shell so chown+chmod are atomic from the caller's perspective.
+    script = (
+        f"chown root:root -- {shlex.quote(uri_remote)} {shlex.quote(key_remote)} "
+        f"&& chmod 600 -- {shlex.quote(uri_remote)} {shlex.quote(key_remote)}"
+    )
+    argv = _priv_argv(privilege_mode, ["sh", "-c", script])
+    proc = host.ssh_run(
+        ssh_host,
+        ssh_user,
+        ssh_port,
+        argv,
+        batch=True,
+        extra=extra,
+        identity_file=identity_file,
+    )
+    if proc.returncode != 0:
+        detail = sanitize_operator_text(
+            (proc.stderr or proc.stdout or "").strip()
+            or f"exit {proc.returncode}"
+        )
+        host.die(f"legacy seed remote secret harden failed: {detail}")
+
+
 def installer_remote_argv(
     unpack_script: str,
     *,
     privilege_mode: PrivilegeMode,
     vcl_server: Optional[str],
+    vcl_port: Optional[int] = None,
+    legacy_uri_remote: Optional[str] = None,
+    legacy_key_remote: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
 ) -> list[str]:
     """Build remote installer argv.
 
-    sudo must wrap ``env`` so VCL_SERVER survives sudo's env reset:
-    ``sudo -n env VCL_SERVER=... bash vincula.sh``.
+    sudo must wrap ``env`` so VCL_SERVER / VCL_PORT survive sudo's env reset:
+    ``sudo -n env VCL_SERVER=... VCL_PORT=... bash vincula.sh``.
+    Legacy seed paths are path-only argv (never URI/key contents).
     """
     argv: list[str] = ["bash", unpack_script]
+    if legacy_uri_remote and legacy_key_remote and legacy_user_tag:
+        argv.extend(
+            [
+                "--legacy-vless-uri-file",
+                legacy_uri_remote,
+                "--legacy-reality-private-key-file",
+                legacy_key_remote,
+                "--legacy-user-tag",
+                legacy_user_tag,
+            ]
+        )
+    env_assigns: list[str] = []
     vcl = (vcl_server or "").strip()
     if vcl:
-        argv = ["env", f"VCL_SERVER={vcl}", *argv]
+        env_assigns.append(f"VCL_SERVER={vcl}")
+    if vcl_port is not None:
+        env_assigns.append(f"VCL_PORT={int(vcl_port)}")
+    if env_assigns:
+        argv = ["env", *env_assigns, *argv]
     return _priv_argv(privilege_mode, argv)
 
 
@@ -672,10 +746,14 @@ def unpack_and_run_installer(
     identity_file: Optional[str] = None,
     extra: Optional[list[str]] = None,
     vcl_server: Optional[str] = None,
+    vcl_port: Optional[int] = None,
     privilege_mode: PrivilegeMode = "root",
     remote_stage: str,
+    legacy_uri_remote: Optional[str] = None,
+    legacy_key_remote: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
 ) -> None:
-    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.1).
+    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.2).
 
     Host-key policy remains D34 (no StrictHostKeyChecking=no). Installer
     lands ``/usr/local/bin/vcl`` and ``/etc/vincula`` (not ``/opt``).
@@ -702,6 +780,10 @@ def unpack_and_run_installer(
         f"{paths['unpack']}/vincula.sh",
         privilege_mode=privilege_mode,
         vcl_server=vcl_server,
+        vcl_port=vcl_port,
+        legacy_uri_remote=legacy_uri_remote,
+        legacy_key_remote=legacy_key_remote,
+        legacy_user_tag=legacy_user_tag,
     )
     heartbeat = _heartbeat_seconds()
     install_timeout = _install_timeout_seconds()
@@ -940,6 +1022,10 @@ def run_provision(
     vcl_server: Optional[str] = None,
     skip_preflight: bool = False,
     skip_sync: bool = False,
+    legacy_uri_file: Optional[str] = None,
+    legacy_private_key_file: Optional[str] = None,
+    legacy_user_tag: Optional[str] = None,
+    vcl_port: int = 443,
 ) -> dict[str, Any]:
     """Fresh VPS: preflight → payload → SCP → install → verify → commit → sync --full.
 
@@ -948,10 +1034,43 @@ def run_provision(
     re-running the installer. Repair path: ``node adopt`` / register only.
     Initial sync is always ``sync --full`` (D25), never bare ``sync``.
     ``skip_sync=True`` skips the post-commit ``sync --full`` (``--no-sync``).
+
+    Legacy seed (0.4.5): all three ``legacy_*`` args must be set together.
+    Secrets stay in local files → SCP path-only → remote staging 0600.
     """
     host = _require_host()
     if vcl_server is None:
         vcl_server = os.environ.get("VCL_SERVER")
+
+    legacy_flags = (
+        legacy_uri_file,
+        legacy_private_key_file,
+        legacy_user_tag,
+    )
+    legacy_set = sum(1 for x in legacy_flags if (x or "").strip())
+    if legacy_set not in (0, 3):
+        host.die(
+            "legacy seed requires --legacy-vless-uri-file, "
+            "--legacy-reality-private-key-file, and --legacy-user-tag together"
+        )
+
+    legacy_seed = None
+    reality_host = select_reality_host()
+    if legacy_set == 3:
+        try:
+            # Install listen port comes from the URI (preserve old client port).
+            legacy_seed = load_legacy_seed(
+                uri_file=Path(str(legacy_uri_file)),
+                private_key_file=Path(str(legacy_private_key_file)),
+                user_tag=str(legacy_user_tag),
+                advertised_server=(vcl_server or "").strip() or None,
+                install_port=None,
+            )
+        except LegacySeedError as exc:
+            host.die(f"legacy seed refused: {exc}")
+        reality_host = legacy_seed.sni
+        vcl_server = legacy_seed.server
+        vcl_port = int(legacy_seed.port)
 
     resolved = resolve_node_payload()
     manifest = verify_local_payload(resolved)
@@ -985,7 +1104,8 @@ def run_provision(
             host_key=host_key,
             manifest=manifest,
             vcl_server=vcl_server,
-            reality_host=select_reality_host(),
+            reality_host=reality_host,
+            vcl_listen_port=int(vcl_port),
         )
         _preflight_die_if_failed(preflight)
         checks = list(preflight.get("checks") or [])
@@ -1025,6 +1145,9 @@ def run_provision(
         identity_file=identity_file,
         extra=extra,
     )
+    legacy_uri_remote: Optional[str] = None
+    legacy_key_remote: Optional[str] = None
+    legacy_tag: Optional[str] = None
     try:
         upload_and_verify_remote_payload(
             resolved,
@@ -1035,6 +1158,32 @@ def run_provision(
             extra=extra,
             remote_stage=remote_stage,
         )
+        if legacy_seed is not None:
+            _progress("upload-legacy-seed")
+            node = _ssh_node_dict(ssh_host, ssh_user, ssh_port, identity_file)
+            legacy_uri_remote = f"{remote_stage}/{LEGACY_URI_REMOTE}"
+            legacy_key_remote = f"{remote_stage}/{LEGACY_KEY_REMOTE}"
+            host.scp_push(
+                node, Path(legacy_seed.uri_path), legacy_uri_remote, extra=extra
+            )
+            host.scp_push(
+                node,
+                Path(legacy_seed.private_key_path),
+                legacy_key_remote,
+                extra=extra,
+            )
+            _harden_remote_legacy_secrets(
+                ssh_host=ssh_host,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+                identity_file=identity_file,
+                extra=extra,
+                privilege_mode=privilege_mode,
+                uri_remote=legacy_uri_remote,
+                key_remote=legacy_key_remote,
+            )
+            legacy_tag = legacy_seed.user_tag
+
         _progress("install")
         unpack_and_run_installer(
             ssh_host=ssh_host,
@@ -1043,8 +1192,12 @@ def run_provision(
             identity_file=identity_file,
             extra=extra,
             vcl_server=vcl_server,
+            vcl_port=int(vcl_port) if legacy_seed is not None else None,
             privilege_mode=privilege_mode,
             remote_stage=remote_stage,
+            legacy_uri_remote=legacy_uri_remote,
+            legacy_key_remote=legacy_key_remote,
+            legacy_user_tag=legacy_tag,
         )
 
         _progress("verify")
@@ -1125,14 +1278,20 @@ def run_provision(
                 "detail": str(exc),
             }
 
+        result: dict[str, Any] = {"ok": True, "node_id": node_id}
+        if legacy_seed is not None:
+            result["legacy_seed"] = True
+            result["legacy_user_tag"] = legacy_seed.user_tag
+            result["node_version"] = NODE_PAYLOAD_VERSION
+
         if skip_sync:
-            return {"ok": True, "node_id": node_id}
+            return result
         _progress("sync")
         _code, sync_doc = host.run_sync_full_payload(
             types.SimpleNamespace(node=name, all=False, full=True, as_json=False)
         )
         if _code != 0 or sync_doc.get("state") != "SUCCESS":
-            return {
+            out = {
                 "ok": False,
                 "state": "PARTIAL",
                 "remote_ready": True,
@@ -1141,7 +1300,13 @@ def run_provision(
                 "sync": sync_doc,
                 "remedy": f"vcl-fleet sync --full --node {name}",
             }
-        return {"ok": True, "node_id": node_id, "sync": sync_doc}
+            if legacy_seed is not None:
+                out["legacy_seed"] = True
+                out["legacy_user_tag"] = legacy_seed.user_tag
+                out["node_version"] = NODE_PAYLOAD_VERSION
+            return out
+        result["sync"] = sync_doc
+        return result
     finally:
         _cleanup_remote_stage(
             remote_stage,
@@ -1217,6 +1382,7 @@ def run_provision_preflight(
     manifest: Optional[dict[str, Any]] = None,
     reality_host: Optional[str] = None,
     vcl_server: Optional[str] = None,
+    vcl_listen_port: int = 443,
     skip: Optional[set[str]] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -1225,6 +1391,8 @@ def run_provision_preflight(
     Returns ``{"ok": bool, "checks": [{"id","status","detail","remedy"?}, ...]}``.
     Does not install payload (B3+) or write registry. Non-interactive without
     ``host_key`` dies via trust.NONINTERACTIVE_HOST_KEY_MSG.
+
+    ``vcl_listen_port`` is the planned VLESS listen port (legacy seed: URI port).
     """
     if _host is None:
         raise RuntimeError("provision.bind(host) required before run_provision_preflight")
@@ -1233,6 +1401,12 @@ def run_provision_preflight(
     if vcl_server is None:
         vcl_server = os.environ.get("VCL_SERVER")
     vcl_server_set = bool((vcl_server or "").strip())
+    try:
+        listen_port = int(vcl_listen_port)
+    except (TypeError, ValueError):
+        listen_port = 443
+    if not (1 <= listen_port <= 65535):
+        listen_port = 443
 
     supported_arch: list[str] = list(DEFAULT_SUPPORTED_ARCH)
     if manifest is not None:
@@ -1591,22 +1765,29 @@ def run_provision_preflight(
             _skip_stage2("bootstrap skipped")
             return _finish(False)
 
-    if want("port_443"):
+    if want("listen_port"):
         proc = _ssh(
             ssh_host,
             ssh_user,
             ssh_port,
-            ["ss", "-lntH", "sport = :443"],
+            ["ss", "-lntH", f"sport = :{listen_port}"],
             identity_file=identity_file,
             extra=extra,
         )
         out = (proc.stdout or "").strip()
         if out:
-            add(_check("port_443", "fail", "port 443 in use"))
+            add(
+                _check(
+                    "listen_port",
+                    "fail",
+                    f"port {listen_port} in use",
+                    remedy="free the URI/install listen port before provision",
+                )
+            )
         else:
-            add(_check("port_443", "pass", "port 443 free"))
+            add(_check("listen_port", "pass", f"port {listen_port} free"))
     else:
-        add(_skipped("port_443"))
+        add(_skipped("listen_port"))
 
     # --- Stage 2: outbound / public IP / Reality ---
     if want("https_out"):
@@ -1697,17 +1878,28 @@ def run_provision_preflight(
         if not rh:
             add(_skipped("reality", "reality_host not configured"))
         else:
+            # Match installer https_reachable: TLS/HTTP reachability without
+            # curl -f (SNI targets often return 403/404/503; Reality only needs
+            # a working handshake destination).
             proc = _ssh(
                 ssh_host,
                 ssh_user,
                 ssh_port,
                 [
                     "curl",
-                    "-fsS",
+                    "-sS",
+                    "--noproxy",
+                    "*",
+                    "--proto",
+                    "=https",
+                    "--tlsv1.2",
+                    "--connect-timeout",
+                    "5",
                     "--max-time",
                     "10",
                     "-o",
                     "/dev/null",
+                    "--head",
                     f"https://{rh}/",
                 ],
                 identity_file=identity_file,

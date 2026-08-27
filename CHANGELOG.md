@@ -2,6 +2,25 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.4.5 (2026-08-25)
+**Integration & Hardening** + **Legacy single-user seed**. Stamp: CTRL `0.4.5`; NODE payload pin **`0.3.2`** (Minimum Node remains `0.3.1`; existing 0.3.1 not forced).
+### Added
+- **Legacy single-user seed：** `vcl-fleet node provision … --legacy-vless-uri-file` / `--legacy-reality-private-key-file` / `--legacy-user-tag`（三项必须同时出现；argv 仅本地路径）。Installer `vincula.sh` file-based seed；X25519 pbk 校验；owner 新 UUID + legacy 保留原 UUID/Reality。
+- **Node 0.3.2：** 首个 payload bump（legacy seed / installer）；controller 内嵌 `vincula-node-0.3.2.tar.gz`。
+- **Shared operation journal：** CLI/UI 共用 `operations.jsonl`（retention、corrupt-tolerant、secret redaction；file lock + atomic trim）。
+- **UI PARTIAL close（AC-4.5-08）：** Node/User drawers + CLI operations history 收口 0.4.4 PARTIAL；User destinations = host/bytes/connections（无 network）。
+### Fixed
+- Fleet suite **HOME / XDG isolation** 贯穿 teardown（防污染真实 `~/.ssh`）。
+- **Review-fix：** sudo/root legacy seed remote `chown`/`chmod` fail-closed；tag/URI 与 `is_valid_user_tag` 对齐并拒重复 query 键；existing VERSION + seed 拒绝；replace journal 记 backup/restore 子步骤；audit archive restore 记为 `audit_archive_restore`。
+- **Review-fix round 2：** installer `validate-seed` path-only（URI/UUID/pbk 不再进子进程 argv）；直装 `sudo` 接受经验证 `SUDO_UID` 属主；parser 拒 password userinfo / URI path / 单标签 SNI；`--from-backup` 仅在 verify 后记 SUCCESS；legacy seed 成功输出对齐 Spec §3.8。
+- **Legacy seed empty sid / URI port：** URI 可缺省或空 `sid`（空 Reality short ID）；安装监听端口取自 URI 并经 `VCL_PORT` 传入 installer。
+- **Reality preflight / self-test：** SNI 目标 HTTP 503 不再误杀（与 installer TLS 探测一致；self-test 接受 503）。
+- **Legacy seed harden：** controller preflight 检查 URI 实际监听端口（非硬编码 443）；legacy 密钥临时文件纳入早期 `0700` `$TMP_DIR` + EXIT 清理；URI 文件拒绝多行；legacy 成功输出对齐 Spec §3.8（无 `node_id=`）。
+### Notes
+- Spec: [`docs/specs/V0.4.5_Spec.md`](docs/specs/V0.4.5_Spec.md) · evidence：[`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md) · LIVE Matrix H：[`docs/evidence/0.4.5/LIVE.md`](docs/evidence/0.4.5/LIVE.md)。
+- `0.5.0` 仍是首个 **capability/telemetry** Node 升级；`0.3.2` 仅为 payload/legacy-seed 制品 bump。
+- `VCL_FLEET_VERSION=0.4.5`；`VINCULA_VERSION=0.3.2`。
+
 ## 0.4.4 (2026-08-25)
 **Controller-only** Local Audit UI **v2** (D53-rev1 / rev1 §16). This milestone **is** UI v2 — not a later add-on.
 Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).

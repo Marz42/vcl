@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.3.1
+# vincula v0.3.2
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.3.1"
+readonly VINCULA_VERSION="0.3.2"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -160,11 +160,13 @@ load_vincula_common || true
 
 usage() {
   cat <<'USAGE'
-vincula v0.3.1
+vincula v0.3.2
 
 Usage:
   sudo bash vincula.sh
   sudo bash vincula.sh --runtime-only
+  sudo bash vincula.sh --legacy-vless-uri-file FILE \
+    --legacy-reality-private-key-file FILE --legacy-user-tag TAG
   bash vincula.sh --help
   bash vincula.sh --version
 
@@ -179,7 +181,7 @@ Python libraries) without writing /etc/vincula/VERSION and without generating
 identity. Finish on that host with:
   sudo vcl restore FILE --reissue-output FILE --server HOST
 
-The normal installation path is non-interactive. Existing vincula v0.3.1
+The normal installation path is non-interactive. Existing vincula v0.3.2
 credentials are preserved when the script is run again. Older 0.1.x and
 0.2.0–0.3.0 installations are migrated in place without rotating UUID or REALITY keys.
 Use 'vcl uninstall' to remove a Vincula-managed installation.
@@ -190,6 +192,17 @@ cleanup_temp() {
   if [[ -n "${TMP_DIR:-}" && "$TMP_DIR" == /tmp/vincula.* && -d "$TMP_DIR" ]]; then
     rm -rf --one-file-system -- "$TMP_DIR"
   fi
+}
+
+# Install / migrate staging root (0700). Create early so legacy seed secret
+# temps live under it and the EXIT trap always removes them.
+ensure_install_tmp_dir() {
+  if [[ -n "${TMP_DIR:-}" && "$TMP_DIR" == /tmp/vincula.* && -d "$TMP_DIR" ]]; then
+    chmod 700 "$TMP_DIR" 2>/dev/null || true
+    return 0
+  fi
+  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
+  chmod 700 "$TMP_DIR" || die "Could not chmod install temp directory."
 }
 
 rollback_install() {
@@ -496,7 +509,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -779,7 +792,7 @@ run_reality_self_test() {
       --socks5-hostname "127.0.0.1:${socks_port}" \
       --proto '=https' --tlsv1.2 \
       --head "https://${reality_host}/" || true)
-    if [[ "$http_code" =~ ^[23][0-9][0-9]$ || "$http_code" == "403" || "$http_code" == "404" ]]; then
+    if [[ "$http_code" =~ ^[23][0-9][0-9]$ || "$http_code" == "403" || "$http_code" == "404" || "$http_code" == "503" ]]; then
       exit 0
     fi
     printf 'ERROR: REALITY end-to-end self-test failed for %s (HTTP status %s).\n' "$reality_host" "${http_code:-none}" >&2
@@ -1342,7 +1355,7 @@ render_systemd_unit() {
   local output=$1
   cat > "$output" <<'UNIT'
 # Managed-By: vincula
-# Vincula-Version: 0.3.1
+# Vincula-Version: 0.3.2
 [Unit]
 Description=sing-box (managed by vincula)
 Documentation=https://sing-box.sagernet.org/
@@ -2007,7 +2020,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0–0.1.5, 0.2.0–0.3.0, 0.3.1-dev, 0.3.1-rc1, and 0.3.1-rc2 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0-0.1.5, 0.2.0-0.3.0, 0.3.1-dev, 0.3.1-rc1, 0.3.1-rc2, and 0.3.1 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {
@@ -2208,6 +2221,209 @@ install_runtime_only() {
   log_info "Finish with: sudo vcl restore FILE --reissue-output FILE --server HOST"
 }
 
+
+# --- Legacy single-user seed (Node 0.3.2 / Controller 0.4.5) ---
+LEGACY_URI_FILE=""
+LEGACY_PRIVATE_KEY_FILE=""
+LEGACY_USER_TAG=""
+
+legacy_seed_requested() {
+  [[ -n "${LEGACY_URI_FILE}" || -n "${LEGACY_PRIVATE_KEY_FILE}" || -n "${LEGACY_USER_TAG}" ]]
+}
+
+legacy_seed_require_all_or_none() {
+  local n=0
+  [[ -n "${LEGACY_URI_FILE}" ]] && n=$((n + 1))
+  [[ -n "${LEGACY_PRIVATE_KEY_FILE}" ]] && n=$((n + 1))
+  [[ -n "${LEGACY_USER_TAG}" ]] && n=$((n + 1))
+  if (( n == 0 )); then
+    return 0
+  fi
+  if (( n != 3 )); then
+    die "Legacy seed requires --legacy-vless-uri-file, --legacy-reality-private-key-file, and --legacy-user-tag together."
+  fi
+  # Same contract as is_valid_user_tag (before python3 is guaranteed).
+  [[ "${LEGACY_USER_TAG}" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]] \
+    || die "invalid legacy user tag"
+  if [[ "${LEGACY_USER_TAG}" == "owner" ]]; then
+    die "Legacy user tag must not be owner."
+  fi
+}
+
+legacy_seed_owner_allowed() {
+  # Args: owner_uid. Accept EUID; when root under sudo also accept SUDO_UID.
+  local owner=$1 euid
+  euid=$(id -u)
+  [[ -n "$owner" ]] || return 1
+  [[ "$owner" == "$euid" ]] && return 0
+  if [[ "$euid" == "0" && -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
+    [[ "$owner" == "$SUDO_UID" || "$owner" == "0" ]] && return 0
+  fi
+  return 1
+}
+
+legacy_seed_validate_local_file() {
+  local path=$1 label=$2
+  local mode owner
+  [[ -e "$path" ]] || die "${label}: missing path"
+  [[ ! -L "$path" ]] || die "${label}: symlink refused"
+  [[ -f "$path" ]] || die "${label}: not a regular file"
+  owner=$(stat -c '%u' "$path" 2>/dev/null || true)
+  legacy_seed_owner_allowed "$owner" || die "${label}: not owned by current user"
+  mode=$(stat -c '%a' "$path" 2>/dev/null || true)
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "${label}: cannot read mode"
+  # Refuse group/world readable bits.
+  if (( (8#$mode) & 0077 )); then
+    die "${label}: group/world readable refused"
+  fi
+}
+
+load_legacy_seed_into_env() {
+  # Sets: LEGACY_UUID LEGACY_SERVER LEGACY_PORT LEGACY_SNI LEGACY_PBK LEGACY_SID
+  #        LEGACY_PRIVATE_KEY LEGACY_PUBLIC_KEY (derived)
+  # Path-only python argv (validate-seed); fields arrive via stdout pipe — never argv.
+  # Secret stdout lands under $TMP_DIR (EXIT trap / cleanup_temp).
+  local root line key value want_server want_port seed_tmp
+  local -a vs_argv
+  ensure_install_tmp_dir
+  legacy_seed_validate_local_file "$LEGACY_URI_FILE" "legacy URI file"
+  legacy_seed_validate_local_file "$LEGACY_PRIVATE_KEY_FILE" "legacy Reality private key file"
+  root=$(installer_root) || die "Cannot locate installer directory for legacy_seed.py."
+  [[ -f "${root}/lib/legacy_seed.py" ]] || die "missing lib/legacy_seed.py in installer payload"
+  want_server=${VCL_SERVER:-}
+  want_port=${VCL_PORT:-443}
+  vs_argv=(
+    python3 "${root}/lib/legacy_seed.py" validate-seed
+    "$LEGACY_URI_FILE" "$LEGACY_PRIVATE_KEY_FILE" "$LEGACY_USER_TAG"
+    --port "$want_port"
+  )
+  if [[ -n "$want_server" ]]; then
+    vs_argv+=(--server "$want_server")
+  fi
+  seed_tmp=$(mktemp "${TMP_DIR}/legacy-seed.XXXXXX")
+  chmod 600 "$seed_tmp" 2>/dev/null || true
+  if ! "${vs_argv[@]}" >"$seed_tmp"; then
+    rm -f -- "$seed_tmp"
+    die "legacy seed refused (zero-install)"
+  fi
+  LEGACY_UUID="" LEGACY_SERVER="" LEGACY_PORT="" LEGACY_SNI="" LEGACY_PBK="" LEGACY_SID=""
+  LEGACY_PRIVATE_KEY="" LEGACY_PUBLIC_KEY=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      UUID) LEGACY_UUID=$value ;;
+      SERVER) LEGACY_SERVER=$value ;;
+      PORT) LEGACY_PORT=$value ;;
+      SNI) LEGACY_SNI=$value ;;
+      PBK) LEGACY_PBK=$value ;;
+      SID) LEGACY_SID=$value ;;
+      PRIVATE_KEY) LEGACY_PRIVATE_KEY=$value ;;
+      PUBLIC_KEY) LEGACY_PUBLIC_KEY=$value ;;
+      TAG) ;; # already validated via argv tag
+      *) ;;
+    esac
+  done <"$seed_tmp"
+  rm -f -- "$seed_tmp"
+  [[ -n "$LEGACY_UUID" && -n "$LEGACY_SERVER" && -n "$LEGACY_PORT" ]] \
+    || die "legacy seed refused (zero-install)"
+  # SID may be empty (URI omitted sid / empty Reality short ID).
+  [[ -n "$LEGACY_SNI" && -n "$LEGACY_PBK" ]] \
+    || die "legacy seed refused (zero-install)"
+  [[ -n "$LEGACY_PRIVATE_KEY" && -n "$LEGACY_PUBLIC_KEY" ]] \
+    || die "legacy seed refused (zero-install)"
+}
+
+render_users_owner_and_legacy() {
+  local output=$1 owner_uuid=$2 legacy_uuid=$3 legacy_tag=$4 installed_at=$5 node_id=$6
+  local owner_user_id owner_cred_id legacy_user_id legacy_cred_id params
+  owner_user_id=$(generate_uuid_v4)
+  owner_cred_id=$(generate_uuid_v4)
+  legacy_user_id=$(generate_uuid_v4)
+  legacy_cred_id=$(generate_uuid_v4)
+  [[ -n "$node_id" ]] || node_id=$(generate_uuid_v4)
+  # Line file keeps UUIDs/tag out of python argv (path-only); under TMP_DIR for EXIT cleanup.
+  ensure_install_tmp_dir
+  params=$(mktemp "${TMP_DIR}/legacy-users.XXXXXX")
+  chmod 600 "$params" 2>/dev/null || true
+  {
+    printf '%s\n' "$owner_user_id"
+    printf '%s\n' "$owner_cred_id"
+    printf '%s\n' "$owner_uuid"
+    printf '%s\n' "$legacy_user_id"
+    printf '%s\n' "$legacy_cred_id"
+    printf '%s\n' "$legacy_uuid"
+    printf '%s\n' "$legacy_tag"
+    printf '%s\n' "$installed_at"
+    printf '%s\n' "$node_id"
+  } >"$params"
+  python3 - "$params" "$output" <<'PY'
+import json, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if len(lines) != 9:
+    raise SystemExit("render_users_owner_and_legacy: bad params")
+(
+    owner_user_id,
+    owner_cred_id,
+    owner_uuid,
+    legacy_user_id,
+    legacy_cred_id,
+    legacy_uuid,
+    legacy_tag,
+    installed_at,
+    node_id,
+) = lines
+output = sys.argv[2]
+doc = {
+    "schema_version": 2,
+    "users": [
+        {
+            "user_id": owner_user_id,
+            "tag": "owner",
+            "display_name": "Owner",
+            "department": "",
+            "enabled": True,
+            "created_at": installed_at,
+            "credentials": [
+                {
+                    "credential_id": owner_cred_id,
+                    "node_id": node_id,
+                    "uuid": owner_uuid,
+                    "status": "active",
+                    "created_at": installed_at,
+                    "revoked_at": None,
+                }
+            ],
+        },
+        {
+            "user_id": legacy_user_id,
+            "tag": legacy_tag,
+            "display_name": legacy_tag,
+            "department": "",
+            "enabled": True,
+            "created_at": installed_at,
+            "credentials": [
+                {
+                    "credential_id": legacy_cred_id,
+                    "node_id": node_id,
+                    "uuid": legacy_uuid,
+                    "status": "active",
+                    "created_at": installed_at,
+                    "revoked_at": None,
+                }
+            ],
+        },
+    ],
+}
+with open(output, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+PY
+  rm -f -- "$params"
+}
+
+
 install_new_node() {
   local os_arch arch port reality_host server binary key_output private_key public_key uuid short_id
   local installed_at uri binary_sha archive_sha
@@ -2216,6 +2432,8 @@ install_new_node() {
   local node_id node_name instance_id clash_port
 
   acquire_vincula_op_lock
+  # Staging root before any legacy secret tempfile (EXIT trap cleans it).
+  ensure_install_tmp_dir
   os_arch=$(uname -m)
   arch=$(map_arch "$os_arch") || die "Unsupported architecture: ${os_arch}. Only amd64 and arm64 are supported."
   port=${VCL_PORT:-443}
@@ -2225,38 +2443,83 @@ install_new_node() {
   validate_port "$clash_port" || die "clash_api_port is invalid."
 
   preflight_clean_install
+  if legacy_seed_requested; then
+    # Validate secrets + key/pbk match before any network mutation beyond clean check.
+    # Full derive uses python (available); sing-box binary not required yet.
+    load_legacy_seed_into_env
+    port=$LEGACY_PORT
+    reality_host=$LEGACY_SNI
+    server=$LEGACY_SERVER
+    export VCL_SERVER=$server
+    export VCL_PORT=$port
+    export VCL_REALITY_HOST=$reality_host
+  fi
   if port_is_listening "$port"; then
     die "TCP port ${port} is already in use. Choose another port with VCL_PORT=<port>."
   fi
   localhost_port_free_or_ours "$clash_port" \
     || die "Clash API port ${clash_port} is already in use on localhost."
-  server=$(detect_public_server)
+  if ! legacy_seed_requested; then
+    server=$(detect_public_server)
+  fi
   log_ok "Environment supported (${OS_ID} ${OS_VERSION}, ${arch})"
   log_ok "Client address resolved as ${server}"
   preflight_reality_target "$reality_host"
 
-  TMP_DIR=$(mktemp -d /tmp/vincula.XXXXXXXX)
   binary=$(download_sing_box "$arch" "$TMP_DIR")
 
-  key_output=$("$binary" generate reality-keypair)
-  private_key=$(parse_private_key "$key_output")
-  public_key=$(parse_public_key "$key_output")
-  uuid=$("$binary" generate uuid)
-  short_id=$("$binary" generate rand --hex 8)
-  node_id=$("$binary" generate uuid)
-  instance_id=$(mint_or_preserve_instance_id "" "$node_id")
-  node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
+  local legacy_mode=0
+  local legacy_uuid=""
+  if legacy_seed_requested; then
+    legacy_mode=1
+    # Secrets already validated in preflight; reuse env (do not re-read files into logs).
+    [[ -n "${LEGACY_PRIVATE_KEY:-}" && -n "${LEGACY_PUBLIC_KEY:-}" && -n "${LEGACY_UUID:-}" ]] \
+      || load_legacy_seed_into_env
+    private_key=$LEGACY_PRIVATE_KEY
+    public_key=$LEGACY_PUBLIC_KEY
+    short_id=$LEGACY_SID
+    reality_host=$LEGACY_SNI
+    server=$LEGACY_SERVER
+    port=$LEGACY_PORT
+    legacy_uuid=$LEGACY_UUID
+    # Owner always gets a fresh UUID; legacy keeps original.
+    uuid=$("$binary" generate uuid)
+    node_id=$("$binary" generate uuid)
+    instance_id=$(mint_or_preserve_instance_id "" "$node_id")
+    node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
+    log_info "Legacy seed mode: importing Reality keypair and legacy UUID (tag=${LEGACY_USER_TAG})"
+  else
+    key_output=$("$binary" generate reality-keypair)
+    private_key=$(parse_private_key "$key_output")
+    public_key=$(parse_public_key "$key_output")
+    uuid=$("$binary" generate uuid)
+    short_id=$("$binary" generate rand --hex 8)
+    node_id=$("$binary" generate uuid)
+    instance_id=$(mint_or_preserve_instance_id "" "$node_id")
+    node_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)
+  fi
 
-  [[ "$private_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the generated REALITY private key."
-  [[ "$public_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the generated REALITY public key."
-  [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated UUID."
+  [[ "$private_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the REALITY private key."
+  [[ "$public_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Could not parse the REALITY public key."
+  [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the owner UUID."
   [[ "$node_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated node_id."
   [[ "$instance_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the generated instance_id."
-  [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Could not validate the generated REALITY short ID."
-  log_info "Assigned node_id ${node_id}"
-  log_info "Assigned instance_id ${instance_id}"
+  if (( legacy_mode )); then
+    # Empty short ID allowed (legacy URI may omit sid).
+    [[ "$short_id" =~ ^[0-9a-f]{0,16}$ ]] || die "Could not validate the imported REALITY short ID."
+    [[ "$legacy_uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Could not validate the legacy UUID."
+  else
+    [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Could not validate the generated REALITY short ID."
+    log_info "Assigned node_id ${node_id}"
+    log_info "Assigned instance_id ${instance_id}"
+  fi
 
-  run_reality_self_test "$binary" "$uuid" "$private_key" "$public_key" "$short_id" "$reality_host" \
+  # Self-test uses imported keypair + legacy UUID when seeding so the old client path is proven.
+  local selftest_uuid=$uuid
+  if (( legacy_mode )); then
+    selftest_uuid=$legacy_uuid
+  fi
+  run_reality_self_test "$binary" "$selftest_uuid" "$private_key" "$public_key" "$short_id" "$reality_host" \
     || die "REALITY end-to-end self-test failed for ${reality_host}. Choose another target with VCL_REALITY_HOST."
   log_ok "REALITY end-to-end self-test passed"
 
@@ -2277,7 +2540,11 @@ install_new_node() {
   staged_helper="${TMP_DIR}/vincula"
   staged_version="${TMP_DIR}/VERSION"
 
-  render_users "$staged_users" "$uuid" "$installed_at" "" "" "$node_id"
+  if (( legacy_mode )); then
+    render_users_owner_and_legacy "$staged_users" "$uuid" "$legacy_uuid" "$LEGACY_USER_TAG" "$installed_at" "$node_id"
+  else
+    render_users "$staged_users" "$uuid" "$installed_at" "" "" "$node_id"
+  fi
   clash_secret=$(generate_clash_api_secret)
   render_sing_box_config_from_registry "$staged_config" "$staged_users" "$private_key" "$short_id" \
     "$port" "$reality_host" "$DEFAULT_LISTEN" "$clash_port" "$clash_secret" true
@@ -2341,24 +2608,58 @@ install_new_node() {
   INSTALL_COMMITTED=1
   log_ok "sing-box installed and binary integrity recorded"
   print_local_success "$port"
-  printf '\nUser: owner\nNode:\n%s\n' "$uri"
-  printf '\nNext checks:\n  vcl verify\n  vcl check\n  vcl diagnose\n  vcl connections\n  vcl stats today\n  vcl link\n'
+  if (( legacy_mode )); then
+    printf '\nLegacy user %s seeded successfully.\n' "$LEGACY_USER_TAG"
+    printf 'Owner and legacy users are active. Retrieve URIs with: vcl user link <tag>\n'
+    printf '\nNext checks:\n  vcl verify\n  vcl check\n  vcl diagnose\n  vcl connections\n  vcl stats today\n'
+  else
+    printf '\nUser: owner\nNode:\n%s\n' "$uri"
+    printf '\nNext checks:\n  vcl verify\n  vcl check\n  vcl diagnose\n  vcl connections\n  vcl stats today\n  vcl link\n'
+  fi
 }
 
 main() {
   local runtime_only=0
-  case "${1:-}" in
-    -h|--help) usage; return ;;
-    -V|--version) printf 'vincula %s\n' "$VINCULA_VERSION"; return ;;
-    --runtime-only)
-      [[ $# -eq 1 ]] || die "Unknown argument: $2. Run with --help."
-      runtime_only=1
-      ;;
-    "") ;;
-    *) die "Unknown argument: $1. Run with --help." ;;
-  esac
+  LEGACY_URI_FILE=""
+  LEGACY_PRIVATE_KEY_FILE=""
+  LEGACY_USER_TAG=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage; return ;;
+      -V|--version) printf 'vincula %s\n' "$VINCULA_VERSION"; return ;;
+      --runtime-only)
+        runtime_only=1
+        shift
+        ;;
+      --legacy-vless-uri-file)
+        [[ $# -ge 2 ]] || die "--legacy-vless-uri-file requires a path"
+        LEGACY_URI_FILE=$2
+        shift 2
+        ;;
+      --legacy-reality-private-key-file)
+        [[ $# -ge 2 ]] || die "--legacy-reality-private-key-file requires a path"
+        LEGACY_PRIVATE_KEY_FILE=$2
+        shift 2
+        ;;
+      --legacy-user-tag)
+        [[ $# -ge 2 ]] || die "--legacy-user-tag requires a tag"
+        LEGACY_USER_TAG=$2
+        shift 2
+        ;;
+      "")
+        shift
+        ;;
+      *)
+        die "Unknown argument: $1. Run with --help."
+        ;;
+    esac
+  done
+  legacy_seed_require_all_or_none
   if [[ "${VCL_RUNTIME_ONLY:-}" == "1" ]]; then
     runtime_only=1
+  fi
+  if (( runtime_only )) && legacy_seed_requested; then
+    die "Refusing --runtime-only with legacy seed flags."
   fi
 
   [[ -n "${BASH_VERSION:-}" ]] || die "This installer requires bash."
@@ -2367,6 +2668,10 @@ main() {
   is_supported_os "$OS_ID" "$OS_VERSION" || die "Unsupported platform: ${OS_ID} ${OS_VERSION}. Supported: Debian 12/13 and Ubuntu 22.04/24.04/26.04."
   ensure_dependencies
   check_systemd
+
+  if [[ -f "$VERSION_FILE" ]] && legacy_seed_requested; then
+    die "Legacy seed requires a clean host."
+  fi
 
   if [[ -f "$VERSION_FILE" ]]; then
     if (( runtime_only )); then
