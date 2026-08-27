@@ -1,0 +1,12 @@
+{
+  "schema": "telemetry/v1",
+  "instance_id": "22222222-2222-4222-8222-222222222222",
+  "observed_at": "2026-08-27T09:00:00Z",
+  "uptime_seconds": 86400,
+  "load": { "load1": 0.1, "load5": 0.1, "load15": 0.1 },
+  "memory": { "total_bytes": 1, "used_bytes": 1 },
+  "filesystem": { "mount": "/", "total_bytes": 1, "used_bytes": 1 },
+  "network": { "rx_bytes": 0, "tx_bytes": 0 },
+  "sing_box": { "active": true },
+  "accountd": { "active": true }
+}
