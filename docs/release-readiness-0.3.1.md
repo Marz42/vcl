@@ -45,7 +45,7 @@ B14 live replace **PASS**. B15 UI **implemented**. B17 restore/sync fail-close *
 
 ## Operator docs
 
-[`manual.md`](manual.md) · [`fleet.md`](fleet.md) · [`backup.md`](backup.md) · [`identity.md`](identity.md) · [`live-replace-checklist.md`](live-replace-checklist.md)
+[`user-guide.md`](user-guide.md) · [`technical-guide.md`](technical-guide.md) · [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md)
 
 ## Post-release policy
 

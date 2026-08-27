@@ -38,7 +38,7 @@ Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixture
 - Spec: [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md) · rev1 [`docs/specs/vcl-spec-v0.4-v0.5-rev1.md`](docs/specs/vcl-spec-v0.4-v0.5-rev1.md) §16。Evidence: [`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md)。
 - AC-4.3-05 **PARTIAL**：列表页已覆盖日常只读；Node/User drawer 与完整 CLI Operations 历史仍有 §16 缺口（见 SUMMARY）。
 - D57 observe≠admin、`node add` runtime warning 仍属 0.5+。`VCL_FLEET_VERSION=0.4.4`。
-- 手测：[`docs/manual.md` § Local Audit UI](docs/manual.md#ui-manual-test)。
+- 手测：[`docs/evidence/0.4.4/SUMMARY.md`](docs/evidence/0.4.4/SUMMARY.md) · UI 合同 [`docs/specs/V0.4.4_ui_v2.md`](docs/specs/V0.4.4_ui_v2.md)（原 `docs/manual.md#ui-manual-test` 已并入用户/技术手册与 evidence）。
 
 ## 0.4.3 (2026-08-21)
 **Controller-only** Adopt & Provision. Stamp: CTRL `0.4.3`; NODE `0.3.1` unchanged (no allowlist/installer/node fixtures).
@@ -129,7 +129,7 @@ Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixture
 - Stamp living tree at `0.3.1-rc1` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests / fixtures).
 - Upgrade allowlist adds **`0.3.1-dev` → `0.3.1-rc1`** (still excludes `0.3.0-dev` and self).
 - **Schema 4 / Export Protocol v2** (from 0.3.1-dev): `export_seq` durable cursor; Fleet `sync --reseed` after upgrade.
-- **Operator manual:** [`docs/manual.md`](docs/manual.md) adds verified dual-VPS + Fleet deploy runbook.
+- **Operator manual:** [`docs/user-guide.md`](docs/user-guide.md)（原 `docs/manual.md` 已拆分合并）adds verified dual-VPS + Fleet deploy runbook.
 - **Tests:** `bash tests/test.sh` **1274** PASS (fleet fixtures aligned for Schema 4 + non-TTY host-key).
 - **Known blocker (fixed in rc2 / B18):** installer `wait_for_accountd_healthy` still expected accounting schema 3 → fresh install rolled back.
 - Release recommendation remained **NOT READY** until live upgrade evidence.
@@ -139,14 +139,14 @@ Stamp: CTRL `0.4.4`; NODE `0.3.1` unchanged (no allowlist/installer/node fixture
 
 Unreleased development line (superseded by **0.3.1-rc1**, then **0.3.1-rc2**). Frozen tag `v0.3.0` is unchanged. Upgrade allowlist was `0.1.0–0.1.5` and `0.2.0–0.3.0` (did **not** add `0.3.0-dev` or `0.3.1-dev`).
 
-**Summary (historical, as of that line):** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** were on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). At that time the remaining NOT READY gap was live **`0.3.0 → 0.3.1` upgrade** plus deferred P1-05 branch protection. Those were later closed/waived on stable **0.3.1** — see the `## 0.3.1` section and [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md). Operator runbook: `docs/live-replace-checklist.md`. The 0.3.0 freeze record is read-only under `docs/legacy/`.
+**Summary (historical, as of that line):** B0–B13, B16, B17, **B14 (live PASS)**, and **B15 (Local Audit UI)** were on the living tree (Known P0: **0**; standalone `bash tests/test-fleet.sh` **517**). At that time the remaining NOT READY gap was live **`0.3.0 → 0.3.1` upgrade** plus deferred P1-05 branch protection. Those were later closed/waived on stable **0.3.1** — see the `## 0.3.1` section and [`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md). Operator runbook: `docs/operations/node-replace-runbook.md`. The 0.3.0 freeze record is read-only under `docs/legacy/`.
 
 - **Schema 4 / Export Protocol v2:** Split `event_id` (stable generation identity; sparsity OK) from `export_seq` (Fleet durable cursor, assigned once on close). Accountd UPDATE-first polls no longer burn AUTOINCREMENT. `vcl audit export` is closed-only by `export_seq` with Protocol v2 meta; `CURSOR_EXPIRED` / `CURSOR_AHEAD` use prune/max export_seq watermarks (not contiguous `event_id`). Fleet `fleet.db` schema **3** stores `cursor_kind` / `last_export_seq`, validates monotonic `export_seq` (gaps allowed), UPSERT-imports on `(node_id, event_id)`, and refuses legacy `event_id` cursors with `CURSOR_PROTOCOL_MISMATCH` until `sync --reseed`. After upgrade, run `--reseed` once per node. Live re-sync evidence still required before READY FOR RC.
 - **v0.32 P2:** Per-node `--identity-file` makes SSH/SCP pass `-i KEY -o IdentitiesOnly=yes` (no password-SSH fallback). Local Audit UI caps concurrent workers at 8 with a 30s request timeout (503 when busy). CI `unit` / `concurrency` no longer run `tests/test-fleet.sh` a second time (`tests/test.sh` already sources it). Fixed a `pipefail` + `awk|grep -q` false fail in `tests/test.sh` (`user add dispatch documents --user-id`). Debian container apt install uses dash-safe `set -eu` (no `pipefail`).
 - **B15 / Local Audit UI:** `vcl-fleet ui [--host 127.0.0.1] [--port 8765]` serves a loopback-only UI (Overview / Audit / Health) from `lib/vincula-ui/` (stdlib `ThreadingHTTPServer` + static HTML/CSS/JS). Non-loopback binds refuse. Data from `$FLEET_HOME`; Refresh/Verify/Sync reuse controller SSH paths; identity mutations stay CLI (recipes panel copy-only). No VLESS URI / Reality keys / Clash secret on default pages. Controller zip packs UI members into `controller.lock`. AC-3.1 fixture coverage in `tests/test-fleet.sh`.
 - **B17 / restore-sync fail-close:** `vcl restore --json` emits one object only after VERSION commit; systemd + accountd must enable/active and pass health first. Rollback that cannot restore service state is `rollback_partial`. Fleet mutations require remote exit 0 and JSON `ok:true`. Audit sync refuses unlabeled/mismatched identity (cursor unchanged); `--reseed` is the only `--stamp-identity` path. Installer migrates `0.3.0`. Version-boundary rollback restores `.runtime-only`. CI actions pinned to full SHAs; Dependabot; `actions: write` only on the artifact job. Living-tree gate docs: `docs/release-readiness-0.3.1.md` / `docs/known-issues-0.3.1.md`.
 - **B16 / REQ-CI:** GitHub Actions `.github/workflows/ci.yml` is the merge gate: **unit** (`ubuntu-latest` plus Debian 12/13 containers), **concurrency** (B6 flock / busy), **failure-injection** (restore / upgrade / Clash fixtures already in `tests/test.sh`), and **artifact** (build node tarball + controller zip, black-box unzip, `sha256sum --check`). No repository secrets. Live `rc-live-upgrade-driver` stays manual.
-- **B14 / P0-01c:** Live two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd` is **PASS (2026-08-18)**. Evidence: `docs/evidence/0.3.1-live/SUMMARY.md`. Runbook: `docs/live-replace-checklist.md`.
+- **B14 / P0-01c:** Live two-VPS secretless replace + AC-3.0-11 + real `age` + Win11 `vcl-fleet.cmd` is **PASS (2026-08-18)**. Evidence: `docs/evidence/0.3.1-live/SUMMARY.md`. Runbook: `docs/operations/node-replace-runbook.md`.
 - **B13 / P2-03:** Controller zip writes `controller.lock` (per-member sha256) and an independent sidecar `dist/vincula-controller-<ver>.zip.sha256`; `sha256sum -c` is the verification step. `vincula-bootstrap.sh` fail-closes in production without `RELEASE_SHA256` (or a baked-in embed). With a pin, the archive must match **both** the pin and the shipped `${URL}.sha256`. Fetching the sibling digest from the same URL only detects transport corruption, not origin replacement.
 - **B12 / P2-02:** Backup verify and `atomic_replace` stream in 1 MiB chunks. Per-member cap 1 GiB (`MAX_MEMBER_BYTES`), total uncompressed cap 2 GiB (`MAX_ARCHIVE_BYTES`); JSON/text members 16 MiB. Oversized archives are `invalid_archive` before a full read. `accounting.db` is never held as a whole-file bytes object (SQLite Backup API snapshot + tempfile extract + chunked copy).
 - **B11 / P2-01:** Install validation compiles Python with `compile(..., "exec")` and does not write `__pycache__`. `vcl uninstall` and installer rollback remove product-owned `$LIB_DIR/__pycache__` so a complete uninstall leaves that directory empty.
@@ -158,7 +158,7 @@ Unreleased development line (superseded by **0.3.1-rc1**, then **0.3.1-rc2**). F
 - **B5 / P1-05:** Clash `/connections` 响应必须是带 `connections` 数组的 JSON 对象。`{}` / 缺字段 / 错类型 / 非对象元素 / 超大 body 视为协议错误：不 close 打开中的连接、不刷新 `last_success_at`。合法 `{"connections":[]}` 仍关闭 stale。计数器非 int 按连接跳过。
 - **B4 / P1-01:** SSH 远程命令用 `shlex.join` 合成一条 POSIX 引用字符串；校验 `ssh_user` / `ssh_host`（DNS/IPv4/IPv6，拒绝控制字符与 shell 元字符）以及 `display_name` / `department`（拒绝 ASCII 控制字符与换行）。节点 CLI / CSV import 同步拒绝。对抗测试覆盖空格、`;`、backtick、`$()`、换行。
 - **B3 / P0-02:** 控制器 zip 纳入 `lib/vincula-audit.py` 与 `lib/vincula-backup.py`。解压黑盒（无仓库 `lib/`）覆盖 `version` / `init` / `audit` / `stats` 与 `node replace` fail-closed。删除「zip omits backup.py」断言。`load_audit_module` / `load_backup_module` 从控制器自己的 `lib/` 解析兄弟文件。
-- **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/fleet.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
+- **B2 / P0-01a:** `vcl-fleet node replace` fail-closed（exit 2，文案含 **NOT IMPLEMENTED against real vcl**）。help / `docs/technical-guide.md` / README 停止教假 restore argv。`node instances` 仍可用。函数体保留待 B10。
 - **B1 / P2-04:** Freeze-record honesty. `docs/legacy/release-readiness-0.3.0.md` / `docs/legacy/known-issues-0.3.0.md` recommendation **NOT READY**; Known P0/P1 = 0 struck; P0-01 / P0-02 reclassified from limitations to contract blockers. Fixture PASS is not a live replace contract.
 - **B0:** Living tree stamped `0.3.1-dev` (`VINCULA_VERSION` / `VCL_FLEET_VERSION` / installer / tests). Frozen tag `v0.3.0` unchanged. Upgrade allowlist still ends at `0.2.9`.
 
@@ -485,7 +485,7 @@ Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / �
 ### 产品声明
 
 - Retention（产品决策）：raw **90** 天 / daily **730** 天
-- 仍为 **approximate polling accounting**；Reliable Accounting **未完成**（见 `docs/accounting-reliability.md`）
+- 仍为 **approximate polling accounting**；Reliable Accounting **未完成**（见 `docs/technical-guide.md`）
 - 迁移接受：`0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.3` → `0.2.4`
 
 ### 文档与验证
@@ -508,7 +508,7 @@ Release gate：把 Accounting Plane 提升到与 Proxy Plane 同级的事务 / �
 
 Reliable accounting path（不 fork sing-box binary）。
 
-- 文档：`docs/accounting-reliability.md` — Clash API 轮询缺口评估与未来 telemetry 方案
+- 文档：`docs/technical-guide.md` — Clash API 轮询缺口评估与未来 telemetry 方案
 - 可选文件 ingest：`/var/lib/vincula/events.jsonl`（`connection_closed`），存在时优先于 poll-close
 - 事件 schema：`lib/vincula-event.schema.json`
 - 迁移接受 `0.1.0`–`0.1.5` 与 `0.2.0`–`0.2.2`

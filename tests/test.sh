@@ -970,8 +970,8 @@ assert_failure "build-release does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_failure "accountd has no JSONL ingest path" \
   grep -Eiq 'jsonl|ingest-file|EVENTS_JSONL' "${PROJECT_DIR}/lib/vincula-accountd.py"
-assert_success "accounting reliability doc exists" \
-  test -f "${PROJECT_DIR}/docs/accounting-reliability.md"
+assert_success "technical-guide documents approximate accounting" \
+  grep -q 'Status: Approximate — Reliable Accounting is NOT done' "${PROJECT_DIR}/docs/technical-guide.md"
 assert_success "preflight lists VAR_LIB_VINCULA" \
   grep -q 'VAR_LIB_VINCULA' "${PROJECT_DIR}/vincula.sh"
 if awk '/^preflight_clean_install\(\)/,/^}/ {print}' "${PROJECT_DIR}/vincula.sh" | grep -q 'ACCOUNTING_DB_FILE'; then
@@ -4045,12 +4045,12 @@ PY
     grep -q 'cmp -s -- "$staged_config" "$CONFIG_FILE"' "${PROJECT_DIR}/bin/vincula"
   assert_success "user mutation compares owner uri before restart" \
     grep -q 'cmp -s -- "$staged_uri" "$URI_FILE"' "${PROJECT_DIR}/bin/vincula"
-  assert_success "README says metadata-only user set does not restart" \
-    grep -q '仅改 metadata 的 `user set` 不重启' "${PROJECT_DIR}/README.md"
-  assert_success "README documents user list --json" \
-    grep -q 'vcl user list --json' "${PROJECT_DIR}/README.md"
-  assert_success "README documents user rotate --json" \
-    grep -q 'vcl user rotate alice --json' "${PROJECT_DIR}/README.md"
+  assert_success "user-guide says metadata-only user set does not restart" \
+    grep -q '仅改 metadata 的 `user set` 不重启' "${PROJECT_DIR}/docs/user-guide.md"
+  assert_success "user-guide documents user list --json" \
+    grep -q 'vcl user list --json' "${PROJECT_DIR}/docs/user-guide.md"
+  assert_success "user-guide documents user rotate --json" \
+    grep -q 'vcl user rotate alice --json' "${PROJECT_DIR}/docs/user-guide.md"
   assert_success "RC CLI coverage keeps pre-add remove cleanup" \
     grep -q 'vcl user remove bob 2>/dev/null || true' "${PROJECT_DIR}/scripts/rc-vcl-cli-coverage.sh"
   assert_success "RC CLI coverage expects user remove exit 2" \
@@ -5615,10 +5615,10 @@ assert_success "backup module documents MAX_TEXT_MEMBER_BYTES" \
   grep -q 'MAX_TEXT_MEMBER_BYTES = 16 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_failure "backup verify does not extracted.read() whole members" \
   grep -q 'extracted.read()' "${PROJECT_DIR}/lib/vincula-backup.py"
-assert_success "docs/backup.md documents MAX_MEMBER_BYTES" \
-  grep -q 'MAX_MEMBER_BYTES' "${PROJECT_DIR}/docs/backup.md"
-assert_success "docs/backup.md documents MAX_ARCHIVE_BYTES" \
-  grep -q 'MAX_ARCHIVE_BYTES' "${PROJECT_DIR}/docs/backup.md"
+assert_success "docs/technical-guide.md documents MAX_MEMBER_BYTES" \
+  grep -q 'MAX_MEMBER_BYTES' "${PROJECT_DIR}/docs/technical-guide.md"
+assert_success "docs/technical-guide.md documents MAX_ARCHIVE_BYTES" \
+  grep -q 'MAX_ARCHIVE_BYTES' "${PROJECT_DIR}/docs/technical-guide.md"
 assert_success "fake-age fixture is executable" \
   test -x "${PROJECT_DIR}/tests/fixtures/fake-age"
 assert_success "fake-age uses python3 shebang" \

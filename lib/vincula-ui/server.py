@@ -1040,7 +1040,7 @@ def recipes_payload() -> dict[str, Any]:
             },
             {
                 "id": "backup-restore",
-                "title": "Backup / restore (node CLI; see docs/backup.md)",
+                "title": "Backup / restore (node CLI; see docs/user-guide.md)",
                 "command": (
                     "vcl backup / vcl restore FILE --reissue-output FILE "
                     "--server HOST  # never via UI"
