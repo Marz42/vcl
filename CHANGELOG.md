@@ -2,6 +2,22 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.0 (2026-08-31)
+**Observation Foundation** + **Node In-Place Upgrade**. Stamp: CTRL `0.5.0`; NODE payload pin **`0.5.0`** (Minimum Node remains `0.3.1`).
+### Added
+- **Node observation：** `vcl capabilities --json`、`vcl telemetry snapshot --json`；schema `capabilities/v1`、`telemetry/v1`；输出 bounded、无密钥材料。
+- **Controller observation service：** `vcl-fleet capabilities|telemetry NODE`；observe/admin credential 路由（`access.py`）；malformed/oversize fail-closed。
+- **Node upgrade：** `vcl-fleet node upgrade plan|apply NODE`；0.3.1+ → 0.5.0 typed upgrade；operation journal `node_upgrade`。
+- **Node 0.5.0 payload：** migrate allowlist 扩展；controller 内嵌 `vincula-node-0.5.0.tar.gz`。
+### Security / compat
+- observe 凭据失败 → **AUTH_FAILED**（无 silent admin fallback）。
+- 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
+- **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
+### Notes
+- Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。
+- Live Matrix L1–L3/L5 **PENDING LIVE**；L4 offline equiv PASS；soak 1000× telemetry offline PASS。
+- `VCL_FLEET_VERSION=0.5.0`；`VINCULA_VERSION=0.5.0`。
+
 ## 0.4.5 (2026-08-25)
 **Integration & Hardening** + **Legacy single-user seed**. Stamp: CTRL `0.4.5`; NODE payload pin **`0.3.2`** (Minimum Node remains `0.3.1`; existing 0.3.1 not forced).
 ### Added

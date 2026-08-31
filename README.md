@@ -2,7 +2,7 @@
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
-**节点** `VINCULA_VERSION=0.3.2`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.4.5`（CLI：`vcl-fleet`）。
+**节点** `VINCULA_VERSION=0.5.0`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.0`（CLI：`vcl-fleet`）。
 
 协议固定：VLESS + REALITY + xtls-rprx-vision + TCP；sing-box **1.13.18**（不追 latest）。流量统计为 **approximate / Clash polling**，非计费级。
 

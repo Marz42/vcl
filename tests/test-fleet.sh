@@ -89,6 +89,7 @@ fi
 export PROJECT_DIR
 
 readonly TEST_TOKYO_NODE_ID="8bb18c32-3333-4333-8333-333333333333"
+readonly TEST_OBSNODE_ID="cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 readonly TEST_SG_NODE_ID="9cc29d43-4444-4444-8444-444444444444"
 
 FLEET_SAVED_HOME="${HOME:-}"
@@ -14534,6 +14535,285 @@ upgrade_no_yes_err=$(fleet node upgrade apply lax --json 2>&1) || upgrade_no_yes
 assert_equal "obs050 upgrade apply without --yes fails" 1 "$upgrade_no_yes_rc"
 assert_success "obs050 upgrade apply without --yes message" \
   grep -q 'requires --yes' <<< "$upgrade_no_yes_err"
+
+# G1: AUTH_FAILED on observe credential (no admin fallback)
+OBS_AUTH_HOME="${TEST_TMP}/obs-auth-fleet"
+OBS_AUTH_ADMIN="${TEST_TMP}/obs-auth-admin.key"
+OBS_AUTH_OBSERVE="${TEST_TMP}/obs-auth-observe.key"
+printf 'admin-key\n' > "$OBS_AUTH_ADMIN"
+printf 'observe-key\n' > "$OBS_AUTH_OBSERVE"
+export VCL_FLEET_HOME="$OBS_AUTH_HOME"
+assert_success "obs-auth workspace init" fleet workspace init
+fleet access bind admin-key --identity-file "$OBS_AUTH_ADMIN" >/dev/null
+fleet access bind observe-key --identity-file "$OBS_AUTH_OBSERVE" >/dev/null
+assert_success "obs-auth add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID"
+python3 - "$OBS_AUTH_HOME/fleet.json" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+data = json.loads(p.read_text(encoding="utf-8"))
+for node in data.get("nodes") or []:
+    if node.get("name") == "lax":
+        node["admin_credential_ref"] = "admin-key"
+        node["observe_credential_ref"] = "observe-key"
+        node.pop("identity_file", None)
+p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_OBSERVE_AUTH_FAIL=1
+export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
+obs_auth_json=$(fleet capabilities lax --json)
+assert_success "obs-auth capabilities AUTH_FAILED" python3 - "$obs_auth_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "AUTH_FAILED", doc
+PY
+unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH
+
+# G1: oversize fail-closed (unit-level)
+assert_success "obs050 oversize capabilities rejected" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+caps_mod = mod.load_observation_capabilities_module()
+big = {
+    "schema": "capabilities/v1",
+    "node_version": "0.5.0",
+    "capabilities": [f"widget{i:03d}/v1" for i in range(80)],
+}
+
+def ssh_json(**kwargs):
+    return ("OK", big, "")
+
+node = {"name": "x", "ssh_host": "h", "ssh_user": "root", "ssh_port": 22}
+result = caps_mod.fetch_capabilities(node, ssh_json=ssh_json)
+assert result.get("state") == "ERROR", result
+detail = (result.get("detail") or "").lower()
+assert "size" in detail or "max items" in detail, result
+PY
+
+# G1: telemetry read-only audit (no restart count growth)
+UPG_STATE="${TEST_TMP}/upg050-state"
+rm -rf "$UPG_STATE"
+mkdir -p "$UPG_STATE/lax"
+python3 - "$UPG_STATE/lax" "$TEST_NODE_ID" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+node_id = sys.argv[2]
+(root / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+(root / "state.json").write_text(json.dumps({
+    "project_version": "0.3.1",
+    "node": {"node_id": node_id, "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+}) + "\n", encoding="utf-8")
+(root / "users.json").write_text('{"schema_version": 2, "users": []}\n', encoding="utf-8")
+(root / "config.toml").write_text("# minimal\n", encoding="utf-8")
+PY
+export VCL_FAKE_STATE_DIR="$UPG_STATE"
+export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_TELEMETRY_AUDIT=1
+export VCL_FAKE_RESTART_COUNT=3
+fleet telemetry lax --json >/dev/null
+fleet telemetry lax --json >/dev/null
+assert_success "obs050 telemetry audit stable" python3 - "$UPG_STATE/lax/telemetry_audit.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert doc.get("calls") == 2, doc
+assert doc.get("restart_count") == 3, doc
+PY
+unset VCL_FAKE_TELEMETRY_AUDIT VCL_FAKE_RESTART_COUNT
+
+# G1: upgrade migrate inject fail (before happy path)
+UPG_FAIL_HOME="${TEST_TMP}/upg050-fail-fleet"
+UPG_FAIL_STATE="${TEST_TMP}/upg050-fail-state"
+rm -rf "$UPG_FAIL_STATE"
+mkdir -p "$UPG_FAIL_STATE/lax"
+python3 - "$UPG_FAIL_STATE/lax" "$TEST_NODE_ID" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+node_id = sys.argv[2]
+(root / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+(root / "state.json").write_text(json.dumps({
+    "project_version": "0.3.1",
+    "node": {"node_id": node_id, "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+}) + "\n", encoding="utf-8")
+(root / "users.json").write_text('{"schema_version": 2, "users": []}\n', encoding="utf-8")
+(root / "config.toml").write_text("# minimal\n", encoding="utf-8")
+PY
+export VCL_FLEET_HOME="$UPG_FAIL_HOME"
+assert_success "upg050-fail fleet init" fleet init
+assert_success "upg050-fail add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID" \
+  --identity-file "$OBS050_KEY"
+export VCL_FAKE_STATE_DIR="$UPG_FAIL_STATE"
+export VCL_FAKE_UPGRADE=1
+export VCL_FAKE_MIGRATE_FAIL=1
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+  bash "${PROJECT_DIR}/scripts/build-release.sh" >/dev/null
+fi
+UPG_FAIL_PAYLOAD="${TEST_TMP}/upg050-fail-payload"
+mkdir -p "$UPG_FAIL_PAYLOAD"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_FAIL_PAYLOAD/"
+python3 - "$UPG_FAIL_PAYLOAD" <<'PY'
+import hashlib, json
+from pathlib import Path
+root = Path(__import__("sys").argv[1])
+tar = root / "vincula-node-0.5.0.tar.gz"
+digest = hashlib.sha256(tar.read_bytes()).hexdigest()
+(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+)
+(root / "payload-manifest.json").write_text(
+    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+                "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.0.tar.gz"
+upg_fail_rc=0
+upg_fail_err=$(fleet node upgrade apply lax --yes --json 2>&1) || upg_fail_rc=$?
+assert_equal "upg050 migrate fail exits non-zero" 1 "$upg_fail_rc"
+unset VCL_FAKE_MIGRATE_FAIL
+
+# G1: upgrade apply happy path (fake migrate)
+UPG_PAYLOAD="${TEST_TMP}/upg050-payload"
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+  assert_success "upg050 build node release" bash "${PROJECT_DIR}/scripts/build-release.sh"
+fi
+mkdir -p "$UPG_PAYLOAD"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_PAYLOAD/"
+python3 - "$UPG_PAYLOAD" <<'PY'
+import hashlib, json
+from pathlib import Path
+root = Path(__import__("sys").argv[1])
+tar = root / "vincula-node-0.5.0.tar.gz"
+digest = hashlib.sha256(tar.read_bytes()).hexdigest()
+(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+)
+(root / "payload-manifest.json").write_text(
+    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+                "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+export VCL_FLEET_HOME="$OBS050_HOME"
+export VCL_NODE_ARCHIVE="$UPG_PAYLOAD/vincula-node-0.5.0.tar.gz"
+export VCL_FAKE_UPGRADE=1
+UPG_ARGV_LOG="${TEST_TMP}/upg050-argv.log"
+export VCL_FAKE_SSH_ARGV_LOG="$UPG_ARGV_LOG"
+upg_apply_json=$(fleet node upgrade apply lax --yes --json)
+assert_success "upg050 apply success" python3 - "$upg_apply_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("ok") is True, doc
+assert doc.get("state") == "SUCCESS", doc
+assert doc.get("to_version") == "0.5.0", doc
+assert doc.get("credential_class") == "admin", doc
+PY
+post_cap=$(fleet capabilities lax --json)
+assert_success "upg050 post-upgrade capabilities OK" python3 - "$post_cap" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "OK", doc
+PY
+assert_success "upg050 apply uses admin identity in SSH log" \
+  test -s "$UPG_ARGV_LOG" && grep -q 'backup' "$UPG_ARGV_LOG"
+assert_success "upg050 journal has node_upgrade" \
+  grep -q '"operation": "node_upgrade"' "$OBS050_HOME/ui-runtime/operations.jsonl"
+assert_success "upg050 journal redacts secrets" \
+  python3 - "$OBS050_HOME/ui-runtime/operations.jsonl" <<'PY'
+import json, sys
+from pathlib import Path
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    row = json.loads(line)
+    if row.get("operation") != "node_upgrade":
+        continue
+    blob = json.dumps(row)
+    assert "vless://" not in blob
+PY
+
+unset VCL_FAKE_UPGRADE VCL_NODE_ARCHIVE VCL_FAKE_SSH_ARGV_LOG
+unset VCL_FAKE_STATE_DIR VCL_FAKE_NODE_VERSION
+
+# --- G2 mixed-version fleet (0.3.x + 0.5.0) ---
+MIX050_HOME="${TEST_TMP}/mix050-fleet"
+MIX050_SAVED=$VCL_FLEET_HOME
+export VCL_FLEET_HOME="$MIX050_HOME"
+assert_success "mix050 fleet init" fleet init
+assert_success "mix050 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID" \
+  --identity-file "$OBS050_KEY"
+assert_success "mix050 add obsnode" \
+  fleet node add obsnode --host 203.0.113.19 --offline --node-id "$TEST_OBSNODE_ID" \
+  --identity-file "$OBS050_KEY"
+mix_cap_lax=$(fleet capabilities lax --json)
+mix_cap_obs=$(fleet capabilities obsnode --json)
+assert_success "mix050 lax UNSUPPORTED" python3 - "$mix_cap_lax" <<'PY'
+import json, sys
+assert json.loads(sys.argv[1]).get("state") == "UNSUPPORTED"
+PY
+assert_success "mix050 obsnode OK" python3 - "$mix_cap_obs" <<'PY'
+import json, sys
+assert json.loads(sys.argv[1]).get("state") == "OK"
+PY
+mix_probe_json=$(fleet probe --json)
+assert_success "mix050 probe lax not ERROR" python3 - "$mix_probe_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+lax = next(n for n in doc["nodes"] if n["name"] == "lax")
+assert lax.get("ssh") != "FAIL", lax
+PY
+export VCL_FLEET_HOME="$MIX050_SAVED"
+
+# --- G2 resilience: corrupt cache tolerance ---
+RES050_HOME="${TEST_TMP}/res050-fleet"
+export VCL_FLEET_HOME="$RES050_HOME"
+assert_success "res050 fleet init" fleet init
+assert_success "res050 add lax offline" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID" \
+  --identity-file "$OBS050_KEY"
+mkdir -p "$RES050_HOME/ui-runtime"
+printf 'not-json\n' >> "$RES050_HOME/ui-runtime/operations.jsonl"
+assert_success "res050 status survives corrupt journal" fleet status --json >/dev/null
+assert_success "res050 capabilities works with corrupt journal" \
+  fleet capabilities lax --json >/dev/null
+assert_success "res050 controller reload preserves observation API" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert hasattr(mod, "fetch_node_capabilities")
+assert hasattr(mod, "fetch_node_telemetry")
+PY
+export VCL_FLEET_HOME="$MIX050_SAVED"
+
+# --- G4 offline soak: 1000x telemetry via fake-ssh ---
+SOAK050_HOME="${TEST_TMP}/soak050-fleet"
+export VCL_FLEET_HOME="$SOAK050_HOME"
+assert_success "soak050 fleet init" fleet init
+assert_success "soak050 add obsnode" \
+  fleet node add obsnode --host 203.0.113.19 --offline --node-id "$TEST_OBSNODE_ID" \
+  --identity-file "$OBS050_KEY"
+soak_fail=0
+for i in $(seq 1 1000); do
+  fleet telemetry obsnode --json >/dev/null || { soak_fail=$i; break; }
+done
+assert_equal "soak050 1000x telemetry" 0 "$soak_fail"
+export VCL_FLEET_HOME="$OBS050_SAVED_HOME"
 
 export VCL_FLEET_HOME="$OBS050_SAVED_HOME"
 

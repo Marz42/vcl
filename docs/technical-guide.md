@@ -292,7 +292,7 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
-| 0.5.0 *(planned)* | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) |
+| 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |
 | 0.4.4 | 0.3.1 | 0.3.1 | UI v2 |
 | ≤0.4.3 | 见当时 evidence | — | 历史 |
