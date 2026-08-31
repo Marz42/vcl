@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.3.2
+# vincula v0.5.0
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.3.2"
+readonly VINCULA_VERSION="0.5.0"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -509,7 +509,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2020,7 +2020,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0-0.1.5, 0.2.0-0.3.0, 0.3.1-dev, 0.3.1-rc1, 0.3.1-rc2, and 0.3.1 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0-0.1.5, 0.2.0-0.3.0, 0.3.1-dev, 0.3.1-rc1, 0.3.1-rc2, 0.3.1, and 0.3.2 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {

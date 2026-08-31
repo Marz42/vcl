@@ -128,7 +128,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.3.2" \
+assert_equal "runs when read from standard input" "vincula 0.5.0" \
   "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -157,7 +157,8 @@ assert_success "migrates from 0.3.1-dev" is_supported_upgrade_from 0.3.1-dev
 assert_success "migrates from 0.3.1-rc1" is_supported_upgrade_from 0.3.1-rc1
 assert_success "migrates from 0.3.1-rc2" is_supported_upgrade_from 0.3.1-rc2
 assert_success "migrates from 0.3.1" is_supported_upgrade_from 0.3.1
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.3.2
+assert_success "migrates from 0.3.2" is_supported_upgrade_from 0.3.2
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.5.0
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -390,9 +391,9 @@ else
   pass "verify_existing_install does not remint instance_id"
 fi
 
-# 0.3.1→0.3.2 shaped migration fixture: preserve UUID / Reality / users / accounting
-assert_success "0.3.1→0.3.2 shaped migrate fixture preserves identity" python3 - \
-  "${TEST_TMP}/migrate-031-032" \
+# 0.3.1→0.5.0 shaped migration fixture: preserve UUID / Reality / users / accounting
+assert_success "0.3.1→0.5.0 shaped migrate fixture preserves identity" python3 - \
+  "${TEST_TMP}/migrate-031-050" \
   "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" \
   "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY'
 import json, sqlite3, sys
@@ -401,7 +402,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 uuid, priv, pub, sid, node_id, instance_id = sys.argv[2:8]
 src = root / "src-0.3.1"
-dst = root / "dst-0.3.2"
+dst = root / "dst-0.5.0"
 src.mkdir(parents=True)
 (src / "VERSION").write_text("0.3.1\n", encoding="utf-8")
 state = {
@@ -464,11 +465,11 @@ acct_bytes = db.read_bytes()
 import shutil
 
 shutil.copytree(src, dst)
-(dst / "VERSION").write_text("0.3.2\n", encoding="utf-8")
+(dst / "VERSION").write_text("0.5.0\n", encoding="utf-8")
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
-dst_state["project_version"] = "0.3.2"
+dst_state["project_version"] = "0.5.0"
 (dst / "state.json").write_text(json.dumps(dst_state, indent=2) + "\n", encoding="utf-8")
-toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.3.2")
+toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.5.0")
 (dst / "config.toml").write_text(toml, encoding="utf-8")
 
 # Preserve assertions (same invariants migrate_existing_install guards).
@@ -476,7 +477,7 @@ src_state = json.loads((src / "state.json").read_text(encoding="utf-8"))
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
 for key in ("uuid", "private_key", "public_key", "short_id", "node_id", "instance_id"):
     assert src_state[key] == dst_state[key], key
-assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.3.2"
+assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.5.0"
 src_users = json.loads((src / "users.json").read_text(encoding="utf-8"))
 dst_users = json.loads((dst / "users.json").read_text(encoding="utf-8"))
 assert src_users == dst_users
@@ -514,7 +515,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.3.2"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.5.0"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -581,6 +582,91 @@ if printf '%s\n' "$main_src" | grep -A12 '^        identity)' | grep -q -- '--js
 else
   fail "identity accepts --json in dispatch"
 fi
+if printf '%s\n' "$main_src" | grep -A12 '^        capabilities)' | grep -q -- '--json'; then
+  pass "capabilities accepts --json in dispatch"
+else
+  fail "capabilities accepts --json in dispatch"
+fi
+if printf '%s\n' "$main_src" | grep -q 'cmd_telemetry'; then
+  pass "telemetry snapshot subcommand in dispatch"
+else
+  fail "telemetry snapshot subcommand in dispatch"
+fi
+assert_success "helper documents vcl capabilities" grep -q 'vcl capabilities --json' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper documents vcl telemetry snapshot" grep -q 'vcl telemetry snapshot --json' "${PROJECT_DIR}/bin/vincula"
+assert_success "capabilities/v1 valid fixture parses" \
+  python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+  "${PROJECT_DIR}/tests/fixtures/schemas/capabilities/v1-valid.json"
+assert_success "telemetry/v1 valid fixture parses" \
+  python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+  "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json"
+assert_success "0.5.0 capabilities contract assembly" python3 - "$VINCULA_VERSION" <<'PY'
+import json, sys
+version = sys.argv[1]
+doc = {
+    "schema": "capabilities/v1",
+    "node_version": version,
+    "capabilities": ["telemetry/v1"],
+}
+assert doc["schema"] == "capabilities/v1"
+assert doc["node_version"] == version
+assert doc["capabilities"] == ["telemetry/v1"]
+print(json.dumps(doc))
+PY
+assert_success "telemetry_snapshot build_snapshot contract keys" python3 - \
+  "${PROJECT_DIR}/lib/telemetry_snapshot.py" \
+  "${TEST_TMP}/telemetry-state" \
+  "${TEST_TMP}/telemetry-state/accounting.db" <<'PY'
+import importlib.util
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+mod_path, state_dir, db_path = sys.argv[1:4]
+state = Path(state_dir)
+state.mkdir(parents=True, exist_ok=True)
+(state / "config.toml").write_text(
+    'node_id = "11111111-1111-4111-8111-111111111111"\n'
+    'clash_api_port = 9090\n'
+    'clash_api_secret = "secret-not-in-output"\n',
+    encoding="utf-8",
+)
+(state / "state.json").write_text(
+    json.dumps({"instance_id": "22222222-2222-4222-8222-222222222222"}) + "\n",
+    encoding="utf-8",
+)
+conn = sqlite3.connect(db_path)
+conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+conn.execute("INSERT INTO meta(key,value) VALUES('last_success_at','2026-08-27T08:00:00Z')")
+conn.execute("INSERT INTO meta(key,value) VALUES('audit_export_seq','7')")
+conn.execute(
+    "CREATE TABLE connections (last_seen_at TEXT)"
+)
+conn.execute(
+    "INSERT INTO connections(last_seen_at) VALUES ('2026-08-27T08:01:00Z')"
+)
+conn.commit()
+conn.close()
+
+spec = importlib.util.spec_from_file_location("telemetry_snapshot", mod_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+doc = mod.build_snapshot(state_dir=state, accounting_db=Path(db_path))
+required = {
+    "schema", "node_id", "instance_id", "observed_at", "uptime_seconds",
+    "load", "memory", "filesystem", "network", "sing_box", "accountd",
+}
+assert required <= set(doc), sorted(required - set(doc))
+assert doc["schema"] == "telemetry/v1"
+assert doc["node_id"] == "11111111-1111-4111-8111-111111111111"
+assert doc["instance_id"] == "22222222-2222-4222-8222-222222222222"
+assert doc["accountd"]["export_seq"] == 7
+blob = json.dumps(doc)
+for needle in ("secret-not-in-output", "clash_api_secret"):
+    assert needle not in blob, needle
+print("ok")
+PY
 assert_success "identity-sample.json is valid JSON" \
   python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
   "${PROJECT_DIR}/tests/fixtures/identity-sample.json"
@@ -846,9 +932,13 @@ assert_success "release.lock includes legacy_seed.py" \
   grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/release.lock"
 assert_success "gen-release-lock includes legacy_seed.py" \
   grep -q 'lib/legacy_seed.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "gen-release-lock includes telemetry_snapshot.py" \
+  grep -q 'lib/telemetry_snapshot.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
+assert_success "release.lock includes telemetry_snapshot.py" \
+  grep -q 'lib/telemetry_snapshot.py' "${PROJECT_DIR}/release.lock"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 11 first-party files" "11" \
+assert_equal "release.lock has 12 first-party files" "12" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -950,8 +1040,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.3.2" \
-  grep -q 'Vincula-Version: 0.3.2' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.5.0" \
+  grep -q 'Vincula-Version: 0.5.0' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -1147,7 +1237,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 11 first-party files" "11" \
+assert_equal "dist node release.lock has 12 first-party files" "12" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
