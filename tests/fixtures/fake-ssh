@@ -181,6 +181,21 @@ def _write_json(path: Path, data: object) -> None:
     tmp.replace(path)
 
 
+def _observation_supported(alias: str) -> bool:
+    forced = os.environ.get("VCL_FAKE_NODE_VERSION", "").strip()
+    if forced:
+        return True
+    ident = _load_fixture(alias, "identity")
+    ver = str(ident.get("vincula_version") or "")
+    return ver.startswith("0.5.")
+
+
+def _unsupported_vcl_command(remote: list[str]) -> int:
+    shown = " ".join(remote) or "(empty)"
+    sys.stderr.write(f"fake-ssh: unknown vcl command: {shown}\n")
+    return 1
+
+
 def _emit_json(data: object) -> None:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
@@ -1618,6 +1633,8 @@ def main(argv: list[str] | None = None) -> int:
     if kind == "restore":
         return _handle_restore(alias, host, rest)
     if kind == "capabilities":
+        if not _observation_supported(alias):
+            return _unsupported_vcl_command(remote)
         _emit_json(
             {
                 "schema": "capabilities/v1",
@@ -1627,6 +1644,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if kind == "telemetry_snapshot":
+        if not _observation_supported(alias):
+            return _unsupported_vcl_command(remote)
         ident = _load_fixture(alias, "identity")
         _emit_json(
             {

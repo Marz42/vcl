@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.4.5"
+VCL_FLEET_VERSION = "0.5.0"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -479,6 +479,12 @@ def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
 
 def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
     return _AC._node_identity_file(node)
+
+
+def node_identity_file_for_class(
+    node: dict[str, Any], credential_class: str
+) -> Optional[str]:
+    return _AC.node_identity_file_for_class(node, credential_class)  # type: ignore[arg-type]
 
 
 BINDINGS_SCHEMA_VERSION = _AC.BINDINGS_SCHEMA_VERSION
@@ -3220,6 +3226,83 @@ def cmd_node_instances(name: str, as_json: bool = False) -> int:
         return 0
     sys.stdout.write(format_instances_table(rows))
     return 0
+
+
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = fetch_node_capabilities(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+        state = result.get("state")
+        if state == "ERROR":
+            return 1
+        return 0
+    state = result.get("state")
+    if state == "OK":
+        caps = ", ".join(result.get("capabilities") or [])
+        sys.stdout.write(
+            f"{args.name}: {result.get('node_version')} [{caps}]\n"
+        )
+        return 0
+    sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+    return 1 if state == "ERROR" else 0
+
+
+def cmd_telemetry(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = fetch_node_telemetry(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+        state = result.get("state")
+        if state == "ERROR":
+            return 1
+        return 0
+    state = result.get("state")
+    if state == "OK":
+        snap = result.get("snapshot") or {}
+        sys.stdout.write(
+            f"{args.name}: telemetry ok observed_at={snap.get('observed_at')}\n"
+        )
+        return 0
+    sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+    return 1 if state == "ERROR" else 0
+
+
+def cmd_node_upgrade_plan(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    plan = load_node_upgrade_module().run_upgrade_plan(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(
+            f"upgrade plan {args.name}: {plan.get('current_version')} → "
+            f"{plan.get('target_version')} ({plan.get('state')})\n"
+        )
+    if plan.get("state") == "AUTH_FAILED":
+        return 1
+    if plan.get("state") == "ERROR":
+        return 1
+    return 0
+
+
+def cmd_node_upgrade_apply(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = load_node_upgrade_module().run_upgrade_apply(
+        node,
+        confirmed=bool(getattr(args, "yes", False)),
+    )
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(
+            f"upgrade apply {args.name}: {result.get('state')} "
+            f"{result.get('from_version')} → {result.get('to_version')}\n"
+        )
+    return 0 if result.get("ok") else 1
 
 
 def format_utc(dt: datetime) -> str:
@@ -5991,6 +6074,10 @@ _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
 _AUDIT_ARCHIVE_MOD: Optional[Any] = None
 _PROVISION_MOD: Optional[Any] = None
+_OBS_CAP_MOD: Optional[Any] = None
+_OBS_TEL_MOD: Optional[Any] = None
+_SSH_TRANSPORT_MOD: Optional[Any] = None
+_NODE_UPGRADE_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -6030,6 +6117,107 @@ def load_provision_module() -> Any:
     _PROVISION_MOD = _load_controller_sibling("vincula_provision", "provision.py")
     _PROVISION_MOD.bind(_FLEET_HOST)
     return _PROVISION_MOD
+
+
+def load_ssh_transport_module() -> Any:
+    global _SSH_TRANSPORT_MOD
+    if _SSH_TRANSPORT_MOD is not None:
+        return _SSH_TRANSPORT_MOD
+    _SSH_TRANSPORT_MOD = _load_controller_sibling("vcl_ssh_transport", "ssh_transport.py")
+    return _SSH_TRANSPORT_MOD
+
+
+def load_observation_capabilities_module() -> Any:
+    global _OBS_CAP_MOD
+    if _OBS_CAP_MOD is not None:
+        return _OBS_CAP_MOD
+    _OBS_CAP_MOD = _load_controller_sibling(
+        "vcl_observation_capabilities", "observation/capabilities.py"
+    )
+    return _OBS_CAP_MOD
+
+
+def load_observation_telemetry_module() -> Any:
+    global _OBS_TEL_MOD
+    if _OBS_TEL_MOD is not None:
+        return _OBS_TEL_MOD
+    _OBS_TEL_MOD = _load_controller_sibling(
+        "vcl_observation_telemetry", "observation/telemetry.py"
+    )
+    return _OBS_TEL_MOD
+
+
+def load_node_upgrade_module() -> Any:
+    global _NODE_UPGRADE_MOD
+    if _NODE_UPGRADE_MOD is not None:
+        return _NODE_UPGRADE_MOD
+    _NODE_UPGRADE_MOD = _load_controller_sibling("vcl_node_upgrade", "node_upgrade.py")
+    _NODE_UPGRADE_MOD.bind(_FLEET_HOST)
+    return _NODE_UPGRADE_MOD
+
+
+def observation_ssh_json(
+    node: dict[str, Any],
+    remote_cmd: list[str],
+    *,
+    credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
+    extra: list[str] | None = None,
+    require_exit_0: bool = False,
+    unsupported_on_missing_command: bool = False,
+) -> tuple[str, Optional[dict[str, Any]], str]:
+    transport = load_ssh_transport_module()
+    return transport.ssh_remote_json_for_class(
+        node=node,
+        remote_cmd=remote_cmd,
+        credential_class=credential_class,  # type: ignore[arg-type]
+        ssh_run=ssh_run,
+        identity_for_class=node_identity_file_for_class,
+        failure_detail=_ssh_failure_detail,
+        timeout=timeout,
+        extra=extra,
+        require_exit_0=require_exit_0,
+        unsupported_on_missing_command=unsupported_on_missing_command,
+    )
+
+
+def fetch_node_capabilities(node: dict[str, Any]) -> dict[str, Any]:
+    caps_mod = load_observation_capabilities_module()
+
+    def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        return observation_ssh_json(
+            kwargs["node"],
+            kwargs["remote_cmd"],
+            credential_class="observe",
+            unsupported_on_missing_command=kwargs.get(
+                "unsupported_on_missing_command", False
+            ),
+            require_exit_0=kwargs.get("require_exit_0", False),
+            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+        )
+
+    return caps_mod.fetch_capabilities(node, ssh_json=_ssh_json)
+
+
+def fetch_node_telemetry(
+    node: dict[str, Any], *, capabilities: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    caps = capabilities if capabilities is not None else fetch_node_capabilities(node)
+    tel_mod = load_observation_telemetry_module()
+
+    def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        return observation_ssh_json(
+            kwargs["node"],
+            kwargs["remote_cmd"],
+            credential_class="observe",
+            unsupported_on_missing_command=kwargs.get(
+                "unsupported_on_missing_command", False
+            ),
+            require_exit_0=kwargs.get("require_exit_0", False),
+            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+        )
+
+    return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
 
 
 def fleet_utc_today() -> date:
@@ -7193,6 +7381,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="print JSON (schema_version 1)",
     )
 
+    p_upgrade = node_sub.add_parser(
+        "upgrade",
+        help="Node firmware upgrade plan/apply (0.5.0)",
+    )
+    upgrade_sub = p_upgrade.add_subparsers(dest="upgrade_command")
+    p_upgrade_plan = upgrade_sub.add_parser(
+        "plan",
+        help="read-only upgrade plan (observe credential MAY be used)",
+    )
+    p_upgrade_plan.add_argument("name")
+    _add_json_flag(p_upgrade_plan)
+    p_upgrade_apply = upgrade_sub.add_parser(
+        "apply",
+        help="typed firmware upgrade (admin credential; requires --yes)",
+    )
+    p_upgrade_apply.add_argument("name")
+    p_upgrade_apply.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm typed upgrade mutation",
+    )
+    _add_json_flag(p_upgrade_apply)
+
+    p_capabilities = sub.add_parser(
+        "capabilities",
+        help="fetch Node capabilities/v1 (observe credential)",
+    )
+    p_capabilities.add_argument("name", help="registered node name")
+    _add_json_flag(p_capabilities)
+
+    p_telemetry = sub.add_parser(
+        "telemetry",
+        help="fetch Node telemetry/v1 snapshot (observe credential)",
+    )
+    p_telemetry.add_argument("name", help="registered node name")
+    _add_json_flag(p_telemetry)
+
     p_status = sub.add_parser(
         "status",
         help="cache-only (D58); use probe or --live for SSH",
@@ -7866,7 +8091,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         if sub == "instances":
             return cmd_node_instances(args.name, as_json=bool(getattr(args, "as_json", False)))
+        if sub == "upgrade":
+            u = getattr(args, "upgrade_command", None)
+            if u is None:
+                parser.parse_args(["node", "upgrade", "--help"])
+                return 2
+            if u == "plan":
+                return cmd_node_upgrade_plan(args)
+            if u == "apply":
+                return run_journaled(
+                    "node_upgrade",
+                    lambda: cmd_node_upgrade_apply(args),
+                    target=str(args.name),
+                )
+            die(f"unknown node upgrade command: {u}", 2)
         die(f"unknown node command: {sub}", 2)
+    if command == "capabilities":
+        return cmd_capabilities(args)
+    if command == "telemetry":
+        return cmd_telemetry(args)
     if command == "user":
         sub = args.user_command
         if sub is None:

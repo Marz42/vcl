@@ -16,7 +16,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+CredentialClass = Literal["observe", "admin"]
 
 _host: Any = None
 
@@ -263,20 +265,44 @@ def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
     return ["-i", validate_identity_file(path, must_exist=True), "-o", "IdentitiesOnly=yes"]
 
 
+def _identity_from_ref(ref: str) -> Optional[str]:
+    binding = resolve_binding(ref)
+    btype = binding.get("type")
+    if btype == "openssh-default":
+        return None
+    if btype == "identity_file":
+        return binding["path"]
+    _host.die(f"invalid binding type for {ref}")
+    return None
+
+
+def node_identity_file_for_class(
+    node: dict[str, Any], credential_class: CredentialClass
+) -> Optional[str]:
+    """Resolve SSH identity for observe or admin credential class (D57, 0.5.0)."""
+    admin_ref = _host._optional_text(node.get("admin_credential_ref"))
+    observe_ref = _host._optional_text(node.get("observe_credential_ref"))
+    legacy = _host._optional_text(node.get("identity_file"))
+
+    if credential_class == "admin":
+        if admin_ref:
+            return _identity_from_ref(admin_ref)
+        return legacy
+
+    if observe_ref:
+        return _identity_from_ref(observe_ref)
+    if legacy and not admin_ref and not observe_ref:
+        return legacy
+    _host.die("observe credential not configured for node")
+
+
+def node_credential_class_label(credential_class: CredentialClass) -> str:
+    return credential_class
+
+
 def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
-    # D57: runtime observe=admin; prefer admin_credential_ref, else observe.
-    ref = _host._optional_text(node.get("admin_credential_ref"))
-    if not ref:
-        ref = _host._optional_text(node.get("observe_credential_ref"))
-    if ref:
-        binding = resolve_binding(ref)
-        btype = binding.get("type")
-        if btype == "openssh-default":
-            return None
-        if btype == "identity_file":
-            return binding["path"]
-        _host.die(f"invalid binding type for {ref}")
-    return _host._optional_text(node.get("identity_file"))
+    # Mutations and legacy paths default to admin credential class.
+    return node_identity_file_for_class(node, "admin")
 
 
 def ssh_argv(

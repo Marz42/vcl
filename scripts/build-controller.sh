@@ -33,6 +33,11 @@ FILES=(
   lib/access.py
   lib/trust.py
   lib/legacy.py
+  lib/ssh_transport.py
+  lib/node_upgrade.py
+  lib/observation/capabilities.py
+  lib/observation/telemetry.py
+  lib/observation/schema_validate.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -139,6 +144,11 @@ need = (
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
     f"{prefix}/lib/legacy.py",
+    f"{prefix}/lib/ssh_transport.py",
+    f"{prefix}/lib/node_upgrade.py",
+    f"{prefix}/lib/observation/capabilities.py",
+    f"{prefix}/lib/observation/telemetry.py",
+    f"{prefix}/lib/observation/schema_validate.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",

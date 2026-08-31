@@ -727,7 +727,7 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.4.5" "0.4.5" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.5.0" "0.5.0" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
 assert_equal "NODE 0.5.0" "0.5.0" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -14409,6 +14409,133 @@ assert_success "0.5.0 migrate preserves UUID/Reality guards present" \
     grep -Fq "Migration attempted to change the REALITY private key" "'"${PROJECT_DIR}"'/vincula.sh" &&
     grep -Fq "Migration attempted to change the REALITY public key" "'"${PROJECT_DIR}"'/vincula.sh"
   '
+
+# --- 0.5.0 Controller observation + upgrade (G1) ---
+assert_success "0.5.0 build-controller packs observation modules" \
+  grep -q 'lib/observation/capabilities.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "0.5.0 build-controller packs node_upgrade" \
+  grep -q 'lib/node_upgrade.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+assert_success "0.5.0 build-controller packs ssh_transport" \
+  grep -q 'lib/ssh_transport.py' "${PROJECT_DIR}/scripts/build-controller.sh"
+
+assert_success "0.5.0 schema_validate fixtures" python3 - \
+  "${PROJECT_DIR}/lib/observation/schema_validate.py" \
+  "${PROJECT_DIR}/tests/fixtures/schemas/capabilities/v1-valid.json" \
+  "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+def load(path):
+    spec = importlib.util.spec_from_file_location("sv", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+sv = load(sys.argv[1])
+cap = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+tel = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+assert sv.validate_capabilities_v1(cap) == []
+assert sv.validate_capabilities_v1({"schema": "capabilities/v1"}) != []
+assert sv.validate_telemetry_v1(tel) == []
+assert sv.validate_telemetry_v1({"schema": "telemetry/v1"}) != []
+PY
+
+assert_success "0.5.0 observe/admin credential routing" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  "${TEST_TMP}/obs-route-home" \
+  "${TEST_TMP}/obs-route-admin.key" \
+  "${TEST_TMP}/obs-route-observe.key" <<'PY'
+import importlib.util, os, sys, argparse
+from pathlib import Path
+
+fleet_path, home, admin_key, observe_key = sys.argv[1:5]
+home = Path(home)
+home.mkdir(parents=True, exist_ok=True)
+Path(admin_key).write_text("admin\n", encoding="utf-8")
+Path(observe_key).write_text("observe\n", encoding="utf-8")
+os.environ["VCL_FLEET_HOME"] = str(home)
+
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+fleet.cmd_workspace_init(argparse.Namespace())
+fleet.bind_identity_file("admin-key", admin_key)
+fleet.bind_identity_file("observe-key", observe_key)
+
+same_ref = {
+    "admin_credential_ref": "admin-key",
+    "observe_credential_ref": "admin-key",
+}
+split_ref = {
+    "admin_credential_ref": "admin-key",
+    "observe_credential_ref": "observe-key",
+}
+assert fleet.node_identity_file_for_class(same_ref, "admin") == admin_key
+assert fleet.node_identity_file_for_class(same_ref, "observe") == admin_key
+assert fleet.node_identity_file_for_class(split_ref, "admin") == admin_key
+assert fleet.node_identity_file_for_class(split_ref, "observe") == observe_key
+PY
+
+OBS050_HOME="${TEST_TMP}/obs050-fleet"
+OBS050_KEY="${TEST_TMP}/obs050-id_ed25519"
+OBS050_SAVED_HOME=$VCL_FLEET_HOME
+printf 'test-only-not-a-real-key\n' > "$OBS050_KEY"
+export VCL_FLEET_HOME="$OBS050_HOME"
+assert_success "obs050 fleet init" fleet init
+assert_success "obs050 add lax offline" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID" \
+  --identity-file "$OBS050_KEY"
+
+obs_cap_json=$(fleet capabilities lax --json)
+assert_success "obs050 capabilities UNSUPPORTED on 0.3.x lax" python3 - "$obs_cap_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "UNSUPPORTED", doc
+assert doc.get("credential_class") == "observe", doc
+PY
+
+obs_tel_json=$(fleet telemetry lax --json)
+assert_success "obs050 telemetry UNSUPPORTED on 0.3.x lax" python3 - "$obs_tel_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "UNSUPPORTED", doc
+PY
+
+export VCL_FAKE_NODE_VERSION=0.5.0
+obs_cap_ok=$(fleet capabilities lax --json)
+assert_success "obs050 capabilities OK when fake node 0.5.0" python3 - "$obs_cap_ok" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "OK", doc
+assert "telemetry/v1" in (doc.get("capabilities") or []), doc
+PY
+
+obs_tel_ok=$(fleet telemetry lax --json)
+assert_success "obs050 telemetry OK when fake node 0.5.0" python3 - "$obs_tel_ok" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "OK", doc
+assert doc.get("snapshot", {}).get("schema") == "telemetry/v1", doc
+PY
+unset VCL_FAKE_NODE_VERSION
+
+obs_plan_json=$(fleet node upgrade plan lax --json)
+assert_success "obs050 upgrade plan allowlist 0.3.1" python3 - "$obs_plan_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("allowlist_ok") is True, doc
+assert doc.get("current_version") == "0.3.1", doc
+assert doc.get("target_version") == "0.5.0", doc
+assert doc.get("credential_class") == "observe", doc
+PY
+
+upgrade_no_yes_rc=0
+upgrade_no_yes_err=$(fleet node upgrade apply lax --json 2>&1) || upgrade_no_yes_rc=$?
+assert_equal "obs050 upgrade apply without --yes fails" 1 "$upgrade_no_yes_rc"
+assert_success "obs050 upgrade apply without --yes message" \
+  grep -q 'requires --yes' <<< "$upgrade_no_yes_err"
+
+export VCL_FLEET_HOME="$OBS050_SAVED_HOME"
 
 # --- 0.4.3 B6 offline suite (aliases / digest / preflight / happy) ---
 B6_SAVED_HOME=$HOME
