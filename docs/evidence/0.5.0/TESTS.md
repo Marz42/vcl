@@ -15,7 +15,7 @@ git diff --check
 | --- | --- |
 | Date | 2026-08-31 |
 | OS | Linux (WSL2 / CI ubuntu-latest matrix) |
-| Commit | `4686b3e` + G1–G5 offline gate (uncommitted test/evidence) |
+| Commit | `6a4ee06` |
 
 ## Results
 
