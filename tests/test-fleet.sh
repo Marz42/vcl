@@ -14439,6 +14439,32 @@ assert sv.validate_capabilities_v1(cap) == []
 assert sv.validate_capabilities_v1({"schema": "capabilities/v1"}) != []
 assert sv.validate_telemetry_v1(tel) == []
 assert sv.validate_telemetry_v1({"schema": "telemetry/v1"}) != []
+
+# AC-5.0-06/07: nested unknown fields / bad optionals / bad timestamps fail-closed
+bad = json.loads(json.dumps(tel))
+bad["sing_box"]["private_key"] = "LEAK"
+assert any("sing_box" in e for e in sv.validate_telemetry_v1(bad)), sv.validate_telemetry_v1(bad)
+bad = json.loads(json.dumps(tel))
+bad["sing_box"]["connection_count"] = -1
+assert any("connection_count" in e for e in sv.validate_telemetry_v1(bad))
+bad = json.loads(json.dumps(tel))
+bad["observed_at"] = "not-a-date"
+assert any("observed_at" in e for e in sv.validate_telemetry_v1(bad))
+bad = json.loads(json.dumps(tel))
+bad["load"]["secret"] = "LEAK"
+assert any("load" in e for e in sv.validate_telemetry_v1(bad))
+bad = json.loads(json.dumps(tel))
+bad["filesystem"]["mount"] = "x" * 257
+assert any("mount" in e for e in sv.validate_telemetry_v1(bad))
+bad = json.loads(json.dumps(tel))
+bad["sing_box"]["last_restart_at"] = "yesterday"
+assert any("last_restart_at" in e for e in sv.validate_telemetry_v1(bad))
+# nulls allowed for optional metrics
+ok_null = json.loads(json.dumps(tel))
+ok_null["sing_box"]["connection_count"] = None
+ok_null["sing_box"]["last_restart_at"] = None
+ok_null["accountd"]["export_seq"] = None
+assert sv.validate_telemetry_v1(ok_null) == []
 PY
 
 assert_success "0.5.0 observe/admin credential routing" python3 - \
