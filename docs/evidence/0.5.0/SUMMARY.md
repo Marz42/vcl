@@ -45,10 +45,10 @@ Deterministic builds: `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` then `build
 
 | Artifact | SHA256 |
 | --- | --- |
-| `dist/vincula-node-0.5.0.tar.gz` | `63fb7b48d2e5f1e3d87b6c96ad9a199bf4de428471ebe06c845015d0a77c2bca` |
-| `dist/vincula-controller-0.5.0.zip` | `ac3ba6fedad4edec539d1c05d3e263238d1a8247c6cb3d6fd6a9988831a9e95c` |
+| `dist/vincula-node-0.5.0.tar.gz` | `52557a013df57a888a0c84fd48c56ea7a82a08118c73ee07321c628bbc717204` |
+| `dist/vincula-controller-0.5.0.zip` | `143b394024bca188ec801c398026f81b46be155eecececbc4d60de539eefccd4` |
 
-Pins use `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` on the release commit (clamped ≥ 1980-01-01). Re-run builds after that commit and refresh if the tree or epoch changes. CI merge-ref timestamps may differ from HEAD; compare against the uploaded release asset, not an arbitrary local rebuild with a different epoch.
+Pins use `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` on commit `8982451` (clamped ≥ 1980-01-01). CI merge-ref epochs may differ; trust the uploaded release asset for a given commit.
 
 
 ## Related

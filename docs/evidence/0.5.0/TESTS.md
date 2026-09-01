@@ -15,7 +15,7 @@ git diff --check
 | --- | --- |
 | Date | 2026-09-01 |
 | OS | Linux (WSL2 / CI ubuntu-latest matrix) |
-| Commit | working tree on `release/0.5.0` (re-pin SHA after commit) |
+| Commit | `8982451` |
 
 ## Results
 

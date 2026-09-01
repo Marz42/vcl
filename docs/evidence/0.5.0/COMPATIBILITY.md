@@ -42,7 +42,7 @@ Deterministic build (`SOURCE_DATE_EPOCH` from git HEAD). Re-pin after the releas
 
 | Artifact | Version | SHA256 |
 | --- | --- | --- |
-| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `ac3ba6fedad4edec539d1c05d3e263238d1a8247c6cb3d6fd6a9988831a9e95c` |
-| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `63fb7b48d2e5f1e3d87b6c96ad9a199bf4de428471ebe06c845015d0a77c2bca` |
+| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `143b394024bca188ec801c398026f81b46be155eecececbc4d60de539eefccd4` |
+| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `52557a013df57a888a0c84fd48c56ea7a82a08118c73ee07321c628bbc717204` |
 
 Minimum compatible Node for Controller 0.5.0: **0.3.1**.
