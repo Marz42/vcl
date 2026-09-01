@@ -265,6 +265,9 @@ def run_upgrade_apply(
             host.die(
                 f"upgrade backup failed: {backup_detail or 'remote backup failed'}"
             )
+        backup_path = _optional_backup_path(backup_doc)
+    else:
+        backup_path = None
 
     resolved = prov.resolve_node_payload()
     prov.verify_local_payload(resolved)
@@ -327,19 +330,59 @@ def run_upgrade_apply(
             extra=extra,
         )
 
-    def _partial(detail: str) -> dict[str, Any]:
+    def _finished_base() -> dict[str, Any]:
         return {
-            "ok": False,
-            "state": "PARTIAL",
-            "detail": detail,
             "node": node.get("name"),
             "node_id": node.get("node_id"),
             "from_version": pre_version,
             "to_version": target,
             "credential_class": "admin",
             "migrate_committed": True,
+            "backup_path": backup_path,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+
+    def _partial(detail: str, *, restore_detail: Optional[str] = None) -> dict[str, Any]:
+        out = _finished_base()
+        out.update(
+            {
+                "ok": False,
+                "state": "PARTIAL",
+                "detail": detail,
+            }
+        )
+        if restore_detail:
+            out["restore_detail"] = restore_detail
+        if backup_path:
+            out["recovery"] = (
+                f"post-check failed after migrate; typed restore from "
+                f"{backup_path} did not succeed"
+                + (f" ({restore_detail})" if restore_detail else "")
+                + f"; operator: inspect node and restore manually from {backup_path}"
+            )
+        else:
+            out["recovery"] = (
+                "post-check failed after migrate; no controller backup path "
+                "available — inspect node / migrate backup on host"
+            )
+        return out
+
+    def _rollback_or_partial(detail: str) -> dict[str, Any]:
+        if not backup_path:
+            return _partial(detail)
+        rolled = _attempt_post_upgrade_restore(
+            node,
+            backup_path=backup_path,
+            post_check_detail=detail,
+            pre_version=pre_version,
+            target=target,
+        )
+        if rolled is not None:
+            return rolled
+        return _partial(
+            detail,
+            restore_detail="typed restore failed or refused (see node stderr)",
+        )
 
     ssh_state, verify_doc, verify_detail = _ssh_json(
         node,
@@ -348,11 +391,10 @@ def run_upgrade_apply(
         require_exit_0=False,
     )
     if ssh_state != "OK" or not isinstance(verify_doc, dict) or not verify_doc.get("ok"):
+        fail_detail = f"post-upgrade verify failed: {verify_detail or 'verify failed'}"
         if migrate_committed:
-            return _partial(
-                f"post-upgrade verify failed: {verify_detail or 'verify failed'}"
-            )
-        host.die(f"post-upgrade verify failed: {verify_detail or 'verify failed'}")
+            return _rollback_or_partial(fail_detail)
+        host.die(fail_detail)
 
     # Post capabilities via admin (not observe) — Spec §3.3.
     caps_mod = host.load_observation_capabilities_module()
@@ -366,12 +408,12 @@ def run_upgrade_apply(
         max_stdout_bytes=max_cap,
     )
     if ssh_state != "OK" or not isinstance(cap_payload, dict):
-        return _partial(
+        return _rollback_or_partial(
             f"post-upgrade capabilities failed: {cap_detail or ssh_state}"
         )
     cap_errors = caps_mod.validate_capabilities_v1(cap_payload)
     if cap_errors:
-        return _partial(
+        return _rollback_or_partial(
             f"post-upgrade capabilities invalid: {'; '.join(cap_errors)}"
         )
 
@@ -381,30 +423,90 @@ def run_upgrade_apply(
         credential_class="admin",
     )
     if ssh_state != "OK" or not isinstance(ident, dict):
-        return _partial(
+        return _rollback_or_partial(
             f"post-upgrade identity failed: {ident_detail or ssh_state}"
         )
     current = str(ident.get("vincula_version") or "").strip()
     if current != target:
-        return _partial(
+        return _rollback_or_partial(
             f"post-upgrade version mismatch: expected {target}, got {current}"
         )
     if ident.get("node_id") != pre_node_id:
-        return _partial(
+        return _rollback_or_partial(
             "post-upgrade node_id changed (identity not preserved)"
         )
     if pre_instance_id and ident.get("instance_id") != pre_instance_id:
-        return _partial(
+        return _rollback_or_partial(
             "post-upgrade instance_id changed (identity not preserved)"
         )
 
+    out = _finished_base()
+    out.update(
+        {
+            "ok": True,
+            "state": "SUCCESS",
+        }
+    )
+    return out
+
+
+def _optional_backup_path(backup_doc: dict[str, Any]) -> Optional[str]:
+    path = backup_doc.get("path")
+    if isinstance(path, str) and path.strip():
+        return path.strip()
+    return None
+
+
+def _attempt_post_upgrade_restore(
+    node: dict[str, Any],
+    *,
+    backup_path: str,
+    post_check_detail: str,
+    pre_version: Optional[str],
+    target: str,
+) -> Optional[dict[str, Any]]:
+    """Try typed ``vcl restore`` after post-check failure (Spec §3.3).
+
+    Returns a ROLLED_BACK result on success, or None so the caller can emit PARTIAL.
+    """
+    host = _require_host()
+    server = str(node.get("ssh_host") or "")
+    build_argv = getattr(host, "build_node_restore_argv", None)
+    if callable(build_argv):
+        restore_argv = list(build_argv(backup_path, server))
+    else:
+        restore_argv = [
+            "vcl",
+            "restore",
+            backup_path,
+            "--reissue-output",
+            "/tmp/vcl-upgrade-reissue.csv",
+            "--server",
+            server,
+            "--json",
+        ]
+    timeout = getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60)
+    ssh_state, doc, restore_detail = _ssh_json(
+        node,
+        restore_argv,
+        credential_class="admin",
+        timeout=timeout,
+        require_exit_0=False,
+    )
+    if ssh_state != "OK" or not isinstance(doc, dict) or doc.get("ok") is not True:
+        return None
     return {
-        "ok": True,
-        "state": "SUCCESS",
+        "ok": False,
+        "state": "ROLLED_BACK",
+        "detail": f"post-check failed; restored backup: {post_check_detail}",
+        "post_check_detail": post_check_detail,
+        "backup_path": backup_path,
+        "restore": doc,
         "node": node.get("name"),
         "node_id": node.get("node_id"),
         "from_version": pre_version,
         "to_version": target,
         "credential_class": "admin",
+        "migrate_committed": True,
         "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }

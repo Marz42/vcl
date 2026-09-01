@@ -1265,6 +1265,8 @@ VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/li
 [[ -n "$VCL_FLEET_VERSION" ]]
 assert_success "build-controller produces zip" \
   bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
+assert_success "build-controller clamps SOURCE_DATE_EPOCH=0 (ZIP 1980+)" \
+  env SOURCE_DATE_EPOCH=0 bash "${PROJECT_DIR}/scripts/build-controller.sh" >/dev/null
 assert_success "controller zip exists" \
   test -f "${PROJECT_DIR}/dist/vincula-controller-${VCL_FLEET_VERSION}.zip"
 assert_success "controller zip sidecar sha256 exists" \

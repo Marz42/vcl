@@ -119,11 +119,18 @@ while read -r digest path; do
 done < "${OUT}/controller.lock"
 
 rm -f -- "$ARCHIVE" "$SIDECAR"
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '0')}"
+# ZIP local-file dates cannot precede 1980-01-01; clamp when git metadata is absent
+# (e.g. some CI containers where `git log` fails → epoch 0).
+ZIP_EPOCH_MIN=315532800
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '%s' "$ZIP_EPOCH_MIN")}"
+if [[ "$SOURCE_DATE_EPOCH" -lt "$ZIP_EPOCH_MIN" ]]; then
+  SOURCE_DATE_EPOCH="$ZIP_EPOCH_MIN"
+fi
 export SOURCE_DATE_EPOCH
 (
   cd "$DIST_ROOT"
   python3 - "$NAME" "$(basename "$ARCHIVE")" "$SOURCE_DATE_EPOCH" <<'PY'
+import datetime
 import os
 import sys
 import zipfile
@@ -131,10 +138,9 @@ from pathlib import Path
 
 prefix, archive_name, epoch_s = sys.argv[1], sys.argv[2], int(sys.argv[3])
 root = Path(prefix)
-# Fixed DOS date for reproducibility (1980-01-01 + epoch clamped).
-# zipfile uses (year, month, day, hour, min, sec); use UTC from epoch.
-import datetime
-
+# ZIP does not support timestamps before 1980-01-01 UTC.
+ZIP_EPOCH_MIN = 315532800
+epoch_s = max(epoch_s, ZIP_EPOCH_MIN)
 ts = datetime.datetime.fromtimestamp(epoch_s, tz=datetime.timezone.utc)
 date_time = (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second)
 

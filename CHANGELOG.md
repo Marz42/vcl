@@ -14,7 +14,9 @@
 - **不得隐式共用：** 新节点不自动把 `observe_credential_ref` 设成 admin；须显式 `node set --observe-credential-ref` / `--observe-identity-file`（可与 admin 相同，但必须显式）。
 - 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
 - telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。
-- **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`。
+- **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`；ZIP/tar epoch **钳制 ≥ 1980-01-01**（避免 CI 无 git 元数据时 epoch=0 崩溃）。
+- observation JSON 拒绝 `NaN`/`Infinity`；有界 SSH capture **遵守 timeout**（selectors 并发读 stdout/stderr）。
+- upgrade post-check 失败：尝试 typed `vcl restore` → **ROLLED_BACK**；restore 失败 → **PARTIAL** + recovery 指引。
 - **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
 ### Notes
 - Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。

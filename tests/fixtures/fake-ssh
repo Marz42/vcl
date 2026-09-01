@@ -1075,8 +1075,12 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         return 1
     node_dir = _alias_dir(alias)
     if (node_dir / "VERSION").is_file():
-        sys.stderr.write("ERROR: Refusing to overwrite an existing Vincula install.\n")
-        return 1
+        # Upgrade post-check rollback: allow typed restore after migrate committed.
+        if os.environ.get("VCL_FAKE_UPGRADE", "").strip() == "1":
+            (node_dir / "VERSION").unlink(missing_ok=True)
+        else:
+            sys.stderr.write("ERROR: Refusing to overwrite an existing Vincula install.\n")
+            return 1
     backup = _load_backup()
     if backup is None:
         sys.stderr.write("fake-ssh: vincula-backup.py not found\n")

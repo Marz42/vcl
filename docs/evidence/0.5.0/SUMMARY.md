@@ -45,10 +45,11 @@ Deterministic builds: `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` then `build
 
 | Artifact | SHA256 |
 | --- | --- |
-| `dist/vincula-node-0.5.0.tar.gz` | `0ca5fdf158ec545b53bf2e3bcaac14fc3c62a96aa4d15a0d7828cd757acf6be7` |
-| `dist/vincula-controller-0.5.0.zip` | `404b21d43d7807290982c5b08732458006606212aed4573acd321a024c1480a1` |
+| `dist/vincula-node-0.5.0.tar.gz` | `63fb7b48d2e5f1e3d87b6c96ad9a199bf4de428471ebe06c845015d0a77c2bca` |
+| `dist/vincula-controller-0.5.0.zip` | `ac3ba6fedad4edec539d1c05d3e263238d1a8247c6cb3d6fd6a9988831a9e95c` |
 
-Prior SUMMARY/CI/local digests diverged because tar/zip order and mtimes were non-deterministic; do not trust pre-deterministic pins.
+Pins use `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` on the release commit (clamped ≥ 1980-01-01). Re-run builds after that commit and refresh if the tree or epoch changes. CI merge-ref timestamps may differ from HEAD; compare against the uploaded release asset, not an arbitrary local rebuild with a different epoch.
+
 
 ## Related
 

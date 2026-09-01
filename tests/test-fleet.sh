@@ -14474,6 +14474,28 @@ ok_null["sing_box"]["connection_count"] = None
 ok_null["sing_box"]["last_restart_at"] = None
 ok_null["accountd"]["export_seq"] = None
 assert sv.validate_telemetry_v1(ok_null) == []
+# Non-finite JSON numbers must fail (JSON Schema / IEEE)
+assert sv.validate_telemetry_v1({**tel, "load": {**tel["load"], "load1": float("inf")}}) != []
+assert any("load1" in e for e in sv.validate_telemetry_v1(
+    {**tel, "load": {**tel["load"], "load1": float("inf")}}
+))
+PY
+
+assert_success "0.5.0 parse_stdout_json rejects Infinity/NaN" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ssh_transport", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+st, pl, _ = tr.parse_stdout_json('{"schema":"telemetry/v1","load":{"load1":Infinity}}')
+assert st == "ERROR" and pl is None, (st, pl)
+st2, pl2, _ = tr.parse_stdout_json('{"schema":"x","v":NaN}')
+assert st2 == "ERROR" and pl2 is None, (st2, pl2)
+# finite still OK
+body = {"schema": "capabilities/v1", "node_version": "0.5.0", "capabilities": ["telemetry/v1"]}
+st3, pl3, _ = tr.parse_stdout_json(json.dumps(body))
+assert st3 == "OK" and isinstance(pl3, dict)
 PY
 
 assert_success "0.5.0 observe/admin credential routing" python3 - \
@@ -14703,6 +14725,47 @@ one_mib = "x" * (1024 * 1024)
 st5, pl5, d5 = tr.parse_stdout_json(one_mib, max_stdout_bytes=65536)
 assert st5 == "ERROR" and pl5 is None, (st5, pl5, d5)
 assert "exceeds" in d5 and "1048576" in d5, d5
+PY
+
+assert_success "obs050 bounded SSH capture honors timeout" python3 - \
+  "${PROJECT_DIR}/lib/access.py" <<'PY'
+import importlib.util, subprocess, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("access", Path(sys.argv[1]))
+access = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(access)
+
+class Host:
+    def die(self, msg, code=1):
+        raise SystemExit(msg)
+
+access.bind(Host())
+cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
+t0 = time.monotonic()
+try:
+    access._ssh_run_bounded_stdout(cmd, timeout=0.2, max_stdout_bytes=1024)
+    raise AssertionError("expected TimeoutExpired")
+except subprocess.TimeoutExpired:
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.2, f"timeout too slow: {elapsed:.3f}s"
+
+# Endless stdout must not bypass timeout either
+flood = [
+    sys.executable,
+    "-c",
+    "import sys\n"
+    "while True:\n"
+    "    sys.stdout.buffer.write(b'x' * 65536)\n"
+    "    sys.stdout.buffer.flush()\n",
+]
+t1 = time.monotonic()
+try:
+    access._ssh_run_bounded_stdout(flood, timeout=0.25, max_stdout_bytes=4096)
+    raise AssertionError("expected TimeoutExpired on flood")
+except subprocess.TimeoutExpired:
+    elapsed = time.monotonic() - t1
+    assert elapsed < 1.2, f"flood timeout too slow: {elapsed:.3f}s"
 PY
 
 # Upgrade plan REFUSED (off-allowlist) → CLI exit 1
@@ -14946,6 +15009,93 @@ result = upg.run_upgrade_apply(node, confirmed=True, skip_backup=False)
 assert result.get("state") == "PARTIAL", result
 assert result.get("ok") is False
 assert "verify" in (result.get("detail") or "").lower(), result
+assert result.get("backup_path") == "/tmp/b.tgz", result
+assert "recovery" in result, result
+PY
+
+# Upgrade: post-check fail + successful typed restore → ROLLED_BACK
+assert_success "obs050 upgrade post-check ROLLED_BACK on restore" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+upg = fleet.load_node_upgrade_module()
+
+class FakeProv:
+    NODE_PAYLOAD_VERSION = "0.5.0"
+
+    def _resolve_privilege_mode(self, **kwargs):
+        return "root"
+
+    def resolve_node_payload(self):
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+
+    def verify_local_payload(self, resolved):
+        return None
+
+    def _create_remote_stage(self, **kwargs):
+        return "/tmp/vcl-stage"
+
+    def upload_and_verify_remote_payload(self, *a, **k):
+        return None
+
+    def _remote_stage_paths(self, stage):
+        return {"tar": f"{stage}/payload.tar.gz", "unpack": stage}
+
+    def installer_remote_argv(self, path, **kwargs):
+        return ["bash", path]
+
+    def _cleanup_remote_stage(self, *a, **k):
+        return None
+
+class FakeProc:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+def fake_obs(node, remote_cmd, **kwargs):
+    cmd = list(remote_cmd)
+    if cmd[:2] == ["vcl", "identity"]:
+        return (
+            "OK",
+            {
+                "vincula_version": "0.3.1",
+                "node_id": node["node_id"],
+                "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+            "",
+        )
+    if cmd[:2] == ["vcl", "backup"]:
+        return "OK", {"ok": True, "path": "/var/backups/vincula/backup.tar"}, ""
+    if cmd[:2] == ["vcl", "verify"]:
+        return "OK", {"ok": False, "detail": "health fail"}, "verify soft-fail"
+    if cmd[:2] == ["vcl", "restore"]:
+        return "OK", {"ok": True, "mode": "safe", "schema_version": 1}, ""
+    return "ERROR", None, "unexpected"
+
+fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
+fleet.load_provision_module = lambda: FakeProv()  # type: ignore[attr-defined]
+fleet.node_identity_file_for_class = lambda node, cls: None  # type: ignore[attr-defined]
+fleet.ssh_run = lambda *a, **k: FakeProc()  # type: ignore[attr-defined]
+fleet.SSH_BACKUP_TIMEOUT_SECONDS = 1
+fleet.SSH_MUTATION_TIMEOUT_SECONDS = 1
+upg.bind(fleet)
+node = {
+    "name": "n",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "h",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+result = upg.run_upgrade_apply(node, confirmed=True)
+assert result.get("state") == "ROLLED_BACK", result
+assert result.get("ok") is False
+assert result.get("backup_path") == "/var/backups/vincula/backup.tar", result
+assert "verify" in (result.get("post_check_detail") or "").lower(), result
 PY
 
 # Upgrade: identity drift (node_id change) after migrate → PARTIAL

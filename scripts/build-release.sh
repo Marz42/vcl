@@ -66,7 +66,12 @@ done < "${OUT}/release.lock"
 
 rm -f -- "$ARCHIVE" "${ARCHIVE}.sha256"
 # Deterministic tar: sorted names, fixed mtime/owner (SOURCE_DATE_EPOCH or HEAD).
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '0')}"
+# Clamp to 1980-01-01 UTC so packaging stays aligned with ZIP epoch rules.
+TAR_EPOCH_MIN=315532800
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '%s' "$TAR_EPOCH_MIN")}"
+if [[ "$SOURCE_DATE_EPOCH" -lt "$TAR_EPOCH_MIN" ]]; then
+  SOURCE_DATE_EPOCH="$TAR_EPOCH_MIN"
+fi
 export SOURCE_DATE_EPOCH
 tar --sort=name \
   --mtime="@${SOURCE_DATE_EPOCH}" \

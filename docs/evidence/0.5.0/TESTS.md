@@ -21,9 +21,9 @@ git diff --check
 
 | Suite | Pass | Fail | Skip | Total |
 | --- | --- | --- | --- | --- |
-| tests/test.sh | 1834 | 0 | 0 | 1834 |
+| tests/test.sh | 1838 | 0 | 0 | 1838 |
 
-Gate: `All 1834 tests passed.` (includes `tests/test-fleet.sh` obs050 / mix050 / res050 / soak050 + upgrade PARTIAL / AUTH_FAILED / REFUSED / raw 1 MiB oversize).
+Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp).
 
 ## Schema contract tests
 
@@ -58,8 +58,11 @@ Gate: `All 1834 tests passed.` (includes `tests/test-fleet.sh` obs050 / mix050 /
 | oversize capabilities/telemetry | ERROR fail-closed |
 | malformed JSON (`badjson` alias) | ERROR |
 | upgrade migrate inject fail | apply exit ≠ 0; identity unchanged |
-| upgrade post-check / identity drift | PARTIAL |
+| upgrade post-check / identity drift | restore attempt → **ROLLED_BACK** or **PARTIAL** + recovery |
 | upgrade plan off-allowlist | REFUSED, exit 1 |
+| Infinity / NaN in observation JSON | ERROR / schema reject |
+| bounded SSH hang / flood | TimeoutExpired within ~timeout |
+| SOURCE_DATE_EPOCH=0 controller zip | builds (ZIP epoch clamped ≥ 1980) |
 | corrupt operation journal | tolerant read; no panic |
 
 ## Concurrency

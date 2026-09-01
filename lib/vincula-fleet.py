@@ -3339,6 +3339,8 @@ def cmd_node_upgrade_apply(args: argparse.Namespace) -> int:
         return 0
     if result.get("state") == "PARTIAL":
         return 2
+    if result.get("state") == "ROLLED_BACK":
+        return 1
     return 1
 
 

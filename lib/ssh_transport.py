@@ -61,8 +61,12 @@ def parse_stdout_json(
     text = raw.strip()
     if not text:
         return "ERROR", None, "remote JSON missing or invalid"
+
+    def _reject_nonfinite(name: str) -> None:
+        raise json.JSONDecodeError(f"non-finite JSON number: {name}", text, 0)
+
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_constant=_reject_nonfinite)
     except json.JSONDecodeError:
         return "ERROR", None, "remote JSON missing or invalid"
     if not isinstance(payload, dict):

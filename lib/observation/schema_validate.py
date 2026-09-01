@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from typing import Any
@@ -24,7 +25,12 @@ def _is_int_nonneg(value: Any) -> bool:
 
 
 def _is_number_nonneg(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    """Finite non-negative JSON number (rejects NaN / ±Infinity)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return value >= 0
 
 
 def _is_rfc3339(value: Any) -> bool:
