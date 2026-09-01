@@ -1,7 +1,7 @@
 # 0.5.0 Observation Foundation — DoD SUMMARY
 
-**Stamp:** CTRL `0.5.0` / NODE payload `0.5.0` · Minimum Node `0.3.1`  
-**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh`  
+**Stamp:** CTRL `0.5.0` / NODE payload `0.5.0` · Minimum Node `0.3.1`
+**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh`
 **Spec:** [`../../specs/V0.5.0_Spec.md`](../../specs/V0.5.0_Spec.md) · Master [`../../specs/VCL_0.5-0.7_Master_SPEC.md`](../../specs/VCL_0.5-0.7_Master_SPEC.md)
 
 | AC | Result | Evidence |
@@ -11,11 +11,11 @@
 | **AC-5.0-03** | **PASS (fixture)** | Mixed fleet: lax 0.3.x → UNSUPPORTED; probe/sync still OK — [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | **AC-5.0-04** | **PASS (fixture)** | obsnode 0.5.0 capabilities/telemetry negotiation OK |
 | **AC-5.0-05** | **PASS LIVE** | observe/admin route; AUTH_FAILED on revoked observe key — [`LIVE.md`](LIVE.md) L3/L4 |
-| **AC-5.0-06** | **PASS (offline)** | malformed JSON, oversize capabilities/telemetry → ERROR fail-closed |
+| **AC-5.0-06** | **PASS (offline)** | malformed / oversize / nested schema / padded raw oversize fail-closed |
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
-| **AC-5.0-10** | **PASS LIVE** (L1 skipped) | L2–L5 **PASS LIVE**; soak **PASS (offline)**; L1 needs fresh VPS — [`LIVE.md`](LIVE.md) |
+| **AC-5.0-10** | **PARTIAL** | L2–L5 **PASS LIVE**; L1 **PENDING LIVE**; soak **PASS (offline only)** — needs fresh VPS L1 + real-node 1000× soak — [`LIVE.md`](LIVE.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
 | **AC-5.0-13** | **PASS LIVE** | `node upgrade apply` 0.3.1→0.5.0; outage ~0s; identity preserved — [`LIVE.md`](LIVE.md) |
@@ -41,8 +41,14 @@ Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
 
 ## Artifact SHAs (release build)
 
-- `dist/vincula-node-0.5.0.tar.gz` — `59171c161cf96651f368ce8507f2424c68886f88191785625966f8d687c772d9`
-- `dist/vincula-controller-0.5.0.zip` — `2abf035ad8572b52de9bfc5b87d4d3f7f36c5d3ad02e948924ef718aa14aa3ca`
+Deterministic builds: `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` then `build-release.sh` + `build-controller.sh`. Same epoch + same tree → same SHA (verified double-build). Refresh pins after the release commit.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `dist/vincula-node-0.5.0.tar.gz` | `0ca5fdf158ec545b53bf2e3bcaac14fc3c62a96aa4d15a0d7828cd757acf6be7` |
+| `dist/vincula-controller-0.5.0.zip` | `404b21d43d7807290982c5b08732458006606212aed4573acd321a024c1480a1` |
+
+Prior SUMMARY/CI/local digests diverged because tar/zip order and mtimes were non-deterministic; do not trust pre-deterministic pins.
 
 ## Related
 

@@ -348,11 +348,17 @@ vcl telemetry snapshot --json
 从 Controller（需 SSH；observe 与 admin 凭据可分离绑定）：
 
 ```bash
+# 显式绑定 observer（Spec：不得隐式共用 admin；可与 admin 相同但必须显式）
+vcl-fleet access bind observe-default --identity-file ~/.ssh/id_ed25519_observe
+vcl-fleet node set NODE --observe-credential-ref observe-default
+# 或：vcl-fleet node set NODE --observe-identity-file ~/.ssh/id_ed25519_observe
+# 清除：vcl-fleet node set NODE --clear-observe-credential-ref
+
 vcl-fleet capabilities NODE --json
 vcl-fleet telemetry NODE --json
 ```
 
-0.3.x 节点返回 **UNSUPPORTED**（非 ERROR）；probe/sync/user 管理仍可用。
+AUTH_FAILED / ERROR 时上述 observation 命令 **exit 1**。0.3.x 节点返回 **UNSUPPORTED**（非 ERROR）；probe/sync/user 管理仍可用。
 
 ### 固件升级（Controller 编排）
 

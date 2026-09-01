@@ -1,6 +1,7 @@
 # 0.5.0 LIVE handbook — Observation Foundation
 
-Operator checklist for **AC-5.0-10** and Live Matrix **L1–L5**.  
+Operator checklist for **AC-5.0-10** and Live Matrix **L1–L5**.
+
 Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, UUIDs, Reality private keys, or Clash secrets.
 
 ## Preconditions

@@ -10,12 +10,15 @@
 - **Node upgrade：** `vcl-fleet node upgrade plan|apply NODE`；0.3.1+ → 0.5.0 typed upgrade；operation journal `node_upgrade`。
 - **Node 0.5.0 payload：** migrate allowlist 扩展；controller 内嵌 `vincula-node-0.5.0.tar.gz`。
 ### Security / compat
-- observe 凭据失败 → **AUTH_FAILED**（无 silent admin fallback）。
+- observe 凭据失败 → **AUTH_FAILED**（无 silent admin fallback）；`capabilities` / `telemetry` / `upgrade plan` 对此类状态 **exit ≠ 0**。
+- **不得隐式共用：** 新节点不自动把 `observe_credential_ref` 设成 admin；须显式 `node set --observe-credential-ref` / `--observe-identity-file`（可与 admin 相同，但必须显式）。
 - 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
+- telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。
+- **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`。
 - **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
 ### Notes
 - Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。
-- Live Matrix L1–L3/L5 **PENDING LIVE**；L4 offline equiv PASS；soak 1000× telemetry offline PASS。
+- Live Matrix：**L2–L5 PASS LIVE**；**L1 PENDING LIVE**；soak 1000× **offline only**（真实节点 soak + 状态增长测量仍待补）→ **AC-5.0-10 PARTIAL**。
 - `VCL_FLEET_VERSION=0.5.0`；`VINCULA_VERSION=0.5.0`。
 
 ## 0.4.5 (2026-08-25)

@@ -65,7 +65,14 @@ while read -r digest path; do
 done < "${OUT}/release.lock"
 
 rm -f -- "$ARCHIVE" "${ARCHIVE}.sha256"
-tar -C "$DIST_ROOT" -czf "$ARCHIVE" "$NAME"
+# Deterministic tar: sorted names, fixed mtime/owner (SOURCE_DATE_EPOCH or HEAD).
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '0')}"
+export SOURCE_DATE_EPOCH
+tar --sort=name \
+  --mtime="@${SOURCE_DATE_EPOCH}" \
+  --owner=0 --group=0 --numeric-owner \
+  --format=gnu \
+  -C "$DIST_ROOT" -czf "$ARCHIVE" "$NAME"
 ( cd "$DIST_ROOT" && sha256sum -- "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256" )
 
 printf 'wrote %s\n' "$OUT"

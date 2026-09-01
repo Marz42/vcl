@@ -216,7 +216,13 @@ def _accounting_metrics(db_path: Path) -> dict[str, Any]:
             "last_event_age_seconds": None,
         }
     try:
-        conn = sqlite3.connect(str(db_path))
+        # Read-only: URI mode=ro + query_only (AC / Spec soak safety).
+        uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
         now = datetime.now(timezone.utc)
         row = conn.execute(
             "SELECT value FROM meta WHERE key='last_success_at'"

@@ -13,17 +13,17 @@ git diff --check
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-08-31 |
+| Date | 2026-09-01 |
 | OS | Linux (WSL2 / CI ubuntu-latest matrix) |
-| Commit | `6a4ee06` |
+| Commit | working tree on `release/0.5.0` (re-pin SHA after commit) |
 
 ## Results
 
 | Suite | Pass | Fail | Skip | Total |
 | --- | --- | --- | --- | --- |
-| tests/test.sh | 1819 | 0 | 0 | 1819 |
+| tests/test.sh | 1834 | 0 | 0 | 1834 |
 
-Gate: `All 1819 tests passed.` (includes `tests/test-fleet.sh` obs050 / mix050 / res050 / soak050 blocks).
+Gate: `All 1834 tests passed.` (includes `tests/test-fleet.sh` obs050 / mix050 / res050 / soak050 + upgrade PARTIAL / AUTH_FAILED / REFUSED / raw 1 MiB oversize).
 
 ## Schema contract tests
 
@@ -34,29 +34,32 @@ Gate: `All 1819 tests passed.` (includes `tests/test-fleet.sh` obs050 / mix050 /
 | `tests/fixtures/schemas/capabilities/v1-unknown-capability.json` | PASS (unknown cap retained) | **PASS** |
 | `tests/fixtures/schemas/telemetry/v1-valid.json` | PASS | **PASS** |
 | `tests/fixtures/schemas/telemetry/v1-missing-node-id.json` | FAIL | **PASS** |
+| nested unknown / bad optionals / bad timestamps | FAIL | **PASS** |
 
 ## 0.5.0 observation blocks (test-fleet.sh)
 
 | Block | Coverage |
 | --- | --- |
 | `obs050` | capabilities/telemetry OK on 0.5.0; UNSUPPORTED on 0.3.x lax; upgrade plan allowlist |
-| `obs-auth` | AUTH_FAILED on wrong observe key (no admin fallback) |
-| oversize | `VCL_FAKE_CAP_OVERSIZE` / `VCL_FAKE_TEL_OVERSIZE` → Controller ERROR |
+| `obs-auth` | AUTH_FAILED on wrong observe key (no admin fallback); exit 1 for capabilities + telemetry |
+| oversize | padded raw + raw 1 MiB oversize → Controller ERROR before `json.loads` |
 | telemetry audit | `VCL_FAKE_TELEMETRY_AUDIT=1` — config/users sha256 + systemd restart count stable |
-| upgrade apply | happy path (`VCL_FAKE_UPGRADE=1`) identity → 0.5.0; migrate fail → journal FAILED |
+| upgrade apply | happy path; migrate fail; SKIPPED already-current; admin-only (observe AUTH ignored); post-check PARTIAL; identity drift PARTIAL; plan REFUSED exit 1 |
 | secret scan | journal / stdout no `vless://`, UUID markers, Reality key material |
 | `mix050` | mixed 0.3.x + 0.5.0 fleet; lax UNSUPPORTED + probe not ERROR |
 | `res050` | corrupt `operations.jsonl`; status/capabilities survive; module reload API intact |
-| `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures |
+| `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures (**offline fixture only**; no live state-growth) |
 
 ## Failure injection
 
 | Injection | Result |
 | --- | --- |
-| observe credential auth failure | AUTH_FAILED |
+| observe credential auth failure | AUTH_FAILED, exit 1 |
 | oversize capabilities/telemetry | ERROR fail-closed |
 | malformed JSON (`badjson` alias) | ERROR |
 | upgrade migrate inject fail | apply exit ≠ 0; identity unchanged |
+| upgrade post-check / identity drift | PARTIAL |
+| upgrade plan off-allowlist | REFUSED, exit 1 |
 | corrupt operation journal | tolerant read; no panic |
 
 ## Concurrency

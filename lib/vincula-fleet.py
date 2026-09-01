@@ -2068,8 +2068,7 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         if not isinstance(obr, str) or not obr.strip():
             die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
         record["observe_credential_ref"] = obr.strip()
-    elif record.get("admin_credential_ref"):
-        record["observe_credential_ref"] = record["admin_credential_ref"]  # observe=admin
+    # Spec §7.2: do NOT implicitly copy admin → observe.
     return record
 
 
@@ -2153,7 +2152,7 @@ def add_node(
         payload["identity_file"] = identity_file
     if admin_credential_ref:
         payload["admin_credential_ref"] = admin_credential_ref
-        payload["observe_credential_ref"] = admin_credential_ref
+        # observe_credential_ref must be set explicitly (Spec §7.2).
     record = normalize_node(
         payload,
         index=len(registry.get("nodes") or []),
@@ -2400,14 +2399,32 @@ def cmd_node_show(name: str) -> int:
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind and/or local SSH identity_file / credential binding."""
+    """Endpoint rebind and/or local SSH identity / observe credential binding."""
     identity_raw = _optional_text(getattr(args, "identity_file", None))
     clear_identity = bool(getattr(args, "clear_identity_file", False))
+    observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
+    observe_identity = _optional_text(getattr(args, "observe_identity_file", None))
+    clear_observe = bool(getattr(args, "clear_observe_credential_ref", False))
     host = _optional_text(getattr(args, "host", None))
     if identity_raw and clear_identity:
         die("use either --identity-file or --clear-identity-file")
-    if not host and not identity_raw and not clear_identity:
-        die("node set requires --host and/or --identity-file/--clear-identity-file")
+    if observe_ref and observe_identity:
+        die("use either --observe-credential-ref or --observe-identity-file")
+    if (observe_ref or observe_identity) and clear_observe:
+        die("cannot clear observe credential while setting it")
+    if (
+        not host
+        and not identity_raw
+        and not clear_identity
+        and not observe_ref
+        and not observe_identity
+        and not clear_observe
+    ):
+        die(
+            "node set requires --host and/or --identity-file/--clear-identity-file "
+            "and/or --observe-credential-ref/--observe-identity-file/"
+            "--clear-observe-credential-ref"
+        )
     registry = load_registry()
     if host:
         set_host(registry, args.name, host, user=args.user, port=args.port)
@@ -2421,10 +2438,22 @@ def cmd_node_set(args: argparse.Namespace) -> int:
             existing = _optional_text(node.get("admin_credential_ref"))
             ref = _bind_identity_for_workspace(resolved, ref=existing)
             node["admin_credential_ref"] = ref
-            node["observe_credential_ref"] = ref
+            # Do not implicitly set observe_credential_ref (Spec §7.2).
             node.pop("identity_file", None)
         else:
             node["identity_file"] = resolved
+    if clear_observe:
+        node.pop("observe_credential_ref", None)
+    elif observe_identity:
+        resolved = validate_identity_file(observe_identity, must_exist=True)
+        if not workspace_trust_active():
+            die("--observe-identity-file requires an active workspace")
+        existing = _optional_text(node.get("observe_credential_ref"))
+        ref = _bind_identity_for_workspace(resolved, ref=existing)
+        node["observe_credential_ref"] = ref
+    elif observe_ref:
+        # Ref must already be bound on this machine (or operator accepts pending).
+        node["observe_credential_ref"] = observe_ref
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
     return 0
@@ -2857,7 +2886,8 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
                 resolved, ref=existing
             )
             new_node["admin_credential_ref"] = replace_admin_ref
-            new_node["observe_credential_ref"] = replace_admin_ref
+            # observe must be set explicitly after replace if needed
+            new_node.pop("observe_credential_ref", None)
             new_node.pop("identity_file", None)
         else:
             new_node["identity_file"] = resolved
@@ -3145,7 +3175,8 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_port"] = new_port
     if replace_admin_ref:
         stored["admin_credential_ref"] = replace_admin_ref
-        stored["observe_credential_ref"] = replace_admin_ref
+        # observe must be set explicitly after replace if needed
+        stored.pop("observe_credential_ref", None)
         stored.pop("identity_file", None)
     elif new_node.get("identity_file"):
         if workspace_trust_active():
@@ -3238,19 +3269,19 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     result = fetch_node_capabilities(node)
     if bool(getattr(args, "as_json", False)):
         sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
         state = result.get("state")
-        if state == "ERROR":
-            return 1
-        return 0
+        if state == "OK":
+            caps = ", ".join(result.get("capabilities") or [])
+            sys.stdout.write(
+                f"{args.name}: {result.get('node_version')} [{caps}]\n"
+            )
+        else:
+            sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
     state = result.get("state")
-    if state == "OK":
-        caps = ", ".join(result.get("capabilities") or [])
-        sys.stdout.write(
-            f"{args.name}: {result.get('node_version')} [{caps}]\n"
-        )
-        return 0
-    sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
-    return 1 if state == "ERROR" else 0
+    if state in ("ERROR", "AUTH_FAILED"):
+        return 1
+    return 0
 
 
 def cmd_telemetry(args: argparse.Namespace) -> int:
@@ -3259,19 +3290,19 @@ def cmd_telemetry(args: argparse.Namespace) -> int:
     result = fetch_node_telemetry(node)
     if bool(getattr(args, "as_json", False)):
         sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
         state = result.get("state")
-        if state == "ERROR":
-            return 1
-        return 0
+        if state == "OK":
+            snap = result.get("snapshot") or {}
+            sys.stdout.write(
+                f"{args.name}: telemetry ok observed_at={snap.get('observed_at')}\n"
+            )
+        else:
+            sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
     state = result.get("state")
-    if state == "OK":
-        snap = result.get("snapshot") or {}
-        sys.stdout.write(
-            f"{args.name}: telemetry ok observed_at={snap.get('observed_at')}\n"
-        )
-        return 0
-    sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
-    return 1 if state == "ERROR" else 0
+    if state in ("ERROR", "AUTH_FAILED"):
+        return 1
+    return 0
 
 
 def cmd_node_upgrade_plan(args: argparse.Namespace) -> int:
@@ -3285,9 +3316,7 @@ def cmd_node_upgrade_plan(args: argparse.Namespace) -> int:
             f"upgrade plan {args.name}: {plan.get('current_version')} → "
             f"{plan.get('target_version')} ({plan.get('state')})\n"
         )
-    if plan.get("state") == "AUTH_FAILED":
-        return 1
-    if plan.get("state") == "ERROR":
+    if plan.get("state") in ("AUTH_FAILED", "ERROR", "REFUSED"):
         return 1
     return 0
 
@@ -7330,6 +7359,25 @@ def build_parser() -> argparse.ArgumentParser:
         dest="clear_identity_file",
         action="store_true",
         help="stop passing -i (use agent / default keys again)",
+    )
+    p_set.add_argument(
+        "--observe-credential-ref",
+        dest="observe_credential_ref",
+        help=(
+            "set observe_credential_ref explicitly (may equal admin ref; "
+            "Spec §7.2 forbids implicit share)"
+        ),
+    )
+    p_set.add_argument(
+        "--observe-identity-file",
+        dest="observe_identity_file",
+        help="bind local SSH key as observe credential (workspace only)",
+    )
+    p_set.add_argument(
+        "--clear-observe-credential-ref",
+        dest="clear_observe_credential_ref",
+        action="store_true",
+        help="remove observe_credential_ref from the node",
     )
 
     p_disable = node_sub.add_parser("disable", help="disable a registered node")

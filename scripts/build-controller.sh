@@ -119,9 +119,46 @@ while read -r digest path; do
 done < "${OUT}/controller.lock"
 
 rm -f -- "$ARCHIVE" "$SIDECAR"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '0')}"
+export SOURCE_DATE_EPOCH
 (
   cd "$DIST_ROOT"
-  python3 -m zipfile -c "$(basename "$ARCHIVE")" "$NAME"
+  python3 - "$NAME" "$(basename "$ARCHIVE")" "$SOURCE_DATE_EPOCH" <<'PY'
+import os
+import sys
+import zipfile
+from pathlib import Path
+
+prefix, archive_name, epoch_s = sys.argv[1], sys.argv[2], int(sys.argv[3])
+root = Path(prefix)
+# Fixed DOS date for reproducibility (1980-01-01 + epoch clamped).
+# zipfile uses (year, month, day, hour, min, sec); use UTC from epoch.
+import datetime
+
+ts = datetime.datetime.fromtimestamp(epoch_s, tz=datetime.timezone.utc)
+date_time = (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second)
+
+files: list[Path] = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames.sort()
+    for name in sorted(filenames):
+        files.append(Path(dirpath) / name)
+files.sort(key=lambda p: p.as_posix())
+
+with zipfile.ZipFile(archive_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in files:
+        arc = path.as_posix()
+        info = zipfile.ZipInfo(arc, date_time=date_time)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 3  # Unix
+        data = path.read_bytes()
+        # Normalize executable bit for bin/vcl-fleet
+        if path.name == "vcl-fleet" and "bin/" in arc:
+            info.external_attr = (0o755 << 16)
+        else:
+            info.external_attr = (0o644 << 16)
+        zf.writestr(info, data)
+PY
 )
 
 python3 - "$ARCHIVE" "$NAME" "$NODE_VER" <<'PY'

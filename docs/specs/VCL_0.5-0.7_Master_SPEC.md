@@ -1,8 +1,11 @@
 # VCL 0.5.x–0.7.x Master Development SPEC
 
-> 状态：Draft / Planning Baseline  
-> 适用范围：VCL 0.5.x、0.6.x、0.7.x  
-> 前置基线：Controller 0.4.5；新 provision payload 为 Node 0.3.2；Controller 0.4.5 最低兼容 Node 0.3.1  
+> 状态：Draft / Planning Baseline
+
+> 适用范围：VCL 0.5.x、0.6.x、0.7.x
+
+> 前置基线：Controller 0.4.5；新 provision payload 为 Node 0.3.2；Controller 0.4.5 最低兼容 Node 0.3.1
+
 > 目标：从“VPS Fleet Manager”演进为“集中控制、可观测、可声明、可编程数据平面”的专用 SDN Controller
 
 ---
