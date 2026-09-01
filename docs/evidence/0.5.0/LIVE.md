@@ -46,10 +46,11 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | _operator TBD_ |
-| Source version | _0.3.1 or 0.3.2_ |
-| Measured outage (s) | _TBD_ |
-| Outcome | **PENDING LIVE** |
+| Date | 2026-08-31 |
+| Source version | 0.3.1 |
+| Measured outage (s) | ~0 (no consecutive non-OK probe) |
+| Outcome | **PASS LIVE** |
+| Notes | identity preserved; capabilities/telemetry OK after hotfixes (installer telemetry helper + nested instance_id); client URI unchanged |
 | Offline equiv | **PASS** — obs050 upgrade apply + migrate fail fixtures |
 
 ---
@@ -62,9 +63,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | _operator TBD_ |
-| Outcome | **PENDING LIVE** |
-| Offline equiv | observe binding path in obs-auth block |
+| Date | 2026-08-31 |
+| Outcome | **PASS LIVE** |
+| Notes | observe-default ≠ admin-default; capabilities/telemetry OK via observe; probe/user via admin |
 
 ---
 
@@ -77,8 +78,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Field | Value |
 | --- | --- |
 | Date | 2026-08-31 |
-| Outcome | **PASS (offline equiv)** |
-| Notes | `obs-auth` test-fleet: `VCL_FAKE_OBSERVE_AUTH_FAIL=1` → AUTH_FAILED; operator should confirm on VPS |
+| Outcome | **PASS LIVE** |
+| Notes | revoke observe pubkey → AUTH_FAILED; restore → OK; no silent admin fallback |
 
 ---
 
@@ -91,8 +92,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | _operator TBD_ |
-| Outcome | **PENDING LIVE** |
+| Date | 2026-09-01 |
+| Outcome | **PASS LIVE** |
+| Notes | Controller SSH blocked ≥5min; proxy continuous; config/state/users sha unchanged; probe recovered |
 
 ---
 

@@ -10,15 +10,15 @@
 | **AC-5.0-02** | **PASS (offline)** | Node `capabilities` / `telemetry snapshot`; fake-ssh `obsnode` alias |
 | **AC-5.0-03** | **PASS (fixture)** | Mixed fleet: lax 0.3.x → UNSUPPORTED; probe/sync still OK — [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | **AC-5.0-04** | **PASS (fixture)** | obsnode 0.5.0 capabilities/telemetry negotiation OK |
-| **AC-5.0-05** | **PASS (offline)** | observe/admin route; AUTH_FAILED on wrong observe key — `obs-auth` block in test-fleet |
+| **AC-5.0-05** | **PASS LIVE** | observe/admin route; AUTH_FAILED on revoked observe key — [`LIVE.md`](LIVE.md) L3/L4 |
 | **AC-5.0-06** | **PASS (offline)** | malformed JSON, oversize capabilities/telemetry → ERROR fail-closed |
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
-| **AC-5.0-10** | **PARTIAL** | Soak 1000× telemetry **PASS (offline)**; Live L1–L5 **PENDING LIVE** — [`LIVE.md`](LIVE.md) |
+| **AC-5.0-10** | **PASS LIVE** (L1 skipped) | L2–L5 **PASS LIVE**; soak **PASS (offline)**; L1 needs fresh VPS — [`LIVE.md`](LIVE.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
-| **AC-5.0-13** | **PASS (offline) / PENDING LIVE** | `node upgrade apply` fixture E2E + migrate fail; outage ≤3s needs Live L2 |
+| **AC-5.0-13** | **PASS LIVE** | `node upgrade apply` 0.3.1→0.5.0; outage ~0s; identity preserved — [`LIVE.md`](LIVE.md) |
 | **AC-5.0-14** | **PASS (offline)** | Typed upgrade plan/apply; journal `node_upgrade` without secrets |
 
 ## Live Matrix
@@ -26,10 +26,10 @@
 | ID | Scenario | Status |
 | --- | --- | --- |
 | **L1** | Fresh Node 0.5.0 telemetry | **PENDING LIVE** (offline: obsnode fixture OK) |
-| **L2** | Upgrade 0.3.x → 0.5.0 identity preserved | **PENDING LIVE** (offline: upgrade apply fixture OK) |
-| **L3** | Observer credential reads observation | **PENDING LIVE** (offline: observe binding + admin mutation path) |
-| **L4** | Broken observer → AUTH_FAILED | **PASS (offline equiv)** — obs-auth fixture; Live confirm on VPS |
-| **L5** | Controller offline; proxy continues | **PENDING LIVE** |
+| **L2** | Upgrade 0.3.x → 0.5.0 identity preserved | **PASS LIVE** (2026-08-31; outage ~0s; hotfixes applied on node) |
+| **L3** | Observer credential reads observation | **PASS LIVE** (2026-08-31) |
+| **L4** | Broken observer → AUTH_FAILED | **PASS LIVE** (2026-08-31) |
+| **L5** | Controller offline; proxy continues | **PASS LIVE** (2026-09-01) |
 
 Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
 

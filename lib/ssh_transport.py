@@ -26,7 +26,13 @@ def is_unsupported_remote(detail: str, *, returncode: int) -> bool:
     if returncode == 127:
         return True
     lowered = (detail or "").lower()
-    return "unknown vcl command" in lowered or "command not found" in lowered
+    # Node 0.3.x: "Unknown command: capabilities. Run 'vcl help'."
+    # fake-ssh / some paths: "unknown vcl command: …"
+    return (
+        "unknown vcl command" in lowered
+        or "unknown command:" in lowered
+        or "command not found" in lowered
+    )
 
 
 def _stdout_json(proc: subprocess.CompletedProcess[str]) -> Optional[Any]:

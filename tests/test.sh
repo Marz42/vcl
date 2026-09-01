@@ -633,7 +633,16 @@ state.mkdir(parents=True, exist_ok=True)
     encoding="utf-8",
 )
 (state / "state.json").write_text(
-    json.dumps({"instance_id": "22222222-2222-4222-8222-222222222222"}) + "\n",
+    json.dumps(
+        {
+            "schema_version": 2,
+            "node": {
+                "node_id": "11111111-1111-4111-8111-111111111111",
+                "instance_id": "22222222-2222-4222-8222-222222222222",
+            },
+        }
+    )
+    + "\n",
     encoding="utf-8",
 )
 conn = sqlite3.connect(db_path)
@@ -936,6 +945,10 @@ assert_success "gen-release-lock includes telemetry_snapshot.py" \
   grep -q 'lib/telemetry_snapshot.py' "${PROJECT_DIR}/scripts/gen-release-lock.sh"
 assert_success "release.lock includes telemetry_snapshot.py" \
   grep -q 'lib/telemetry_snapshot.py' "${PROJECT_DIR}/release.lock"
+assert_success "installer installs telemetry_snapshot.py" \
+  grep -q 'telemetry_snapshot.py' "${PROJECT_DIR}/vincula.sh"
+assert_success "installer defines TELEMETRY_PY" \
+  grep -q 'TELEMETRY_PY=' "${PROJECT_DIR}/vincula.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
 assert_equal "release.lock has 12 first-party files" "12" \

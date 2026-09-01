@@ -14487,6 +14487,17 @@ assert_success "obs050 add lax offline" \
   fleet node add lax --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID" \
   --identity-file "$OBS050_KEY"
 
+assert_success "obs050 real-node Unknown command maps UNSUPPORTED" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ssh_transport", Path(sys.argv[1]))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+detail = "ERROR: Unknown command: capabilities. Run 'vcl help'."
+assert mod.is_unsupported_remote(detail, returncode=1)
+PY
+
 obs_cap_json=$(fleet capabilities lax --json)
 assert_success "obs050 capabilities UNSUPPORTED on 0.3.x lax" python3 - "$obs_cap_json" <<'PY'
 import json, sys

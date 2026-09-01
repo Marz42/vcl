@@ -227,6 +227,8 @@ NODE_KEYS = (
     "ssh_user",
     "ssh_port",
     "identity_file",
+    "admin_credential_ref",
+    "observe_credential_ref",
     "enabled",
     "status",
 )

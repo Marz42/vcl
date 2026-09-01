@@ -178,7 +178,11 @@ def _read_toml(path: Path, key: str) -> str:
 def _json_field(path: Path, field: str) -> str:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return ""
         val = data.get(field)
+        if val is None and isinstance(data.get("node"), dict):
+            val = data["node"].get(field)
         return str(val) if val is not None else ""
     except (OSError, json.JSONDecodeError, TypeError):
         return ""
