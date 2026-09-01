@@ -40,7 +40,7 @@ Live evidence: Live Matrix **L2** in [`LIVE.md`](LIVE.md) — **PENDING LIVE**.
 
 | Artifact | Version | SHA256 |
 | --- | --- | --- |
-| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `e4256146257a8c7479f5d1f094ef4bcdbe69aee785ea7be25f51e2bce5dcc9bf` |
-| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `365ab648c87aee2d6b56a049e9364d5838f1dcbf1c8e96f3cb9a072329b7e25c` |
+| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `2abf035ad8572b52de9bfc5b87d4d3f7f36c5d3ad02e948924ef718aa14aa3ca` |
+| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `59171c161cf96651f368ce8507f2424c68886f88191785625966f8d687c772d9` |
 
 Minimum compatible Node for Controller 0.5.0: **0.3.1**.

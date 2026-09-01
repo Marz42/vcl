@@ -41,8 +41,8 @@ Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
 
 ## Artifact SHAs (release build)
 
-- `dist/vincula-node-0.5.0.tar.gz` — `365ab648c87aee2d6b56a049e9364d5838f1dcbf1c8e96f3cb9a072329b7e25c`
-- `dist/vincula-controller-0.5.0.zip` — `e4256146257a8c7479f5d1f094ef4bcdbe69aee785ea7be25f51e2bce5dcc9bf`
+- `dist/vincula-node-0.5.0.tar.gz` — `59171c161cf96651f368ce8507f2424c68886f88191785625966f8d687c772d9`
+- `dist/vincula-controller-0.5.0.zip` — `2abf035ad8572b52de9bfc5b87d4d3f7f36c5d3ad02e948924ef718aa14aa3ca`
 
 ## Related
 
