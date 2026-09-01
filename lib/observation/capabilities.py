@@ -30,6 +30,7 @@ def fetch_capabilities(
         node=node,
         remote_cmd=REMOTE_CMD,
         unsupported_on_missing_command=True,
+        max_stdout_bytes=CAPABILITIES_MAX_BYTES,
     )
     if state == "UNSUPPORTED":
         return {
@@ -60,6 +61,7 @@ def fetch_capabilities(
             "detail": "capabilities response exceeds size limit",
             "credential_class": "observe",
         }
+    # Transport already enforced raw UTF-8 size; keep canonical re-check.
     errors = validate_capabilities_v1(payload)
     if errors:
         return {

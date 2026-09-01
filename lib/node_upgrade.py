@@ -33,7 +33,11 @@ def upgrade_target_version() -> str:
 
 def is_upgrade_allowed(current: str, target: Optional[str] = None) -> bool:
     target = target or upgrade_target_version()
-    return UPGRADE_ALLOWLIST.get((current or "").strip()) == target
+    current = (current or "").strip()
+    target = (target or "").strip()
+    if current == target:
+        return True  # already at target → SKIPPED path, not refuse
+    return UPGRADE_ALLOWLIST.get(current) == target
 
 
 def _ssh_json(
@@ -43,6 +47,8 @@ def _ssh_json(
     credential_class: Literal["observe", "admin"] = "observe",
     timeout: float = 20.0,
     require_exit_0: bool = False,
+    unsupported_on_missing_command: bool = False,
+    max_stdout_bytes: Optional[int] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     host = _require_host()
     return host.observation_ssh_json(
@@ -51,11 +57,21 @@ def _ssh_json(
         credential_class=credential_class,
         timeout=timeout,
         require_exit_0=require_exit_0,
+        unsupported_on_missing_command=unsupported_on_missing_command,
+        max_stdout_bytes=max_stdout_bytes,
     )
 
 
-def _fetch_identity(node: dict[str, Any]) -> tuple[str, Optional[dict[str, Any]], str]:
-    return _ssh_json(node, ["vcl", "identity", "--json"], credential_class="observe")
+def _fetch_identity(
+    node: dict[str, Any],
+    *,
+    credential_class: Literal["observe", "admin"],
+) -> tuple[str, Optional[dict[str, Any]], str]:
+    return _ssh_json(
+        node,
+        ["vcl", "identity", "--json"],
+        credential_class=credential_class,
+    )
 
 
 def _plan_checks(
@@ -117,17 +133,21 @@ def _plan_checks(
     return checks
 
 
-def run_upgrade_plan(node: dict[str, Any]) -> dict[str, Any]:
-    """Read-only upgrade plan (observe credential MAY be used)."""
+def run_upgrade_plan(
+    node: dict[str, Any],
+    *,
+    credential_class: Literal["observe", "admin"] = "observe",
+) -> dict[str, Any]:
+    """Read-only upgrade plan (observe credential MAY be used; apply uses admin)."""
     target = upgrade_target_version()
-    ssh_state, identity, detail = _fetch_identity(node)
+    ssh_state, identity, detail = _fetch_identity(node, credential_class=credential_class)
     if ssh_state == "AUTH_FAILED":
         return {
             "ok": False,
             "state": "AUTH_FAILED",
             "target_version": target,
             "detail": detail,
-            "credential_class": "observe",
+            "credential_class": credential_class,
         }
     if ssh_state != "OK" or not isinstance(identity, dict):
         return {
@@ -135,16 +155,33 @@ def run_upgrade_plan(node: dict[str, Any]) -> dict[str, Any]:
             "state": "ERROR",
             "target_version": target,
             "detail": detail or "identity fetch failed",
-            "credential_class": "observe",
+            "credential_class": credential_class,
         }
     current = str(identity.get("vincula_version") or "").strip()
     checks = _plan_checks(node, identity, target)
-    allowed = all(c.get("status") != "fail" for c in checks)
+    refused = any(c.get("status") == "fail" for c in checks)
+    if current == target and not refused:
+        return {
+            "ok": True,
+            "state": "SKIPPED",
+            "node": node.get("name"),
+            "node_id": node.get("node_id"),
+            "instance_id": identity.get("instance_id"),
+            "current_version": current,
+            "target_version": target,
+            "allowlist_ok": True,
+            "checks": checks,
+            "backup": "remote secretless vcl backup create",
+            "rollback": "vincula.sh migrate EXIT trap + restore from backup",
+            "outage_budget_seconds": OUTAGE_BUDGET_SECONDS,
+            "credential_class": credential_class,
+        }
     return {
-        "ok": allowed and current != target,
-        "state": "PLANNED" if allowed else "REFUSED",
+        "ok": (not refused) and current != target,
+        "state": "REFUSED" if refused else "PLANNED",
         "node": node.get("name"),
         "node_id": node.get("node_id"),
+        "instance_id": identity.get("instance_id"),
         "current_version": current,
         "target_version": target,
         "allowlist_ok": is_upgrade_allowed(current, target),
@@ -152,7 +189,12 @@ def run_upgrade_plan(node: dict[str, Any]) -> dict[str, Any]:
         "backup": "remote secretless vcl backup create",
         "rollback": "vincula.sh migrate EXIT trap + restore from backup",
         "outage_budget_seconds": OUTAGE_BUDGET_SECONDS,
-        "credential_class": "observe",
+        "credential_class": credential_class,
+        "identity": {
+            "node_id": identity.get("node_id"),
+            "instance_id": identity.get("instance_id"),
+            "vincula_version": current,
+        },
     }
 
 
@@ -162,27 +204,40 @@ def run_upgrade_apply(
     confirmed: bool,
     skip_backup: bool = False,
 ) -> dict[str, Any]:
-    """Typed Node firmware upgrade (admin credential only)."""
+    """Typed Node firmware upgrade (admin credential only for all steps)."""
     host = _require_host()
     prov = host.load_provision_module()
     if not confirmed:
         host.die("node upgrade apply requires --yes")
 
-    plan = run_upgrade_plan(node)
+    # Spec §3.3 / §3.6: apply MUST use admin for plan/preflight/post-check.
+    plan = run_upgrade_plan(node, credential_class="admin")
     if plan.get("state") == "AUTH_FAILED":
         host.die(f"upgrade plan failed: {plan.get('detail') or 'AUTH_FAILED'}")
-    if not plan.get("allowlist_ok"):
-        host.die(
-            f"unsupported upgrade: {plan.get('current_version')} → "
-            f"{plan.get('target_version')}"
-        )
-    if str(plan.get("current_version") or "") == plan.get("target_version"):
+    if plan.get("state") == "ERROR":
+        host.die(f"upgrade plan failed: {plan.get('detail') or 'ERROR'}")
+    if plan.get("state") == "SKIPPED":
         return {
             "ok": True,
             "state": "SKIPPED",
             "detail": "already at target version",
+            "node": node.get("name"),
+            "node_id": node.get("node_id"),
+            "from_version": plan.get("current_version"),
+            "to_version": plan.get("target_version"),
             "credential_class": "admin",
         }
+    if plan.get("state") == "REFUSED" or not plan.get("allowlist_ok"):
+        host.die(
+            f"unsupported upgrade: {plan.get('current_version')} → "
+            f"{plan.get('target_version')}"
+        )
+
+    pre = plan.get("identity") or {}
+    pre_node_id = pre.get("node_id") or node.get("node_id")
+    pre_instance_id = pre.get("instance_id")
+    pre_version = plan.get("current_version")
+    target = upgrade_target_version()
 
     identity_file = host.node_identity_file_for_class(node, "admin")
     extra: list[str] = []
@@ -220,6 +275,7 @@ def run_upgrade_apply(
         identity_file=identity_file,
         extra=extra,
     )
+    migrate_committed = False
     try:
         prov.upload_and_verify_remote_payload(
             resolved,
@@ -258,7 +314,9 @@ def run_upgrade_apply(
             timeout=host.SSH_MUTATION_TIMEOUT_SECONDS,
         )
         if install_proc.returncode != 0:
+            # migrate EXIT trap should have rolled back on node.
             host.die(f"remote migrate failed: {host._ssh_failure_detail(install_proc)}")
+        migrate_committed = True
     finally:
         prov._cleanup_remote_stage(
             remote_stage,
@@ -269,6 +327,20 @@ def run_upgrade_apply(
             extra=extra,
         )
 
+    def _partial(detail: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "state": "PARTIAL",
+            "detail": detail,
+            "node": node.get("name"),
+            "node_id": node.get("node_id"),
+            "from_version": pre_version,
+            "to_version": target,
+            "credential_class": "admin",
+            "migrate_committed": True,
+            "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
     ssh_state, verify_doc, verify_detail = _ssh_json(
         node,
         ["vcl", "verify", "--json"],
@@ -276,30 +348,62 @@ def run_upgrade_apply(
         require_exit_0=False,
     )
     if ssh_state != "OK" or not isinstance(verify_doc, dict) or not verify_doc.get("ok"):
+        if migrate_committed:
+            return _partial(
+                f"post-upgrade verify failed: {verify_detail or 'verify failed'}"
+            )
         host.die(f"post-upgrade verify failed: {verify_detail or 'verify failed'}")
 
-    caps = host.fetch_node_capabilities(node)
-    if caps.get("state") != "OK":
-        host.die(
-            f"post-upgrade capabilities failed: {caps.get('detail') or caps.get('state')}"
+    # Post capabilities via admin (not observe) — Spec §3.3.
+    caps_mod = host.load_observation_capabilities_module()
+    max_cap = getattr(caps_mod, "CAPABILITIES_MAX_BYTES", 4096)
+
+    ssh_state, cap_payload, cap_detail = _ssh_json(
+        node,
+        ["vcl", "capabilities", "--json"],
+        credential_class="admin",
+        unsupported_on_missing_command=True,
+        max_stdout_bytes=max_cap,
+    )
+    if ssh_state != "OK" or not isinstance(cap_payload, dict):
+        return _partial(
+            f"post-upgrade capabilities failed: {cap_detail or ssh_state}"
+        )
+    cap_errors = caps_mod.validate_capabilities_v1(cap_payload)
+    if cap_errors:
+        return _partial(
+            f"post-upgrade capabilities invalid: {'; '.join(cap_errors)}"
         )
 
-    ssh_state, ident, _ = _ssh_json(
+    ssh_state, ident, ident_detail = _ssh_json(
         node,
         ["vcl", "identity", "--json"],
         credential_class="admin",
     )
-    current = str((ident or {}).get("vincula_version") or "")
-    target = upgrade_target_version()
+    if ssh_state != "OK" or not isinstance(ident, dict):
+        return _partial(
+            f"post-upgrade identity failed: {ident_detail or ssh_state}"
+        )
+    current = str(ident.get("vincula_version") or "").strip()
     if current != target:
-        host.die(f"post-upgrade version mismatch: expected {target}, got {current}")
+        return _partial(
+            f"post-upgrade version mismatch: expected {target}, got {current}"
+        )
+    if ident.get("node_id") != pre_node_id:
+        return _partial(
+            "post-upgrade node_id changed (identity not preserved)"
+        )
+    if pre_instance_id and ident.get("instance_id") != pre_instance_id:
+        return _partial(
+            "post-upgrade instance_id changed (identity not preserved)"
+        )
 
     return {
         "ok": True,
         "state": "SUCCESS",
         "node": node.get("name"),
         "node_id": node.get("node_id"),
-        "from_version": plan.get("current_version"),
+        "from_version": pre_version,
         "to_version": target,
         "credential_class": "admin",
         "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

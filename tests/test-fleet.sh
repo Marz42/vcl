@@ -14635,6 +14635,170 @@ detail = (result.get("detail") or "").lower()
 assert "size" in detail or "max items" in detail, result
 PY
 
+# AC-5.0-06: whitespace-padded raw response cannot bypass size gate
+assert_success "obs050 padded raw oversize rejected before json.loads" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("ssh_transport", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+
+valid_cap = {
+    "schema": "capabilities/v1",
+    "node_version": "0.5.0",
+    "capabilities": ["telemetry/v1"],
+}
+padded = (" " * 1_000_000) + json.dumps(valid_cap)
+st, payload, detail = tr.parse_stdout_json(padded, max_stdout_bytes=4096)
+assert st == "ERROR" and payload is None, (st, payload, detail)
+assert "exceeds" in detail, detail
+# Without max, padding strip would yield OK — prove the gate is what fails closed
+st2, payload2, _ = tr.parse_stdout_json(padded, max_stdout_bytes=None)
+assert st2 == "OK" and isinstance(payload2, dict)
+
+valid_tel = json.loads(Path(
+    Path(sys.argv[1]).resolve().parents[1]
+    / "tests/fixtures/schemas/telemetry/v1-valid.json"
+).read_text(encoding="utf-8"))
+padded_tel = (" " * 100_000) + json.dumps(valid_tel)
+st3, _, detail3 = tr.parse_stdout_json(padded_tel, max_stdout_bytes=65536)
+assert st3 == "ERROR" and "exceeds" in detail3, detail3
+
+def fake_ssh_run(host, user, port, remote_cmd, **kwargs):
+    return subprocess.CompletedProcess(
+        ["ssh"], 0, padded, ""
+    )
+
+node = {"name": "n", "ssh_host": "h", "ssh_user": "root", "ssh_port": 22}
+st4, pl4, d4 = tr.ssh_remote_json_for_class(
+    node=node,
+    remote_cmd=["vcl", "capabilities", "--json"],
+    credential_class="observe",
+    ssh_run=fake_ssh_run,
+    identity_for_class=lambda n, c: None,
+    failure_detail=lambda p: (p.stderr or "").strip(),
+    max_stdout_bytes=4096,
+)
+assert st4 == "ERROR" and pl4 is None, (st4, pl4, d4)
+assert "exceeds" in d4, d4
+PY
+
+# Upgrade: already-at-target → SKIPPED (admin plan path)
+assert_success "obs050 upgrade apply SKIPPED when already 0.5.0" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+upg = fleet.load_node_upgrade_module()
+
+calls = []
+
+def fake_obs(node, remote_cmd, **kwargs):
+    calls.append((tuple(remote_cmd), kwargs.get("credential_class")))
+    if remote_cmd[:2] == ["vcl", "identity"]:
+        return (
+            "OK",
+            {
+                "vincula_version": "0.5.0",
+                "node_id": node["node_id"],
+                "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+            "",
+        )
+    return "ERROR", None, "unexpected"
+
+fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
+upg.bind(fleet)
+node = {
+    "name": "n",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "h",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+plan = upg.run_upgrade_plan(node, credential_class="admin")
+assert plan.get("state") == "SKIPPED", plan
+result = upg.run_upgrade_apply(node, confirmed=True)
+assert result.get("state") == "SKIPPED", result
+assert result.get("ok") is True
+assert all(c == "admin" for _, c in calls), calls
+PY
+
+# Upgrade apply must not require observe when admin works
+assert_success "obs050 upgrade apply uses admin not observe for plan" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+upg = fleet.load_node_upgrade_module()
+
+class FakeProv:
+    NODE_PAYLOAD_VERSION = "0.5.0"
+
+    def _resolve_privilege_mode(self, **kwargs):
+        return "root"
+
+msgs = []
+
+def capture_die(msg, code=1):
+    msgs.append(msg)
+    raise SystemExit(code)
+
+def fake_obs(node, remote_cmd, **kwargs):
+    cls = kwargs.get("credential_class")
+    if cls == "observe":
+        return "AUTH_FAILED", None, "observe denied"
+    if remote_cmd[:2] == ["vcl", "identity"]:
+        return (
+            "OK",
+            {
+                "vincula_version": "0.3.1",
+                "node_id": node["node_id"],
+                "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+            "",
+        )
+    if remote_cmd[:2] == ["vcl", "backup"]:
+        return "ERROR", None, "backup mocked fail"
+    return "ERROR", None, "unexpected " + " ".join(remote_cmd)
+
+fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
+fleet.die = capture_die  # type: ignore[attr-defined]
+fleet.load_provision_module = lambda: FakeProv()  # type: ignore[attr-defined]
+fleet.SSH_BACKUP_TIMEOUT_SECONDS = 1
+fleet.node_identity_file_for_class = lambda node, cls: None  # type: ignore[attr-defined]
+upg.bind(fleet)
+node = {
+    "name": "n",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "h",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+observe_plan = upg.run_upgrade_plan(node, credential_class="observe")
+assert observe_plan.get("state") == "AUTH_FAILED", observe_plan
+admin_plan = upg.run_upgrade_plan(node, credential_class="admin")
+assert admin_plan.get("state") == "PLANNED", admin_plan
+assert admin_plan.get("allowlist_ok") is True
+try:
+    upg.run_upgrade_apply(node, confirmed=True)
+except SystemExit:
+    pass
+assert msgs, "die not called"
+assert "observe denied" not in msgs[0], msgs[0]
+assert "backup" in msgs[0].lower(), msgs[0]
+PY
+
 # G1: telemetry read-only audit (no restart count growth)
 UPG_STATE="${TEST_TMP}/upg050-state"
 rm -rf "$UPG_STATE"

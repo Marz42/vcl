@@ -1752,6 +1752,17 @@ def main(argv: list[str] | None = None) -> int:
         if os.environ.get("VCL_FAKE_CAP_OVERSIZE", "").strip() == "1":
             _emit_json(_oversized_capabilities())
             return 0
+        if os.environ.get("VCL_FAKE_CAP_PADDED_OVERSIZE", "").strip() == "1":
+            body = json.dumps(
+                {
+                    "schema": "capabilities/v1",
+                    "node_version": NODE_PAYLOAD_VERSION,
+                    "capabilities": ["telemetry/v1"],
+                },
+                ensure_ascii=False,
+            )
+            sys.stdout.write((" " * 1_000_000) + body + "\n")
+            return 0
         _emit_json(
             {
                 "schema": "capabilities/v1",
@@ -1766,6 +1777,26 @@ def main(argv: list[str] | None = None) -> int:
         if os.environ.get("VCL_FAKE_TEL_OVERSIZE", "").strip() == "1":
             ident = _load_fixture(alias, "identity")
             _emit_json(_oversized_telemetry(ident))
+            return 0
+        if os.environ.get("VCL_FAKE_TEL_PADDED_OVERSIZE", "").strip() == "1":
+            ident = _load_fixture(alias, "identity")
+            body = json.dumps(
+                {
+                    "schema": "telemetry/v1",
+                    "node_id": ident.get("node_id"),
+                    "instance_id": ident.get("instance_id"),
+                    "observed_at": _utc_now(),
+                    "uptime_seconds": 1,
+                    "load": {"load1": 0.0, "load5": 0.0, "load15": 0.0},
+                    "memory": {"total_bytes": 1, "used_bytes": 0},
+                    "filesystem": {"mount": "/", "total_bytes": 1, "used_bytes": 0},
+                    "network": {"rx_bytes": 0, "tx_bytes": 0},
+                    "sing_box": {"active": True},
+                    "accountd": {"active": True},
+                },
+                ensure_ascii=False,
+            )
+            sys.stdout.write((" " * 100_000) + body + "\n")
             return 0
         _record_telemetry_audit(alias)
         ident = _load_fixture(alias, "identity")

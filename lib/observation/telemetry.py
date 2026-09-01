@@ -62,6 +62,7 @@ def fetch_telemetry(
         node=node,
         remote_cmd=REMOTE_CMD,
         unsupported_on_missing_command=True,
+        max_stdout_bytes=TELEMETRY_MAX_BYTES,
     )
     if state == "UNSUPPORTED":
         return {

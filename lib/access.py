@@ -358,8 +358,13 @@ def ssh_run(
     extra: list[str] | None = None,
     identity_file: Optional[str] = None,
     timeout: float = SSH_TIMEOUT_SECONDS,
+    max_stdout_bytes: Optional[int] = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved."""
+    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved.
+
+    When ``max_stdout_bytes`` is set, stdout is read only up to that many
+    UTF-8 bytes (+1 to detect overflow); excess is discarded.
+    """
     argv = ssh_argv(
         host,
         user,
@@ -370,12 +375,16 @@ def ssh_run(
         identity_file=identity_file,
     )
     try:
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+        if max_stdout_bytes is None:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        return _ssh_run_bounded_stdout(
+            argv, timeout=timeout, max_stdout_bytes=max_stdout_bytes
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout
@@ -390,6 +399,62 @@ def ssh_run(
         return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
     except OSError as exc:
         _host.die(f"cannot execute {argv[0]}: {exc}")
+
+
+def _ssh_run_bounded_stdout(
+    argv: list[str],
+    *,
+    timeout: float,
+    max_stdout_bytes: int,
+) -> subprocess.CompletedProcess[str]:
+    """Capture SSH stdout with a hard byte cap (fail-closed for observation)."""
+    if max_stdout_bytes < 0:
+        raise ValueError("max_stdout_bytes must be >= 0")
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    limit = max_stdout_bytes + 1
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while total < limit:
+            block = proc.stdout.read(min(65536, limit - total))
+            if not block:
+                break
+            chunks.append(block)
+            total += len(block)
+        # Drain remainder so the remote process can exit.
+        while True:
+            block = proc.stdout.read(65536)
+            if not block:
+                break
+        stderr_b = proc.stderr.read()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise subprocess.TimeoutExpired(argv, timeout, output=b"".join(chunks), stderr=stderr_b)
+    except Exception:
+        proc.kill()
+        raise
+    stdout_b = b"".join(chunks)
+    overflow = len(stdout_b) > max_stdout_bytes
+    if overflow:
+        stdout_b = stdout_b[:max_stdout_bytes]
+    stdout = stdout_b.decode("utf-8", "replace")
+    stderr = (stderr_b or b"").decode("utf-8", "replace")
+    if overflow:
+        marker = f"stdout exceeds {max_stdout_bytes} bytes"
+        stderr = f"{stderr}\n{marker}".strip() if stderr.strip() else marker
+        # Non-zero so callers treat as transport/protocol failure.
+        rc = proc.returncode if proc.returncode not in (0, None) else 1
+        return subprocess.CompletedProcess(argv, rc, stdout, stderr)
+    return subprocess.CompletedProcess(argv, proc.returncode or 0, stdout, stderr)
 
 
 def scp_argv(

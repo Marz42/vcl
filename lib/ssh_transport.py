@@ -35,14 +35,39 @@ def is_unsupported_remote(detail: str, *, returncode: int) -> bool:
     )
 
 
-def _stdout_json(proc: subprocess.CompletedProcess[str]) -> Optional[Any]:
-    text = (proc.stdout or "").strip()
+def raw_stdout_byte_len(stdout: Optional[str]) -> int:
+    """UTF-8 byte length of raw SSH stdout (no strip — padding counts)."""
+    return len((stdout or "").encode("utf-8"))
+
+
+def parse_stdout_json(
+    stdout: Optional[str],
+    *,
+    max_stdout_bytes: Optional[int] = None,
+) -> tuple[str, Optional[Any], str]:
+    """Parse JSON from SSH stdout with optional raw-size gate before loads.
+
+    Returns ``(state, payload, detail)`` where state is ``OK`` or ``ERROR``.
+    """
+    raw = stdout or ""
+    if max_stdout_bytes is not None:
+        nbytes = len(raw.encode("utf-8"))
+        if nbytes > max_stdout_bytes:
+            return (
+                "ERROR",
+                None,
+                f"response exceeds {max_stdout_bytes} bytes (raw {nbytes})",
+            )
+    text = raw.strip()
     if not text:
-        return None
+        return "ERROR", None, "remote JSON missing or invalid"
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError:
-        return None
+        return "ERROR", None, "remote JSON missing or invalid"
+    if not isinstance(payload, dict):
+        return "ERROR", None, "remote JSON missing or invalid"
+    return "OK", payload, ""
 
 
 def ssh_remote_json_for_class(
@@ -57,23 +82,38 @@ def ssh_remote_json_for_class(
     extra: Optional[list[str]] = None,
     require_exit_0: bool = False,
     unsupported_on_missing_command: bool = False,
+    max_stdout_bytes: Optional[int] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH remote vcl --json with explicit credential class routing.
 
     Returns ``(state, payload, detail)`` where state is one of
     ``OK``, ``ERROR``, ``AUTH_FAILED``, ``UNSUPPORTED``.
+
+    When ``max_stdout_bytes`` is set, SSH capture is bounded and raw UTF-8
+    length is checked before ``json.loads`` (whitespace padding cannot bypass).
     """
+    run_kwargs: dict[str, Any] = {
+        "batch": True,
+        "extra": extra,
+        "identity_file": identity_for_class(node, credential_class),
+        "timeout": timeout,
+    }
+    if max_stdout_bytes is not None:
+        run_kwargs["max_stdout_bytes"] = max_stdout_bytes
     proc = ssh_run(
         node["ssh_host"],
         node["ssh_user"],
         int(node.get("ssh_port") or 22),
         remote_cmd,
-        batch=True,
-        extra=extra,
-        identity_file=identity_for_class(node, credential_class),
-        timeout=timeout,
+        **run_kwargs,
     )
     detail = failure_detail(proc)
+    if max_stdout_bytes is not None and "stdout exceeds" in (detail or "").lower():
+        return (
+            "ERROR",
+            None,
+            f"response exceeds {max_stdout_bytes} bytes",
+        )
     if proc.returncode == 255:
         if is_auth_failure(detail):
             return "AUTH_FAILED", None, detail
@@ -81,20 +121,21 @@ def ssh_remote_json_for_class(
     if unsupported_on_missing_command and proc.returncode != 0:
         if is_unsupported_remote(detail, returncode=proc.returncode):
             return "UNSUPPORTED", None, detail
-    payload = _stdout_json(proc)
+    parse_state, payload, parse_detail = parse_stdout_json(
+        proc.stdout, max_stdout_bytes=max_stdout_bytes
+    )
+    if parse_state != "OK":
+        if unsupported_on_missing_command and proc.returncode != 0:
+            if is_unsupported_remote(detail, returncode=proc.returncode):
+                return "UNSUPPORTED", None, detail
+        return "ERROR", None, parse_detail or detail or "remote JSON missing or invalid"
+    assert isinstance(payload, dict)
     if require_exit_0 and proc.returncode != 0:
         if unsupported_on_missing_command and is_unsupported_remote(
             detail, returncode=proc.returncode
         ):
             return "UNSUPPORTED", None, detail
-        return "ERROR", payload if isinstance(payload, dict) else None, detail or (
-            f"remote exit {proc.returncode}"
-        )
-    if not isinstance(payload, dict):
-        if unsupported_on_missing_command and proc.returncode != 0:
-            if is_unsupported_remote(detail, returncode=proc.returncode):
-                return "UNSUPPORTED", None, detail
-        return "ERROR", None, detail or "remote JSON missing or invalid"
+        return "ERROR", payload, detail or (f"remote exit {proc.returncode}")
     if proc.returncode != 0:
         return "ERROR", payload, detail or f"remote exit {proc.returncode}"
     return "OK", payload, detail

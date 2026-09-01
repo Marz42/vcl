@@ -533,6 +533,7 @@ def ssh_run(
     extra: list[str] | None = None,
     identity_file: Optional[str] = None,
     timeout: float = SSH_TIMEOUT_SECONDS,
+    max_stdout_bytes: Optional[int] = None,
 ) -> subprocess.CompletedProcess[str]:
     return _AC.ssh_run(
         host,
@@ -543,6 +544,7 @@ def ssh_run(
         extra=extra,
         identity_file=identity_file,
         timeout=timeout,
+        max_stdout_bytes=max_stdout_bytes,
     )
 
 
@@ -3304,7 +3306,11 @@ def cmd_node_upgrade_apply(args: argparse.Namespace) -> int:
             f"upgrade apply {args.name}: {result.get('state')} "
             f"{result.get('from_version')} → {result.get('to_version')}\n"
         )
-    return 0 if result.get("ok") else 1
+    if result.get("ok"):
+        return 0
+    if result.get("state") == "PARTIAL":
+        return 2
+    return 1
 
 
 def format_utc(dt: datetime) -> str:
@@ -6167,6 +6173,7 @@ def observation_ssh_json(
     extra: list[str] | None = None,
     require_exit_0: bool = False,
     unsupported_on_missing_command: bool = False,
+    max_stdout_bytes: Optional[int] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     transport = load_ssh_transport_module()
     return transport.ssh_remote_json_for_class(
@@ -6180,43 +6187,57 @@ def observation_ssh_json(
         extra=extra,
         require_exit_0=require_exit_0,
         unsupported_on_missing_command=unsupported_on_missing_command,
+        max_stdout_bytes=max_stdout_bytes,
     )
 
 
-def fetch_node_capabilities(node: dict[str, Any]) -> dict[str, Any]:
+def fetch_node_capabilities(
+    node: dict[str, Any],
+    *,
+    credential_class: str = "observe",
+) -> dict[str, Any]:
     caps_mod = load_observation_capabilities_module()
 
     def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
         return observation_ssh_json(
             kwargs["node"],
             kwargs["remote_cmd"],
-            credential_class="observe",
+            credential_class=credential_class,
             unsupported_on_missing_command=kwargs.get(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
             timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            max_stdout_bytes=kwargs.get("max_stdout_bytes"),
         )
 
     return caps_mod.fetch_capabilities(node, ssh_json=_ssh_json)
 
 
 def fetch_node_telemetry(
-    node: dict[str, Any], *, capabilities: Optional[dict[str, Any]] = None
+    node: dict[str, Any],
+    *,
+    capabilities: Optional[dict[str, Any]] = None,
+    credential_class: str = "observe",
 ) -> dict[str, Any]:
-    caps = capabilities if capabilities is not None else fetch_node_capabilities(node)
+    caps = (
+        capabilities
+        if capabilities is not None
+        else fetch_node_capabilities(node, credential_class=credential_class)
+    )
     tel_mod = load_observation_telemetry_module()
 
     def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
         return observation_ssh_json(
             kwargs["node"],
             kwargs["remote_cmd"],
-            credential_class="observe",
+            credential_class=credential_class,
             unsupported_on_missing_command=kwargs.get(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
             timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            max_stdout_bytes=kwargs.get("max_stdout_bytes"),
         )
 
     return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
