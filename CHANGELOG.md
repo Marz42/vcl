@@ -20,7 +20,7 @@
 - **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
 ### Notes
 - Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。
-- Live Matrix：**L2–L5 PASS LIVE**；**L1 PENDING LIVE**；soak 1000× **offline only**（真实节点 soak + 状态增长测量仍待补）→ **AC-5.0-10 PARTIAL**。
+- Live Matrix：**L2–L5 PASS LIVE**；soak 1000× **PASS LIVE**（含状态增长测量）；**L1 PENDING LIVE**（fresh VPS 延后）→ **AC-5.0-10 PARTIAL**。
 - `VCL_FLEET_VERSION=0.5.0`；`VINCULA_VERSION=0.5.0`。
 
 ## 0.4.5 (2026-08-25)

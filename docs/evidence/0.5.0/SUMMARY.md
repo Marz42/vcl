@@ -15,7 +15,7 @@
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
-| **AC-5.0-10** | **PARTIAL** | L2–L5 **PASS LIVE**; L1 **PENDING LIVE**; soak **PASS (offline only)** — needs fresh VPS L1 + real-node 1000× soak — [`LIVE.md`](LIVE.md) |
+| **AC-5.0-10** | **PARTIAL** | L2–L5 **PASS LIVE**; soak **PASS LIVE** (1000× + state growth on `neptunespear`); L1 **PENDING LIVE** (fresh VPS deferred) — [`LIVE.md`](LIVE.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
 | **AC-5.0-13** | **PASS LIVE** | `node upgrade apply` 0.3.1→0.5.0; outage ~0s; identity preserved — [`LIVE.md`](LIVE.md) |

@@ -104,15 +104,22 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 On one production-like node:
 
 ```bash
-for i in $(seq 1 1000); do vcl-fleet telemetry NODE --json >/dev/null || break; done
+VCL_SOAK_LIVE=1 VCL_FLEET_HOME=… \
+  bash scripts/soak-0.5.0-telemetry.sh NODE --live --iterations 1000
 ```
+
+Operator evidence (local, not committed): `~/vcl-rc-evidence/0.5.0-soak/<NODE>/SUMMARY.txt`.
 
 | Field | Value |
 | --- | --- |
+| Date | 2026-09-07 |
+| Node | `neptunespear` (upgraded 0.5.0 live candidate) |
 | Iterations | 1000 |
 | Failures | 0 |
-| Node state growth | not measured (fake-ssh) |
-| Outcome | **PASS (offline)** — `soak050` block in test-fleet |
+| Elapsed | 3881 s |
+| Node state growth | **PASS** — state file count Δ0; sing-box/accountd NRestarts 0→0; active unchanged; state/accounting bytes Δ ≈344 KiB (live traffic; within 16 MiB slack) |
+| Outcome | **PASS LIVE** |
+| Offline equiv | **PASS** — `soak050` block in test-fleet |
 
 ---
 

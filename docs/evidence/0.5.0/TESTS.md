@@ -48,7 +48,8 @@ Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN rejec
 | secret scan | journal / stdout no `vless://`, UUID markers, Reality key material |
 | `mix050` | mixed 0.3.x + 0.5.0 fleet; lax UNSUPPORTED + probe not ERROR |
 | `res050` | corrupt `operations.jsonl`; status/capabilities survive; module reload API intact |
-| `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures (**offline fixture only**; no live state-growth) |
+| `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures (**offline fixture**) |
+| Live soak | `scripts/soak-0.5.0-telemetry.sh` on real node — **PASS LIVE** 2026-09-07 (see [`LIVE.md`](LIVE.md)) |
 
 ## Failure injection
 
