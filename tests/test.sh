@@ -6550,6 +6550,24 @@ assert_success "helper implements upgrade checkpoint" \
   grep -q '^cmd_upgrade_checkpoint()' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper rollback verifies service active" \
   grep -q 'service_not_active' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper rollback fail-closes when still active after stop" \
+  grep -q 'service_still_active' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper defers vincula/vcl restore until after verification" \
+  python3 - "${PROJECT_DIR}/bin/vincula" <<'PY'
+from pathlib import Path
+import sys
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+i = src.index("cmd_upgrade_rollback()")
+j = src.index("cmd_upgrade()", i)
+body = src[i:j]
+assert "service_still_active" in body
+assert body.index("upgrade_rollback_install_member \"vincula\"") > body.index(
+    "service_not_active"
+)
+assert "upgrade-rollback-helper" in src[src.index("cmd_upgrade_checkpoint()") : i]
+PY
+assert_success "controller PARTIAL recovery cites durable rollback helper" \
+  grep -q 'upgrade-rollback-helper' "${PROJECT_DIR}/lib/node_upgrade.py"
 assert_success "controller stages checkpoint via bash unpack helper" \
   grep -q 'staged_helper' "${PROJECT_DIR}/lib/node_upgrade.py"
 assert_success "controller does not call installed vcl upgrade checkpoint" \
@@ -6565,7 +6583,8 @@ upg_cli_root="${TEST_TMP}/upgrade-cli"
 upg_state="${upg_cli_root}/state"
 upg_backups="${upg_cli_root}/backups"
 upg_ctl="${upg_cli_root}/fake-systemctl"
-mkdir -p "${upg_cli_root}/bin" "$upg_state" "$upg_backups"
+upg_ctl_state="${upg_cli_root}/ctl-state"
+mkdir -p "${upg_cli_root}/bin" "$upg_state" "$upg_backups" "$upg_ctl_state"
 ln -sfn "${PROJECT_DIR}/lib" "${upg_cli_root}/lib"
 sed -e 's|^main "$@"$|cmd_upgrade "$@"|' \
     "${PROJECT_DIR}/bin/vincula" > "${upg_cli_root}/bin/vincula"
@@ -6573,15 +6592,33 @@ chmod +x "${upg_cli_root}/bin/vincula"
 printf '%s\n' "0.3.1" > "${upg_state}/VERSION"
 printf '%s\n' '{"project_version":"0.3.1","node":{"node_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}' \
   > "${upg_state}/state.json"
-cat > "$upg_ctl" <<'EOF'
+# Seed a sentinel "installed" helper so we can assert stop-fail does not clobber state.
+printf '%s\n' '#!/bin/sh' > "${upg_state}/sentinel-helper"
+cat > "$upg_ctl" <<EOF
 #!/bin/sh
-# Default: pretend success. VCL_FAKE_CTL_FAIL_ACTIVE=1 → is-active fails.
-case " $* " in
+# Phase-aware fake systemctl for upgrade rollback tests.
+# VCL_FAKE_CTL_STILL_ACTIVE=1 → is-active always succeeds (stop gate fails).
+# VCL_FAKE_CTL_FAIL_ACTIVE=1 → is-active always fails (final active gate fails).
+state_dir="${upg_ctl_state}"
+mkdir -p "\$state_dir"
+case " \$* " in
+  *" disable "*|*" stop "*)
+    printf 'stopped\n' > "\$state_dir/phase"
+    exit 0
+    ;;
+  *" enable "*)
+    printf 'started\n' > "\$state_dir/phase"
+    exit 0
+    ;;
   *" is-active "*)
-    if [ "${VCL_FAKE_CTL_FAIL_ACTIVE:-0}" = "1" ]; then exit 1; fi
+    if [ "\${VCL_FAKE_CTL_STILL_ACTIVE:-0}" = "1" ]; then exit 0; fi
+    if [ "\${VCL_FAKE_CTL_FAIL_ACTIVE:-0}" = "1" ]; then exit 1; fi
+    phase=\$(cat "\$state_dir/phase" 2>/dev/null || echo running)
+    if [ "\$phase" = "stopped" ]; then exit 1; fi
     exit 0
     ;;
   *" is-enabled "*) exit 0 ;;
+  *" daemon-reload "*) exit 0 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -6600,10 +6637,13 @@ upg_ck_path=""
 if (( upg_ck_rc == 0 )); then
   upg_ck_path=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["path"])' "$upg_ck_out")
 fi
-if (( upg_ck_rc == 0 )) && [[ -n "$upg_ck_path" && -f "${upg_ck_path}/.vincula-upgrade-checkpoint" ]]; then
+if (( upg_ck_rc == 0 )) && [[ -n "$upg_ck_path" && -f "${upg_ck_path}/.vincula-upgrade-checkpoint" \
+    && -x "${upg_ck_path}/upgrade-rollback-helper" ]]; then
   pass "vcl upgrade checkpoint writes atomic unique dir"
+  pass "vcl upgrade checkpoint embeds durable rollback helper"
 else
   fail "vcl upgrade checkpoint writes atomic unique dir (rc=${upg_ck_rc} out=${upg_ck_out})"
+  fail "vcl upgrade checkpoint embeds durable rollback helper"
 fi
 # Distinct second checkpoint must not reuse the first directory.
 upg_ck2_out=$(cli_upgrade checkpoint --json 2>/dev/null) || true
@@ -6615,13 +6655,32 @@ else
 fi
 printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
 upg_rb_ok_rc=0
+rm -f "${upg_ctl_state}/phase"
 VCL_UPGRADE_SKIP_SERVICE=1 cli_upgrade rollback "$upg_ck_path" --json >/dev/null 2>&1 || upg_rb_ok_rc=$?
 if (( upg_rb_ok_rc == 0 )) && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.3.1" ]]; then
   pass "vcl upgrade rollback restores VERSION with skip-service"
 else
   fail "vcl upgrade rollback restores VERSION with skip-service (rc=${upg_rb_ok_rc})"
 fi
+# Stop failure: services remain active → refuse to overwrite VERSION.
 printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+rm -f "${upg_ctl_state}/phase"
+upg_stop_rc=0
+upg_stop_out=$(
+  VCL_FAKE_CTL_STILL_ACTIVE=1 VCL_UPGRADE_SKIP_SERVICE=0 \
+    cli_upgrade rollback "$upg_ck_path" --json 2>/dev/null
+) || upg_stop_rc=$?
+upg_stop_parse=1
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("ok") is False; assert d.get("error")=="service_still_active"' \
+  "$upg_stop_out" 2>/dev/null && upg_stop_parse=0 || true
+if (( upg_stop_rc != 0 && upg_stop_parse == 0 )) \
+    && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.5.0" ]]; then
+  pass "vcl upgrade rollback fail-closes on stop failure without overwriting state"
+else
+  fail "vcl upgrade rollback fail-closes on stop failure without overwriting state (rc=${upg_stop_rc} out=${upg_stop_out} ver=$(tr -d '[:space:]' <"${upg_state}/VERSION"))"
+fi
+printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+rm -f "${upg_ctl_state}/phase"
 upg_rb_fail_rc=0
 upg_rb_fail_out=$(
   VCL_FAKE_CTL_FAIL_ACTIVE=1 VCL_UPGRADE_SKIP_SERVICE=0 \
@@ -6635,6 +6694,10 @@ if (( upg_rb_fail_rc != 0 && upg_rb_fail_parse == 0 )); then
 else
   fail "vcl upgrade rollback fail-closes when service not active (rc=${upg_rb_fail_rc} out=${upg_rb_fail_out})"
 fi
+# After mid-failure on final active check, VERSION may already be restored but
+# PARTIAL recovery must still cite the durable helper path in controller text.
+assert_success "PARTIAL recovery documents upgrade-rollback-helper path" \
+  grep -q 'upgrade-rollback-helper' "${PROJECT_DIR}/lib/node_upgrade.py"
 
 # --- 0.3.0 vcl restore (fresh-node, reissue, transaction) ---
 assert_success "helper implements cmd_restore" \

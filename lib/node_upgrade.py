@@ -387,7 +387,10 @@ def run_upgrade_apply(
             f"post-check failed after migrate; in-place upgrade rollback from "
             f"{checkpoint_path} did not succeed"
             + (f" ({restore_detail})" if restore_detail else "")
-            + f"; operator: run `vcl upgrade rollback {checkpoint_path}` on the node"
+            + f"; operator: bash {checkpoint_path}/upgrade-rollback-helper "
+            f"upgrade rollback {checkpoint_path}"
+            + " (durable 0.5 helper embedded in the checkpoint; do not rely on "
+            + "installed vcl if a mid-rollback restored 0.3.x helpers)"
             + (
                 f" (secretless archive still at {backup_path})"
                 if backup_path

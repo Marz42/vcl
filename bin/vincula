@@ -3317,11 +3317,13 @@ vcl upgrade — in-place Node firmware checkpoint / rollback
   vcl upgrade rollback DIR [--json]
 
 checkpoint copies identity-critical files under an atomic unique directory in
-$BACKUP_ROOT/ (upgrade-checkpoint-<UTC>.XXXXXX). Controller apply invokes this
-from the *staged* 0.5 helper so 0.3.1/0.3.2 installed helpers need no upgrade CLI.
-rollback restores from that directory onto the existing install (does not refuse
-VERSION; does not mint a new instance_id or rotate URI credentials). Rollback
-fail-closes unless services are enabled+active and VERSION/identity match.
+$BACKUP_ROOT/ (upgrade-checkpoint-<UTC>.XXXXXX) and embeds upgrade-rollback-helper
+(the 0.5 CLI) so PARTIAL recovery remains executable after a mid-rollback failure.
+Controller apply invokes checkpoint from the *staged* 0.5 helper so 0.3.1/0.3.2
+installed helpers need no upgrade CLI.
+
+rollback stops services (fail-closed if still active), restores state/config, verifies
+VERSION/identity/services, then restores the old vincula/vcl helpers last.
 HELP
 }
 
@@ -3393,6 +3395,14 @@ PY
   fi
 
   # Marker last so incomplete dirs are never treated as valid checkpoints.
+  # Embed the running 0.5 helper so operators can re-run rollback even if the
+  # installed vincula/vcl was reverted mid-failure (0.3.x has no upgrade CLI).
+  local self=${BASH_SOURCE[0]-}
+  if [[ -n "$self" && -f "$self" ]]; then
+    cp -a -- "$self" "${dest}/upgrade-rollback-helper"
+    chmod 0755 "${dest}/upgrade-rollback-helper"
+  fi
+
   cat > "${dest}/${UPGRADE_CHECKPOINT_MARKER}" <<EOF
 project=vincula
 type=upgrade-checkpoint
@@ -3411,6 +3421,7 @@ print(json.dumps({
     "path": sys.argv[1],
     "source_version": sys.argv[2],
     "created_at": sys.argv[3],
+    "rollback_helper": f"{sys.argv[1]}/upgrade-rollback-helper",
 }, sort_keys=True))
 PY
   else
@@ -3422,6 +3433,8 @@ cmd_upgrade_rollback() {
   local json=0 dir="" name path mode owner group ver
   local ctl=${VCL_SYSTEMCTL:-systemctl}
   local expect_node_id="" expect_instance_id="" got_node_id="" got_instance_id=""
+  local skip_service=0
+  local unit
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3444,6 +3457,9 @@ cmd_upgrade_rollback() {
   [[ -f "${dir}/VERSION" ]] || die "checkpoint missing VERSION: $dir"
   ver=$(tr -d '[:space:]' <"${dir}/VERSION")
   [[ -n "$ver" ]] || die "checkpoint VERSION is empty"
+  if [[ "${VCL_UPGRADE_SKIP_SERVICE:-}" == "1" ]]; then
+    skip_service=1
+  fi
 
   if [[ -f "${dir}/state.json" ]]; then
     expect_node_id=$(json_quoted_field "${dir}/state.json" node_id 2>/dev/null || true)
@@ -3466,31 +3482,9 @@ cmd_upgrade_rollback() {
     die "$msg"
   }
 
-  "$ctl" disable --now vincula-accountd.service >/dev/null 2>&1 || true
-  "$ctl" disable --now sing-box.service >/dev/null 2>&1 || true
-
-  for name in \
-    sing-box.service \
-    vincula \
-    vcl \
-    config.json \
-    VERSION \
-    state.json \
-    users.json \
-    config.toml \
-    owner.uri \
-    sing-box.binary.sha256 \
-    install.manifest \
-    vincula-common.sh \
-    vincula-accountd.py \
-    vincula-stats.py \
-    vincula-audit.py \
-    vincula-backup.py \
-    telemetry_snapshot.py \
-    vincula-event.schema.json \
-    vincula-accountd.service \
-    events.jsonl; do
-    [[ -e "${dir}/${name}" || -L "${dir}/${name}" ]] || continue
+  upgrade_rollback_install_member() {
+    local name=$1
+    [[ -e "${dir}/${name}" || -L "${dir}/${name}" ]] || return 0
     case "$name" in
       sing-box.service) path=$SYSTEMD_UNIT; mode=0644; owner=root; group=root ;;
       vincula) path=$HELPER_PATH; mode=0755; owner=root; group=root ;;
@@ -3512,7 +3506,7 @@ cmd_upgrade_rollback() {
       vincula-event.schema.json) path=$EVENT_SCHEMA_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.service) path=$ACCOUNTD_UNIT; mode=0644; owner=root; group=root ;;
       events.jsonl) path=$EVENTS_JSONL_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
-      *) continue ;;
+      *) return 0 ;;
     esac
     mkdir -p -- "$(dirname -- "$path")"
     if [[ -L "${dir}/${name}" ]]; then
@@ -3523,6 +3517,48 @@ cmd_upgrade_rollback() {
     else
       install -m "$mode" "${dir}/${name}" "$path"
     fi
+  }
+
+  # Stop first; never overwrite live DB/config while services are still active.
+  if (( skip_service == 0 )); then
+    "$ctl" disable --now vincula-accountd.service >/dev/null 2>&1 || true
+    "$ctl" disable --now sing-box.service >/dev/null 2>&1 || true
+    for unit in vincula-accountd.service sing-box.service; do
+      if "$ctl" is-active --quiet "$unit" 2>/dev/null; then
+        "$ctl" stop "$unit" >/dev/null 2>&1 || true
+      fi
+    done
+    for unit in vincula-accountd.service sing-box.service; do
+      if "$ctl" is-active --quiet "$unit" 2>/dev/null; then
+        upgrade_rollback_fail \
+          "${unit} still active after stop; refusing to overwrite live state" \
+          "service_still_active"
+      fi
+    done
+  fi
+
+  # Restore state/config/libs/units first — keep installed 0.5 vincula/vcl until
+  # verification succeeds so mid-failure recovery can still run upgrade rollback.
+  for name in \
+    sing-box.service \
+    config.json \
+    VERSION \
+    state.json \
+    users.json \
+    config.toml \
+    owner.uri \
+    sing-box.binary.sha256 \
+    install.manifest \
+    vincula-common.sh \
+    vincula-accountd.py \
+    vincula-stats.py \
+    vincula-audit.py \
+    vincula-backup.py \
+    telemetry_snapshot.py \
+    vincula-event.schema.json \
+    vincula-accountd.service \
+    events.jsonl; do
+    upgrade_rollback_install_member "$name"
   done
 
   if [[ -f "${dir}/accounting.db" ]]; then
@@ -3556,9 +3592,7 @@ cmd_upgrade_rollback() {
     fi
   fi
 
-  if [[ "${VCL_UPGRADE_SKIP_SERVICE:-}" == "1" ]]; then
-    :
-  else
+  if (( skip_service == 0 )); then
     if ! "$ctl" daemon-reload >/dev/null 2>&1; then
       upgrade_rollback_fail "daemon-reload failed after rollback" "daemon_reload_failed"
     fi
@@ -3581,6 +3615,11 @@ cmd_upgrade_rollback() {
       upgrade_rollback_fail "vincula-accountd.service is not active after rollback" "service_not_active"
     fi
   fi
+
+  # Commit old helpers only after verification — preserves executable upgrade CLI
+  # on mid-rollback PARTIAL (0.3.x helpers have no upgrade subcommand).
+  upgrade_rollback_install_member "vincula"
+  upgrade_rollback_install_member "vcl"
 
   if (( json )); then
     python3 - "$dir" "$ver" <<'PY'

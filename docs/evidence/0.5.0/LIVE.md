@@ -50,8 +50,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Date | 2026-08-31 |
 | Source version | 0.3.1 |
 | Measured outage (s) | ~0 (no consecutive non-OK probe) |
-| Outcome | **PASS LIVE** |
-| Notes | identity preserved; capabilities/telemetry OK after hotfixes (installer telemetry helper + nested instance_id); client URI unchanged |
+| Outcome | **PASS LIVE** (historical); **re-verify PENDING** after 2026-09-07 rollback stop-before-write + deferred-helper fixes |
+| Notes | identity preserved; capabilities/telemetry OK after hotfixes (installer telemetry helper + nested instance_id); client URI unchanged. Re-run `node upgrade apply` (and a forced post-check rollback drill if safe) before treating L2 as closed for this tree. |
 | Offline equiv | **PASS** — obs050 upgrade apply + migrate fail fixtures |
 
 ---

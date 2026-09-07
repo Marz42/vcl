@@ -1209,6 +1209,12 @@ def _handle_upgrade(alias: str, argv: list[str]) -> int:
             if src.is_file():
                 shutil.copy2(src, ck / name)
         ver = (node_dir / "VERSION").read_text(encoding="utf-8").strip()
+        helper = ck / "upgrade-rollback-helper"
+        helper.write_text(
+            "#!/bin/sh\n# fake durable 0.5 rollback helper\nexit 0\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
         (ck / ".vincula-upgrade-checkpoint").write_text(
             f"project=vincula\ntype=upgrade-checkpoint\nsource_version={ver}\n",
             encoding="utf-8",
@@ -1232,6 +1238,7 @@ def _handle_upgrade(alias: str, argv: list[str]) -> int:
             "path": remote_path,
             "source_version": ver,
             "created_at": stamp,
+            "rollback_helper": f"{remote_path}/upgrade-rollback-helper",
         }
         if as_json:
             _emit_json(result)
