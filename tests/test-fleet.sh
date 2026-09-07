@@ -14750,6 +14750,27 @@ except subprocess.TimeoutExpired:
     elapsed = time.monotonic() - t0
     assert elapsed < 1.2, f"timeout too slow: {elapsed:.3f}s"
 
+# One byte then hang must not wedge past the deadline (blocking read trap).
+one_then_hang = [
+    sys.executable,
+    "-c",
+    "import sys, time\n"
+    "sys.stdout.buffer.write(b'x')\n"
+    "sys.stdout.buffer.flush()\n"
+    "time.sleep(30)\n",
+]
+t_hang = time.monotonic()
+try:
+    access._ssh_run_bounded_stdout(one_then_hang, timeout=0.2, max_stdout_bytes=1024)
+    raise AssertionError("expected TimeoutExpired on one-byte-then-hang")
+except subprocess.TimeoutExpired as exc:
+    elapsed = time.monotonic() - t_hang
+    assert elapsed < 1.2, f"one-byte hang timeout too slow: {elapsed:.3f}s"
+    out = exc.stdout or b""
+    if isinstance(out, str):
+        out = out.encode()
+    assert out.startswith(b"x"), out[:16]
+
 # Endless stdout must not bypass timeout either
 flood = [
     sys.executable,
@@ -14898,6 +14919,8 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
+    if remote_cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+        return "ERROR", None, "checkpoint mocked fail"
     if remote_cmd[:2] == ["vcl", "backup"]:
         return "ERROR", None, "backup mocked fail"
     return "ERROR", None, "unexpected " + " ".join(remote_cmd)
@@ -14926,7 +14949,7 @@ except SystemExit:
     pass
 assert msgs, "die not called"
 assert "observe denied" not in msgs[0], msgs[0]
-assert "backup" in msgs[0].lower(), msgs[0]
+assert "checkpoint" in msgs[0].lower(), msgs[0]
 PY
 
 # Upgrade: post-check verify fail after migrate → PARTIAL (no silent SUCCESS)
@@ -14985,10 +15008,14 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
+    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/tmp/b.tgz"}, ""
     if cmd[:2] == ["vcl", "verify"]:
         return "OK", {"ok": False, "detail": "health fail"}, "verify soft-fail"
+    if cmd[:3] == ["vcl", "upgrade", "rollback"]:
+        return "OK", {"ok": False, "error": "rollback refused"}, "rollback soft-fail"
     return "ERROR", None, "unexpected"
 
 fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
@@ -15009,11 +15036,12 @@ result = upg.run_upgrade_apply(node, confirmed=True, skip_backup=False)
 assert result.get("state") == "PARTIAL", result
 assert result.get("ok") is False
 assert "verify" in (result.get("detail") or "").lower(), result
+assert result.get("checkpoint_path") == "/var/backups/vincula/upgrade-checkpoint-x", result
 assert result.get("backup_path") == "/tmp/b.tgz", result
 assert "recovery" in result, result
 PY
 
-# Upgrade: post-check fail + successful typed restore → ROLLED_BACK
+# Upgrade: post-check fail + successful in-place rollback → ROLLED_BACK
 assert_success "obs050 upgrade post-check ROLLED_BACK on restore" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
 import importlib.util, os
@@ -15069,12 +15097,24 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
+    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/var/backups/vincula/backup.tar"}, ""
     if cmd[:2] == ["vcl", "verify"]:
         return "OK", {"ok": False, "detail": "health fail"}, "verify soft-fail"
-    if cmd[:2] == ["vcl", "restore"]:
-        return "OK", {"ok": True, "mode": "safe", "schema_version": 1}, ""
+    if cmd[:3] == ["vcl", "upgrade", "rollback"]:
+        assert cmd[3] == "/var/backups/vincula/upgrade-checkpoint-x", cmd
+        return (
+            "OK",
+            {
+                "ok": True,
+                "mode": "in_place",
+                "schema_version": 1,
+                "restored_version": "0.3.1",
+            },
+            "",
+        )
     return "ERROR", None, "unexpected"
 
 fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
@@ -15094,8 +15134,11 @@ node = {
 result = upg.run_upgrade_apply(node, confirmed=True)
 assert result.get("state") == "ROLLED_BACK", result
 assert result.get("ok") is False
+assert result.get("checkpoint_path") == "/var/backups/vincula/upgrade-checkpoint-x", result
 assert result.get("backup_path") == "/var/backups/vincula/backup.tar", result
 assert "verify" in (result.get("post_check_detail") or "").lower(), result
+assert isinstance(result.get("rollback"), dict), result
+assert result["rollback"].get("ok") is True
 PY
 
 # Upgrade: identity drift (node_id change) after migrate → PARTIAL
@@ -15169,6 +15212,11 @@ def fake_obs(node, remote_cmd, **kwargs):
         )
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/tmp/b.tgz"}, ""
+    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
+    if cmd[:3] == ["vcl", "upgrade", "rollback"]:
+        # Force PARTIAL: in-place rollback also fails after identity drift.
+        return "OK", {"ok": False, "error": "rollback refused"}, "rollback soft-fail"
     if cmd[:2] == ["vcl", "verify"]:
         return "OK", {"ok": True}, ""
     if cmd[:2] == ["vcl", "capabilities"]:
@@ -15459,7 +15507,95 @@ for i in $(seq 1 1000); do
   fleet telemetry obsnode --json >/dev/null || { soak_fail=$i; break; }
 done
 assert_equal "soak050 1000x telemetry" 0 "$soak_fail"
-export VCL_FLEET_HOME="$OBS050_SAVED_HOME"
+
+# Soak gate must fail-closed on missing critical metrics (no SKIP → PASS LIVE).
+assert_success "soak050 missing metrics fail closed" python3 - <<'PY'
+checks = []
+
+def compare(label, a, b):
+    if a is None or b is None:
+        checks.append((label, "FAIL", "missing metric"))
+        return
+    checks.append((label, "PASS", f"{a} → {b}"))
+
+def require_active(label, value):
+    if value != "active":
+        checks.append((label, "FAIL", f"expected active, got {value!r}"))
+    else:
+        checks.append((label, "PASS", "active"))
+
+compare("rss", None, 10)
+require_active("svc", "inactive")
+assert any(s == "FAIL" for _, s, _ in checks)
+assert not any(s == "SKIP" for _, s, _ in checks)
+overall = "FAIL LIVE"
+assert overall != "PASS LIVE"
+PY
+
+# Fake-SSH in-place upgrade checkpoint/rollback preserves VERSION (no unlink cheat).
+assert_success "upg050 fake-ssh checkpoint rollback preserves VERSION" python3 - \
+  "${PROJECT_DIR}/tests/fixtures/fake-ssh" <<'PY'
+import json, os, subprocess, sys, tempfile
+from pathlib import Path
+
+fake = Path(sys.argv[1])
+root = Path(tempfile.mkdtemp(prefix="upg-ck-"))
+node = root / "lax"
+node.mkdir()
+(node / "VERSION").write_text("0.3.1\n", encoding="utf-8")
+(node / "state.json").write_text('{"project_version":"0.3.1"}\n', encoding="utf-8")
+(node / "identity.json").write_text(
+    json.dumps({
+        "schema_version": 1,
+        "vincula_version": "0.3.1",
+        "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "node_name": "lax",
+    })
+    + "\n",
+    encoding="utf-8",
+)
+env = os.environ.copy()
+env["VCL_FAKE_STATE_DIR"] = str(root)
+env["VCL_FAKE_UPGRADE"] = "1"
+ck = subprocess.run(
+    [sys.executable, str(fake), "root@203.0.113.10", "--", "vcl", "upgrade", "checkpoint", "--json"],
+    capture_output=True, text=True, env=env, check=False,
+)
+assert ck.returncode == 0, ck.stderr
+doc = json.loads(ck.stdout)
+assert doc.get("ok") is True and doc.get("path"), doc
+# Simulate post-migrate VERSION bump
+(node / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+rb = subprocess.run(
+    [
+        sys.executable,
+        str(fake),
+        "root@203.0.113.10",
+        "--",
+        "vcl",
+        "upgrade",
+        "rollback",
+        doc["path"],
+        "--json",
+    ],
+    capture_output=True,
+    text=True,
+    env=env,
+    check=False,
+)
+assert rb.returncode == 0, rb.stderr
+out = json.loads(rb.stdout)
+assert out.get("ok") is True and out.get("restored_version") == "0.3.1", out
+assert (node / "VERSION").read_text(encoding="utf-8").strip() == "0.3.1"
+# Fresh-node restore must still refuse existing VERSION (no VCL_FAKE_UPGRADE unlink).
+rs = subprocess.run(
+    [sys.executable, str(fake), "root@203.0.113.10", "--", "vcl", "restore", "/tmp/x.tar", "--json"],
+    capture_output=True, text=True, env=env, check=False,
+)
+assert rs.returncode != 0
+assert "Refusing" in (rs.stderr or "")
+PY
 
 export VCL_FLEET_HOME="$OBS050_SAVED_HOME"
 

@@ -186,8 +186,8 @@ def run_upgrade_plan(
         "target_version": target,
         "allowlist_ok": is_upgrade_allowed(current, target),
         "checks": checks,
-        "backup": "remote secretless vcl backup create",
-        "rollback": "vincula.sh migrate EXIT trap + restore from backup",
+        "backup": "remote secretless vcl backup create + vcl upgrade checkpoint",
+        "rollback": "vincula.sh migrate EXIT trap + vcl upgrade rollback <checkpoint>",
         "outage_budget_seconds": OUTAGE_BUDGET_SECONDS,
         "credential_class": credential_class,
         "identity": {
@@ -249,6 +249,25 @@ def run_upgrade_apply(
         extra=extra,
     )
 
+    # In-place identity-preserving checkpoint (required for post-check rollback).
+    # Fresh-node ``vcl restore`` is not used: it refuses existing VERSION and
+    # secretless restore rotates URI credentials / mints a new instance_id.
+    ssh_state, ck_doc, ck_detail = _ssh_json(
+        node,
+        ["vcl", "upgrade", "checkpoint", "--json"],
+        credential_class="admin",
+        timeout=host.SSH_BACKUP_TIMEOUT_SECONDS,
+        require_exit_0=True,
+    )
+    if ssh_state != "OK" or not isinstance(ck_doc, dict) or ck_doc.get("ok") is not True:
+        host.die(
+            f"upgrade checkpoint failed: {ck_detail or 'remote checkpoint failed'}"
+        )
+    checkpoint_path = _optional_backup_path(ck_doc)
+    if not checkpoint_path:
+        host.die("upgrade checkpoint failed: missing path in JSON response")
+
+    backup_path: Optional[str] = None
     if not skip_backup:
         ssh_state, backup_doc, backup_detail = _ssh_json(
             node,
@@ -266,8 +285,6 @@ def run_upgrade_apply(
                 f"upgrade backup failed: {backup_detail or 'remote backup failed'}"
             )
         backup_path = _optional_backup_path(backup_doc)
-    else:
-        backup_path = None
 
     resolved = prov.resolve_node_payload()
     prov.verify_local_payload(resolved)
@@ -338,6 +355,7 @@ def run_upgrade_apply(
             "to_version": target,
             "credential_class": "admin",
             "migrate_committed": True,
+            "checkpoint_path": checkpoint_path,
             "backup_path": backup_path,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
@@ -353,25 +371,23 @@ def run_upgrade_apply(
         )
         if restore_detail:
             out["restore_detail"] = restore_detail
-        if backup_path:
-            out["recovery"] = (
-                f"post-check failed after migrate; typed restore from "
-                f"{backup_path} did not succeed"
-                + (f" ({restore_detail})" if restore_detail else "")
-                + f"; operator: inspect node and restore manually from {backup_path}"
+        out["recovery"] = (
+            f"post-check failed after migrate; in-place upgrade rollback from "
+            f"{checkpoint_path} did not succeed"
+            + (f" ({restore_detail})" if restore_detail else "")
+            + f"; operator: run `vcl upgrade rollback {checkpoint_path}` on the node"
+            + (
+                f" (secretless archive still at {backup_path})"
+                if backup_path
+                else ""
             )
-        else:
-            out["recovery"] = (
-                "post-check failed after migrate; no controller backup path "
-                "available — inspect node / migrate backup on host"
-            )
+        )
         return out
 
     def _rollback_or_partial(detail: str) -> dict[str, Any]:
-        if not backup_path:
-            return _partial(detail)
-        rolled = _attempt_post_upgrade_restore(
+        rolled = _attempt_post_upgrade_rollback(
             node,
+            checkpoint_path=checkpoint_path,
             backup_path=backup_path,
             post_check_detail=detail,
             pre_version=pre_version,
@@ -381,7 +397,7 @@ def run_upgrade_apply(
             return rolled
         return _partial(
             detail,
-            restore_detail="typed restore failed or refused (see node stderr)",
+            restore_detail="upgrade rollback failed or refused (see node stderr)",
         )
 
     ssh_state, verify_doc, verify_detail = _ssh_json(
@@ -457,38 +473,32 @@ def _optional_backup_path(backup_doc: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _attempt_post_upgrade_restore(
+def _attempt_post_upgrade_rollback(
     node: dict[str, Any],
     *,
-    backup_path: str,
+    checkpoint_path: str,
+    backup_path: Optional[str],
     post_check_detail: str,
     pre_version: Optional[str],
     target: str,
 ) -> Optional[dict[str, Any]]:
-    """Try typed ``vcl restore`` after post-check failure (Spec §3.3).
+    """Try in-place ``vcl upgrade rollback`` after post-check failure (Spec §3.3).
 
-    Returns a ROLLED_BACK result on success, or None so the caller can emit PARTIAL.
+    Unlike fresh-node ``vcl restore``, this preserves VERSION, instance_id, and
+    URI credentials. Returns ROLLED_BACK on success, or None → PARTIAL.
     """
     host = _require_host()
-    server = str(node.get("ssh_host") or "")
-    build_argv = getattr(host, "build_node_restore_argv", None)
-    if callable(build_argv):
-        restore_argv = list(build_argv(backup_path, server))
-    else:
-        restore_argv = [
-            "vcl",
-            "restore",
-            backup_path,
-            "--reissue-output",
-            "/tmp/vcl-upgrade-reissue.csv",
-            "--server",
-            server,
-            "--json",
-        ]
+    rollback_argv = [
+        "vcl",
+        "upgrade",
+        "rollback",
+        checkpoint_path,
+        "--json",
+    ]
     timeout = getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60)
     ssh_state, doc, restore_detail = _ssh_json(
         node,
-        restore_argv,
+        rollback_argv,
         credential_class="admin",
         timeout=timeout,
         require_exit_0=False,
@@ -498,10 +508,11 @@ def _attempt_post_upgrade_restore(
     return {
         "ok": False,
         "state": "ROLLED_BACK",
-        "detail": f"post-check failed; restored backup: {post_check_detail}",
+        "detail": f"post-check failed; rolled back checkpoint: {post_check_detail}",
         "post_check_detail": post_check_detail,
+        "checkpoint_path": checkpoint_path,
         "backup_path": backup_path,
-        "restore": doc,
+        "rollback": doc,
         "node": node.get("name"),
         "node_id": node.get("node_id"),
         "from_version": pre_version,

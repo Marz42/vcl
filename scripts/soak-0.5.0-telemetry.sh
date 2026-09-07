@@ -148,6 +148,47 @@ def restart_count(unit):
     except Exception:
         return None
 
+def main_pid(unit):
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        text = (r.stdout or "").strip()
+        return int(text) if text.isdigit() and int(text) > 0 else None
+    except Exception:
+        return None
+
+def proc_rss_kb(pid):
+    if not pid:
+        return None
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                parts = line.split()
+                return int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else None
+    except Exception:
+        return None
+    return None
+
+def proc_fd_count(pid):
+    if not pid:
+        return None
+    try:
+        return len(list(Path(f"/proc/{pid}/fd").iterdir()))
+    except Exception:
+        return None
+
+def service_proc(unit):
+    pid = main_pid(unit)
+    return {
+        "active": systemctl_active(unit),
+        "nrestarts": restart_count(unit),
+        "main_pid": pid,
+        "rss_kb": proc_rss_kb(pid),
+        "fd_count": proc_fd_count(pid),
+    }
+
 print(json.dumps({
     "observed_at_host": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "paths": {
@@ -158,14 +199,8 @@ print(json.dumps({
         "log_dir_file_count": count_files("/var/log/vincula"),
     },
     "services": {
-        "sing-box": {
-            "active": systemctl_active("sing-box.service"),
-            "nrestarts": restart_count("sing-box.service"),
-        },
-        "vincula-accountd": {
-            "active": systemctl_active("vincula-accountd.service"),
-            "nrestarts": restart_count("vincula-accountd.service"),
-        },
+        "sing-box": service_proc("sing-box.service"),
+        "vincula-accountd": service_proc("vincula-accountd.service"),
     },
 }, sort_keys=True))
 '''
@@ -266,7 +301,9 @@ log "Taking AFTER snapshot..."
 take_snapshot "${OUT}/after.json"
 
 python3 - "$OUT" "$NODE" "$ITERATIONS" "$ok" "$fail_at" "$elapsed" <<'PY'
-import json, sys
+import hashlib
+import json
+import sys
 from pathlib import Path
 
 out, node, iterations, ok, fail_at, elapsed = sys.argv[1:7]
@@ -289,8 +326,9 @@ def dig(doc, *keys):
 checks = []
 
 def compare(label, a, b, *, allow_non_decrease=False, max_growth=None, must_equal=False):
+    # Missing critical metrics fail closed (no SKIP → PASS LIVE).
     if a is None or b is None:
-        checks.append((label, "SKIP", "missing metric"))
+        checks.append((label, "FAIL", "missing metric"))
         return
     if must_equal:
         checks.append((label, "PASS" if a == b else "FAIL", f"{a} → {b}"))
@@ -304,6 +342,14 @@ def compare(label, a, b, *, allow_non_decrease=False, max_growth=None, must_equa
             checks.append((label, "PASS", f"{a} → {b} (Δ {b - a})"))
         return
     checks.append((label, "PASS" if a == b else "WARN", f"{a} → {b}"))
+
+def require_active(label, value):
+    if value is None:
+        checks.append((label, "FAIL", "missing metric"))
+    elif value != "active":
+        checks.append((label, "FAIL", f"expected active, got {value!r}"))
+    else:
+        checks.append((label, "PASS", "active"))
 
 compare(
     "state_dir_bytes",
@@ -346,17 +392,37 @@ compare(
     dig(after, "services", "vincula-accountd", "nrestarts"),
     must_equal=True,
 )
-compare(
-    "sing-box active",
-    dig(before, "services", "sing-box", "active"),
-    dig(after, "services", "sing-box", "active"),
-    must_equal=True,
+require_active("sing-box after active", dig(after, "services", "sing-box", "active"))
+require_active(
+    "accountd after active", dig(after, "services", "vincula-accountd", "active")
 )
 compare(
-    "accountd active",
-    dig(before, "services", "vincula-accountd", "active"),
-    dig(after, "services", "vincula-accountd", "active"),
-    must_equal=True,
+    "sing-box rss_kb",
+    dig(before, "services", "sing-box", "rss_kb"),
+    dig(after, "services", "sing-box", "rss_kb"),
+    allow_non_decrease=True,
+    max_growth=64 * 1024,  # KiB
+)
+compare(
+    "accountd rss_kb",
+    dig(before, "services", "vincula-accountd", "rss_kb"),
+    dig(after, "services", "vincula-accountd", "rss_kb"),
+    allow_non_decrease=True,
+    max_growth=64 * 1024,
+)
+compare(
+    "sing-box fd_count",
+    dig(before, "services", "sing-box", "fd_count"),
+    dig(after, "services", "sing-box", "fd_count"),
+    allow_non_decrease=True,
+    max_growth=256,
+)
+compare(
+    "accountd fd_count",
+    dig(before, "services", "vincula-accountd", "fd_count"),
+    dig(after, "services", "vincula-accountd", "fd_count"),
+    allow_non_decrease=True,
+    max_growth=256,
 )
 
 soak_pass = fail_at == 0 and ok == iterations
@@ -379,9 +445,32 @@ for label, status, detail in checks:
     lines.append(f"  [{status}] {label}: {detail}")
 text = "\n".join(lines) + "\n"
 (out / "SUMMARY.txt").write_text(text, encoding="utf-8")
+
+# Redacted digest for operators to copy into docs/evidence (no IPs/secrets).
+digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+digest_doc = {
+    "schema": "soak-digest/v1",
+    "node_label": node,
+    "iterations": iterations,
+    "ok": ok,
+    "fail_at": fail_at,
+    "elapsed_seconds": elapsed,
+    "outcome": overall,
+    "summary_sha256": digest,
+    "metric_results": [
+        {"label": label, "status": status, "detail": detail}
+        for label, status, detail in checks
+    ],
+}
+(out / "DIGEST.json").write_text(
+    json.dumps(digest_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
 print(text)
+print(f"digest_sha256={digest}")
+print(f"wrote {out / 'DIGEST.json'}")
 if overall != "PASS LIVE":
     raise SystemExit(1)
 PY
 
 log "Done. Summary: ${OUT}/SUMMARY.txt"
+log "Digest: ${OUT}/DIGEST.json"

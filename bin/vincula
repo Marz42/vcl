@@ -36,6 +36,7 @@ readonly SERVICE_GROUP="sing-box"
 readonly VAR_LIB_SING_BOX="/var/lib/sing-box"
 readonly BACKUP_ROOT="${VCL_BACKUP_ROOT:-/var/backups/vincula}"
 readonly BACKUP_MARKER=".vincula-backup"
+readonly UPGRADE_CHECKPOINT_MARKER=".vincula-upgrade-checkpoint"
 readonly COMMON_FILE="${LIB_DIR}/vincula-common.sh"
 
 die() {
@@ -122,6 +123,10 @@ Usage:
   vcl backup create [--include-secrets] [--output FILE] [--age-recipient FILE] [--json]
   vcl backup verify FILE [--age-identity FILE] [--json]
   vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
+  vcl upgrade checkpoint [--json]
+                        In-place upgrade checkpoint (preserves identity/URI)
+  vcl upgrade rollback DIR [--json]
+                        Roll back to an upgrade checkpoint on this node
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -3304,6 +3309,228 @@ print(json.dumps(doc, ensure_ascii=False, indent=2))
   emit_restore_success
 }
 
+cmd_upgrade_usage() {
+  cat <<'HELP'
+vcl upgrade — in-place Node firmware checkpoint / rollback
+
+  vcl upgrade checkpoint [--json]
+  vcl upgrade rollback DIR [--json]
+
+checkpoint copies identity-critical files under $BACKUP_ROOT/upgrade-checkpoint-<UTC>/.
+rollback restores from that directory onto the existing install (does not refuse VERSION;
+does not mint a new instance_id or rotate URI credentials).
+HELP
+}
+
+cmd_upgrade_checkpoint() {
+  local json=0 stamp dest name path ver
+  local backup_py
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) cmd_upgrade_usage; return 0 ;;
+      *) die "Unknown upgrade checkpoint argument: $1" ;;
+    esac
+  done
+
+  [[ -f "$VERSION_FILE" ]] || die "upgrade checkpoint requires an installed VERSION"
+  ver=$(tr -d '[:space:]' <"$VERSION_FILE")
+  [[ -n "$ver" ]] || die "VERSION is empty"
+
+  stamp=$(date -u +'%Y%m%dT%H%M%SZ')
+  dest="${BACKUP_ROOT}/upgrade-checkpoint-${stamp}"
+  install -d -o root -g root -m 0700 "$BACKUP_ROOT"
+  install -d -o root -g root -m 0700 "$dest"
+
+  for path in \
+    "$SYSTEMD_UNIT" \
+    "$HELPER_ALIAS_PATH" \
+    "$HELPER_PATH" \
+    "$CONFIG_FILE" \
+    "$VERSION_FILE" \
+    "$STATE_FILE" \
+    "$USERS_FILE" \
+    "$SETTINGS_FILE" \
+    "$URI_FILE" \
+    "$CHECKSUM_FILE" \
+    "$INSTALL_MANIFEST_FILE" \
+    "${LIB_DIR}/vincula-common.sh" \
+    "$ACCOUNTD_PY" \
+    "$STATS_PY" \
+    "$AUDIT_PY" \
+    "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
+    "$EVENT_SCHEMA_FILE" \
+    "$ACCOUNTD_UNIT" \
+    "$EVENTS_JSONL_FILE"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      name=$(basename -- "$path")
+      cp -a -- "$path" "${dest}/${name}"
+    fi
+  done
+
+  if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
+    if backup_py=$(resolve_backup_py 2>/dev/null); then
+      python3 - "$backup_py" "$ACCOUNTING_DB_FILE" "${dest}/accounting.db" <<'PY' \
+        || die "Failed to snapshot accounting.db for upgrade checkpoint"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("vincula_backup", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.snapshot_sqlite(Path(sys.argv[2]), Path(sys.argv[3]))
+PY
+    else
+      cp -a -- "$ACCOUNTING_DB_FILE" "${dest}/accounting.db"
+    fi
+  fi
+
+  cat > "${dest}/${UPGRADE_CHECKPOINT_MARKER}" <<EOF
+project=vincula
+type=upgrade-checkpoint
+source_version=${ver}
+created_at=${stamp}
+EOF
+  chmod 0600 "${dest}/${UPGRADE_CHECKPOINT_MARKER}"
+
+  if (( json )); then
+    python3 - "$dest" "$ver" "$stamp" <<'PY'
+import json, sys
+print(json.dumps({
+    "schema_version": 1,
+    "ok": True,
+    "mode": "in_place",
+    "path": sys.argv[1],
+    "source_version": sys.argv[2],
+    "created_at": sys.argv[3],
+}, sort_keys=True))
+PY
+  else
+    printf 'upgrade checkpoint written: %s (source_version=%s)\n' "$dest" "$ver"
+  fi
+}
+
+cmd_upgrade_rollback() {
+  local json=0 dir="" name path mode owner group ver
+  local ctl=systemctl
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) cmd_upgrade_usage; return 0 ;;
+      -*)
+        die "Unknown upgrade rollback option: $1"
+        ;;
+      *)
+        [[ -z "$dir" ]] || die "upgrade rollback accepts a single DIR"
+        dir=$1
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$dir" ]] || die "usage: vcl upgrade rollback DIR [--json]"
+  [[ -d "$dir" ]] || die "upgrade checkpoint directory not found: $dir"
+  [[ -f "${dir}/${UPGRADE_CHECKPOINT_MARKER}" ]] \
+    || die "not an upgrade checkpoint (missing ${UPGRADE_CHECKPOINT_MARKER}): $dir"
+  [[ -f "${dir}/VERSION" ]] || die "checkpoint missing VERSION: $dir"
+  ver=$(tr -d '[:space:]' <"${dir}/VERSION")
+  [[ -n "$ver" ]] || die "checkpoint VERSION is empty"
+
+  "$ctl" disable --now vincula-accountd.service >/dev/null 2>&1 || true
+  "$ctl" disable --now sing-box.service >/dev/null 2>&1 || true
+
+  for name in \
+    sing-box.service \
+    vincula \
+    vcl \
+    config.json \
+    VERSION \
+    state.json \
+    users.json \
+    config.toml \
+    owner.uri \
+    sing-box.binary.sha256 \
+    install.manifest \
+    vincula-common.sh \
+    vincula-accountd.py \
+    vincula-stats.py \
+    vincula-audit.py \
+    vincula-backup.py \
+    telemetry_snapshot.py \
+    vincula-event.schema.json \
+    vincula-accountd.service \
+    events.jsonl; do
+    [[ -e "${dir}/${name}" || -L "${dir}/${name}" ]] || continue
+    case "$name" in
+      sing-box.service) path=$SYSTEMD_UNIT; mode=0644; owner=root; group=root ;;
+      vincula) path=$HELPER_PATH; mode=0755; owner=root; group=root ;;
+      vcl) path=$HELPER_ALIAS_PATH; mode=0755; owner=root; group=root ;;
+      config.json) path=$CONFIG_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
+      VERSION) path=$VERSION_FILE; mode=0644; owner=root; group=root ;;
+      state.json) path=$STATE_FILE; mode=0600; owner=root; group=root ;;
+      users.json) path=$USERS_FILE; mode=0600; owner=root; group=root ;;
+      config.toml) path=$SETTINGS_FILE; mode=0600; owner=root; group=root ;;
+      owner.uri) path=$URI_FILE; mode=0600; owner=root; group=root ;;
+      sing-box.binary.sha256) path=$CHECKSUM_FILE; mode=0644; owner=root; group=root ;;
+      install.manifest) path=$INSTALL_MANIFEST_FILE; mode=0644; owner=root; group=root ;;
+      vincula-common.sh) path=$COMMON_FILE; mode=0644; owner=root; group=root ;;
+      vincula-accountd.py) path=$ACCOUNTD_PY; mode=0644; owner=root; group=root ;;
+      vincula-stats.py) path=$STATS_PY; mode=0644; owner=root; group=root ;;
+      vincula-audit.py) path=$AUDIT_PY; mode=0644; owner=root; group=root ;;
+      vincula-backup.py) path=$BACKUP_PY; mode=0644; owner=root; group=root ;;
+      telemetry_snapshot.py) path=$TELEMETRY_PY; mode=0644; owner=root; group=root ;;
+      vincula-event.schema.json) path=$EVENT_SCHEMA_FILE; mode=0644; owner=root; group=root ;;
+      vincula-accountd.service) path=$ACCOUNTD_UNIT; mode=0644; owner=root; group=root ;;
+      events.jsonl) path=$EVENTS_JSONL_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
+      *) continue ;;
+    esac
+    mkdir -p -- "$(dirname -- "$path")"
+    if [[ -L "${dir}/${name}" ]]; then
+      rm -f -- "$path"
+      cp -a -- "${dir}/${name}" "$path"
+    else
+      install -m "$mode" -o "$owner" -g "$group" "${dir}/${name}" "$path"
+    fi
+  done
+
+  if [[ -f "${dir}/accounting.db" ]]; then
+    mkdir -p -- "$VAR_LIB_VINCULA"
+    rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
+    install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
+  fi
+
+  "$ctl" daemon-reload >/dev/null 2>&1 || true
+  "$ctl" enable --now sing-box.service >/dev/null 2>&1 || true
+  "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1 || true
+
+  if (( json )); then
+    python3 - "$dir" "$ver" <<'PY'
+import json, sys
+print(json.dumps({
+    "schema_version": 1,
+    "ok": True,
+    "mode": "in_place",
+    "path": sys.argv[1],
+    "restored_version": sys.argv[2],
+}, sort_keys=True))
+PY
+  else
+    printf 'upgrade rolled back to %s from %s\n' "$ver" "$dir"
+  fi
+}
+
+cmd_upgrade() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    checkpoint) cmd_upgrade_checkpoint "$@" ;;
+    rollback) cmd_upgrade_rollback "$@" ;;
+    -h|--help|"") cmd_upgrade_usage ;;
+    *) die "Unknown upgrade subcommand: ${sub}. Try 'vcl upgrade --help'." ;;
+  esac
+}
+
 cmd_link() {
   [[ -r "$URI_FILE" ]] || die "Owner URI is missing."
   cat "$URI_FILE"
@@ -3379,6 +3606,7 @@ main() {
         stats) cmd_stats "$@" ;;
         audit) cmd_audit "$@" ;;
         backup) cmd_backup "$@" ;;
+        upgrade) cmd_upgrade "$@" ;;
         *) die "Unknown command: ${command}. Run 'vcl help'." ;;
       esac
       ;;

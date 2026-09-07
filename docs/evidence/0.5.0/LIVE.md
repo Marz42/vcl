@@ -108,7 +108,10 @@ VCL_SOAK_LIVE=1 VCL_FLEET_HOME=… \
   bash scripts/soak-0.5.0-telemetry.sh NODE --live --iterations 1000
 ```
 
-Operator evidence (local, not committed): `~/vcl-rc-evidence/0.5.0-soak/<NODE>/SUMMARY.txt`.
+Operator evidence (local): `~/vcl-rc-evidence/0.5.0-soak/<NODE>/{SUMMARY.txt,DIGEST.json}`.
+In-repo redacted digest: [`SOAK.md`](SOAK.md).
+
+Gate (current script): missing metrics → **FAIL**; services must end **active**; RSS/FD growth bounded; no SKIP→PASS LIVE.
 
 | Field | Value |
 | --- | --- |
@@ -117,8 +120,9 @@ Operator evidence (local, not committed): `~/vcl-rc-evidence/0.5.0-soak/<NODE>/S
 | Iterations | 1000 |
 | Failures | 0 |
 | Elapsed | 3881 s |
-| Node state growth | **PASS** — state file count Δ0; sing-box/accountd NRestarts 0→0; active unchanged; state/accounting bytes Δ ≈344 KiB (live traffic; within 16 MiB slack) |
-| Outcome | **PASS LIVE** |
+| Node state growth | **PASS** (file count Δ0; NRestarts 0→0; bytes Δ≈344 KiB) under prior gate |
+| RSS / FD | **PENDING LIVE** (not in 2026-09-07 snapshot; re-run required) |
+| Outcome | **PARTIAL** (telemetry soak OK; tightened resource gate pending) |
 | Offline equiv | **PASS** — `soak050` block in test-fleet |
 
 ---

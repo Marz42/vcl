@@ -49,7 +49,7 @@ Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN rejec
 | `mix050` | mixed 0.3.x + 0.5.0 fleet; lax UNSUPPORTED + probe not ERROR |
 | `res050` | corrupt `operations.jsonl`; status/capabilities survive; module reload API intact |
 | `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures (**offline fixture**) |
-| Live soak | `scripts/soak-0.5.0-telemetry.sh` on real node — **PASS LIVE** 2026-09-07 (see [`LIVE.md`](LIVE.md)) |
+| Live soak | `scripts/soak-0.5.0-telemetry.sh` — 2026-09-07 historical metrics OK; RSS/FD gate **PENDING** re-run ([`SOAK.md`](SOAK.md)) |
 
 ## Failure injection
 
@@ -59,7 +59,7 @@ Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN rejec
 | oversize capabilities/telemetry | ERROR fail-closed |
 | malformed JSON (`badjson` alias) | ERROR |
 | upgrade migrate inject fail | apply exit ≠ 0; identity unchanged |
-| upgrade post-check / identity drift | restore attempt → **ROLLED_BACK** or **PARTIAL** + recovery |
+| upgrade post-check / identity drift | in-place `upgrade rollback` → **ROLLED_BACK** or **PARTIAL** + recovery |
 | upgrade plan off-allowlist | REFUSED, exit 1 |
 | Infinity / NaN in observation JSON | ERROR / schema reject |
 | bounded SSH hang / flood | TimeoutExpired within ~timeout |

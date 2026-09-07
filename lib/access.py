@@ -11,11 +11,11 @@ import ipaddress
 import json
 import os
 import re
-import selectors
 import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -414,9 +414,10 @@ def _ssh_run_bounded_stdout(
 ) -> subprocess.CompletedProcess[str]:
     """Capture SSH stdout with a hard byte cap and a hard wall-clock timeout.
 
-    Reads stdout/stderr concurrently via selectors so a stalled or endless
-    remote stream cannot bypass ``timeout`` (unlike blocking ``read()`` then
-    ``wait(timeout=...)``).
+    Drain pipes on background threads so a peer that emits a little then
+    stalls cannot wedge a blocking ``read(65536)`` past ``timeout`` (selectors
+    + blocking read is unsafe on some Windows pipe backends). The main thread
+    owns the deadline and kills the child when it expires.
     """
     if max_stdout_bytes < 0:
         raise ValueError("max_stdout_bytes must be >= 0")
@@ -435,12 +436,8 @@ def _ssh_run_bounded_stdout(
     err_chunks: list[bytes] = []
     out_total = 0
     err_total = 0
-    out_done = False
-    err_done = False
+    lock = threading.Lock()
     deadline = time.monotonic() + timeout
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ, "out")
-    sel.register(proc.stderr, selectors.EVENT_READ, "err")
 
     def _kill_and_timeout() -> None:
         proc.kill()
@@ -448,45 +445,56 @@ def _ssh_run_bounded_stdout(
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        raise subprocess.TimeoutExpired(
-            argv,
-            timeout,
-            output=b"".join(out_chunks),
-            stderr=b"".join(err_chunks),
-        )
+        with lock:
+            out = b"".join(out_chunks)
+            err = b"".join(err_chunks)
+        raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
 
+    def _drain(stream: Any, *, is_out: bool) -> None:
+        nonlocal out_total, err_total
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                with lock:
+                    if is_out:
+                        if out_total < limit:
+                            take = min(len(chunk), limit - out_total)
+                            if take:
+                                out_chunks.append(chunk[:take])
+                                out_total += take
+                        # Else discard: still drain so the peer can exit.
+                    else:
+                        if err_total < _SSH_BOUNDED_STDERR_MAX:
+                            take = min(len(chunk), _SSH_BOUNDED_STDERR_MAX - err_total)
+                            if take:
+                                err_chunks.append(chunk[:take])
+                                err_total += take
+        except (OSError, ValueError):
+            # Pipe closed after kill / process exit — expected.
+            return
+
+    t_out = threading.Thread(
+        target=_drain, args=(proc.stdout,), kwargs={"is_out": True}, daemon=True
+    )
+    t_err = threading.Thread(
+        target=_drain, args=(proc.stderr,), kwargs={"is_out": False}, daemon=True
+    )
+    t_out.start()
+    t_err.start()
     try:
-        while not (out_done and err_done):
+        while t_out.is_alive() or t_err.is_alive():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _kill_and_timeout()
-            events = sel.select(timeout=remaining)
-            if not events:
-                if time.monotonic() >= deadline:
+            slice_s = min(0.05, max(remaining, 0.0))
+            t_out.join(timeout=slice_s)
+            if t_err.is_alive():
+                err_left = deadline - time.monotonic()
+                if err_left <= 0:
                     _kill_and_timeout()
-                continue
-            for key, _mask in events:
-                chunk = key.fileobj.read(65536)
-                if not chunk:
-                    sel.unregister(key.fileobj)
-                    if key.data == "out":
-                        out_done = True
-                    else:
-                        err_done = True
-                    continue
-                if key.data == "out":
-                    if out_total < limit:
-                        take = min(len(chunk), limit - out_total)
-                        if take:
-                            out_chunks.append(chunk[:take])
-                            out_total += take
-                    # Else discard: still drain so the peer can exit before deadline.
-                else:
-                    if err_total < _SSH_BOUNDED_STDERR_MAX:
-                        take = min(len(chunk), _SSH_BOUNDED_STDERR_MAX - err_total)
-                        if take:
-                            err_chunks.append(chunk[:take])
-                            err_total += take
+                t_err.join(timeout=min(0.05, max(err_left, 0.0)))
         wait_left = deadline - time.monotonic()
         if wait_left <= 0:
             _kill_and_timeout()
@@ -504,10 +512,20 @@ def _ssh_run_bounded_stdout(
             pass
         raise
     finally:
-        sel.close()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
 
-    stdout_b = b"".join(out_chunks)
-    stderr_b = b"".join(err_chunks)
+    with lock:
+        stdout_b = b"".join(out_chunks)
+        stderr_b = b"".join(err_chunks)
     overflow = len(stdout_b) > max_stdout_bytes
     if overflow:
         stdout_b = stdout_b[:max_stdout_bytes]

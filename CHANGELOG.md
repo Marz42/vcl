@@ -15,12 +15,13 @@
 - 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
 - telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。
 - **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`；ZIP/tar epoch **钳制 ≥ 1980-01-01**（避免 CI 无 git 元数据时 epoch=0 崩溃）。
-- observation JSON 拒绝 `NaN`/`Infinity`；有界 SSH capture **遵守 timeout**（selectors 并发读 stdout/stderr）。
-- upgrade post-check 失败：尝试 typed `vcl restore` → **ROLLED_BACK**；restore 失败 → **PARTIAL** + recovery 指引。
+- observation JSON 拒绝 `NaN`/`Infinity`；有界 SSH capture：**线程 drain + deadline kill**（单字节后挂起不可绕过 timeout；含 Windows pipe）。
+- upgrade post-check 失败：`vcl upgrade checkpoint` + **`vcl upgrade rollback`**（原地、保留 identity/URI）→ **ROLLED_BACK**；失败 → **PARTIAL**（不再复用 fresh-node `vcl restore`）。
+- LIVE soak gate：缺失关键指标 **FAIL**；服务最终须 **active**；对照进程 RSS/FD；产出 `DIGEST.json`（[`docs/evidence/0.5.0/SOAK.md`](docs/evidence/0.5.0/SOAK.md)）。
 - **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
 ### Notes
 - Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。
-- Live Matrix：**L2–L5 PASS LIVE**；soak 1000× **PASS LIVE**（含状态增长测量）；**L1 PENDING LIVE**（fresh VPS 延后）→ **AC-5.0-10 PARTIAL**。
+- Live Matrix：**L2–L5 PASS LIVE**；soak 1000× 历史指标 OK、RSS/FD **PENDING** 复跑；**L1 PENDING LIVE** → **AC-5.0-10 PARTIAL**。
 - `VCL_FLEET_VERSION=0.5.0`；`VINCULA_VERSION=0.5.0`。
 
 ## 0.4.5 (2026-08-25)

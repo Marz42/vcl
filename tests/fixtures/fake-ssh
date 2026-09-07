@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 NODES = HERE / "nodes"
 
 FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
-KNOWN_KINDS = ("identity", "status", "verify", "capabilities", "telemetry_snapshot", "user", "audit", "backup", "restore")
+KNOWN_KINDS = ("identity", "status", "verify", "capabilities", "telemetry_snapshot", "user", "audit", "backup", "restore", "upgrade")
 NODE_PAYLOAD_VERSION = os.environ.get("VCL_FAKE_NODE_VERSION", "0.5.0").strip() or "0.5.0"
 NODE_TARBALL_BASENAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 USER_ID_RE = re.compile(
@@ -1075,12 +1075,8 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         return 1
     node_dir = _alias_dir(alias)
     if (node_dir / "VERSION").is_file():
-        # Upgrade post-check rollback: allow typed restore after migrate committed.
-        if os.environ.get("VCL_FAKE_UPGRADE", "").strip() == "1":
-            (node_dir / "VERSION").unlink(missing_ok=True)
-        else:
-            sys.stderr.write("ERROR: Refusing to overwrite an existing Vincula install.\n")
-            return 1
+        sys.stderr.write("ERROR: Refusing to overwrite an existing Vincula install.\n")
+        return 1
     backup = _load_backup()
     if backup is None:
         sys.stderr.write("fake-ssh: vincula-backup.py not found\n")
@@ -1166,6 +1162,141 @@ def _handle_restore(alias: str, host: str, argv: list[str]) -> int:
         sys.stdout.write(f"instance_id: {plan['new_instance_id']}\n")
         sys.stdout.write(f"reissue_csv: {csv_remote}\n")
     return 0
+
+
+def _handle_upgrade(alias: str, argv: list[str]) -> int:
+    """In-place upgrade checkpoint / rollback (not fresh-node restore)."""
+    import shutil
+
+    if not argv:
+        sys.stderr.write("fake-ssh: usage: vcl upgrade checkpoint|rollback …\n")
+        return 1
+    sub = argv[0]
+    as_json = "--json" in argv
+    if _state_root() is None:
+        sys.stderr.write("fake-ssh: VCL_FAKE_STATE_DIR is required for upgrade\n")
+        return 1
+    node_dir = _alias_dir(alias)
+    if sub == "checkpoint":
+        if not (node_dir / "VERSION").is_file():
+            sys.stderr.write("fake-ssh: upgrade checkpoint requires VERSION\n")
+            return 1
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ck = node_dir / "upgrade-checkpoints" / f"upgrade-checkpoint-{stamp}"
+        ck.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "VERSION",
+            "state.json",
+            "users.json",
+            "identity.json",
+            "config.toml",
+            "owner.uri",
+            "config.json",
+            "accounting.db",
+        ):
+            src = node_dir / name
+            if src.is_file():
+                shutil.copy2(src, ck / name)
+        ver = (node_dir / "VERSION").read_text(encoding="utf-8").strip()
+        (ck / ".vincula-upgrade-checkpoint").write_text(
+            f"project=vincula\ntype=upgrade-checkpoint\nsource_version={ver}\n",
+            encoding="utf-8",
+        )
+        # Absolute-looking path for controller JSON (fake host path).
+        remote_path = f"/var/backups/vincula/upgrade-checkpoint-{stamp}"
+        # Remember mapping so rollback can resolve the fake path.
+        map_file = node_dir / "upgrade-checkpoints" / "path-map.json"
+        mapping: dict[str, str] = {}
+        if map_file.is_file():
+            try:
+                mapping = json.loads(map_file.read_text(encoding="utf-8"))
+            except Exception:
+                mapping = {}
+        mapping[remote_path] = str(ck)
+        _write_json(map_file, mapping)
+        result = {
+            "schema_version": 1,
+            "ok": True,
+            "mode": "in_place",
+            "path": remote_path,
+            "source_version": ver,
+            "created_at": stamp,
+        }
+        if as_json:
+            _emit_json(result)
+        else:
+            sys.stdout.write(f"upgrade checkpoint written: {remote_path}\n")
+        return 0
+    if sub == "rollback":
+        rest = [a for a in argv[1:] if a != "--json"]
+        if not rest:
+            sys.stderr.write("fake-ssh: usage: vcl upgrade rollback DIR [--json]\n")
+            return 1
+        remote_path = rest[0]
+        map_file = node_dir / "upgrade-checkpoints" / "path-map.json"
+        ck: Path | None = None
+        if map_file.is_file():
+            try:
+                mapping = json.loads(map_file.read_text(encoding="utf-8"))
+                mapped = mapping.get(remote_path)
+                if mapped:
+                    ck = Path(mapped)
+            except Exception:
+                ck = None
+        if ck is None:
+            candidate = Path(remote_path)
+            if candidate.is_dir():
+                ck = candidate
+        if ck is None or not ck.is_dir():
+            sys.stderr.write(f"fake-ssh: upgrade checkpoint not found: {remote_path}\n")
+            return 1
+        marker = ck / ".vincula-upgrade-checkpoint"
+        if not marker.is_file():
+            sys.stderr.write("fake-ssh: not an upgrade checkpoint\n")
+            return 1
+        ver_src = ck / "VERSION"
+        if not ver_src.is_file():
+            sys.stderr.write("fake-ssh: checkpoint missing VERSION\n")
+            return 1
+        for name in (
+            "VERSION",
+            "state.json",
+            "users.json",
+            "identity.json",
+            "config.toml",
+            "owner.uri",
+            "config.json",
+            "accounting.db",
+        ):
+            src = ck / name
+            if src.is_file():
+                shutil.copy2(src, node_dir / name)
+        # Keep identity.json vincula_version aligned with restored VERSION.
+        ver = ver_src.read_text(encoding="utf-8").strip()
+        ident_path = node_dir / "identity.json"
+        if ident_path.is_file():
+            try:
+                ident = json.loads(ident_path.read_text(encoding="utf-8"))
+                if isinstance(ident, dict):
+                    ident["vincula_version"] = ver
+                    _write_json(ident_path, ident)
+            except Exception:
+                pass
+        result = {
+            "schema_version": 1,
+            "ok": True,
+            "mode": "in_place",
+            "path": remote_path,
+            "restored_version": ver,
+        }
+        if as_json:
+            _emit_json(result)
+        else:
+            sys.stdout.write(f"upgrade rolled back to {ver}\n")
+        return 0
+    shown = " ".join(["vcl", "upgrade", *argv]).strip()
+    sys.stderr.write(f"fake-ssh: unimplemented: {shown}\n")
+    return 1
 
 
 def _fake_fs_path(alias: str, remote_path: str) -> Path:
@@ -1750,6 +1881,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_backup(alias, rest)
     if kind == "restore":
         return _handle_restore(alias, host, rest)
+    if kind == "upgrade":
+        return _handle_upgrade(alias, rest)
     if kind == "capabilities":
         if not _observation_supported(alias):
             return _unsupported_vcl_command(remote)
