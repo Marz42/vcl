@@ -14919,8 +14919,6 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
-    if remote_cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
-        return "ERROR", None, "checkpoint mocked fail"
     if remote_cmd[:2] == ["vcl", "backup"]:
         return "ERROR", None, "backup mocked fail"
     return "ERROR", None, "unexpected " + " ".join(remote_cmd)
@@ -14949,7 +14947,7 @@ except SystemExit:
     pass
 assert msgs, "die not called"
 assert "observe denied" not in msgs[0], msgs[0]
-assert "checkpoint" in msgs[0].lower(), msgs[0]
+assert "backup" in msgs[0].lower(), msgs[0]
 PY
 
 # Upgrade: post-check verify fail after migrate → PARTIAL (no silent SUCCESS)
@@ -15008,10 +15006,16 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
-    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
-        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/tmp/b.tgz"}, ""
+    # Staged 0.5 helper (not installed 0.3.x vcl)
+    if (
+        len(cmd) >= 4
+        and cmd[0] == "bash"
+        and str(cmd[1]).endswith("/bin/vincula")
+        and cmd[2:4] == ["upgrade", "checkpoint"]
+    ):
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "verify"]:
         return "OK", {"ok": False, "detail": "health fail"}, "verify soft-fail"
     if cmd[:3] == ["vcl", "upgrade", "rollback"]:
@@ -15097,10 +15101,15 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
-    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
-        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/var/backups/vincula/backup.tar"}, ""
+    if (
+        len(cmd) >= 4
+        and cmd[0] == "bash"
+        and str(cmd[1]).endswith("/bin/vincula")
+        and cmd[2:4] == ["upgrade", "checkpoint"]
+    ):
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:2] == ["vcl", "verify"]:
         return "OK", {"ok": False, "detail": "health fail"}, "verify soft-fail"
     if cmd[:3] == ["vcl", "upgrade", "rollback"]:
@@ -15139,6 +15148,122 @@ assert result.get("backup_path") == "/var/backups/vincula/backup.tar", result
 assert "verify" in (result.get("post_check_detail") or "").lower(), result
 assert isinstance(result.get("rollback"), dict), result
 assert result["rollback"].get("ok") is True
+PY
+
+# Upgrade checkpoint must use staged 0.5 helper argv (0.3.x installed vcl has no upgrade).
+assert_success "obs050 upgrade checkpoint uses staged helper not installed vcl" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, os
+from pathlib import Path
+
+fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
+spec = importlib.util.spec_from_file_location("fleet", fleet_path)
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+upg = fleet.load_node_upgrade_module()
+
+class FakeProv:
+    NODE_PAYLOAD_VERSION = "0.5.0"
+
+    def _resolve_privilege_mode(self, **kwargs):
+        return "root"
+
+    def resolve_node_payload(self):
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+
+    def verify_local_payload(self, resolved):
+        return None
+
+    def _create_remote_stage(self, **kwargs):
+        return "/tmp/vcl-stage"
+
+    def upload_and_verify_remote_payload(self, *a, **k):
+        return None
+
+    def _remote_stage_paths(self, stage):
+        return {
+            "tar": f"{stage}/payload.tar.gz",
+            "unpack": f"{stage}/vincula-node-0.5.0",
+        }
+
+    def installer_remote_argv(self, path, **kwargs):
+        return ["bash", path]
+
+    def _cleanup_remote_stage(self, *a, **k):
+        return None
+
+class FakeProc:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+calls = []
+ident_n = {"n": 0}
+
+def fake_obs(node, remote_cmd, **kwargs):
+    cmd = list(remote_cmd)
+    calls.append(cmd)
+    if cmd[:2] == ["vcl", "identity"]:
+        ident_n["n"] += 1
+        ver = "0.3.1" if ident_n["n"] == 1 else "0.5.0"
+        return (
+            "OK",
+            {
+                "vincula_version": ver,
+                "node_id": node["node_id"],
+                "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+            "",
+        )
+    if cmd[:2] == ["vcl", "backup"]:
+        return "OK", {"ok": True, "path": "/tmp/b.tgz"}, ""
+    if (
+        len(cmd) >= 4
+        and cmd[0] == "bash"
+        and cmd[1].endswith("/bin/vincula")
+        and cmd[2:4] == ["upgrade", "checkpoint"]
+    ):
+        assert cmd[1] == "/tmp/vcl-stage/vincula-node-0.5.0/bin/vincula", cmd
+        return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
+    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+        raise AssertionError(f"must not call installed vcl upgrade checkpoint: {cmd}")
+    if cmd[:2] == ["vcl", "verify"]:
+        return "OK", {"ok": True}, ""
+    if cmd[:2] == ["vcl", "capabilities"]:
+        return (
+            "OK",
+            {
+                "schema": "capabilities/v1",
+                "node_version": "0.5.0",
+                "capabilities": ["telemetry/v1"],
+            },
+            "",
+        )
+    return "ERROR", None, "unexpected " + " ".join(cmd)
+
+fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
+fleet.load_provision_module = lambda: FakeProv()  # type: ignore[attr-defined]
+fleet.node_identity_file_for_class = lambda node, cls: None  # type: ignore[attr-defined]
+fleet.ssh_run = lambda *a, **k: FakeProc()  # type: ignore[attr-defined]
+fleet.SSH_BACKUP_TIMEOUT_SECONDS = 1
+fleet.SSH_MUTATION_TIMEOUT_SECONDS = 1
+upg.bind(fleet)
+node = {
+    "name": "n",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "h",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+result = upg.run_upgrade_apply(node, confirmed=True)
+assert result.get("state") == "SUCCESS", (result, calls)
+assert not any(c[:3] == ["vcl", "upgrade", "checkpoint"] for c in calls), calls
+assert any(
+    c[:1] == ["bash"] and c[2:4] == ["upgrade", "checkpoint"] for c in calls
+), calls
+src = (Path(os.environ["PROJECT_DIR"]) / "lib/node_upgrade.py").read_text(encoding="utf-8")
+assert '["bash", staged_helper, "upgrade", "checkpoint"' in src
+assert '["vcl", "upgrade", "checkpoint"' not in src
 PY
 
 # Upgrade: identity drift (node_id change) after migrate → PARTIAL
@@ -15212,7 +15337,12 @@ def fake_obs(node, remote_cmd, **kwargs):
         )
     if cmd[:2] == ["vcl", "backup"]:
         return "OK", {"ok": True, "path": "/tmp/b.tgz"}, ""
-    if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
+    if (
+        len(cmd) >= 4
+        and cmd[0] == "bash"
+        and str(cmd[1]).endswith("/bin/vincula")
+        and cmd[2:4] == ["upgrade", "checkpoint"]
+    ):
         return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:3] == ["vcl", "upgrade", "rollback"]:
         # Force PARTIAL: in-place rollback also fails after identity drift.
@@ -15595,6 +15725,27 @@ rs = subprocess.run(
 )
 assert rs.returncode != 0
 assert "Refusing" in (rs.stderr or "")
+# Staged helper argv (controller apply path on 0.3.x nodes).
+ck2 = subprocess.run(
+    [
+        sys.executable,
+        str(fake),
+        "root@203.0.113.10",
+        "--",
+        "bash",
+        "/tmp/stage/vincula-node-0.5.0/bin/vincula",
+        "upgrade",
+        "checkpoint",
+        "--json",
+    ],
+    capture_output=True,
+    text=True,
+    env=env,
+    check=False,
+)
+assert ck2.returncode == 0, ck2.stderr
+doc2 = json.loads(ck2.stdout)
+assert doc2.get("ok") is True and doc2.get("path"), doc2
 PY
 
 export VCL_FLEET_HOME="$OBS050_SAVED_HOME"

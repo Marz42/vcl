@@ -6545,6 +6545,97 @@ else
   fail "vcl backup unknown subcommand dies (rc=${bogus_rc}, err='${bogus_err}')"
 fi
 
+# --- 0.5.0 upgrade checkpoint / fail-closed rollback ---
+assert_success "helper implements upgrade checkpoint" \
+  grep -q '^cmd_upgrade_checkpoint()' "${PROJECT_DIR}/bin/vincula"
+assert_success "helper rollback verifies service active" \
+  grep -q 'service_not_active' "${PROJECT_DIR}/bin/vincula"
+assert_success "controller stages checkpoint via bash unpack helper" \
+  grep -q 'staged_helper' "${PROJECT_DIR}/lib/node_upgrade.py"
+assert_success "controller does not call installed vcl upgrade checkpoint" \
+  python3 - "${PROJECT_DIR}/lib/node_upgrade.py" <<'PY'
+from pathlib import Path
+import sys
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+assert '["bash", staged_helper, "upgrade", "checkpoint"' in src
+assert '["vcl", "upgrade", "checkpoint"' not in src
+PY
+
+upg_cli_root="${TEST_TMP}/upgrade-cli"
+upg_state="${upg_cli_root}/state"
+upg_backups="${upg_cli_root}/backups"
+upg_ctl="${upg_cli_root}/fake-systemctl"
+mkdir -p "${upg_cli_root}/bin" "$upg_state" "$upg_backups"
+ln -sfn "${PROJECT_DIR}/lib" "${upg_cli_root}/lib"
+sed -e 's|^main "$@"$|cmd_upgrade "$@"|' \
+    "${PROJECT_DIR}/bin/vincula" > "${upg_cli_root}/bin/vincula"
+chmod +x "${upg_cli_root}/bin/vincula"
+printf '%s\n' "0.3.1" > "${upg_state}/VERSION"
+printf '%s\n' '{"project_version":"0.3.1","node":{"node_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}' \
+  > "${upg_state}/state.json"
+cat > "$upg_ctl" <<'EOF'
+#!/bin/sh
+# Default: pretend success. VCL_FAKE_CTL_FAIL_ACTIVE=1 → is-active fails.
+case " $* " in
+  *" is-active "*)
+    if [ "${VCL_FAKE_CTL_FAIL_ACTIVE:-0}" = "1" ]; then exit 1; fi
+    exit 0
+    ;;
+  *" is-enabled "*) exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$upg_ctl"
+cli_upgrade() {
+  VCL_STATE_DIR="$upg_state" \
+  VCL_BACKUP_ROOT="$upg_backups" \
+  VCL_ACCOUNTING_DB_FILE="${upg_state}/accounting.db" \
+  VCL_SYSTEMCTL="$upg_ctl" \
+  VCL_UPGRADE_SKIP_SERVICE="${VCL_UPGRADE_SKIP_SERVICE:-0}" \
+    "${upg_cli_root}/bin/vincula" "$@"
+}
+upg_ck_rc=0
+upg_ck_out=$(cli_upgrade checkpoint --json 2>/dev/null) || upg_ck_rc=$?
+upg_ck_path=""
+if (( upg_ck_rc == 0 )); then
+  upg_ck_path=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["path"])' "$upg_ck_out")
+fi
+if (( upg_ck_rc == 0 )) && [[ -n "$upg_ck_path" && -f "${upg_ck_path}/.vincula-upgrade-checkpoint" ]]; then
+  pass "vcl upgrade checkpoint writes atomic unique dir"
+else
+  fail "vcl upgrade checkpoint writes atomic unique dir (rc=${upg_ck_rc} out=${upg_ck_out})"
+fi
+# Distinct second checkpoint must not reuse the first directory.
+upg_ck2_out=$(cli_upgrade checkpoint --json 2>/dev/null) || true
+upg_ck2_path=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["path"])' "$upg_ck2_out" 2>/dev/null || true)
+if [[ -n "$upg_ck2_path" && "$upg_ck2_path" != "$upg_ck_path" ]]; then
+  pass "vcl upgrade checkpoint directories are unique"
+else
+  fail "vcl upgrade checkpoint directories are unique ('${upg_ck_path}' vs '${upg_ck2_path}')"
+fi
+printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+upg_rb_ok_rc=0
+VCL_UPGRADE_SKIP_SERVICE=1 cli_upgrade rollback "$upg_ck_path" --json >/dev/null 2>&1 || upg_rb_ok_rc=$?
+if (( upg_rb_ok_rc == 0 )) && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.3.1" ]]; then
+  pass "vcl upgrade rollback restores VERSION with skip-service"
+else
+  fail "vcl upgrade rollback restores VERSION with skip-service (rc=${upg_rb_ok_rc})"
+fi
+printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+upg_rb_fail_rc=0
+upg_rb_fail_out=$(
+  VCL_FAKE_CTL_FAIL_ACTIVE=1 VCL_UPGRADE_SKIP_SERVICE=0 \
+    cli_upgrade rollback "$upg_ck_path" --json 2>/dev/null
+) || upg_rb_fail_rc=$?
+upg_rb_fail_parse=1
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("ok") is False; assert "service" in (d.get("error") or "")' \
+  "$upg_rb_fail_out" 2>/dev/null && upg_rb_fail_parse=0 || true
+if (( upg_rb_fail_rc != 0 && upg_rb_fail_parse == 0 )); then
+  pass "vcl upgrade rollback fail-closes when service not active"
+else
+  fail "vcl upgrade rollback fail-closes when service not active (rc=${upg_rb_fail_rc} out=${upg_rb_fail_out})"
+fi
+
 # --- 0.3.0 vcl restore (fresh-node, reissue, transaction) ---
 assert_success "helper implements cmd_restore" \
   grep -q '^cmd_restore()' "${PROJECT_DIR}/bin/vincula"

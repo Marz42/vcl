@@ -124,9 +124,9 @@ Usage:
   vcl backup verify FILE [--age-identity FILE] [--json]
   vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
   vcl upgrade checkpoint [--json]
-                        In-place upgrade checkpoint (preserves identity/URI)
+                        In-place upgrade checkpoint via helper (staged on apply)
   vcl upgrade rollback DIR [--json]
-                        Roll back to an upgrade checkpoint on this node
+                        Roll back to an upgrade checkpoint; fail-closed on services
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
   vcl version          Print vincula and sing-box versions
@@ -3316,9 +3316,12 @@ vcl upgrade — in-place Node firmware checkpoint / rollback
   vcl upgrade checkpoint [--json]
   vcl upgrade rollback DIR [--json]
 
-checkpoint copies identity-critical files under $BACKUP_ROOT/upgrade-checkpoint-<UTC>/.
-rollback restores from that directory onto the existing install (does not refuse VERSION;
-does not mint a new instance_id or rotate URI credentials).
+checkpoint copies identity-critical files under an atomic unique directory in
+$BACKUP_ROOT/ (upgrade-checkpoint-<UTC>.XXXXXX). Controller apply invokes this
+from the *staged* 0.5 helper so 0.3.1/0.3.2 installed helpers need no upgrade CLI.
+rollback restores from that directory onto the existing install (does not refuse
+VERSION; does not mint a new instance_id or rotate URI credentials). Rollback
+fail-closes unless services are enabled+active and VERSION/identity match.
 HELP
 }
 
@@ -3338,10 +3341,13 @@ cmd_upgrade_checkpoint() {
   ver=$(tr -d '[:space:]' <"$VERSION_FILE")
   [[ -n "$ver" ]] || die "VERSION is empty"
 
+  acquire_vincula_op_lock || die "cannot acquire Vincula operation lock for upgrade checkpoint"
+
   stamp=$(date -u +'%Y%m%dT%H%M%SZ')
-  dest="${BACKUP_ROOT}/upgrade-checkpoint-${stamp}"
-  install -d -o root -g root -m 0700 "$BACKUP_ROOT"
-  install -d -o root -g root -m 0700 "$dest"
+  install -d -m 0700 "$BACKUP_ROOT"
+  dest=$(mktemp -d "${BACKUP_ROOT}/upgrade-checkpoint-${stamp}.XXXXXX") \
+    || die "cannot create upgrade checkpoint directory"
+  chmod 0700 "$dest"
 
   for path in \
     "$SYSTEMD_UNIT" \
@@ -3386,6 +3392,7 @@ PY
     fi
   fi
 
+  # Marker last so incomplete dirs are never treated as valid checkpoints.
   cat > "${dest}/${UPGRADE_CHECKPOINT_MARKER}" <<EOF
 project=vincula
 type=upgrade-checkpoint
@@ -3413,7 +3420,8 @@ PY
 
 cmd_upgrade_rollback() {
   local json=0 dir="" name path mode owner group ver
-  local ctl=systemctl
+  local ctl=${VCL_SYSTEMCTL:-systemctl}
+  local expect_node_id="" expect_instance_id="" got_node_id="" got_instance_id=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3436,6 +3444,27 @@ cmd_upgrade_rollback() {
   [[ -f "${dir}/VERSION" ]] || die "checkpoint missing VERSION: $dir"
   ver=$(tr -d '[:space:]' <"${dir}/VERSION")
   [[ -n "$ver" ]] || die "checkpoint VERSION is empty"
+
+  if [[ -f "${dir}/state.json" ]]; then
+    expect_node_id=$(json_quoted_field "${dir}/state.json" node_id 2>/dev/null || true)
+    expect_instance_id=$(json_quoted_field "${dir}/state.json" instance_id 2>/dev/null || true)
+  fi
+
+  acquire_vincula_op_lock || die "cannot acquire Vincula operation lock for upgrade rollback"
+
+  emit_upgrade_rollback_failure() {
+    local error=$1
+    if (( json )); then
+      python3 -c 'import json,sys; print(json.dumps({"schema_version":1,"ok":False,"mode":"in_place","error":sys.argv[1]},ensure_ascii=False,sort_keys=True))' "$error"
+    fi
+  }
+
+  upgrade_rollback_fail() {
+    local msg=$1
+    local error=${2:-failed}
+    emit_upgrade_rollback_failure "$error"
+    die "$msg"
+  }
 
   "$ctl" disable --now vincula-accountd.service >/dev/null 2>&1 || true
   "$ctl" disable --now sing-box.service >/dev/null 2>&1 || true
@@ -3489,20 +3518,69 @@ cmd_upgrade_rollback() {
     if [[ -L "${dir}/${name}" ]]; then
       rm -f -- "$path"
       cp -a -- "${dir}/${name}" "$path"
-    else
+    elif (( EUID == 0 )); then
       install -m "$mode" -o "$owner" -g "$group" "${dir}/${name}" "$path"
+    else
+      install -m "$mode" "${dir}/${name}" "$path"
     fi
   done
 
   if [[ -f "${dir}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
     rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
-    install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
+    if (( EUID == 0 )); then
+      install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
+    else
+      install -m 0640 "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
+    fi
   fi
 
-  "$ctl" daemon-reload >/dev/null 2>&1 || true
-  "$ctl" enable --now sing-box.service >/dev/null 2>&1 || true
-  "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1 || true
+  [[ -f "$VERSION_FILE" ]] || upgrade_rollback_fail "VERSION missing after rollback" "version_missing"
+  [[ "$(tr -d '[:space:]' <"$VERSION_FILE")" == "$ver" ]] \
+    || upgrade_rollback_fail "VERSION mismatch after rollback" "version_mismatch"
+
+  if [[ -n "$expect_node_id" || -n "$expect_instance_id" ]]; then
+    got_node_id=$(json_quoted_field "$STATE_FILE" node_id 2>/dev/null || true)
+    got_instance_id=$(json_quoted_field "$STATE_FILE" instance_id 2>/dev/null || true)
+    if [[ -n "$expect_node_id" && "$got_node_id" != "$expect_node_id" ]]; then
+      upgrade_rollback_fail "node_id mismatch after rollback" "identity_mismatch"
+    fi
+    if [[ -n "$expect_instance_id" && "$got_instance_id" != "$expect_instance_id" ]]; then
+      upgrade_rollback_fail "instance_id mismatch after rollback" "identity_mismatch"
+    fi
+  fi
+
+  if [[ -x "$BINARY_PATH" && -f "$CONFIG_FILE" ]]; then
+    if ! "$BINARY_PATH" check -c "$CONFIG_FILE" >/dev/null 2>&1; then
+      upgrade_rollback_fail "sing-box check failed after rollback" "config_check_failed"
+    fi
+  fi
+
+  if [[ "${VCL_UPGRADE_SKIP_SERVICE:-}" == "1" ]]; then
+    :
+  else
+    if ! "$ctl" daemon-reload >/dev/null 2>&1; then
+      upgrade_rollback_fail "daemon-reload failed after rollback" "daemon_reload_failed"
+    fi
+    if ! "$ctl" enable --now sing-box.service >/dev/null 2>&1; then
+      upgrade_rollback_fail "failed to enable sing-box after rollback" "service_enable_failed"
+    fi
+    if ! "$ctl" enable --now vincula-accountd.service >/dev/null 2>&1; then
+      upgrade_rollback_fail "failed to enable vincula-accountd after rollback" "service_enable_failed"
+    fi
+    if ! "$ctl" is-enabled --quiet sing-box.service; then
+      upgrade_rollback_fail "sing-box.service is not enabled after rollback" "service_not_enabled"
+    fi
+    if ! "$ctl" is-active --quiet sing-box.service; then
+      upgrade_rollback_fail "sing-box.service is not active after rollback" "service_not_active"
+    fi
+    if ! "$ctl" is-enabled --quiet vincula-accountd.service; then
+      upgrade_rollback_fail "vincula-accountd.service is not enabled after rollback" "service_not_enabled"
+    fi
+    if ! "$ctl" is-active --quiet vincula-accountd.service; then
+      upgrade_rollback_fail "vincula-accountd.service is not active after rollback" "service_not_active"
+    fi
+  fi
 
   if (( json )); then
     python3 - "$dir" "$ver" <<'PY'

@@ -186,7 +186,7 @@ def run_upgrade_plan(
         "target_version": target,
         "allowlist_ok": is_upgrade_allowed(current, target),
         "checks": checks,
-        "backup": "remote secretless vcl backup create + vcl upgrade checkpoint",
+        "backup": "remote secretless vcl backup create + staged 0.5 helper upgrade checkpoint",
         "rollback": "vincula.sh migrate EXIT trap + vcl upgrade rollback <checkpoint>",
         "outage_budget_seconds": OUTAGE_BUDGET_SECONDS,
         "credential_class": credential_class,
@@ -249,24 +249,9 @@ def run_upgrade_apply(
         extra=extra,
     )
 
-    # In-place identity-preserving checkpoint (required for post-check rollback).
-    # Fresh-node ``vcl restore`` is not used: it refuses existing VERSION and
-    # secretless restore rotates URI credentials / mints a new instance_id.
-    ssh_state, ck_doc, ck_detail = _ssh_json(
-        node,
-        ["vcl", "upgrade", "checkpoint", "--json"],
-        credential_class="admin",
-        timeout=host.SSH_BACKUP_TIMEOUT_SECONDS,
-        require_exit_0=True,
-    )
-    if ssh_state != "OK" or not isinstance(ck_doc, dict) or ck_doc.get("ok") is not True:
-        host.die(
-            f"upgrade checkpoint failed: {ck_detail or 'remote checkpoint failed'}"
-        )
-    checkpoint_path = _optional_backup_path(ck_doc)
-    if not checkpoint_path:
-        host.die("upgrade checkpoint failed: missing path in JSON response")
-
+    # Secretless archive on the *installed* helper (0.3.1+ has ``vcl backup``).
+    # Do NOT call ``vcl upgrade checkpoint`` on the installed helper: 0.3.1/0.3.2
+    # helpers have no ``upgrade`` subcommand, so apply would die before staging.
     backup_path: Optional[str] = None
     if not skip_backup:
         ssh_state, backup_doc, backup_detail = _ssh_json(
@@ -295,6 +280,7 @@ def run_upgrade_apply(
         identity_file=identity_file,
         extra=extra,
     )
+    checkpoint_path: Optional[str] = None
     migrate_committed = False
     try:
         prov.upload_and_verify_remote_payload(
@@ -318,6 +304,29 @@ def run_upgrade_apply(
         )
         if tar_proc.returncode != 0:
             host.die(f"remote tar unpack failed: {host._ssh_failure_detail(tar_proc)}")
+
+        # In-place checkpoint via the *staged* 0.5 helper (not the installed 0.3.x
+        # vcl). Fresh-node restore is unused: it refuses VERSION and rotates URI.
+        staged_helper = f"{paths['unpack']}/bin/vincula"
+        ssh_state, ck_doc, ck_detail = _ssh_json(
+            node,
+            ["bash", staged_helper, "upgrade", "checkpoint", "--json"],
+            credential_class="admin",
+            timeout=host.SSH_BACKUP_TIMEOUT_SECONDS,
+            require_exit_0=True,
+        )
+        if (
+            ssh_state != "OK"
+            or not isinstance(ck_doc, dict)
+            or ck_doc.get("ok") is not True
+        ):
+            host.die(
+                f"upgrade checkpoint failed: {ck_detail or 'remote checkpoint failed'}"
+            )
+        checkpoint_path = _optional_backup_path(ck_doc)
+        if not checkpoint_path:
+            host.die("upgrade checkpoint failed: missing path in JSON response")
+
         install_argv = prov.installer_remote_argv(
             f"{paths['unpack']}/vincula.sh",
             privilege_mode=privilege_mode,
@@ -346,6 +355,9 @@ def run_upgrade_apply(
             identity_file=identity_file,
             extra=extra,
         )
+
+    if not checkpoint_path:
+        host.die("upgrade checkpoint path missing after staging")
 
     def _finished_base() -> dict[str, Any]:
         return {
