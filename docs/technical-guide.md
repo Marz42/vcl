@@ -292,6 +292,7 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
+| 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |
 | 0.4.4 | 0.3.1 | 0.3.1 | UI v2 |
 | ≤0.4.3 | 见当时 evidence | — | 历史 |
@@ -345,7 +346,7 @@ CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
 - 多节点 mutation **无**分布式 rollback（PARTIAL exit 2）。
 - UI 不执行变更。
 - 离线 `register` 不验证远端身份，直至 adopt/probe。
-- 0.5.x 路线图（telemetry、observe credential 等）见 [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md)；**以代码版本戳为准**，该 draft 内历史戳可能落后。
+- 0.5.x 规划见 [`specs/VCL_0.5-0.7_Master_SPEC.md`](specs/VCL_0.5-0.7_Master_SPEC.md) 与 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md)；历史决策见 [`specs/vcl-spec-v0.4-v0.5-rev1.md`](specs/vcl-spec-v0.4-v0.5-rev1.md)。**以代码版本戳为准**。
 
 ---
 

@@ -33,6 +33,11 @@ FILES=(
   lib/access.py
   lib/trust.py
   lib/legacy.py
+  lib/ssh_transport.py
+  lib/node_upgrade.py
+  lib/observation/capabilities.py
+  lib/observation/telemetry.py
+  lib/observation/schema_validate.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -114,9 +119,52 @@ while read -r digest path; do
 done < "${OUT}/controller.lock"
 
 rm -f -- "$ARCHIVE" "$SIDECAR"
+# ZIP local-file dates cannot precede 1980-01-01; clamp when git metadata is absent
+# (e.g. some CI containers where `git log` fails → epoch 0).
+ZIP_EPOCH_MIN=315532800
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '%s' "$ZIP_EPOCH_MIN")}"
+if [[ "$SOURCE_DATE_EPOCH" -lt "$ZIP_EPOCH_MIN" ]]; then
+  SOURCE_DATE_EPOCH="$ZIP_EPOCH_MIN"
+fi
+export SOURCE_DATE_EPOCH
 (
   cd "$DIST_ROOT"
-  python3 -m zipfile -c "$(basename "$ARCHIVE")" "$NAME"
+  python3 - "$NAME" "$(basename "$ARCHIVE")" "$SOURCE_DATE_EPOCH" <<'PY'
+import datetime
+import os
+import sys
+import zipfile
+from pathlib import Path
+
+prefix, archive_name, epoch_s = sys.argv[1], sys.argv[2], int(sys.argv[3])
+root = Path(prefix)
+# ZIP does not support timestamps before 1980-01-01 UTC.
+ZIP_EPOCH_MIN = 315532800
+epoch_s = max(epoch_s, ZIP_EPOCH_MIN)
+ts = datetime.datetime.fromtimestamp(epoch_s, tz=datetime.timezone.utc)
+date_time = (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second)
+
+files: list[Path] = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames.sort()
+    for name in sorted(filenames):
+        files.append(Path(dirpath) / name)
+files.sort(key=lambda p: p.as_posix())
+
+with zipfile.ZipFile(archive_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in files:
+        arc = path.as_posix()
+        info = zipfile.ZipInfo(arc, date_time=date_time)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 3  # Unix
+        data = path.read_bytes()
+        # Normalize executable bit for bin/vcl-fleet
+        if path.name == "vcl-fleet" and "bin/" in arc:
+            info.external_attr = (0o755 << 16)
+        else:
+            info.external_attr = (0o644 << 16)
+        zf.writestr(info, data)
+PY
 )
 
 python3 - "$ARCHIVE" "$NAME" "$NODE_VER" <<'PY'
@@ -139,6 +187,11 @@ need = (
     f"{prefix}/lib/access.py",
     f"{prefix}/lib/trust.py",
     f"{prefix}/lib/legacy.py",
+    f"{prefix}/lib/ssh_transport.py",
+    f"{prefix}/lib/node_upgrade.py",
+    f"{prefix}/lib/observation/capabilities.py",
+    f"{prefix}/lib/observation/telemetry.py",
+    f"{prefix}/lib/observation/schema_validate.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",

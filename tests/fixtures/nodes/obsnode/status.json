@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "proxy": {
+    "ok": true,
+    "sing_box_active": true,
+    "port_listening": true,
+    "port_owned": true
+  },
+  "accounting": {
+    "ok": true,
+    "service_active": true,
+    "heartbeat": "fresh",
+    "heartbeat_age_seconds": 5
+  }
+}

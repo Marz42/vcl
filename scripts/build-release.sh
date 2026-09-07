@@ -27,6 +27,7 @@ FILES=(
   lib/vincula-stats.py
   lib/vincula-audit.py
   lib/vincula-backup.py
+  lib/telemetry_snapshot.py
   lib/vincula-accountd.service
 )
 
@@ -46,7 +47,7 @@ chmod 0755 "${OUT}/vincula.sh" "${OUT}/vincula-bootstrap.sh" "${OUT}/bin/vincula
   cd "$OUT"
   : > release.lock
   for f in vincula.sh vincula-bootstrap.sh bin/vincula lib/vincula-common.sh lib/legacy_seed.py lib/sing-box-release.sh lib/vincula-accountd.py \
-           lib/vincula-stats.py lib/vincula-audit.py lib/vincula-backup.py lib/vincula-accountd.service; do
+           lib/vincula-stats.py lib/vincula-audit.py lib/vincula-backup.py lib/telemetry_snapshot.py lib/vincula-accountd.service; do
     sha256sum -- "$f" >> release.lock
   done
   sha256sum -- vincula.sh | tee vincula.sh.sha256 >/dev/null
@@ -64,7 +65,19 @@ while read -r digest path; do
 done < "${OUT}/release.lock"
 
 rm -f -- "$ARCHIVE" "${ARCHIVE}.sha256"
-tar -C "$DIST_ROOT" -czf "$ARCHIVE" "$NAME"
+# Deterministic tar: sorted names, fixed mtime/owner (SOURCE_DATE_EPOCH or HEAD).
+# Clamp to 1980-01-01 UTC so packaging stays aligned with ZIP epoch rules.
+TAR_EPOCH_MIN=315532800
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '%s' "$TAR_EPOCH_MIN")}"
+if [[ "$SOURCE_DATE_EPOCH" -lt "$TAR_EPOCH_MIN" ]]; then
+  SOURCE_DATE_EPOCH="$TAR_EPOCH_MIN"
+fi
+export SOURCE_DATE_EPOCH
+tar --sort=name \
+  --mtime="@${SOURCE_DATE_EPOCH}" \
+  --owner=0 --group=0 --numeric-owner \
+  --format=gnu \
+  -C "$DIST_ROOT" -czf "$ARCHIVE" "$NAME"
 ( cd "$DIST_ROOT" && sha256sum -- "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256" )
 
 printf 'wrote %s\n' "$OUT"

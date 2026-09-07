@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vincula.local/schemas/capabilities/v1.schema.json",
+  "title": "capabilities/v1",
+  "description": "Node capability discovery response for vcl capabilities --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "node_version", "capabilities"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "capabilities/v1"
+    },
+    "node_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9_-]*/v[0-9]+$"
+      }
+    }
+  }
+}

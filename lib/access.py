@@ -15,8 +15,15 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+# Cap stderr while draining so a malicious peer cannot OOM the controller.
+_SSH_BOUNDED_STDERR_MAX = 1_048_576
+
+CredentialClass = Literal["observe", "admin"]
 
 _host: Any = None
 
@@ -263,20 +270,44 @@ def ssh_identity_args(identity_file: Optional[str]) -> list[str]:
     return ["-i", validate_identity_file(path, must_exist=True), "-o", "IdentitiesOnly=yes"]
 
 
+def _identity_from_ref(ref: str) -> Optional[str]:
+    binding = resolve_binding(ref)
+    btype = binding.get("type")
+    if btype == "openssh-default":
+        return None
+    if btype == "identity_file":
+        return binding["path"]
+    _host.die(f"invalid binding type for {ref}")
+    return None
+
+
+def node_identity_file_for_class(
+    node: dict[str, Any], credential_class: CredentialClass
+) -> Optional[str]:
+    """Resolve SSH identity for observe or admin credential class (D57, 0.5.0)."""
+    admin_ref = _host._optional_text(node.get("admin_credential_ref"))
+    observe_ref = _host._optional_text(node.get("observe_credential_ref"))
+    legacy = _host._optional_text(node.get("identity_file"))
+
+    if credential_class == "admin":
+        if admin_ref:
+            return _identity_from_ref(admin_ref)
+        return legacy
+
+    if observe_ref:
+        return _identity_from_ref(observe_ref)
+    if legacy and not admin_ref and not observe_ref:
+        return legacy
+    _host.die("observe credential not configured for node")
+
+
+def node_credential_class_label(credential_class: CredentialClass) -> str:
+    return credential_class
+
+
 def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
-    # D57: runtime observe=admin; prefer admin_credential_ref, else observe.
-    ref = _host._optional_text(node.get("admin_credential_ref"))
-    if not ref:
-        ref = _host._optional_text(node.get("observe_credential_ref"))
-    if ref:
-        binding = resolve_binding(ref)
-        btype = binding.get("type")
-        if btype == "openssh-default":
-            return None
-        if btype == "identity_file":
-            return binding["path"]
-        _host.die(f"invalid binding type for {ref}")
-    return _host._optional_text(node.get("identity_file"))
+    # Mutations and legacy paths default to admin credential class.
+    return node_identity_file_for_class(node, "admin")
 
 
 def ssh_argv(
@@ -332,8 +363,13 @@ def ssh_run(
     extra: list[str] | None = None,
     identity_file: Optional[str] = None,
     timeout: float = SSH_TIMEOUT_SECONDS,
+    max_stdout_bytes: Optional[int] = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved."""
+    """Run remote_cmd over SSH. Stderr is captured; exit code is preserved.
+
+    When ``max_stdout_bytes`` is set, stdout is read only up to that many
+    UTF-8 bytes (+1 to detect overflow); excess is discarded.
+    """
     argv = ssh_argv(
         host,
         user,
@@ -344,12 +380,16 @@ def ssh_run(
         identity_file=identity_file,
     )
     try:
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+        if max_stdout_bytes is None:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        return _ssh_run_bounded_stdout(
+            argv, timeout=timeout, max_stdout_bytes=max_stdout_bytes
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout
@@ -364,6 +404,140 @@ def ssh_run(
         return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
     except OSError as exc:
         _host.die(f"cannot execute {argv[0]}: {exc}")
+
+
+def _ssh_run_bounded_stdout(
+    argv: list[str],
+    *,
+    timeout: float,
+    max_stdout_bytes: int,
+) -> subprocess.CompletedProcess[str]:
+    """Capture SSH stdout with a hard byte cap and a hard wall-clock timeout.
+
+    Drain pipes on background threads so a peer that emits a little then
+    stalls cannot wedge a blocking ``read(65536)`` past ``timeout`` (selectors
+    + blocking read is unsafe on some Windows pipe backends). The main thread
+    owns the deadline and kills the child when it expires.
+    """
+    if max_stdout_bytes < 0:
+        raise ValueError("max_stdout_bytes must be >= 0")
+    timeout = float(timeout)
+    if timeout < 0:
+        raise ValueError("timeout must be >= 0")
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    limit = max_stdout_bytes + 1
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+    out_total = 0
+    err_total = 0
+    lock = threading.Lock()
+    deadline = time.monotonic() + timeout
+
+    def _kill_and_timeout() -> None:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        with lock:
+            out = b"".join(out_chunks)
+            err = b"".join(err_chunks)
+        raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
+
+    def _drain(stream: Any, *, is_out: bool) -> None:
+        nonlocal out_total, err_total
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                with lock:
+                    if is_out:
+                        if out_total < limit:
+                            take = min(len(chunk), limit - out_total)
+                            if take:
+                                out_chunks.append(chunk[:take])
+                                out_total += take
+                        # Else discard: still drain so the peer can exit.
+                    else:
+                        if err_total < _SSH_BOUNDED_STDERR_MAX:
+                            take = min(len(chunk), _SSH_BOUNDED_STDERR_MAX - err_total)
+                            if take:
+                                err_chunks.append(chunk[:take])
+                                err_total += take
+        except (OSError, ValueError):
+            # Pipe closed after kill / process exit — expected.
+            return
+
+    t_out = threading.Thread(
+        target=_drain, args=(proc.stdout,), kwargs={"is_out": True}, daemon=True
+    )
+    t_err = threading.Thread(
+        target=_drain, args=(proc.stderr,), kwargs={"is_out": False}, daemon=True
+    )
+    t_out.start()
+    t_err.start()
+    try:
+        while t_out.is_alive() or t_err.is_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_and_timeout()
+            slice_s = min(0.05, max(remaining, 0.0))
+            t_out.join(timeout=slice_s)
+            if t_err.is_alive():
+                err_left = deadline - time.monotonic()
+                if err_left <= 0:
+                    _kill_and_timeout()
+                t_err.join(timeout=min(0.05, max(err_left, 0.0)))
+        wait_left = deadline - time.monotonic()
+        if wait_left <= 0:
+            _kill_and_timeout()
+        try:
+            proc.wait(timeout=wait_left)
+        except subprocess.TimeoutExpired:
+            _kill_and_timeout()
+    except subprocess.TimeoutExpired:
+        raise
+    except Exception:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+
+    with lock:
+        stdout_b = b"".join(out_chunks)
+        stderr_b = b"".join(err_chunks)
+    overflow = len(stdout_b) > max_stdout_bytes
+    if overflow:
+        stdout_b = stdout_b[:max_stdout_bytes]
+    stdout = stdout_b.decode("utf-8", "replace")
+    stderr = stderr_b.decode("utf-8", "replace")
+    if overflow:
+        marker = f"stdout exceeds {max_stdout_bytes} bytes"
+        stderr = f"{stderr}\n{marker}".strip() if stderr.strip() else marker
+        # Non-zero so callers treat as transport/protocol failure.
+        rc = proc.returncode if proc.returncode not in (0, None) else 1
+        return subprocess.CompletedProcess(argv, rc, stdout, stderr)
+    return subprocess.CompletedProcess(argv, proc.returncode or 0, stdout, stderr)
 
 
 def scp_argv(

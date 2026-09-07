@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.4.5"
+VCL_FLEET_VERSION = "0.5.0"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -227,6 +227,8 @@ NODE_KEYS = (
     "ssh_user",
     "ssh_port",
     "identity_file",
+    "admin_credential_ref",
+    "observe_credential_ref",
     "enabled",
     "status",
 )
@@ -481,6 +483,12 @@ def _node_identity_file(node: dict[str, Any]) -> Optional[str]:
     return _AC._node_identity_file(node)
 
 
+def node_identity_file_for_class(
+    node: dict[str, Any], credential_class: str
+) -> Optional[str]:
+    return _AC.node_identity_file_for_class(node, credential_class)  # type: ignore[arg-type]
+
+
 BINDINGS_SCHEMA_VERSION = _AC.BINDINGS_SCHEMA_VERSION
 credential_bindings_path = _AC.credential_bindings_path
 empty_bindings = _AC.empty_bindings
@@ -525,6 +533,7 @@ def ssh_run(
     extra: list[str] | None = None,
     identity_file: Optional[str] = None,
     timeout: float = SSH_TIMEOUT_SECONDS,
+    max_stdout_bytes: Optional[int] = None,
 ) -> subprocess.CompletedProcess[str]:
     return _AC.ssh_run(
         host,
@@ -535,6 +544,7 @@ def ssh_run(
         extra=extra,
         identity_file=identity_file,
         timeout=timeout,
+        max_stdout_bytes=max_stdout_bytes,
     )
 
 
@@ -2058,8 +2068,7 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         if not isinstance(obr, str) or not obr.strip():
             die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
         record["observe_credential_ref"] = obr.strip()
-    elif record.get("admin_credential_ref"):
-        record["observe_credential_ref"] = record["admin_credential_ref"]  # observe=admin
+    # Spec §7.2: do NOT implicitly copy admin → observe.
     return record
 
 
@@ -2143,7 +2152,7 @@ def add_node(
         payload["identity_file"] = identity_file
     if admin_credential_ref:
         payload["admin_credential_ref"] = admin_credential_ref
-        payload["observe_credential_ref"] = admin_credential_ref
+        # observe_credential_ref must be set explicitly (Spec §7.2).
     record = normalize_node(
         payload,
         index=len(registry.get("nodes") or []),
@@ -2390,14 +2399,32 @@ def cmd_node_show(name: str) -> int:
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind and/or local SSH identity_file / credential binding."""
+    """Endpoint rebind and/or local SSH identity / observe credential binding."""
     identity_raw = _optional_text(getattr(args, "identity_file", None))
     clear_identity = bool(getattr(args, "clear_identity_file", False))
+    observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
+    observe_identity = _optional_text(getattr(args, "observe_identity_file", None))
+    clear_observe = bool(getattr(args, "clear_observe_credential_ref", False))
     host = _optional_text(getattr(args, "host", None))
     if identity_raw and clear_identity:
         die("use either --identity-file or --clear-identity-file")
-    if not host and not identity_raw and not clear_identity:
-        die("node set requires --host and/or --identity-file/--clear-identity-file")
+    if observe_ref and observe_identity:
+        die("use either --observe-credential-ref or --observe-identity-file")
+    if (observe_ref or observe_identity) and clear_observe:
+        die("cannot clear observe credential while setting it")
+    if (
+        not host
+        and not identity_raw
+        and not clear_identity
+        and not observe_ref
+        and not observe_identity
+        and not clear_observe
+    ):
+        die(
+            "node set requires --host and/or --identity-file/--clear-identity-file "
+            "and/or --observe-credential-ref/--observe-identity-file/"
+            "--clear-observe-credential-ref"
+        )
     registry = load_registry()
     if host:
         set_host(registry, args.name, host, user=args.user, port=args.port)
@@ -2411,10 +2438,22 @@ def cmd_node_set(args: argparse.Namespace) -> int:
             existing = _optional_text(node.get("admin_credential_ref"))
             ref = _bind_identity_for_workspace(resolved, ref=existing)
             node["admin_credential_ref"] = ref
-            node["observe_credential_ref"] = ref
+            # Do not implicitly set observe_credential_ref (Spec §7.2).
             node.pop("identity_file", None)
         else:
             node["identity_file"] = resolved
+    if clear_observe:
+        node.pop("observe_credential_ref", None)
+    elif observe_identity:
+        resolved = validate_identity_file(observe_identity, must_exist=True)
+        if not workspace_trust_active():
+            die("--observe-identity-file requires an active workspace")
+        existing = _optional_text(node.get("observe_credential_ref"))
+        ref = _bind_identity_for_workspace(resolved, ref=existing)
+        node["observe_credential_ref"] = ref
+    elif observe_ref:
+        # Ref must already be bound on this machine (or operator accepts pending).
+        node["observe_credential_ref"] = observe_ref
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
     return 0
@@ -2847,7 +2886,8 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
                 resolved, ref=existing
             )
             new_node["admin_credential_ref"] = replace_admin_ref
-            new_node["observe_credential_ref"] = replace_admin_ref
+            # observe must be set explicitly after replace if needed
+            new_node.pop("observe_credential_ref", None)
             new_node.pop("identity_file", None)
         else:
             new_node["identity_file"] = resolved
@@ -3135,7 +3175,8 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_port"] = new_port
     if replace_admin_ref:
         stored["admin_credential_ref"] = replace_admin_ref
-        stored["observe_credential_ref"] = replace_admin_ref
+        # observe must be set explicitly after replace if needed
+        stored.pop("observe_credential_ref", None)
         stored.pop("identity_file", None)
     elif new_node.get("identity_file"):
         if workspace_trust_active():
@@ -3220,6 +3261,87 @@ def cmd_node_instances(name: str, as_json: bool = False) -> int:
         return 0
     sys.stdout.write(format_instances_table(rows))
     return 0
+
+
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = fetch_node_capabilities(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
+        state = result.get("state")
+        if state == "OK":
+            caps = ", ".join(result.get("capabilities") or [])
+            sys.stdout.write(
+                f"{args.name}: {result.get('node_version')} [{caps}]\n"
+            )
+        else:
+            sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+    state = result.get("state")
+    if state in ("ERROR", "AUTH_FAILED"):
+        return 1
+    return 0
+
+
+def cmd_telemetry(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = fetch_node_telemetry(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
+        state = result.get("state")
+        if state == "OK":
+            snap = result.get("snapshot") or {}
+            sys.stdout.write(
+                f"{args.name}: telemetry ok observed_at={snap.get('observed_at')}\n"
+            )
+        else:
+            sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+    state = result.get("state")
+    if state in ("ERROR", "AUTH_FAILED"):
+        return 1
+    return 0
+
+
+def cmd_node_upgrade_plan(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    plan = load_node_upgrade_module().run_upgrade_plan(node)
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(
+            f"upgrade plan {args.name}: {plan.get('current_version')} → "
+            f"{plan.get('target_version')} ({plan.get('state')})\n"
+        )
+    if plan.get("state") in ("AUTH_FAILED", "ERROR", "REFUSED"):
+        return 1
+    return 0
+
+
+def cmd_node_upgrade_apply(args: argparse.Namespace) -> int:
+    validate_name(args.name)
+    node = require_node(load_registry(), args.name)
+    result = load_node_upgrade_module().run_upgrade_apply(
+        node,
+        confirmed=bool(getattr(args, "yes", False)),
+    )
+    if bool(getattr(args, "as_json", False)):
+        sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(
+            f"upgrade apply {args.name}: {result.get('state')} "
+            f"{result.get('from_version')} → {result.get('to_version')}\n"
+        )
+    if result.get("ok"):
+        return 0
+    if result.get("state") == "PARTIAL":
+        return 2
+    if result.get("state") == "ROLLED_BACK":
+        return 1
+    return 1
 
 
 def format_utc(dt: datetime) -> str:
@@ -5991,6 +6113,10 @@ _AUDIT_MOD: Optional[Any] = None
 _BACKUP_MOD: Optional[Any] = None
 _AUDIT_ARCHIVE_MOD: Optional[Any] = None
 _PROVISION_MOD: Optional[Any] = None
+_OBS_CAP_MOD: Optional[Any] = None
+_OBS_TEL_MOD: Optional[Any] = None
+_SSH_TRANSPORT_MOD: Optional[Any] = None
+_NODE_UPGRADE_MOD: Optional[Any] = None
 
 
 def load_audit_module() -> Any:
@@ -6030,6 +6156,122 @@ def load_provision_module() -> Any:
     _PROVISION_MOD = _load_controller_sibling("vincula_provision", "provision.py")
     _PROVISION_MOD.bind(_FLEET_HOST)
     return _PROVISION_MOD
+
+
+def load_ssh_transport_module() -> Any:
+    global _SSH_TRANSPORT_MOD
+    if _SSH_TRANSPORT_MOD is not None:
+        return _SSH_TRANSPORT_MOD
+    _SSH_TRANSPORT_MOD = _load_controller_sibling("vcl_ssh_transport", "ssh_transport.py")
+    return _SSH_TRANSPORT_MOD
+
+
+def load_observation_capabilities_module() -> Any:
+    global _OBS_CAP_MOD
+    if _OBS_CAP_MOD is not None:
+        return _OBS_CAP_MOD
+    _OBS_CAP_MOD = _load_controller_sibling(
+        "vcl_observation_capabilities", "observation/capabilities.py"
+    )
+    return _OBS_CAP_MOD
+
+
+def load_observation_telemetry_module() -> Any:
+    global _OBS_TEL_MOD
+    if _OBS_TEL_MOD is not None:
+        return _OBS_TEL_MOD
+    _OBS_TEL_MOD = _load_controller_sibling(
+        "vcl_observation_telemetry", "observation/telemetry.py"
+    )
+    return _OBS_TEL_MOD
+
+
+def load_node_upgrade_module() -> Any:
+    global _NODE_UPGRADE_MOD
+    if _NODE_UPGRADE_MOD is not None:
+        return _NODE_UPGRADE_MOD
+    _NODE_UPGRADE_MOD = _load_controller_sibling("vcl_node_upgrade", "node_upgrade.py")
+    _NODE_UPGRADE_MOD.bind(_FLEET_HOST)
+    return _NODE_UPGRADE_MOD
+
+
+def observation_ssh_json(
+    node: dict[str, Any],
+    remote_cmd: list[str],
+    *,
+    credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
+    extra: list[str] | None = None,
+    require_exit_0: bool = False,
+    unsupported_on_missing_command: bool = False,
+    max_stdout_bytes: Optional[int] = None,
+) -> tuple[str, Optional[dict[str, Any]], str]:
+    transport = load_ssh_transport_module()
+    return transport.ssh_remote_json_for_class(
+        node=node,
+        remote_cmd=remote_cmd,
+        credential_class=credential_class,  # type: ignore[arg-type]
+        ssh_run=ssh_run,
+        identity_for_class=node_identity_file_for_class,
+        failure_detail=_ssh_failure_detail,
+        timeout=timeout,
+        extra=extra,
+        require_exit_0=require_exit_0,
+        unsupported_on_missing_command=unsupported_on_missing_command,
+        max_stdout_bytes=max_stdout_bytes,
+    )
+
+
+def fetch_node_capabilities(
+    node: dict[str, Any],
+    *,
+    credential_class: str = "observe",
+) -> dict[str, Any]:
+    caps_mod = load_observation_capabilities_module()
+
+    def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        return observation_ssh_json(
+            kwargs["node"],
+            kwargs["remote_cmd"],
+            credential_class=credential_class,
+            unsupported_on_missing_command=kwargs.get(
+                "unsupported_on_missing_command", False
+            ),
+            require_exit_0=kwargs.get("require_exit_0", False),
+            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+        )
+
+    return caps_mod.fetch_capabilities(node, ssh_json=_ssh_json)
+
+
+def fetch_node_telemetry(
+    node: dict[str, Any],
+    *,
+    capabilities: Optional[dict[str, Any]] = None,
+    credential_class: str = "observe",
+) -> dict[str, Any]:
+    caps = (
+        capabilities
+        if capabilities is not None
+        else fetch_node_capabilities(node, credential_class=credential_class)
+    )
+    tel_mod = load_observation_telemetry_module()
+
+    def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        return observation_ssh_json(
+            kwargs["node"],
+            kwargs["remote_cmd"],
+            credential_class=credential_class,
+            unsupported_on_missing_command=kwargs.get(
+                "unsupported_on_missing_command", False
+            ),
+            require_exit_0=kwargs.get("require_exit_0", False),
+            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+        )
+
+    return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
 
 
 def fleet_utc_today() -> date:
@@ -7120,6 +7362,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop passing -i (use agent / default keys again)",
     )
+    p_set.add_argument(
+        "--observe-credential-ref",
+        dest="observe_credential_ref",
+        help=(
+            "set observe_credential_ref explicitly (may equal admin ref; "
+            "Spec §7.2 forbids implicit share)"
+        ),
+    )
+    p_set.add_argument(
+        "--observe-identity-file",
+        dest="observe_identity_file",
+        help="bind local SSH key as observe credential (workspace only)",
+    )
+    p_set.add_argument(
+        "--clear-observe-credential-ref",
+        dest="clear_observe_credential_ref",
+        action="store_true",
+        help="remove observe_credential_ref from the node",
+    )
 
     p_disable = node_sub.add_parser("disable", help="disable a registered node")
     p_disable.add_argument("name")
@@ -7192,6 +7453,43 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="print JSON (schema_version 1)",
     )
+
+    p_upgrade = node_sub.add_parser(
+        "upgrade",
+        help="Node firmware upgrade plan/apply (0.5.0)",
+    )
+    upgrade_sub = p_upgrade.add_subparsers(dest="upgrade_command")
+    p_upgrade_plan = upgrade_sub.add_parser(
+        "plan",
+        help="read-only upgrade plan (observe credential MAY be used)",
+    )
+    p_upgrade_plan.add_argument("name")
+    _add_json_flag(p_upgrade_plan)
+    p_upgrade_apply = upgrade_sub.add_parser(
+        "apply",
+        help="typed firmware upgrade (admin credential; requires --yes)",
+    )
+    p_upgrade_apply.add_argument("name")
+    p_upgrade_apply.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm typed upgrade mutation",
+    )
+    _add_json_flag(p_upgrade_apply)
+
+    p_capabilities = sub.add_parser(
+        "capabilities",
+        help="fetch Node capabilities/v1 (observe credential)",
+    )
+    p_capabilities.add_argument("name", help="registered node name")
+    _add_json_flag(p_capabilities)
+
+    p_telemetry = sub.add_parser(
+        "telemetry",
+        help="fetch Node telemetry/v1 snapshot (observe credential)",
+    )
+    p_telemetry.add_argument("name", help="registered node name")
+    _add_json_flag(p_telemetry)
 
     p_status = sub.add_parser(
         "status",
@@ -7866,7 +8164,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         if sub == "instances":
             return cmd_node_instances(args.name, as_json=bool(getattr(args, "as_json", False)))
+        if sub == "upgrade":
+            u = getattr(args, "upgrade_command", None)
+            if u is None:
+                parser.parse_args(["node", "upgrade", "--help"])
+                return 2
+            if u == "plan":
+                return cmd_node_upgrade_plan(args)
+            if u == "apply":
+                return run_journaled(
+                    "node_upgrade",
+                    lambda: cmd_node_upgrade_apply(args),
+                    target=str(args.name),
+                )
+            die(f"unknown node upgrade command: {u}", 2)
         die(f"unknown node command: {sub}", 2)
+    if command == "capabilities":
+        return cmd_capabilities(args)
+    if command == "telemetry":
+        return cmd_telemetry(args)
     if command == "user":
         sub = args.user_command
         if sub is None:

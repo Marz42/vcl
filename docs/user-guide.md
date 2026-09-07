@@ -1,4 +1,4 @@
-# Vincula 用户手册（Controller 0.4.5 · Node 0.3.2）
+# Vincula 用户手册（Controller 0.5.0 · Node 0.5.0）
 
 面向能使用终端、但不需要阅读源码的 VPS 管理者。
 架构与合同细节见 [`technical-guide.md`](technical-guide.md)。完整参数以 CLI `--help` 为准。
@@ -334,11 +334,42 @@ python3 bin/vcl-fleet node provision NAME \
 
 ---
 
-## 15. 节点升级
+## 15. 节点升级与观测
 
-- 已装 **0.3.1** 可用 Controller 0.4.5 管理；legacy seed / 新 provision 钉 **0.3.2**。
-- 原地升级：在节点解开新 `vincula-node-*.tar.gz`，校验后 `sudo bash vincula.sh`（保留身份与用户）。
-- 升级前建议 `vcl backup create`。细节见 [`known-issues-0.3.1.md`](known-issues-0.3.1.md) 与 CHANGELOG。
+### 观测（0.5.0+ Node）
+
+在 **Node 0.5.0+** 上：
+
+```bash
+vcl capabilities --json
+vcl telemetry snapshot --json
+```
+
+从 Controller（需 SSH；observe 与 admin 凭据可分离绑定）：
+
+```bash
+# 显式绑定 observer（Spec：不得隐式共用 admin；可与 admin 相同但必须显式）
+vcl-fleet access bind observe-default --identity-file ~/.ssh/id_ed25519_observe
+vcl-fleet node set NODE --observe-credential-ref observe-default
+# 或：vcl-fleet node set NODE --observe-identity-file ~/.ssh/id_ed25519_observe
+# 清除：vcl-fleet node set NODE --clear-observe-credential-ref
+
+vcl-fleet capabilities NODE --json
+vcl-fleet telemetry NODE --json
+```
+
+AUTH_FAILED / ERROR 时上述 observation 命令 **exit 1**。0.3.x 节点返回 **UNSUPPORTED**（非 ERROR）；probe/sync/user 管理仍可用。
+
+### 固件升级（Controller 编排）
+
+```bash
+vcl-fleet node upgrade plan NODE
+vcl-fleet node upgrade apply NODE --yes
+```
+
+支持 **0.3.1 / 0.3.2 → 0.5.0**；保留 `node_id`、URI、accounting。升级前建议 `vcl backup create`。
+
+手动原地升级仍可用：解开 `vincula-node-*.tar.gz`，校验后 `sudo bash vincula.sh`。细节见 CHANGELOG 与 [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md)。
 
 ---
 
