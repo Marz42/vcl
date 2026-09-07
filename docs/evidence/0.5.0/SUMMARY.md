@@ -18,7 +18,7 @@
 | **AC-5.0-10** | **PARTIAL** | L3–L5 **PASS LIVE**; L2 historical PASS, **re-verify PENDING** (rollback path hardened); soak 1000× historical OK, RSS/FD **PENDING**; L1 **PENDING LIVE** — [`LIVE.md`](LIVE.md) / [`SOAK.md`](SOAK.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
-| **AC-5.0-13** | **PASS LIVE** | `node upgrade apply` 0.3.1→0.5.0; outage ~0s; identity preserved — [`LIVE.md`](LIVE.md) |
+| **AC-5.0-13** | **PASS LIVE** (historical); **re-verify PENDING** | 2026-08-31 apply OK; re-run after rollback stop/helper hardening — [`LIVE.md`](LIVE.md) L2 |
 | **AC-5.0-14** | **PASS (offline)** | Typed upgrade plan/apply; journal `node_upgrade` without secrets |
 
 ## Live Matrix
