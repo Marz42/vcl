@@ -34,15 +34,15 @@ Verified in `obs050` + `mix050` blocks.
 Controller entry: `vcl-fleet node upgrade plan|apply NODE`.
 
 Offline evidence: `obs050` upgrade apply happy path + migrate fail inject in test-fleet.
-Live evidence: Live Matrix **L2** in [`LIVE.md`](LIVE.md) — **PASS LIVE** (2026-08-31).
+Live evidence: Live Matrix **L2** in [`LIVE.md`](LIVE.md) — historical **PASS LIVE** (2026-08-31); re-verification after rollback hardening remains **PENDING**.
 
 ## Artifact pins
 
-Deterministic build (`SOURCE_DATE_EPOCH` from git HEAD). Re-pin after the release commit if tree/epoch changes.
+Candidate build from `6428960` with `SOURCE_DATE_EPOCH=1790260874`. Re-pin if packaged source changes.
 
 | Artifact | Version | SHA256 |
 | --- | --- | --- |
-| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `143b394024bca188ec801c398026f81b46be155eecececbc4d60de539eefccd4` |
-| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `52557a013df57a888a0c84fd48c56ea7a82a08118c73ee07321c628bbc717204` |
+| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `a155c92f497d8c2a7a89a80d1f72a7b09819a6880f3532507721b0ab3e0aa078` |
+| `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `23ebd558f39204fc21e7fdef92c58d1b8403b8953c8fc343b233bcd88f97330a` |
 
 Minimum compatible Node for Controller 0.5.0: **0.3.1**.

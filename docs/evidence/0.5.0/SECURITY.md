@@ -22,8 +22,8 @@
 
 | Rule | Result |
 | --- | --- |
-| observation uses observe ref when configured | **PASS (offline)** — obs-auth + obs050 blocks |
-| no silent admin fallback on observe auth fail | **PASS (offline)** — AUTH_FAILED fixture |
+| capabilities / telemetry / live probe / verify use observe ref when configured | **PASS (offline)** — obs-auth + obs050 blocks, including all three probe/verify remote reads |
+| no silent admin fallback on observe auth fail | **PASS (offline)** — AUTH_FAILED fixture for capabilities, telemetry, probe, verify |
 | mutation never uses observe identity | **PASS (offline)** — upgrade apply argv log uses admin `-i` |
 | logs record credential class only | **PASS (offline)** — journal redaction + secret scan |
 
@@ -63,6 +63,6 @@ L4 equivalent (offline): wrong observe key → AUTH_FAILED, not silent admin suc
 
 - `vcl capabilities --json` — read-only; SSH transport only
 - `vcl telemetry snapshot --json` — read-only; bounded output (64KiB cap)
-- Controller `vcl-fleet capabilities|telemetry NODE` — same transport; oversize/malformed fail-closed
+- Controller `vcl-fleet capabilities|telemetry NODE` — same transport; oversize/malformed fail-closed; telemetry checks current identity via observe SSH before returning OK
 
 No new northbound HTTP API on Node.

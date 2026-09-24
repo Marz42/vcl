@@ -19,7 +19,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 2. Run on node: `vcl capabilities --json` — expect `telemetry/v1` in list.
 3. Run: `vcl telemetry snapshot --json` — schema valid; required fields present.
 4. From Controller: `vcl-fleet capabilities NODE --json` / `vcl-fleet telemetry NODE --json` — same fields, no secrets.
-5. Optional: loop 10× and note p95 latency ≤2s subjective / log timestamps.
+5. Compare `node_id` in the registry, live `vcl identity --json`, and Controller telemetry; compare `instance_id` in live identity and telemetry. Do this locally and record only match/mismatch, never the UUID values.
+6. With the distinct observe binding, run `vcl-fleet probe --json` and `vcl-fleet verify --json`; both must succeed.
+7. Optional: loop 10× and note p95 latency ≤2s subjective / log timestamps.
 
 | Field | Value |
 | --- | --- |
@@ -43,7 +45,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 4. Measure probe failure window; target **≤3s** until proxy OK again.
 5. Verify `node_id`, `instance_id`, user count, accounting cursor continuity.
 6. Re-run client test **without** URI/profile change.
-7. Confirm `vcl capabilities --json` and `vcl telemetry snapshot --json` on upgraded node.
+7. Confirm `vcl capabilities --json` and `vcl telemetry snapshot --json` on upgraded node. From Controller, confirm telemetry identity matches the current Node identity and `probe` / `verify` work via the observe binding.
 
 | Field | Value |
 | --- | --- |
@@ -73,7 +75,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 ## L4 — Broken observer → AUTH_FAILED
 
 1. Revoke or corrupt observe key / binding.
-2. Retry observation — expect **AUTH_FAILED**, not silent admin success.
+2. Retry `capabilities`, `telemetry`, `probe`, and `verify` — expect **AUTH_FAILED**, not silent admin success. A locally bound, unauthorized test key may be used instead of revoking the remote key; restore the original observe ref afterward.
 3. Restore observe key; observation recovers.
 
 | Field | Value |

@@ -1,7 +1,7 @@
 # 0.5.0 Observation Foundation — DoD SUMMARY
 
 **Stamp:** CTRL `0.5.0` / NODE payload `0.5.0` · Minimum Node `0.3.1`
-**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh`
+**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh` — code commit `6428960`: 1862 tests PASS, both builds PASS (2026-09-24)
 **Spec:** [`../../specs/V0.5.0_Spec.md`](../../specs/V0.5.0_Spec.md) · Master [`../../specs/VCL_0.5-0.7_Master_SPEC.md`](../../specs/VCL_0.5-0.7_Master_SPEC.md)
 
 | AC | Result | Evidence |
@@ -10,8 +10,8 @@
 | **AC-5.0-02** | **PASS (offline)** | Node `capabilities` / `telemetry snapshot`; fake-ssh `obsnode` alias |
 | **AC-5.0-03** | **PASS (fixture)** | Mixed fleet: lax 0.3.x → UNSUPPORTED; probe/sync still OK — [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | **AC-5.0-04** | **PASS (fixture)** | obsnode 0.5.0 capabilities/telemetry negotiation OK |
-| **AC-5.0-05** | **PASS LIVE** | observe/admin route; AUTH_FAILED on revoked observe key — [`LIVE.md`](LIVE.md) L3/L4 |
-| **AC-5.0-06** | **PASS (offline)** | malformed / oversize / nested schema / padded raw oversize fail-closed |
+| **AC-5.0-05** | **PASS LIVE** | observe/admin route; AUTH_FAILED on revoked observe key — [`LIVE.md`](LIVE.md) L3/L4; probe/verify observe route regression PASS offline at `6428960` |
+| **AC-5.0-06** | **PASS (offline)** | malformed / oversize / nested schema / padded raw oversize fail-closed; telemetry node/instance identity mismatch rejected |
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
@@ -39,16 +39,16 @@ Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
 - Node: `VINCULA_VERSION = "0.5.0"`.
 - Minimum Node: `0.3.1`.
 
-## Artifact SHAs (release build)
+## Artifact SHAs (current candidate build)
 
-Deterministic builds: `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` then `build-release.sh` + `build-controller.sh`. Same epoch + same tree → same SHA (verified double-build). Refresh pins after the release commit.
+From code commit `6428960`, set `SOURCE_DATE_EPOCH=1790260874` (that commit's UTC timestamp), then run `build-release.sh` + `build-controller.sh`. Same epoch + same tree produced the same SHA on two builds. These are candidate pins until G4/G5 live gates pass; refresh them if packaged source changes.
 
 | Artifact | SHA256 |
 | --- | --- |
-| `dist/vincula-node-0.5.0.tar.gz` | `52557a013df57a888a0c84fd48c56ea7a82a08118c73ee07321c628bbc717204` |
-| `dist/vincula-controller-0.5.0.zip` | `143b394024bca188ec801c398026f81b46be155eecececbc4d60de539eefccd4` |
+| `dist/vincula-node-0.5.0.tar.gz` | `23ebd558f39204fc21e7fdef92c58d1b8403b8953c8fc343b233bcd88f97330a` |
+| `dist/vincula-controller-0.5.0.zip` | `a155c92f497d8c2a7a89a80d1f72a7b09819a6880f3532507721b0ab3e0aa078` |
 
-Pins use `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)` on commit `8982451` (clamped ≥ 1980-01-01). CI merge-ref epochs may differ; trust the uploaded release asset for a given commit.
+The explicit epoch keeps these candidate digests reproducible after evidence-only commits. CI merge-ref epochs may differ; compare a release asset against the digest for the exact source tree and epoch used to build it.
 
 
 ## Related

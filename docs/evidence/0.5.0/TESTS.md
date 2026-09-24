@@ -13,17 +13,17 @@ git diff --check
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-09-01 |
-| OS | Linux (WSL2 / CI ubuntu-latest matrix) |
-| Commit | `8982451` |
+| Date | 2026-09-24 |
+| OS | Debian (WSL2; clean `git archive` of the code commit) |
+| Commit | `6428960` |
 
 ## Results
 
 | Suite | Pass | Fail | Skip | Total |
 | --- | --- | --- | --- | --- |
-| tests/test.sh | 1838 | 0 | 0 | 1838 |
+| tests/test.sh | 1862 | 0 | 0 | 1862 |
 
-Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp).
+Gate: `All 1862 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp). Node and Controller builds passed; two builds with `SOURCE_DATE_EPOCH=1790260874` produced identical SHAs recorded in [`SUMMARY.md`](SUMMARY.md). `git diff --check` passed.
 
 ## Schema contract tests
 
@@ -40,8 +40,8 @@ Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN rejec
 
 | Block | Coverage |
 | --- | --- |
-| `obs050` | capabilities/telemetry OK on 0.5.0; UNSUPPORTED on 0.3.x lax; upgrade plan allowlist |
-| `obs-auth` | AUTH_FAILED on wrong observe key (no admin fallback); exit 1 for capabilities + telemetry |
+| `obs050` | capabilities/telemetry OK on 0.5.0; UNSUPPORTED on 0.3.x lax; upgrade plan allowlist; registry/remote/snapshot `node_id` and `instance_id` mismatch rejected |
+| `obs-auth` | AUTH_FAILED on wrong observe key (no admin fallback); exit 1 for capabilities, telemetry, probe, verify; identity/status/verify remote reads all use observe |
 | oversize | padded raw + raw 1 MiB oversize → Controller ERROR before `json.loads` |
 | telemetry audit | `VCL_FAKE_TELEMETRY_AUDIT=1` — config/users sha256 + systemd restart count stable |
 | upgrade apply | happy path; migrate fail; SKIPPED already-current; admin-only (observe AUTH ignored); post-check PARTIAL; identity drift PARTIAL; plan REFUSED exit 1 |
@@ -56,6 +56,7 @@ Gate: `All 1838 tests passed.` (includes bounded SSH timeout, Infinity/NaN rejec
 | Injection | Result |
 | --- | --- |
 | observe credential auth failure | AUTH_FAILED, exit 1 |
+| wrong telemetry node_id / instance_id | ERROR, no snapshot accepted |
 | oversize capabilities/telemetry | ERROR fail-closed |
 | malformed JSON (`badjson` alias) | ERROR |
 | upgrade migrate inject fail | apply exit ≠ 0; identity unchanged |
