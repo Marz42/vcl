@@ -237,6 +237,8 @@ python3 bin/vcl-fleet verify
 
 时钟：相对 Controller UTC，偏移 **>30s** 警告，**>300s** 失败（见技术手册常量）。
 
+`probe` / `verify` 的 live SSH 使用 observe 凭据；observe 认证失败会显示 `AUTH_FAILED` 并返回非零状态。`status` 只读本地 cache，不连接节点。
+
 游标异常：`CURSOR_EXPIRED` / `CURSOR_AHEAD` → 对该节点 `sync --reseed NAME`（会清该节点本地 audit 缓存后再拉）。
 
 ---
@@ -358,7 +360,7 @@ vcl-fleet capabilities NODE --json
 vcl-fleet telemetry NODE --json
 ```
 
-AUTH_FAILED / ERROR 时上述 observation 命令 **exit 1**。0.3.x 节点返回 **UNSUPPORTED**（非 ERROR）；probe/sync/user 管理仍可用。
+AUTH_FAILED / ERROR 时上述 observation 命令 **exit 1**。Telemetry 还会核对当前 Node identity；`node_id` 或 `instance_id` 不匹配时返回 ERROR。0.3.x 节点返回 **UNSUPPORTED**（非 ERROR）；probe/sync/user 管理仍可用。
 
 ### 固件升级（Controller 编排）
 

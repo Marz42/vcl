@@ -3692,6 +3692,7 @@ def ssh_remote_json(
     timeout: float = SSH_TIMEOUT_SECONDS,
     extra: list[str] | None = None,
     require_exit_0: bool = False,
+    credential_class: str = "admin",
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
@@ -3708,11 +3709,15 @@ def ssh_remote_json(
         remote_cmd,
         batch=True,
         extra=extra,
-        identity_file=_node_identity_file(node),
+        identity_file=node_identity_file_for_class(node, credential_class),
         timeout=timeout,
     )
     detail = _ssh_failure_detail(proc)
     if proc.returncode == 255:
+        if credential_class == "observe" and load_ssh_transport_module().is_auth_failure(
+            detail
+        ):
+            return "AUTH_FAILED", None, detail
         return "FAIL", None, detail
     payload = _stdout_json(proc)
     if require_exit_0 and proc.returncode != 0:
@@ -3776,9 +3781,11 @@ def classify_accounting(status_doc: Optional[dict[str, Any]]) -> str:
 
 
 def status_is_fail(row: dict[str, Any]) -> bool:
-    return row.get("ssh") == "FAIL" or row.get("proxy") == "FAIL" or row.get(
-        "accounting"
-    ) == "FAIL"
+    return (
+        row.get("ssh") in ("FAIL", "AUTH_FAILED")
+        or row.get("proxy") == "FAIL"
+        or row.get("accounting") == "FAIL"
+    )
 
 
 def verify_is_fail(row: dict[str, Any]) -> bool:
@@ -3833,10 +3840,10 @@ def probe_node(
         return row
 
     ssh_state, ident, ident_detail = ssh_remote_json(
-        node, ["vcl", "identity", "--json"]
+        node, ["vcl", "identity", "--json"], credential_class="observe"
     )
     if ssh_state != "OK":
-        row["ssh"] = "FAIL"
+        row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = ident_detail
         row["ok"] = False
         return row
@@ -3877,10 +3884,10 @@ def probe_node(
         row["registry"] = "FAIL"
 
     ssh_state, status_doc, status_detail = ssh_remote_json(
-        node, ["vcl", "status", "--json"]
+        node, ["vcl", "status", "--json"], credential_class="observe"
     )
     if ssh_state != "OK":
-        row["ssh"] = "FAIL"
+        row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = status_detail
         row["proxy"] = "UNKNOWN"
         row["accounting"] = "UNKNOWN"
@@ -3896,10 +3903,10 @@ def probe_node(
 
     if want_verify:
         v_ssh, verify_doc, v_detail = ssh_remote_json(
-            node, ["vcl", "verify", "--json"]
+            node, ["vcl", "verify", "--json"], credential_class="observe"
         )
         if v_ssh != "OK":
-            row["ssh"] = "FAIL"
+            row["ssh"] = "AUTH_FAILED" if v_ssh == "AUTH_FAILED" else "FAIL"
             row["ssh_detail"] = v_detail
             row["proxy"] = "UNKNOWN"
             row["accounting"] = "UNKNOWN"
@@ -3937,14 +3944,14 @@ def format_status_table(rows: list[dict[str, Any]]) -> str:
                 f"{row['ssh']:<11} {row.get('cursor_status') or '-'}"
             )
         return "\n".join(lines) + "\n"
-    lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<7} {'PROXY':<7} ACCOUNTING"]
+    lines = [f"{'NAME':<8} {'NODE_ID':<8} {'INSTANCE':<8} {'SSH':<11} {'PROXY':<7} ACCOUNTING"]
     for row in rows:
         instance = "-"
-        if row.get("ssh") not in ("FAIL", "DISABLED", "-") and row.get("instance_id"):
+        if row.get("ssh") not in ("FAIL", "AUTH_FAILED", "DISABLED", "-") and row.get("instance_id"):
             instance = short_id(row.get("instance_id"))
         lines.append(
             f"{row['name']:<8} {short_id(row.get('node_id')):<8} {instance:<8} "
-            f"{row['ssh']:<7} {row['proxy']:<7} {row['accounting']}"
+            f"{row['ssh']:<11} {row['proxy']:<7} {row['accounting']}"
         )
     return "\n".join(lines) + "\n"
 
@@ -3971,12 +3978,14 @@ def format_verify_report(rows: list[dict[str, Any]]) -> str:
         parts.append(f"  clock: {row['clock']}")
         if row.get("clock_detail"):
             parts.append(f"  clock_detail: {row['clock_detail']}")
-        if row.get("ssh_detail") and row["ssh"] == "FAIL":
+        if row.get("ssh_detail") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
             parts.append(f"  ssh_detail: {row['ssh_detail']}")
         for warning in row.get("warnings") or []:
             parts.append(f"  WARN: {warning}")
         if row["ssh"] == "FAIL":
             parts.append("  FAIL: SSH unreachable")
+        if row["ssh"] == "AUTH_FAILED":
+            parts.append("  FAIL: SSH authentication")
         if row["proxy"] == "FAIL":
             parts.append("  FAIL: PROXY")
         if row["accounting"] == "FAIL":

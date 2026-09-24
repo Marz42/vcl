@@ -18,7 +18,9 @@ validate_telemetry_v1 = _sv.validate_telemetry_v1
 TELEMETRY_SCHEMA = "telemetry/v1"
 TELEMETRY_CAPABILITY = "telemetry/v1"
 TELEMETRY_MAX_BYTES = 65536
+IDENTITY_MAX_BYTES = 4096
 REMOTE_CMD = ["vcl", "telemetry", "snapshot", "--json"]
+IDENTITY_CMD = ["vcl", "identity", "--json"]
 
 
 def fetch_telemetry(
@@ -99,6 +101,51 @@ def fetch_telemetry(
             "state": "ERROR",
             "schema": TELEMETRY_SCHEMA,
             "detail": "; ".join(errors),
+            "credential_class": "observe",
+        }
+    # The telemetry schema proves that the IDs are well formed, but not that
+    # this snapshot belongs to the registered node or its current instance.
+    # Read identity through the same observe credential and fail closed on a
+    # mismatch, including a physical replacement between observations.
+    identity_state, identity, identity_detail = ssh_json(
+        node=node,
+        remote_cmd=IDENTITY_CMD,
+        require_exit_0=True,
+        max_stdout_bytes=IDENTITY_MAX_BYTES,
+    )
+    if identity_state == "AUTH_FAILED":
+        return {
+            "state": "AUTH_FAILED",
+            "schema": TELEMETRY_SCHEMA,
+            "detail": identity_detail or "observe auth failed",
+            "credential_class": "observe",
+        }
+    if identity_state != "OK" or not isinstance(identity, dict):
+        return {
+            "state": "ERROR",
+            "schema": TELEMETRY_SCHEMA,
+            "detail": identity_detail or "identity fetch failed",
+            "credential_class": "observe",
+        }
+    if identity.get("node_id") != node.get("node_id"):
+        return {
+            "state": "ERROR",
+            "schema": TELEMETRY_SCHEMA,
+            "detail": "remote identity node_id does not match registry",
+            "credential_class": "observe",
+        }
+    if payload["node_id"] != identity.get("node_id"):
+        return {
+            "state": "ERROR",
+            "schema": TELEMETRY_SCHEMA,
+            "detail": "telemetry node_id does not match remote identity",
+            "credential_class": "observe",
+        }
+    if payload["instance_id"] != identity.get("instance_id"):
+        return {
+            "state": "ERROR",
+            "schema": TELEMETRY_SCHEMA,
+            "detail": "telemetry instance_id does not match remote identity",
             "credential_class": "observe",
         }
     return {

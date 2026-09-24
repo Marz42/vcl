@@ -10719,6 +10719,11 @@ print("ok")
 PY
 
 # --- AC-4.0-M04: post-migrate verify / sync / status / audit / stats / ui ---
+# 0.5.0 requires an explicit observe ref after migrating a pre-workspace
+# identity_file; the old admin key may be shared only by this explicit choice.
+AC041_ADMIN_REF=$(fleet node show lax | sed -n 's/^admin_credential_ref=//p')
+assert_success "AC-4.0-M04 explicitly bind migrated observe credential" \
+  fleet node set lax --observe-credential-ref "$AC041_ADMIN_REF"
 assert_success "AC-4.0-M04 post-migrate verify" fleet verify
 assert_success "AC-4.0-M04 post-migrate sync --node lax" fleet sync --node lax
 ac041_status_json=$(fleet status --json 2>/dev/null) || true
@@ -14532,6 +14537,7 @@ assert fleet.node_identity_file_for_class(same_ref, "admin") == admin_key
 assert fleet.node_identity_file_for_class(same_ref, "observe") == admin_key
 assert fleet.node_identity_file_for_class(split_ref, "admin") == admin_key
 assert fleet.node_identity_file_for_class(split_ref, "observe") == observe_key
+assert fleet.node_identity_file_for_class({}, "observe") is None
 PY
 
 OBS050_HOME="${TEST_TMP}/obs050-fleet"
@@ -14588,6 +14594,43 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
 assert doc.get("snapshot", {}).get("schema") == "telemetry/v1", doc
 PY
+
+assert_success "obs050 telemetry rejects wrong node and instance identity" python3 - \
+  "${PROJECT_DIR}/lib/observation/telemetry.py" \
+  "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("telemetry", Path(sys.argv[1]))
+telemetry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(telemetry)
+snapshot = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+identity = {"node_id": snapshot["node_id"], "instance_id": snapshot["instance_id"]}
+node = {"node_id": snapshot["node_id"]}
+capabilities = {"state": "OK", "capabilities": ["telemetry/v1"]}
+calls = []
+
+def ssh_json(**kwargs):
+    calls.append(kwargs)
+    if kwargs["remote_cmd"] == telemetry.IDENTITY_CMD:
+        return "OK", identity, ""
+    return "OK", snapshot, ""
+
+def fetch():
+    return telemetry.fetch_telemetry(node, capabilities=capabilities, ssh_json=ssh_json)
+
+assert fetch()["state"] == "OK"
+assert calls[-1]["remote_cmd"] == ["vcl", "identity", "--json"]
+assert calls[-1]["max_stdout_bytes"] == telemetry.IDENTITY_MAX_BYTES
+node["node_id"] = "00000000-0000-4000-8000-000000000000"
+assert fetch()["state"] == "ERROR"  # remote identity vs registry
+node["node_id"] = identity["node_id"]
+identity["node_id"] = "00000000-0000-4000-8000-000000000000"
+assert fetch()["state"] == "ERROR"  # snapshot vs remote identity
+identity["node_id"] = node["node_id"]
+identity["instance_id"] = "00000000-0000-4000-8000-000000000000"
+assert fetch()["state"] == "ERROR"  # snapshot vs current instance
+PY
 unset VCL_FAKE_NODE_VERSION
 
 obs_plan_json=$(fleet node upgrade plan lax --json)
@@ -14641,6 +14684,62 @@ assert_success "obs-auth capabilities AUTH_FAILED" python3 - "$obs_auth_json" <<
 import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("state") == "AUTH_FAILED", doc
+PY
+obs_probe_auth_rc=0
+obs_probe_auth_json=$(fleet probe --json) || obs_probe_auth_rc=$?
+assert_equal "obs-auth probe exits non-zero without admin fallback" 1 "$obs_probe_auth_rc"
+assert_success "obs-auth probe reports AUTH_FAILED" python3 - "$obs_probe_auth_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["ok"] is False, doc
+assert doc["nodes"][0]["ssh"] == "AUTH_FAILED", doc
+PY
+obs_verify_auth_rc=0
+obs_verify_auth_json=$(fleet verify --json) || obs_verify_auth_rc=$?
+assert_equal "obs-auth verify exits non-zero without admin fallback" 1 "$obs_verify_auth_rc"
+assert_success "obs-auth verify reports AUTH_FAILED" python3 - "$obs_verify_auth_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["ok"] is False, doc
+assert doc["nodes"][0]["ssh"] == "AUTH_FAILED", doc
+PY
+assert_success "obs050 probe and verify use observe for every remote read" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, json, subprocess, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+node = {
+    "name": "lax", "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "203.0.113.10", "ssh_user": "root", "ssh_port": 22,
+    "enabled": True,
+}
+identity = {
+    "node_id": node["node_id"],
+    "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "vincula_version": "0.5.0",
+    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+responses = {
+    "identity": identity,
+    "status": {"proxy": {"ok": True}, "accounting": {"ok": True}},
+    "verify": {"ok": True, "accounting": {"checks": []}},
+}
+calls = []
+
+def fake_ssh_run(host, user, port, command, **kwargs):
+    calls.append((tuple(command), kwargs.get("identity_file")))
+    return subprocess.CompletedProcess(command, 0, json.dumps(responses[command[1]]), "")
+
+fleet.ssh_run = fake_ssh_run
+fleet.node_identity_file_for_class = lambda _node, cls: f"{cls}-key"
+row = fleet.probe_node(node, controller_utc=datetime.now(timezone.utc), want_verify=True)
+assert row["ok"] is True, row
+assert [cmd[0][1] for cmd in calls] == ["identity", "status", "verify"], calls
+assert all(key == "observe-key" for _, key in calls), calls
 PY
 unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH
 

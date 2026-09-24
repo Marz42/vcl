@@ -11,6 +11,7 @@
 - **Node 0.5.0 payload：** migrate allowlist 扩展；controller 内嵌 `vincula-node-0.5.0.tar.gz`。
 ### Security / compat
 - observe 凭据失败 → **AUTH_FAILED**（无 silent admin fallback）；`capabilities` / `telemetry` / `upgrade plan` 对此类状态 **exit ≠ 0**。
+- **Review fixes：** telemetry 以 observe 凭据读取当前 Node identity，核对 registry `node_id` 与 snapshot `node_id` / `instance_id`；live `probe` / `verify` 的 identity、status、verify SSH 均走 observe 凭据，认证失败显示 `AUTH_FAILED`。
 - **不得隐式共用：** 新节点不自动把 `observe_credential_ref` 设成 admin；须显式 `node set --observe-credential-ref` / `--observe-identity-file`（可与 admin 相同，但必须显式）。
 - 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
 - telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。

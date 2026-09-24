@@ -170,7 +170,7 @@ stateDiagram-v2
 
 | 操作 | 远端 | 用途 |
 | --- | --- | --- |
-| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；payload pin **0.3.2**；可选 legacy seed |
+| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；当前开发分支 payload pin **0.5.0**；可选 legacy seed |
 | `node adopt` | `vcl identity --json` + 注册 | 已装节点 |
 | `node register` / `add --offline` | **无 SSH** | 仅写 registry；后续须 adopt/set |
 | `node set` | 无（本地改 `ssh_host`） | **Endpoint rebind**；凭据不变 |
@@ -324,8 +324,9 @@ CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
 ```
 
 - `status`：cache-only（D58）；无 SSH。
-- `probe`：live SSH 健康；**不写** status cache。
-- `verify`：identity + status + clock；漂移 >30s WARN，>300s FAIL。
+- `probe`：live SSH 健康；**不写** status cache。identity/status 使用 observe 凭据，认证失败返回 `AUTH_FAILED`。
+- `verify`：identity + status + clock；SSH 使用 observe 凭据；漂移 >30s WARN，>300s FAIL。
+- `telemetry`：snapshot 经 schema 校验后，再用同一 observe 凭据读取当前 identity；registry `node_id`、snapshot `node_id` / `instance_id` 不一致则拒绝。
 
 ### AC-2.9（节选；fixture 权威在 tests）
 
