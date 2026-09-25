@@ -327,6 +327,7 @@ CLOCK_SKEW_FAIL_CHECK = "audit-clock-health"
 - `status`：cache-only（D58）；无 SSH。
 - `probe`：live SSH 健康；**不写** status cache。identity/status 使用 observe 凭据，认证失败返回 `AUTH_FAILED`。
 - `verify`：identity + status + clock；SSH 使用 observe 凭据；漂移 >30s WARN，>300s FAIL。
+- `probe` / `verify` / `sync --full` 的时钟比较取该节点 identity SSH 往返时间的中点；全 Fleet 顺序等待时间不计入节点时钟偏差。
 - `telemetry`：snapshot 经 schema 校验后，再用同一 observe 凭据读取当前 identity；registry `node_id`、snapshot `node_id` / `instance_id` 不一致则拒绝。
 
 ### AC-2.9（节选；fixture 权威在 tests）

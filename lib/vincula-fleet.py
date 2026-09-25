@@ -2687,7 +2687,6 @@ def cmd_node_retire(name: str) -> int:
     if last_status is None:
         probe = probe_node(
             node,
-            controller_utc=datetime.now(timezone.utc),
             want_verify=False,
         )
         last_status = _status_json_node(probe)
@@ -3669,6 +3668,17 @@ def clock_skew_from_identity(
     return (state, detail, delta)
 
 
+def clock_skew_from_identity_window(
+    started_utc: datetime,
+    finished_utc: datetime,
+    ident: Optional[dict[str, Any]],
+) -> tuple[str, str, Optional[float]]:
+    """Compare the remote clock with the midpoint of its identity SSH call."""
+    started = _as_utc(started_utc)
+    finished = _as_utc(finished_utc)
+    return clock_skew_from_identity(started + (finished - started) / 2, ident)
+
+
 def short_id(value: Optional[str]) -> str:
     if not value:
         return "-"
@@ -3816,7 +3826,6 @@ def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
 def probe_node(
     node: dict[str, Any],
     *,
-    controller_utc: datetime,
     want_verify: bool,
     previous_instances: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
@@ -3839,9 +3848,11 @@ def probe_node(
         row["ok"] = True
         return row
 
+    identity_started_utc = datetime.now(timezone.utc)
     ssh_state, ident, ident_detail = ssh_remote_json(
         node, ["vcl", "identity", "--json"], credential_class="observe"
     )
+    identity_finished_utc = datetime.now(timezone.utc)
     if ssh_state != "OK":
         row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = ident_detail
@@ -3859,7 +3870,9 @@ def probe_node(
 
     row["instance_id"] = ident.get("instance_id") or None
     row["vincula_version"] = ident.get("vincula_version")
-    clock_state, clock_detail, skew = clock_skew_from_identity(controller_utc, ident)
+    clock_state, clock_detail, skew = clock_skew_from_identity_window(
+        identity_started_utc, identity_finished_utc, ident
+    )
     row["clock"] = clock_state
     row["clock_detail"] = clock_detail
     row["clock_skew_seconds"] = skew
@@ -4090,7 +4103,7 @@ def run_status_payload(*, include_all: bool = False) -> dict[str, Any]:
     registry = load_registry()
     controller_utc = datetime.now(timezone.utc)
     rows = [
-        probe_node(node, controller_utc=controller_utc, want_verify=False)
+        probe_node(node, want_verify=False)
         for node in _selected_nodes(registry, include_all)
     ]
     payload = {
@@ -4247,7 +4260,6 @@ def run_verify_payload(*, include_all: bool = False) -> dict[str, Any]:
     rows = [
         probe_node(
             node,
-            controller_utc=controller_utc,
             want_verify=True,
             previous_instances=previous,
         )
@@ -5726,7 +5738,6 @@ def sync_full_one_node(
     node: dict[str, Any],
     *,
     now_iso: str,
-    controller_utc: datetime,
 ) -> dict[str, Any]:
     """Pull identity/status/users/audit → one DB txn; fail-closed; no cursor advance on error."""
     node_id = node["node_id"]
@@ -5741,7 +5752,9 @@ def sync_full_one_node(
             last_export_seq=after,
         )
     # 1) pull (no writes)
+    identity_started_utc = datetime.now(timezone.utc)
     st, ident, detail = ssh_remote_json(node, ["vcl", "identity", "--json"])
+    identity_finished_utc = datetime.now(timezone.utc)
     if st != "OK" or not isinstance(ident, dict):
         return _sync_result(
             node,
@@ -5838,7 +5851,9 @@ def sync_full_one_node(
             last_export_seq=after,
             error=str(exc),
         )
-    clock_state, _, skew = clock_skew_from_identity(controller_utc, ident)
+    clock_state, _, skew = clock_skew_from_identity_window(
+        identity_started_utc, identity_finished_utc, ident
+    )
     payload = json.dumps(
         {"identity": ident, "status": status_doc},
         ensure_ascii=False,
@@ -6079,7 +6094,6 @@ def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]
     """Additive sync --full: identity/health/users/audit → cache (D25)."""
     registry = load_registry()
     now_iso = format_utc(datetime.now(timezone.utc))
-    controller_utc = datetime.now(timezone.utc)
     targets = sync_target_nodes(
         registry,
         node_name=(getattr(args, "node", None) or "").strip() or None,
@@ -6089,9 +6103,7 @@ def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]
     conn = open_cache_for_sync()
     try:
         rows = [
-            sync_full_one_node(
-                conn, n, now_iso=now_iso, controller_utc=controller_utc
-            )
+            sync_full_one_node(conn, n, now_iso=now_iso)
             for n in targets
         ]  # sequential; no --jobs
     finally:

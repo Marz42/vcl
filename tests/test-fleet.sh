@@ -3363,6 +3363,14 @@ assert str(mod.CLOCK_SKEW_WARN_SECONDS) in warn_detail
 missing = mod.clock_skew_from_identity(now, {"node_id": "x"})
 assert missing[0] == "FAIL"
 assert mod.CLOCK_SKEW_FAIL_CHECK in missing[1]
+late_identity = {"utc_now": (now + timedelta(seconds=56)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+assert mod.clock_skew_from_identity(now, late_identity)[0] == "WARN"
+window = mod.clock_skew_from_identity_window(
+    now + timedelta(seconds=55),
+    now + timedelta(seconds=57),
+    late_identity,
+)
+assert window[0] == "OK" and window[2] == 0, window
 stale = {
     "ok": False,
     "proxy": {"ok": True},
@@ -14736,7 +14744,7 @@ def fake_ssh_run(host, user, port, command, **kwargs):
 
 fleet.ssh_run = fake_ssh_run
 fleet.node_identity_file_for_class = lambda _node, cls: f"{cls}-key"
-row = fleet.probe_node(node, controller_utc=datetime.now(timezone.utc), want_verify=True)
+row = fleet.probe_node(node, want_verify=True)
 assert row["ok"] is True, row
 assert [cmd[0][1] for cmd in calls] == ["identity", "status", "verify"], calls
 assert all(key == "observe-key" for _, key in calls), calls
