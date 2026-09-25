@@ -38,7 +38,7 @@ Live evidence: Live Matrix **L2** in [`LIVE.md`](LIVE.md) — historical **PASS 
 
 ## Artifact pins
 
-Candidate build from `6428960` with `SOURCE_DATE_EPOCH=1790260874`. Re-pin if packaged source changes.
+Candidate build from `82dc577` with fixed `SOURCE_DATE_EPOCH=1790260874`; both Kali Linux and WSL Windows mounted builds match. Re-pin if packaged source changes.
 
 | Artifact | Version | SHA256 |
 | --- | --- | --- |

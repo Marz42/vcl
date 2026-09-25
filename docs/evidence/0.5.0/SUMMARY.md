@@ -1,7 +1,7 @@
 # 0.5.0 Observation Foundation — DoD SUMMARY
 
 **Stamp:** CTRL `0.5.0` / NODE payload `0.5.0` · Minimum Node `0.3.1`
-**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh` — code commit `6428960`: 1862 tests PASS, both builds PASS (2026-09-24)
+**Gate (offline):** `bash tests/test.sh` + `bash scripts/build-release.sh` + `bash scripts/build-controller.sh` — code commit `82dc577`: 1863 tests PASS, both builds PASS (2026-09-25)
 **Spec:** [`../../specs/V0.5.0_Spec.md`](../../specs/V0.5.0_Spec.md) · Master [`../../specs/VCL_0.5-0.7_Master_SPEC.md`](../../specs/VCL_0.5-0.7_Master_SPEC.md)
 
 | AC | Result | Evidence |
@@ -41,7 +41,7 @@ Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
 
 ## Artifact SHAs (current candidate build)
 
-From code commit `6428960`, set `SOURCE_DATE_EPOCH=1790260874` (that commit's UTC timestamp), then run `build-release.sh` + `build-controller.sh`. Same epoch + same tree produced the same SHA on two builds. These are candidate pins until G4/G5 live gates pass; refresh them if packaged source changes.
+From code commit `82dc577`, set `SOURCE_DATE_EPOCH=1790260874` (the fixed candidate epoch from `6428960`), then run `build-release.sh` + `build-controller.sh`. The same source and epoch produced the same SHA on Kali Linux and WSL Windows mounted filesystems. These are candidate pins until G4/G5 live gates pass; refresh them if packaged source changes.
 
 | Artifact | SHA256 |
 | --- | --- |

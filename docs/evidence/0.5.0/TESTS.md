@@ -13,17 +13,19 @@ git diff --check
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-09-24 |
+| Date | 2026-09-25 |
 | OS | Debian (WSL2; clean `git archive` of the code commit) |
-| Commit | `6428960` |
+| Commit | `82dc577` |
 
 ## Results
 
 | Suite | Pass | Fail | Skip | Total |
 | --- | --- | --- | --- | --- |
-| tests/test.sh | 1862 | 0 | 0 | 1862 |
+| tests/test.sh | 1863 | 0 | 0 | 1863 |
 
-Gate: `All 1862 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp). Node and Controller builds passed; two builds with `SOURCE_DATE_EPOCH=1790260874` produced identical SHAs recorded in [`SUMMARY.md`](SUMMARY.md). `git diff --check` passed.
+Gate: `All 1863 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp, and canonical tar modes). Node and Controller builds passed; with `SOURCE_DATE_EPOCH=1790260874`, builds from `82dc577` on Kali Linux filesystem and WSL Windows mounted filesystem produced identical SHAs recorded in [`SUMMARY.md`](SUMMARY.md). `git diff --check` passed.
+
+The cross-filesystem mismatch was caused by DrvFs reporting all staged files as mode `0777`; the Node tar preserved those modes and changed the embedded payload in the Controller zip. `build-release.sh` now stages canonical modes in POSIX `/tmp` before archiving.
 
 ## Schema contract tests
 
