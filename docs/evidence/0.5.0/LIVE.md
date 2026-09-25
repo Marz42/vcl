@@ -26,8 +26,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Field | Value |
 | --- | --- |
 | Date | 2026-09-25 |
-| Outcome | **PARTIAL LIVE** — fresh provision, capabilities/telemetry, and probe health PASS; `verify` clock WARN on prior Controller; re-verify with `98423ed` and distinct observe credential pending |
-| Clock note | VPS reported `NTP=yes`, `NTPSynchronized=yes`; prior full-Fleet verify measured ~57s. Batch-start timestamp bias is a plausible cause; current Controller re-check pending. |
+| Outcome | **PASS LIVE** — fresh provision, direct and Controller capabilities/telemetry, probe and verify all OK with a separate observe credential |
+| Clock note | VPS reported `NTP=yes`, `NTPSynchronized=yes`. The prior ~57s full-Fleet clock WARN cleared on `8762362`; follow-up skew was ~6.9s and clock=OK. |
 | Offline equiv | **PASS** — fake-ssh `obsnode` alias + obs050 block |
 
 ---
@@ -35,7 +35,7 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 ## L2 — Upgrade 0.3.x → 0.5.0 (`node upgrade apply`)
 
 1. Record pre-upgrade: client connects without URI change (yes/no only in notes).
-2. Start continuous lightweight probe (e.g. `vcl-fleet probe NODE` every 1s in a loop) in a second terminal; record timestamps.
+2. Start a one-second watcher in a second terminal that uses the node's admin SSH binding to run remote `vcl status --json`. Record proxy OK/FAIL transitions and timestamps. The Fleet `probe` command has no per-node argument.
 3. Run:
 
    ```bash
@@ -43,18 +43,18 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
    vcl-fleet node upgrade apply NODE --yes
    ```
 
-4. Measure probe failure window; target **≤3s** until proxy OK again.
+4. If a poll fails, measure the interval from the last OK poll to the first recovered OK poll; target **≤3s**. If no poll fails, record "none observed" rather than claiming zero outage.
 5. Verify `node_id`, `instance_id`, user count, accounting cursor continuity.
 6. Re-run client test **without** URI/profile change.
 7. Confirm `vcl capabilities --json` and `vcl telemetry snapshot --json` on upgraded node. From Controller, confirm telemetry identity matches the current Node identity and `probe` / `verify` work via the observe binding.
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-08-31 |
+| Date | 2026-09-25 re-check |
 | Source version | 0.3.1 |
-| Measured outage (s) | ~0 (no consecutive non-OK probe) |
-| Outcome | **PASS LIVE** (historical); **re-verify PENDING** after 2026-09-07 rollback stop-before-write + deferred-helper fixes |
-| Notes | identity preserved; capabilities/telemetry OK after hotfixes (installer telemetry helper + nested instance_id); client URI unchanged. Re-run `node upgrade apply` (and a forced post-check rollback drill if safe) before treating L2 as closed for this tree. |
+| Measured outage (s) | No failed one-second proxy-status polls observed; exact outage duration was not measured. |
+| Outcome | **PARTIAL LIVE** — current `node upgrade apply` returned SUCCESS and subsequent sync succeeded; client-profile and post-upgrade observation confirmations pending |
+| Notes | Current apply's post-check verifies version, node_id and instance_id. Operator reported only initial watcher OK, upgrade success and normal sync. Prior 2026-08-31 full L2 run passed; do not use that run to claim current client continuity. |
 | Offline equiv | **PASS** — obs050 upgrade apply + migrate fail fixtures |
 
 ---
@@ -67,9 +67,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-08-31 |
-| Outcome | **PASS LIVE** (historical); probe/verify observe route re-verify pending |
-| Notes | 2026-08-31 observe-default ≠ admin-default; capabilities/telemetry OK via observe; probe then used admin. Current Controller routes probe/verify via observe. |
+| Date | 2026-09-25 re-check |
+| Outcome | **PASS LIVE** — capabilities, telemetry, probe and verify all OK via observe |
+| Notes | Operator confirmed admin-default and observe-default contain different keys on an existing 0.5.0 node. Fresh node also passed verify after the observe public key was authorized. |
 
 ---
 
@@ -81,9 +81,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | 2026-08-31 |
-| Outcome | **PASS LIVE** (historical); probe/verify AUTH_FAILED path re-verify pending |
-| Notes | 2026-08-31 revoke observe pubkey → AUTH_FAILED for observation; restore → OK. Current Controller also requires probe/verify to fail closed. |
+| Date | 2026-09-25 re-check |
+| Outcome | **PASS LIVE** — capabilities, telemetry, probe and verify rejected unauthorized observe access; recovered after authorization/binding restore |
+| Notes | On an existing node, a temporarily unauthorized local observe key yielded AUTH_FAILED for capabilities, telemetry and probe; restoring the binding recovered capabilities. On the fresh node, verify yielded AUTH_FAILED before its observe public key was authorized and OK afterward. |
 
 ---
 

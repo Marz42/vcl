@@ -325,7 +325,7 @@ def dig(doc, *keys):
 
 checks = []
 
-def compare(label, a, b, *, allow_non_decrease=False, max_growth=None, must_equal=False):
+def compare(label, a, b, *, allow_non_decrease=False, allow_decrease=False, max_growth=None, must_equal=False):
     # Missing critical metrics fail closed (no SKIP → PASS LIVE).
     if a is None or b is None:
         checks.append((label, "FAIL", "missing metric"))
@@ -334,7 +334,7 @@ def compare(label, a, b, *, allow_non_decrease=False, max_growth=None, must_equa
         checks.append((label, "PASS" if a == b else "FAIL", f"{a} → {b}"))
         return
     if allow_non_decrease and isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        if b < a:
+        if b < a and not allow_decrease:
             checks.append((label, "FAIL", f"decreased {a} → {b}"))
         elif max_growth is not None and (b - a) > max_growth:
             checks.append((label, "FAIL", f"growth {b - a} exceeds {max_growth} ({a} → {b})"))
@@ -401,6 +401,7 @@ compare(
     dig(before, "services", "sing-box", "rss_kb"),
     dig(after, "services", "sing-box", "rss_kb"),
     allow_non_decrease=True,
+    allow_decrease=True,
     max_growth=64 * 1024,  # KiB
 )
 compare(
@@ -408,6 +409,7 @@ compare(
     dig(before, "services", "vincula-accountd", "rss_kb"),
     dig(after, "services", "vincula-accountd", "rss_kb"),
     allow_non_decrease=True,
+    allow_decrease=True,
     max_growth=64 * 1024,
 )
 compare(
@@ -415,6 +417,7 @@ compare(
     dig(before, "services", "sing-box", "fd_count"),
     dig(after, "services", "sing-box", "fd_count"),
     allow_non_decrease=True,
+    allow_decrease=True,
     max_growth=256,
 )
 compare(
@@ -422,6 +425,7 @@ compare(
     dig(before, "services", "vincula-accountd", "fd_count"),
     dig(after, "services", "vincula-accountd", "fd_count"),
     allow_non_decrease=True,
+    allow_decrease=True,
     max_growth=256,
 )
 

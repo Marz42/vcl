@@ -10,25 +10,25 @@
 | **AC-5.0-02** | **PASS (offline)** | Node `capabilities` / `telemetry snapshot`; fake-ssh `obsnode` alias |
 | **AC-5.0-03** | **PASS (fixture)** | Mixed fleet: lax 0.3.x → UNSUPPORTED; probe/sync still OK — [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | **AC-5.0-04** | **PASS (fixture)** | obsnode 0.5.0 capabilities/telemetry negotiation OK |
-| **AC-5.0-05** | **PASS (offline) / PARTIAL LIVE** | capabilities/telemetry observe route historical PASS LIVE; probe/verify observe route PASS offline, current live re-verify pending — [`LIVE.md`](LIVE.md) L3/L4 |
+| **AC-5.0-05** | **PASS (offline and live)** | Separate observe key worked for capabilities/telemetry/probe/verify; unauthorized observe access failed closed and recovered — [`LIVE.md`](LIVE.md) L3/L4 |
 | **AC-5.0-06** | **PASS (offline)** | malformed / oversize / nested schema / padded raw oversize fail-closed; telemetry node/instance identity mismatch rejected |
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
-| **AC-5.0-10** | **PARTIAL** | L1 provision/telemetry PASS, clock and observe re-verify pending; L2 re-verify pending; L3/L4 new probe/verify route pending; L5 historical PASS; tightened RSS/FD soak pending — [`LIVE.md`](LIVE.md) / [`SOAK.md`](SOAK.md) |
+| **AC-5.0-10** | **PARTIAL** | L1/L3/L4 current live PASS; L2 apply and sync succeeded with no failed status polls, but client-profile/post-upgrade observation confirmation pending; L5 historical PASS; tightened RSS/FD soak pending — [`LIVE.md`](LIVE.md) / [`SOAK.md`](SOAK.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
-| **AC-5.0-13** | **PASS LIVE** (historical); **re-verify PENDING** | 2026-08-31 apply OK; re-run after rollback stop/helper hardening — [`LIVE.md`](LIVE.md) L2 |
+| **AC-5.0-13** | **PARTIAL LIVE** | Current apply SUCCESS and sync OK; client-profile and post-upgrade observation confirmation pending — [`LIVE.md`](LIVE.md) L2 |
 | **AC-5.0-14** | **PASS (offline)** | Typed upgrade plan/apply; journal `node_upgrade` without secrets |
 
 ## Live Matrix
 
 | ID | Scenario | Status |
 | --- | --- | --- |
-| **L1** | Fresh Node 0.5.0 telemetry | **PARTIAL LIVE** — provision, capabilities, telemetry, health PASS; clock/observe re-verify pending |
-| **L2** | Upgrade 0.3.x → 0.5.0 identity preserved | **PASS LIVE** (2026-08-31); **re-verify PENDING** after rollback hardening |
-| **L3** | Observer credential reads observation | **PASS LIVE** (historical, 2026-08-31); probe/verify route re-verify pending |
-| **L4** | Broken observer → AUTH_FAILED | **PASS LIVE** (historical, 2026-08-31); probe/verify failure path re-verify pending |
+| **L1** | Fresh Node 0.5.0 telemetry | **PASS LIVE** — provision, capabilities, telemetry, probe, verify and clock OK with observe access |
+| **L2** | Upgrade 0.3.x → 0.5.0 identity preserved | **PARTIAL LIVE** — apply SUCCESS, sync OK, no failed proxy-status polls; client/post-upgrade observation confirmation pending |
+| **L3** | Observer credential reads observation | **PASS LIVE** — distinct observe key works for capabilities/telemetry/probe/verify |
+| **L4** | Broken observer → AUTH_FAILED | **PASS LIVE** — unauthorized observe access failed closed; recovered after restore/authorization |
 | **L5** | Controller offline; proxy continues | **PASS LIVE** (2026-09-01) |
 
 Detail: [`LIVE.md`](LIVE.md). Do not paste secrets into evidence.
