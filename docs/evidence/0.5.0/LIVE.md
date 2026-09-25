@@ -128,6 +128,8 @@ Gate (current script): missing metrics → **FAIL**; services must end **active*
 | Outcome | **PARTIAL** (telemetry soak OK; tightened resource gate pending) |
 | Offline equiv | **PASS** — `soak050` block in test-fleet |
 
+2026-09-25 `eagleclaw` re-run: 1000/1000 telemetry OK in 5643 s. State size/file count, service restarts/active state, RSS and FD checks passed. Original gate reported **FAIL LIVE** only because the optional `/var/log/vincula` directory was absent in both snapshots. Corrected saved-evidence recheck pending; see [`SOAK.md`](SOAK.md).
+
 ---
 
 ## Fail-close spot checks (optional)

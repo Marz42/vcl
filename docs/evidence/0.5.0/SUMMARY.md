@@ -15,7 +15,7 @@
 | **AC-5.0-07** | **PASS (offline)** | Secret scan on capabilities/telemetry/journal stdout |
 | **AC-5.0-08** | **PASS (offline)** | Telemetry audit: no mutation of config/users/systemd restart count |
 | **AC-5.0-09** | **PASS (offline)** | Listener audit: no new management port; Clash/UI loopback — [`SECURITY.md`](SECURITY.md) |
-| **AC-5.0-10** | **PARTIAL** | L1/L3/L4 current live PASS; L2 apply and sync succeeded with no failed status polls, but client-profile/post-upgrade observation confirmation pending; L5 historical PASS; tightened RSS/FD soak pending — [`LIVE.md`](LIVE.md) / [`SOAK.md`](SOAK.md) |
+| **AC-5.0-10** | **PARTIAL** | L1/L3/L4 current live PASS; L2 apply and sync succeeded with no failed status polls, but client-profile/post-upgrade observation confirmation pending; L5 historical PASS. Current 1000× soak telemetry and resource metrics passed, but the gate misclassified an absent optional log directory; saved-evidence recheck pending — [`LIVE.md`](LIVE.md) / [`SOAK.md`](SOAK.md) |
 | **AC-5.0-11** | **PASS (blocker)** | accountd de-root deferred; documented deviation — [`SECURITY.md`](SECURITY.md) |
 | **AC-5.0-12** | **PASS (offline)** | CHANGELOG / README / technical-guide / evidence synced |
 | **AC-5.0-13** | **PARTIAL LIVE** | Current apply SUCCESS and sync OK; client-profile and post-upgrade observation confirmation pending — [`LIVE.md`](LIVE.md) L2 |

@@ -18,16 +18,19 @@ FLEET_BIN="${VCL_FLEET_BIN:-${ROOT}/bin/vcl-fleet}"
 ITERATIONS=1000
 NODE=""
 LIVE=0
+RECHECK=0
 
 usage() {
   cat <<'EOF'
 Vincula 0.5.0 LIVE telemetry soak (1000×) + state-growth measurement.
 
-Requires: VCL_SOAK_LIVE=1 or --live, VCL_FLEET_HOME (or workspace), NODE name.
+Live run requires: VCL_SOAK_LIVE=1 or --live, VCL_FLEET_HOME (or workspace), NODE name.
+Saved-evidence recheck requires only NODE and --recheck-evidence; it makes no SSH calls.
 
 Options:
   --iterations N   default 1000
   --live           same as VCL_SOAK_LIVE=1
+  --recheck-evidence  re-evaluate saved before/after snapshots without contacting the node
   -h, --help
 
 Evidence dir: $SOAK_EVIDENCE_DIR or ~/vcl-rc-evidence/0.5.0-soak/<NODE>/
@@ -38,6 +41,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live) LIVE=1; shift ;;
+    --recheck-evidence) RECHECK=1; shift ;;
     --iterations) ITERATIONS=${2:?}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*)
@@ -53,7 +57,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${VCL_SOAK_LIVE:-0}" == "1" ]]; then LIVE=1; fi
-if (( LIVE != 1 )); then
+if (( LIVE != 1 && RECHECK != 1 )); then
   printf 'REFUSED: LIVE-ONLY. Pass --live or set VCL_SOAK_LIVE=1.\n' >&2
   exit 2
 fi
@@ -61,7 +65,7 @@ if [[ -z "$NODE" ]]; then
   printf 'usage: %s NODE [--iterations N] --live\n' "$0" >&2
   exit 2
 fi
-if [[ ! -x "$FLEET_BIN" ]]; then
+if (( RECHECK != 1 )) && [[ ! -x "$FLEET_BIN" ]]; then
   printf 'missing vcl-fleet: %s\n' "$FLEET_BIN" >&2
   exit 2
 fi
@@ -70,7 +74,7 @@ EVIDENCE_ROOT="${SOAK_EVIDENCE_DIR:-${HOME}/vcl-rc-evidence/0.5.0-soak}"
 OUT="${EVIDENCE_ROOT}/${NODE}"
 mkdir -p "$OUT"
 LOG="${OUT}/soak.log"
-: >"$LOG"
+if (( RECHECK != 1 )); then : >"$LOG"; fi
 
 fleet() { "$FLEET_BIN" "$@"; }
 
@@ -118,8 +122,10 @@ def file_size(path):
     p = Path(path)
     return p.stat().st_size if p.is_file() else None
 
-def count_files(path):
+def count_files(path, *, absent_is_zero=False):
     p = Path(path)
+    if not p.exists():
+        return 0 if absent_is_zero else None
     if not p.is_dir():
         return None
     n = 0
@@ -196,7 +202,7 @@ print(json.dumps({
         "log_dir_bytes": du_bytes("/var/log/vincula"),
         "accounting_db_bytes": file_size("/var/lib/vincula/accounting.db"),
         "state_dir_file_count": count_files("/var/lib/vincula"),
-        "log_dir_file_count": count_files("/var/log/vincula"),
+        "log_dir_file_count": count_files("/var/log/vincula", absent_is_zero=True),
     },
     "services": {
         "sing-box": service_proc("sing-box.service"),
@@ -246,6 +252,37 @@ print(f"wrote {dest}")
 PY
 }
 
+recheck_of=""
+if (( RECHECK == 1 )); then
+  recheck_meta=$(python3 - "$OUT" "$NODE" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+out, node = Path(sys.argv[1]), sys.argv[2]
+summary = (out / "SUMMARY.txt").read_bytes()
+digest = json.loads((out / "DIGEST.json").read_text(encoding="utf-8"))
+sha = hashlib.sha256(summary).hexdigest()
+if digest.get("schema") != "soak-digest/v1" or digest.get("node_label") != node:
+    raise SystemExit("recheck refused: original digest identifies a different run")
+if digest.get("summary_sha256") != sha or digest.get("outcome") != "FAIL LIVE":
+    raise SystemExit("recheck refused: original failed summary/digest mismatch")
+values = [digest.get(k) for k in ("iterations", "ok", "fail_at", "elapsed_seconds")]
+if any(type(v) is not int or v < 0 for v in values):
+    raise SystemExit("recheck refused: invalid original run counts")
+if values[0] == 0 or values[1] > values[0]:
+    raise SystemExit("recheck refused: invalid original iteration count")
+fields = dict(line.split("=", 1) for line in summary.decode("utf-8").splitlines() if "=" in line)
+expected = dict(zip(("iterations", "ok", "fail_at", "elapsed_seconds"), map(str, values)))
+expected.update(node=node, outcome="FAIL LIVE")
+if any(fields.get(key) != value for key, value in expected.items()):
+    raise SystemExit("recheck refused: original summary fields disagree with digest")
+print(*values, sha)
+PY
+  )
+  IFS=' ' read -r ITERATIONS ok fail_at elapsed recheck_of <<< "$recheck_meta"
+  printf 'Rechecking saved soak evidence for %s; original summary SHA-256 %s\n' "$NODE" "$recheck_of"
+else
+# Live collection path.
 log "=== 0.5.0 telemetry soak ==="
 log "node=${NODE} iterations=${ITERATIONS}"
 log "evidence=${OUT}"
@@ -299,14 +336,15 @@ elapsed=$((t1 - t0))
 
 log "Taking AFTER snapshot..."
 take_snapshot "${OUT}/after.json"
+fi
 
-python3 - "$OUT" "$NODE" "$ITERATIONS" "$ok" "$fail_at" "$elapsed" <<'PY'
+python3 - "$OUT" "$NODE" "$ITERATIONS" "$ok" "$fail_at" "$elapsed" "$recheck_of" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-out, node, iterations, ok, fail_at, elapsed = sys.argv[1:7]
+out, node, iterations, ok, fail_at, elapsed, recheck_of = sys.argv[1:8]
 out = Path(out)
 iterations = int(iterations)
 ok = int(ok)
@@ -322,6 +360,19 @@ def dig(doc, *keys):
             return None
         cur = cur.get(k)
     return cur
+
+def optional_log_count(doc):
+    paths = dig(doc, "paths")
+    if not isinstance(paths, dict) or (
+        "log_dir_file_count" not in paths or "log_dir_bytes" not in paths
+    ):
+        return None
+    count = paths["log_dir_file_count"]
+    # The Node uses journald and does not create /var/log/vincula. In older
+    # snapshots du_bytes=None proves the path was absent at collection time.
+    if count is None and paths["log_dir_bytes"] is None:
+        return 0
+    return count
 
 checks = []
 
@@ -375,8 +426,8 @@ compare(
 )
 compare(
     "log_dir_file_count",
-    dig(before, "paths", "log_dir_file_count"),
-    dig(after, "paths", "log_dir_file_count"),
+    optional_log_count(before),
+    optional_log_count(after),
     allow_non_decrease=True,
     max_growth=32,
 )
@@ -445,10 +496,14 @@ lines = [
     "",
     "metrics:",
 ]
+if recheck_of:
+    lines.insert(-2, f"recheck_of_summary_sha256={recheck_of}")
 for label, status, detail in checks:
     lines.append(f"  [{status}] {label}: {detail}")
 text = "\n".join(lines) + "\n"
-(out / "SUMMARY.txt").write_text(text, encoding="utf-8")
+summary_name = "SUMMARY.recheck.txt" if recheck_of else "SUMMARY.txt"
+digest_name = "DIGEST.recheck.json" if recheck_of else "DIGEST.json"
+(out / summary_name).write_text(text, encoding="utf-8")
 
 # Redacted digest for operators to copy into docs/evidence (no IPs/secrets).
 digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -466,15 +521,23 @@ digest_doc = {
         for label, status, detail in checks
     ],
 }
-(out / "DIGEST.json").write_text(
+if recheck_of:
+    digest_doc["recheck_of_summary_sha256"] = recheck_of
+    digest_doc["before_json_sha256"] = hashlib.sha256((out / "before.json").read_bytes()).hexdigest()
+    digest_doc["after_json_sha256"] = hashlib.sha256((out / "after.json").read_bytes()).hexdigest()
+(out / digest_name).write_text(
     json.dumps(digest_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
 )
 print(text)
 print(f"digest_sha256={digest}")
-print(f"wrote {out / 'DIGEST.json'}")
+print(f"wrote {out / digest_name}")
 if overall != "PASS LIVE":
     raise SystemExit(1)
 PY
 
-log "Done. Summary: ${OUT}/SUMMARY.txt"
-log "Digest: ${OUT}/DIGEST.json"
+if (( RECHECK == 1 )); then
+  printf 'Recheck complete. Original evidence preserved; see %s/SUMMARY.recheck.txt and DIGEST.recheck.json\n' "$OUT"
+else
+  log "Done. Summary: ${OUT}/SUMMARY.txt"
+  log "Digest: ${OUT}/DIGEST.json"
+fi

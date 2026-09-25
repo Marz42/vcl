@@ -32,6 +32,27 @@ The 2026-09-07 run used an earlier gate that could **SKIP** missing metrics and 
 
 **Soak outcome for AC-5.0-10:** **PARTIAL** until a re-run with the tightened script emits `DIGEST.json` and `outcome=PASS LIVE`.
 
+## Run — 2026-09-25 operator report (`eagleclaw`)
+
+The current live run completed 1000/1000 telemetry calls with zero failures in 5643 s. State and accounting DB growth, service restart counts, active state, RSS, and file descriptors all passed. The script reported `FAIL LIVE` only because `/var/log/vincula` did not exist in either snapshot and its file count was recorded as null. Both snapshots also recorded null `log_dir_bytes`, which the collector emits only when the path is absent. The Node uses journald; `/var/log/vincula` is not created by the product.
+
+| Field | Value |
+| --- | --- |
+| Original summary SHA-256 | `101968b85b10638d961a61be1bcab904eeaf1ffa43cf5e89dba3136e8671c48a` |
+| Telemetry | 1000/1000 OK; 0 failures |
+| Elapsed | 5643 s |
+| State growth | +397528 bytes; accounting DB +360448 bytes; state file count 3→3 |
+| Restarts | sing-box 0→0; accountd 0→0 |
+| RSS | sing-box +5584 KiB; accountd +2136 KiB |
+| FD | sing-box 18→22; accountd 7→7 |
+| Original outcome | **FAIL LIVE** — optional log directory absent; recheck pending |
+
+The revised script treats an absent optional log directory as zero files and provides `--recheck-evidence` to evaluate the saved snapshots without repeating the 1000 calls. It verifies the original summary/digest pair and writes separate `SUMMARY.recheck.txt` and `DIGEST.recheck.json`; the original failed evidence remains intact.
+
+```bash
+bash scripts/soak-0.5.0-telemetry.sh eagleclaw --recheck-evidence
+```
+
 ### Operator copy checklist (next run)
 
 ```bash
