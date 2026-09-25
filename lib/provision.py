@@ -49,8 +49,18 @@ LEGACY_KEY_REMOTE = "reality-private.key"
 
 PrivilegeMode = Literal["root", "sudo"]
 
-# D51: single arch-neutral node payload pinned for 0.4.x provision.
-NODE_PAYLOAD_VERSION = "0.3.2"
+# D51: single arch-neutral node payload pinned to tree vincula.sh VINCULA_VERSION.
+def _node_payload_version_from_tree() -> str:
+    vincula_sh = Path(__file__).resolve().parent.parent / "vincula.sh"
+    match = re.search(
+        r'^readonly VINCULA_VERSION="([^"]+)"', vincula_sh.read_text(encoding="utf-8"), re.M
+    )
+    if not match:
+        raise RuntimeError("VINCULA_VERSION not found in vincula.sh")
+    return match.group(1)
+
+
+NODE_PAYLOAD_VERSION = _node_payload_version_from_tree()
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
@@ -753,7 +763,7 @@ def unpack_and_run_installer(
     legacy_key_remote: Optional[str] = None,
     legacy_user_tag: Optional[str] = None,
 ) -> None:
-    """Unpack staged tarball and run pinned payload ``vincula.sh`` (0.3.2).
+    """Unpack staged tarball and run pinned payload ``vincula.sh`` (tree node version).
 
     Host-key policy remains D34 (no StrictHostKeyChecking=no). Installer
     lands ``/usr/local/bin/vcl`` and ``/etc/vincula`` (not ``/opt``).

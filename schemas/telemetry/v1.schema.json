@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vincula.local/schemas/telemetry/v1.schema.json",
+  "title": "telemetry/v1",
+  "description": "Node telemetry snapshot for vcl telemetry snapshot --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "node_id",
+    "instance_id",
+    "observed_at",
+    "uptime_seconds",
+    "load",
+    "memory",
+    "filesystem",
+    "network",
+    "sing_box",
+    "accountd"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "telemetry/v1"
+    },
+    "node_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "instance_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "uptime_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["load1", "load5", "load15"],
+      "properties": {
+        "load1": { "type": "number", "minimum": 0 },
+        "load5": { "type": "number", "minimum": 0 },
+        "load15": { "type": "number", "minimum": 0 }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_bytes", "used_bytes"],
+      "properties": {
+        "total_bytes": { "type": "integer", "minimum": 0 },
+        "used_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mount", "total_bytes", "used_bytes"],
+      "properties": {
+        "mount": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "total_bytes": { "type": "integer", "minimum": 0 },
+        "used_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rx_bytes", "tx_bytes"],
+      "properties": {
+        "rx_bytes": { "type": "integer", "minimum": 0 },
+        "tx_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "sing_box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "connection_count": { "type": ["integer", "null"], "minimum": 0 },
+        "restart_count": { "type": ["integer", "null"], "minimum": 0 },
+        "last_restart_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "accountd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "last_poll_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "export_seq": { "type": ["integer", "null"], "minimum": 0 },
+        "last_event_age_seconds": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1365,7 +1365,8 @@ def _execute_migrate_locked() -> dict[str, Any]:
                     mapping[path] = f"migrated-key-{i}"
                 ref = mapping[path]
                 n["admin_credential_ref"] = ref
-                n["observe_credential_ref"] = ref
+                # Spec §7.2: observe must be set explicitly after migrate.
+                n.pop("observe_credential_ref", None)
             new_reg["nodes"].append(n)
         _save_registry_unlocked(staging / "fleet.json", new_reg)
         _migrate_fail_after("migrate registry")
@@ -1877,11 +1878,12 @@ DEFAULT_ADMIN_CREDENTIAL_REF = "admin-default"
 
 def planned_credential_refs(node):
     admin = node.get(ADMIN_CREDENTIAL_REF_KEY) or DEFAULT_ADMIN_CREDENTIAL_REF
-    observe = node.get(OBSERVE_CREDENTIAL_REF_KEY) or admin  # observe=admin
-    return {
-        ADMIN_CREDENTIAL_REF_KEY: admin,
-        OBSERVE_CREDENTIAL_REF_KEY: observe,
-    }
+    observe = node.get(OBSERVE_CREDENTIAL_REF_KEY)
+    # Do not invent observe=admin; unset means observation is not configured.
+    out = {ADMIN_CREDENTIAL_REF_KEY: admin}
+    if observe:
+        out[OBSERVE_CREDENTIAL_REF_KEY] = observe
+    return out
 
 
 def node_schema_field_names():

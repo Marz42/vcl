@@ -4,6 +4,7 @@
 
 | 目录 | 说明 |
 | --- | --- |
+| [`0.5.0/`](0.5.0/SUMMARY.md) | 0.5.0 Observation Foundation（G0 模板，待编码/LIVE） |
 | [`0.4.5/`](0.4.5/SUMMARY.md) | Controller 0.4.5 / Node 0.3.2（含 LIVE） |
 | [`0.4.4/`](0.4.4/SUMMARY.md) | UI v2 |
 | [`0.4.3/`](0.4.3/SUMMARY.md) | Adopt / Provision |

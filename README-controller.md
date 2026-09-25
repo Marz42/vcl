@@ -10,16 +10,17 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Stamp (0.4.5):** controller `VCL_FLEET_VERSION=0.4.5`; new provision payload
-pins Node `VINCULA_VERSION=0.3.2` (minimum Node remains `0.3.1`). Local Audit UI
-v2 (0.4.4+) plus 0.4.5 journal / legacy single-user seed.
+**Stamp (0.5.0):** controller `VCL_FLEET_VERSION=0.5.0`; new provision payload
+pins Node `VINCULA_VERSION=0.5.0` (minimum Node remains `0.3.1`). Observation
+(`capabilities`/`telemetry`), observe/admin credential routing, and `node upgrade`
+plan|apply (0.3.1+ → 0.5.0). Local Audit UI v2 (0.4.4+) retained.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
 
 Full operator guide (repo): `docs/user-guide.md`. Architecture and contracts:
-`docs/technical-guide.md`. Spec: `docs/specs/V0.4.5_Spec.md`. Evidence:
-`docs/evidence/0.4.5/SUMMARY.md`.
+`docs/technical-guide.md`. Spec: `docs/specs/V0.5.0_Spec.md`. Evidence:
+`docs/evidence/0.5.0/SUMMARY.md`.
 
 ## Windows 11
 

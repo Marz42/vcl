@@ -1,0 +1,4 @@
+{
+  "node_version": "0.5.0",
+  "capabilities": ["telemetry/v1"]
+}

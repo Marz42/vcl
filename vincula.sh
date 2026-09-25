@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.3.2
+# vincula v0.5.0
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.3.2"
+readonly VINCULA_VERSION="0.5.0"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -48,6 +48,7 @@ readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
 readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
+readonly TELEMETRY_PY="${LIB_DIR}/telemetry_snapshot.py"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly VAR_LIB_VINCULA="/var/lib/vincula"
 readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
@@ -231,6 +232,7 @@ rollback_install() {
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$ACCOUNTING_DB_FILE" \
@@ -290,6 +292,7 @@ rollback_migration() {
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -298,7 +301,7 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
@@ -509,7 +512,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1143,6 +1146,7 @@ file=${ACCOUNTD_PY}
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
+file=${TELEMETRY_PY}
 file=${ACCOUNTD_UNIT}
 file=${ACCOUNTING_DB_FILE}
 
@@ -1177,6 +1181,7 @@ file=${ACCOUNTD_PY}
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
+file=${TELEMETRY_PY}
 file=${ACCOUNTD_UNIT}
 
 directory=${STATE_DIR}
@@ -1489,6 +1494,7 @@ preflight_clean_install() {
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$VAR_LIB_VINCULA" \
     "$ACCOUNTING_DB_FILE" \
@@ -1643,6 +1649,7 @@ backup_existing_install() {
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -2020,7 +2027,7 @@ handle_existing_install() {
     migrate_existing_install "$installed_project_version"
     return
   fi
-  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0-0.1.5, 0.2.0-0.3.0, 0.3.1-dev, 0.3.1-rc1, 0.3.1-rc2, and 0.3.1 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
+  die "Installed vincula version is ${installed_project_version}; this installer can migrate 0.1.0-0.1.5, 0.2.0-0.3.0, 0.3.1-dev, 0.3.1-rc1, 0.3.1-rc2, 0.3.1, and 0.3.2 to ${VINCULA_VERSION}, but will not downgrade or skip versions."
 }
 
 wait_for_service() {
@@ -2037,28 +2044,32 @@ wait_for_service() {
 
 
 install_accountd_artifacts() {
-  local root staged_unit staged_py staged_stats staged_audit staged_backup
+  local root staged_unit staged_py staged_stats staged_audit staged_backup staged_telemetry
   root=$(installer_root) || die "Cannot locate installer directory for accounting artifacts."
   staged_py="${TMP_DIR}/vincula-accountd.py"
   staged_stats="${TMP_DIR}/vincula-stats.py"
   staged_audit="${TMP_DIR}/vincula-audit.py"
   staged_backup="${TMP_DIR}/vincula-backup.py"
+  staged_telemetry="${TMP_DIR}/telemetry_snapshot.py"
   staged_unit="${TMP_DIR}/vincula-accountd.service"
   [[ -f "${root}/lib/vincula-accountd.py" ]] || die "Missing ${root}/lib/vincula-accountd.py"
   [[ -f "${root}/lib/vincula-stats.py" ]] || die "Missing ${root}/lib/vincula-stats.py"
   [[ -f "${root}/lib/vincula-audit.py" ]] || die "Missing ${root}/lib/vincula-audit.py"
   [[ -f "${root}/lib/vincula-backup.py" ]] || die "Missing ${root}/lib/vincula-backup.py"
+  [[ -f "${root}/lib/telemetry_snapshot.py" ]] || die "Missing ${root}/lib/telemetry_snapshot.py"
   [[ -f "${root}/lib/vincula-accountd.service" ]] || die "Missing ${root}/lib/vincula-accountd.service"
   install -m 0644 "${root}/lib/vincula-accountd.py" "$staged_py"
   install -m 0644 "${root}/lib/vincula-stats.py" "$staged_stats"
   install -m 0644 "${root}/lib/vincula-audit.py" "$staged_audit"
   install -m 0644 "${root}/lib/vincula-backup.py" "$staged_backup"
+  install -m 0644 "${root}/lib/telemetry_snapshot.py" "$staged_telemetry"
   install -m 0644 "${root}/lib/vincula-accountd.service" "$staged_unit"
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
   atomic_install "$staged_stats" "$STATS_PY" 0644 root root
   atomic_install "$staged_audit" "$AUDIT_PY" 0644 root root
   atomic_install "$staged_backup" "$BACKUP_PY" 0644 root root
+  atomic_install "$staged_telemetry" "$TELEMETRY_PY" 0644 root root
   atomic_install "$staged_unit" "$ACCOUNTD_UNIT" 0644 root root
   # Create empty DB file ownership marker (daemon initializes schema).
   if [[ ! -f "$ACCOUNTING_DB_FILE" ]]; then
@@ -2078,11 +2089,13 @@ validate_accounting_artifacts() {
   [[ -f "$STATS_PY" ]] || die "Missing stats helper ${STATS_PY}"
   [[ -f "$AUDIT_PY" ]] || die "Missing audit helper ${AUDIT_PY}"
   [[ -f "$BACKUP_PY" ]] || die "Missing backup helper ${BACKUP_PY}"
+  [[ -f "$TELEMETRY_PY" ]] || die "Missing telemetry helper ${TELEMETRY_PY}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
   python_syntax_check "$ACCOUNTD_PY" || die "vincula-accountd.py failed syntax check"
   python_syntax_check "$STATS_PY" || die "vincula-stats.py failed syntax check"
   python_syntax_check "$AUDIT_PY" || die "vincula-audit.py failed syntax check"
   python_syntax_check "$BACKUP_PY" || die "vincula-backup.py failed syntax check"
+  python_syntax_check "$TELEMETRY_PY" || die "telemetry_snapshot.py failed syntax check"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"
   fi

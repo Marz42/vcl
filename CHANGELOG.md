@@ -2,6 +2,31 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.0 (2026-08-31)
+**Observation Foundation** + **Node In-Place Upgrade**. Stamp: CTRL `0.5.0`; NODE payload pin **`0.5.0`** (Minimum Node remains `0.3.1`).
+### Added
+- **Node observation：** `vcl capabilities --json`、`vcl telemetry snapshot --json`；schema `capabilities/v1`、`telemetry/v1`；输出 bounded、无密钥材料。
+- **Controller observation service：** `vcl-fleet capabilities|telemetry NODE`；observe/admin credential 路由（`access.py`）；malformed/oversize fail-closed。
+- **Node upgrade：** `vcl-fleet node upgrade plan|apply NODE`；0.3.1+ → 0.5.0 typed upgrade；operation journal `node_upgrade`。
+- **Node 0.5.0 payload：** migrate allowlist 扩展；controller 内嵌 `vincula-node-0.5.0.tar.gz`。
+### Security / compat
+- observe 凭据失败 → **AUTH_FAILED**（无 silent admin fallback）；`capabilities` / `telemetry` / `upgrade plan` 对此类状态 **exit ≠ 0**。
+- **Review fixes：** telemetry 以 observe 凭据读取当前 Node identity，核对 registry `node_id` 与 snapshot `node_id` / `instance_id`；live `probe` / `verify` 的 identity、status、verify SSH 均走 observe 凭据，认证失败显示 `AUTH_FAILED`。
+- **Clock skew measurement：** live `probe` / `verify` 与 `sync --full` 使用每个节点 identity SSH 往返时间的中点比较远端 UTC，避免全 Fleet 顺序等待或后续 audit export 造成虚假的时钟 WARN。
+- **不得隐式共用：** 新节点不自动把 `observe_credential_ref` 设成 admin；须显式 `node set --observe-credential-ref` / `--observe-identity-file`（可与 admin 相同，但必须显式）。
+- 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
+- telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。
+- **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`；ZIP/tar epoch **钳制 ≥ 1980-01-01**（避免 CI 无 git 元数据时 epoch=0 崩溃）。
+- **WSL 挂载盘打包修复：** Node tar 在 POSIX `/tmp` 暂存并规范化目录/文件权限；同一源码和 `SOURCE_DATE_EPOCH` 在 Linux 文件系统与 `/mnt/*` 上得到相同 SHA，Controller zip 随之稳定。
+- observation JSON 拒绝 `NaN`/`Infinity`；有界 SSH capture：**线程 drain + deadline kill**（单字节后挂起不可绕过 timeout；含 Windows pipe）。
+- upgrade post-check 失败：先解包再跑 **staged 0.5 helper** `upgrade checkpoint`（0.3.1/0.3.2 安装态 helper 无 upgrade CLI）；回滚停服后才改状态（仍 active → fail-close）；校验通过后才恢复旧 `vincula`/`vcl`；checkpoint 内嵌 **upgrade-rollback-helper**，PARTIAL 指引该耐久路径。
+- LIVE soak gate：缺失关键指标 **FAIL**；服务最终须 **active**；对照进程 RSS/FD；产出 `DIGEST.json`（[`docs/evidence/0.5.0/SOAK.md`](docs/evidence/0.5.0/SOAK.md)）。
+- **Documented blockers：** accountd 仍 `User=root`（目标 0.5.1 de-root）；observer forced-command 延至 0.5.x patch。
+### Notes
+- Spec: [`docs/specs/V0.5.0_Spec.md`](docs/specs/V0.5.0_Spec.md) · Master §7.1 · evidence：[`docs/evidence/0.5.0/SUMMARY.md`](docs/evidence/0.5.0/SUMMARY.md)。
+- Live Matrix：**L2–L5 PASS LIVE**；soak 1000× 历史指标 OK、RSS/FD **PENDING** 复跑；**L1 PENDING LIVE** → **AC-5.0-10 PARTIAL**。
+- `VCL_FLEET_VERSION=0.5.0`；`VINCULA_VERSION=0.5.0`。
+
 ## 0.4.5 (2026-08-25)
 **Integration & Hardening** + **Legacy single-user seed**. Stamp: CTRL `0.4.5`; NODE payload pin **`0.3.2`** (Minimum Node remains `0.3.1`; existing 0.3.1 not forced).
 ### Added
