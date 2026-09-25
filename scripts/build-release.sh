@@ -66,6 +66,30 @@ done < "${OUT}/release.lock"
 
 rm -f -- "$ARCHIVE" "${ARCHIVE}.sha256"
 # Deterministic tar: sorted names, fixed mtime/owner (SOURCE_DATE_EPOCH or HEAD).
+# Normalize modes on a POSIX filesystem before archiving. WSL DrvFs reports
+# files under /mnt/* as 0777 even after install/chmod, which otherwise changes
+# the tar (and the controller zip that embeds it) for identical source bytes.
+PACKAGE_TMP=$(mktemp -d /tmp/vcl-node-package.XXXXXXXX)
+cleanup_package_tmp() {
+  if [[ "${PACKAGE_TMP:-}" == /tmp/vcl-node-package.* && -d "$PACKAGE_TMP" ]]; then
+    rm -rf --one-file-system -- "$PACKAGE_TMP"
+  fi
+}
+trap cleanup_package_tmp EXIT
+mkdir -p "${PACKAGE_TMP}/${NAME}"
+cp -a -- "${OUT}/." "${PACKAGE_TMP}/${NAME}/"
+find "${PACKAGE_TMP}/${NAME}" -type d -exec chmod 0755 {} +
+find "${PACKAGE_TMP}/${NAME}" -type f -exec chmod 0644 {} +
+chmod 0755 \
+  "${PACKAGE_TMP}/${NAME}/vincula.sh" \
+  "${PACKAGE_TMP}/${NAME}/vincula-bootstrap.sh" \
+  "${PACKAGE_TMP}/${NAME}/bin/vincula"
+[[ "$(stat -c %a "${PACKAGE_TMP}/${NAME}")" == 755 \
+  && "$(stat -c %a "${PACKAGE_TMP}/${NAME}/lib/vincula-audit.py")" == 644 \
+  && "$(stat -c %a "${PACKAGE_TMP}/${NAME}/bin/vincula")" == 755 ]] || {
+  printf 'ERROR: /tmp does not support canonical POSIX package modes\n' >&2
+  exit 1
+}
 # Clamp to 1980-01-01 UTC so packaging stays aligned with ZIP epoch rules.
 TAR_EPOCH_MIN=315532800
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || printf '%s' "$TAR_EPOCH_MIN")}"
@@ -77,7 +101,7 @@ tar --sort=name \
   --mtime="@${SOURCE_DATE_EPOCH}" \
   --owner=0 --group=0 --numeric-owner \
   --format=gnu \
-  -C "$DIST_ROOT" -czf "$ARCHIVE" "$NAME"
+  -C "$PACKAGE_TMP" -czf "$ARCHIVE" "$NAME"
 ( cd "$DIST_ROOT" && sha256sum -- "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256" )
 
 printf 'wrote %s\n' "$OUT"

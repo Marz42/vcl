@@ -16,6 +16,7 @@
 - 0.3.x 节点 observation → **UNSUPPORTED**（非 ERROR）；0.4 管理（probe/sync/user）仍可用。
 - telemetry 读 accounting DB：SQLite URI `mode=ro` + `PRAGMA query_only=ON`。
 - **Deterministic build：** `build-release.sh` / `build-controller.sh` 固定 tar/zip 排序与 `SOURCE_DATE_EPOCH`；ZIP/tar epoch **钳制 ≥ 1980-01-01**（避免 CI 无 git 元数据时 epoch=0 崩溃）。
+- **WSL 挂载盘打包修复：** Node tar 在 POSIX `/tmp` 暂存并规范化目录/文件权限；同一源码和 `SOURCE_DATE_EPOCH` 在 Linux 文件系统与 `/mnt/*` 上得到相同 SHA，Controller zip 随之稳定。
 - observation JSON 拒绝 `NaN`/`Infinity`；有界 SSH capture：**线程 drain + deadline kill**（单字节后挂起不可绕过 timeout；含 Windows pipe）。
 - upgrade post-check 失败：先解包再跑 **staged 0.5 helper** `upgrade checkpoint`（0.3.1/0.3.2 安装态 helper 无 upgrade CLI）；回滚停服后才改状态（仍 active → fail-close）；校验通过后才恢复旧 `vincula`/`vcl`；checkpoint 内嵌 **upgrade-rollback-helper**，PARTIAL 指引该耐久路径。
 - LIVE soak gate：缺失关键指标 **FAIL**；服务最终须 **active**；对照进程 RSS/FD；产出 `DIGEST.json`（[`docs/evidence/0.5.0/SOAK.md`](docs/evidence/0.5.0/SOAK.md)）。

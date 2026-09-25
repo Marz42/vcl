@@ -314,6 +314,7 @@ bash scripts/build-controller.sh # → dist/vincula-controller-<ver>.zip
 
 CI：`.github/workflows/ci.yml`（unit / concurrency / failure-injection / artifact）。
 Controller zip 含 `README-controller.md`、`bin/vcl-fleet`、`bin/vcl-fleet.cmd`、`lib/*`、`controller.lock`；旁路 `.sha256`。
+Node 制品打包时在 POSIX `/tmp` 规范化目录为 `0755`、普通文件为 `0644`、三个入口脚本为 `0755`；因此 WSL 源码位于 `/mnt/*` 时仍能复现同一 SHA。构建环境的 `/tmp` 必须支持这些权限，否则脚本拒绝生成制品。
 
 ### status / probe / verify 与时钟
 

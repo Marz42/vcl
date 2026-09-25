@@ -1261,6 +1261,23 @@ assert_failure "node tarball does not contain vincula-fleet.py" \
   grep -q 'vincula-fleet.py' <<< "$node_listing"
 assert_success "node tarball contains vincula-backup.py" \
   grep -q 'vincula-backup.py' <<< "$node_listing"
+assert_success "node tarball has canonical POSIX modes" python3 - \
+  "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz" \
+  "$VINCULA_VERSION" <<'PY'
+import sys
+import tarfile
+
+archive, version = sys.argv[1:3]
+root = f"vincula-node-{version}/"
+executables = {root + name for name in (
+    "vincula.sh", "vincula-bootstrap.sh", "bin/vincula"
+)}
+with tarfile.open(archive, "r:gz") as tf:
+    for member in tf.getmembers():
+        expected = 0o755 if member.isdir() or member.name in executables else 0o644
+        assert member.isfile() or member.isdir(), member.name
+        assert member.mode == expected, (member.name, oct(member.mode), oct(expected))
+PY
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
 [[ -n "$VCL_FLEET_VERSION" ]]
 assert_success "build-controller produces zip" \
