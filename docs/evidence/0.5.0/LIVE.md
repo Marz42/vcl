@@ -53,8 +53,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Date | 2026-09-25 re-check |
 | Source version | 0.3.1 |
 | Measured outage (s) | No failed one-second proxy-status polls observed; exact outage duration was not measured. |
-| Outcome | **PARTIAL LIVE** — current `node upgrade apply` returned SUCCESS and subsequent sync succeeded; client-profile and post-upgrade observation confirmations pending |
-| Notes | Current apply's post-check verifies version, node_id and instance_id. Operator reported only initial watcher OK, upgrade success and normal sync. Prior 2026-08-31 full L2 run passed; do not use that run to claim current client continuity. |
+| Outcome | **PASS LIVE** — current `node upgrade apply` returned SUCCESS; sync, original client profile, and post-upgrade capabilities/telemetry/probe/verify succeeded |
+| Notes | Current apply's post-check verifies version, node_id and instance_id. Operator reported only initial watcher OK, upgrade success and normal sync, then confirmed all remaining client and observation checks as normal. No failed status polls were observed; exact outage duration was not measured. |
 | Offline equiv | **PASS** — obs050 upgrade apply + migrate fail fixtures |
 
 ---
@@ -114,7 +114,7 @@ VCL_SOAK_LIVE=1 VCL_FLEET_HOME=… \
 Operator evidence (local): `~/vcl-rc-evidence/0.5.0-soak/<NODE>/{SUMMARY.txt,DIGEST.json}`.
 In-repo redacted digest: [`SOAK.md`](SOAK.md).
 
-Gate (current script): missing metrics → **FAIL**; services must end **active**; RSS/FD growth bounded; no SKIP→PASS LIVE.
+Gate (current script): missing critical metrics → **FAIL**; an absent optional log directory counts as zero files; services must end **active**; RSS/FD growth bounded; no SKIP→PASS LIVE.
 
 | Field | Value |
 | --- | --- |
@@ -128,7 +128,7 @@ Gate (current script): missing metrics → **FAIL**; services must end **active*
 | Outcome | **PARTIAL** (telemetry soak OK; tightened resource gate pending) |
 | Offline equiv | **PASS** — `soak050` block in test-fleet |
 
-2026-09-25 `eagleclaw` re-run: 1000/1000 telemetry OK in 5643 s. State size/file count, service restarts/active state, RSS and FD checks passed. Original gate reported **FAIL LIVE** only because the optional `/var/log/vincula` directory was absent in both snapshots. Corrected saved-evidence recheck pending; see [`SOAK.md`](SOAK.md).
+2026-09-25 `eagleclaw` re-run: 1000/1000 telemetry OK in 5643 s. State size/file count, service restarts/active state, RSS and FD checks passed. Original gate reported **FAIL LIVE** only because the optional `/var/log/vincula` directory was absent in both snapshots. Corrected saved-evidence recheck reported **PASS LIVE**, summary SHA-256 `64e22e7452241afeabc36a03bc40b0f97073876e7b5c7f44ca7f579098bacd83`; see [`SOAK.md`](SOAK.md).
 
 ---
 

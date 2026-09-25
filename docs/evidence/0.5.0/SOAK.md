@@ -30,7 +30,7 @@ The 2026-09-07 run used an earlier gate that could **SKIP** missing metrics and 
 | RSS / FD before→after | **not measured** → soak gate **PENDING LIVE** re-run |
 | In-repo DIGEST.json | produce on next run; copy `summary_sha256` here |
 
-**Soak outcome for AC-5.0-10:** **PARTIAL** until a re-run with the tightened script emits `DIGEST.json` and `outcome=PASS LIVE`.
+**Outcome of the 2026-09-07 run:** **PARTIAL** under the tightened gate; the current `eagleclaw` run below supersedes it for AC-5.0-10.
 
 ## Run — 2026-09-25 operator report (`eagleclaw`)
 
@@ -45,9 +45,13 @@ The current live run completed 1000/1000 telemetry calls with zero failures in 5
 | Restarts | sing-box 0→0; accountd 0→0 |
 | RSS | sing-box +5584 KiB; accountd +2136 KiB |
 | FD | sing-box 18→22; accountd 7→7 |
-| Original outcome | **FAIL LIVE** — optional log directory absent; recheck pending |
+| Original outcome | **FAIL LIVE** — optional log directory absent |
+| Corrected recheck | **PASS LIVE** — 1000/1000 telemetry and all resource checks passed |
+| Recheck summary SHA-256 | `64e22e7452241afeabc36a03bc40b0f97073876e7b5c7f44ca7f579098bacd83` |
 
 The revised script treats an absent optional log directory as zero files and provides `--recheck-evidence` to evaluate the saved snapshots without repeating the 1000 calls. It verifies the original summary/digest pair and writes separate `SUMMARY.recheck.txt` and `DIGEST.recheck.json`; the original failed evidence remains intact.
+
+The operator ran the recheck on the saved live snapshots. It verified the original summary SHA-256 above, then reported `soak=PASS`, `state_growth=PASS`, and `outcome=PASS LIVE`. All twelve metric checks passed. The recheck measured no new live traffic; its conclusion is based on the preserved 1000-call run and the before/after snapshots.
 
 ```bash
 bash scripts/soak-0.5.0-telemetry.sh eagleclaw --recheck-evidence

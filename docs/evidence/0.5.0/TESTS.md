@@ -52,7 +52,7 @@ Clock skew comparison now uses the midpoint of each identity SSH call. The fixtu
 | `mix050` | mixed 0.3.x + 0.5.0 fleet; lax UNSUPPORTED + probe not ERROR |
 | `res050` | corrupt `operations.jsonl`; status/capabilities survive; module reload API intact |
 | `soak050` | 1000× `fleet telemetry obsnode --json` — 0 failures (**offline fixture**) |
-| Live soak | `scripts/soak-0.5.0-telemetry.sh` — 2026-09-07 historical metrics OK; RSS/FD gate **PENDING** re-run ([`SOAK.md`](SOAK.md)) |
+| Live soak | `scripts/soak-0.5.0-telemetry.sh` — 2026-09-25 `eagleclaw` 1000/1000 telemetry OK; RSS/FD and all resource checks **PASS LIVE** on preserved-snapshot recheck ([`SOAK.md`](SOAK.md)) |
 
 ## Failure injection
 
