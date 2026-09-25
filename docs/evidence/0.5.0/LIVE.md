@@ -25,8 +25,9 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 
 | Field | Value |
 | --- | --- |
-| Date | _operator TBD_ |
-| Outcome | **PENDING LIVE** |
+| Date | 2026-09-25 |
+| Outcome | **PARTIAL LIVE** — fresh provision, capabilities/telemetry, and probe health PASS; `verify` clock WARN on prior Controller; re-verify with `98423ed` and distinct observe credential pending |
+| Clock note | VPS reported `NTP=yes`, `NTPSynchronized=yes`; prior full-Fleet verify measured ~57s. Batch-start timestamp bias is a plausible cause; current Controller re-check pending. |
 | Offline equiv | **PASS** — fake-ssh `obsnode` alias + obs050 block |
 
 ---
@@ -67,8 +68,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Field | Value |
 | --- | --- |
 | Date | 2026-08-31 |
-| Outcome | **PASS LIVE** |
-| Notes | observe-default ≠ admin-default; capabilities/telemetry OK via observe; probe/user via admin |
+| Outcome | **PASS LIVE** (historical); probe/verify observe route re-verify pending |
+| Notes | 2026-08-31 observe-default ≠ admin-default; capabilities/telemetry OK via observe; probe then used admin. Current Controller routes probe/verify via observe. |
 
 ---
 
@@ -81,8 +82,8 @@ Record outcomes in [`SUMMARY.md`](SUMMARY.md). **Never** paste IPs, VLESS URIs, 
 | Field | Value |
 | --- | --- |
 | Date | 2026-08-31 |
-| Outcome | **PASS LIVE** |
-| Notes | revoke observe pubkey → AUTH_FAILED; restore → OK; no silent admin fallback |
+| Outcome | **PASS LIVE** (historical); probe/verify AUTH_FAILED path re-verify pending |
+| Notes | 2026-08-31 revoke observe pubkey → AUTH_FAILED for observation; restore → OK. Current Controller also requires probe/verify to fail closed. |
 
 ---
 

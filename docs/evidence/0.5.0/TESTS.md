@@ -15,7 +15,7 @@ git diff --check
 | --- | --- |
 | Date | 2026-09-25 |
 | OS | Debian (WSL2; clean `git archive` of the code commit) |
-| Commit | `82dc577` |
+| Commit | `98423ed` |
 
 ## Results
 
@@ -23,9 +23,10 @@ git diff --check
 | --- | --- | --- | --- | --- |
 | tests/test.sh | 1863 | 0 | 0 | 1863 |
 
-Gate: `All 1863 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp, and canonical tar modes). Node and Controller builds passed; with `SOURCE_DATE_EPOCH=1790260874`, builds from `82dc577` on Kali Linux filesystem and WSL Windows mounted filesystem produced identical SHAs recorded in [`SUMMARY.md`](SUMMARY.md). `git diff --check` passed.
+Gate: `All 1863 tests passed.` (includes bounded SSH timeout, Infinity/NaN reject, upgrade ROLLED_BACK / PARTIAL recovery, SOURCE_DATE_EPOCH=0 ZIP clamp, canonical tar modes, and per-node clock measurement). Node and Controller builds passed with `SOURCE_DATE_EPOCH=1790260874`; candidate SHAs are recorded in [`SUMMARY.md`](SUMMARY.md). `git diff --check` passed.
 
 The cross-filesystem mismatch was caused by DrvFs reporting all staged files as mode `0777`; the Node tar preserved those modes and changed the embedded payload in the Controller zip. `build-release.sh` now stages canonical modes in POSIX `/tmp` before archiving.
+Clock skew comparison now uses the midpoint of each identity SSH call. The fixture confirms a 56-second delay before the call no longer becomes a false WARN, while genuine 45-second and 400-second skew retain WARN and FAIL behavior.
 
 ## Schema contract tests
 

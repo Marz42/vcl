@@ -38,11 +38,11 @@ Live evidence: Live Matrix **L2** in [`LIVE.md`](LIVE.md) — historical **PASS 
 
 ## Artifact pins
 
-Candidate build from `82dc577` with fixed `SOURCE_DATE_EPOCH=1790260874`; both Kali Linux and WSL Windows mounted builds match. Re-pin if packaged source changes.
+Candidate build from `98423ed` with fixed `SOURCE_DATE_EPOCH=1790260874`; Node payload SHA is unchanged by the Controller clock fix. Re-pin if packaged source changes.
 
 | Artifact | Version | SHA256 |
 | --- | --- | --- |
-| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `a155c92f497d8c2a7a89a80d1f72a7b09819a6880f3532507721b0ab3e0aa078` |
+| `vincula-controller-0.5.0.zip` | Controller 0.5.0 | `0adc8179a6260ddecd024b2f4ee219871f17ca7443415f6c344a392f65b641cd` |
 | `vincula-node-0.5.0.tar.gz` | Node 0.5.0 | `23ebd558f39204fc21e7fdef92c58d1b8403b8953c8fc343b233bcd88f97330a` |
 
 Minimum compatible Node for Controller 0.5.0: **0.3.1**.
