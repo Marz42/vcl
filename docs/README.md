@@ -11,6 +11,7 @@
 | 维护者 / 要对齐实现与合同 | [`technical-guide.md`](technical-guide.md) |
 | 做换机等高风险操作 | [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md) |
 | 核对规格或验收 | [`specs/`](specs/README.md) · [`evidence/`](evidence/README.md) |
+| 推进 0.5.x～0.7.x 开发与阶段验收 | [`实施方案`](plans/VCL_0.5-0.7_Implementation_Plan.md) · [`人工验收清单`](plans/VCL_0.5-0.7_Human_Acceptance.md) |
 | 查历史冻结 / 旧 known-issues | [`legacy/`](legacy/README.md)（只读，非当前操作依据） |
 
 ## 目录结构
@@ -24,6 +25,7 @@ docs/
   release-readiness-0.3.1.md
   known-issues-0.3.1.md
   specs/                    # 设计规格
+  plans/                    # 实施步骤、阶段验收与人工关卡
   evidence/                 # 验收证据（勿改写失真）
   legacy/                   # 历史材料
 ```

@@ -14,4 +14,6 @@
 
 Machine-readable contracts：[`../../schemas/README.md`](../../schemas/README.md)
 
+0.5.x～0.7.x 执行入口：[`实施与验收方案`](../plans/VCL_0.5-0.7_Implementation_Plan.md) · [`大阶段人工验收清单`](../plans/VCL_0.5-0.7_Human_Acceptance.md)。按 14 个子版本推进，0.5.x / 0.6.x / 0.7.x 收尾分别经 H05 / H06 / H07 人工签署后放行。
+
 操作说明见 [`../user-guide.md`](../user-guide.md)；架构摘要见 [`../technical-guide.md`](../technical-guide.md)。
