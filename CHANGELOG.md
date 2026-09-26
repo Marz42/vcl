@@ -2,6 +2,18 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.1 — local development candidate (2026-09-27, unreleased)
+
+- Controller/Node stamp `0.5.1`，minimum Node仍为`0.3.1`；typed upgrade allowlist覆盖0.3.1/0.3.2/0.5.0→0.5.1。
+- 前台`monitor [NODE]`：每节点总SSH deadline、并发上限、jitter/backoff、进程锁、单节点故障隔离；`health`与UI `/api/monitor`只读本地缓存。
+- 分离Node/Observation/Proxy/Accounting健康，明确UNKNOWN、陈旧与恢复状态；进程active不冒充代理可用。新增专用VLESS/Reality→HTTPS probe，凭据只存本机私有文件，禁止direct fallback。
+- 独立`observation.db`：raw/5m/hourly retention、行数/256MiB上限、坏行隔离、事务恢复；跨instance或计数复位不产生错误网络速率。
+- accountd独立系统用户，root固定pre-start生成最小`accountd-runtime/v1`输入；用户变更/恢复刷新投影，规范secret文件保持root私有。新增真实Linux降权文件权限测试并纳入CI。
+- 显式`vcl observer install-key --file`配置受限Ed25519观察身份，固定命令经本机Unix socket和有资源限制的只读broker执行；新增`--observe-ssh-user`，observe认证失败不回退admin。
+- 所有新增Node库与unit纳入制品、manifest和upgrade checkpoint/rollback；Node/Controller包均使用现有digest/lock校验。
+- 本轮仅完成本地交付：真实VPS、升级断流、systemd/sshd现场配置、≥10节点2h、24h soak与发布门禁均保留`PENDING LIVE`。H05人工验收仍在0.5.x大阶段收尾。
+- [SPEC](docs/specs/V0.5.1_Spec.md) · [本地证据](docs/evidence/0.5.1/SUMMARY.md) · [操作说明](docs/operations/monitoring-runbook.md)。
+
 ## 0.5.0 (2026-08-31)
 **Observation Foundation** + **Node In-Place Upgrade**. Stamp: CTRL `0.5.0`; NODE payload pin **`0.5.0`** (Minimum Node remains `0.3.1`).
 ### Added

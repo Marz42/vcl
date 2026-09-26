@@ -1,9 +1,11 @@
-# Vincula 用户手册（Controller 0.5.0 · Node 0.5.0）
+# Vincula 用户手册（Controller/Node 0.5.1 开发候选）
 
 面向能使用终端、但不需要阅读源码的 VPS 管理者。
 架构与合同细节见 [`technical-guide.md`](technical-guide.md)。完整参数以 CLI `--help` 为准。
 
 **记账始终是 approximate（Clash 轮询），不能当发票。**
+
+0.5.1 本轮只收口本地交付，真实 VPS / 24h soak 保留 `PENDING LIVE`，不是生产发布声明。前台monitor、cache-only health、专用代理probe和独立observer配置见 [`监控操作说明`](operations/monitoring-runbook.md)；验证边界见 [`0.5.1 evidence`](evidence/0.5.1/SUMMARY.md)。
 
 ---
 

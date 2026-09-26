@@ -27,6 +27,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Node tests (sources fleet)
         run: bash tests/test.sh
+      - name: Accountd filesystem privilege boundary (temporary files only)
+        run: sudo -n python3 tests/test_accountd_privileges.py
 
   unit-debian:
     name: unit (${{ matrix.image }})

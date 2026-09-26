@@ -1,4 +1,4 @@
-# Vincula 技术手册（Controller 0.4.5 · Node 0.3.2）
+# Vincula 技术手册（Controller/Node 0.5.1 开发候选）
 
 面向维护者与希望理解实现合同的读者。操作步骤见 [`user-guide.md`](user-guide.md)。
 设计规格见 [`specs/`](specs/README.md)；验收证据见 [`evidence/`](evidence/README.md)。
@@ -7,10 +7,12 @@
 
 | 常量 | 位置 | 值 |
 | --- | --- | --- |
-| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.4.5** |
-| `VINCULA_VERSION` | `vincula.sh` | **0.3.2** |
-| 新 provision payload pin | Controller | Node **0.3.2** |
+| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.1** |
+| `VINCULA_VERSION` | `vincula.sh` | **0.5.1** |
+| 新 provision payload pin | Controller | Node **0.5.1** |
 | 最低兼容 Node | Spec / fleet | **0.3.1**（已有 0.3.1 不强制升级） |
+
+0.5.1 为本地开发候选，真实VPS与24h soak暂不执行，发布门禁尚未通过。观测新增`monitor/v1`与machine-local `observation.db`，不改变fleet-cache/v4；UI GET只读。Node accountd采用最小投影和独立服务用户；observer采用独立SSH身份、本机Unix socket及受限root读broker。详细权限、存储与失败合同见 [`V0.5.1 SPEC`](specs/V0.5.1_Spec.md)，本地测试与现场缺口见 [`evidence`](evidence/0.5.1/SUMMARY.md)。
 
 ---
 
@@ -292,6 +294,7 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
+| 0.5.1（开发候选） | 0.5.1 | 0.3.1 | monitor/health；0.5.0 Node可观测但无新hardening；独立observe用户名需0.5.1 Controller；[实际验证矩阵](evidence/0.5.1/COMPATIBILITY.md) |
 | 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |
 | 0.4.4 | 0.3.1 | 0.3.1 | UI v2 |

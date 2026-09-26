@@ -1,6 +1,6 @@
 # Vincula 文档导航
 
-当前稳定基线：**Controller 0.4.5** · **Node 0.3.2** · 最低兼容 Node **0.3.1**。
+本地主线开发基线：**Controller/Node 0.5.0**；当前开发候选：**Controller/Node 0.5.1**；最低兼容 Node **0.3.1**。0.5.1 仅收口本地交付，真实 VPS / soak / 发布门禁尚未完成，见 [`0.5.1 evidence`](evidence/0.5.1/SUMMARY.md)。
 
 ## 按受众阅读
 
@@ -10,6 +10,7 @@
 | 日常用终端管 VPS 的管理员 | [`user-guide.md`](user-guide.md) |
 | 维护者 / 要对齐实现与合同 | [`technical-guide.md`](technical-guide.md) |
 | 做换机等高风险操作 | [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md) |
+| 使用 0.5.1 监控、专用 probe 与 observer | [`operations/monitoring-runbook.md`](operations/monitoring-runbook.md) |
 | 核对规格或验收 | [`specs/`](specs/README.md) · [`evidence/`](evidence/README.md) |
 | 推进 0.5.x～0.7.x 开发与阶段验收 | [`实施方案`](plans/VCL_0.5-0.7_Implementation_Plan.md) · [`人工验收清单`](plans/VCL_0.5-0.7_Human_Acceptance.md) |
 | 查历史冻结 / 旧 known-issues | [`legacy/`](legacy/README.md)（只读，非当前操作依据） |

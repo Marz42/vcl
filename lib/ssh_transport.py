@@ -106,7 +106,7 @@ def ssh_remote_json_for_class(
         run_kwargs["max_stdout_bytes"] = max_stdout_bytes
     proc = ssh_run(
         node["ssh_host"],
-        node["ssh_user"],
+        node.get("observe_ssh_user", node["ssh_user"]) if credential_class == "observe" else node["ssh_user"],
         int(node.get("ssh_port") or 22),
         remote_cmd,
         **run_kwargs,

@@ -10,17 +10,20 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Stamp (0.5.0):** controller `VCL_FLEET_VERSION=0.5.0`; new provision payload
-pins Node `VINCULA_VERSION=0.5.0` (minimum Node remains `0.3.1`). Observation
-(`capabilities`/`telemetry`), observe/admin credential routing, and `node upgrade`
-plan|apply (0.3.1+ → 0.5.0). Local Audit UI v2 (0.4.4+) retained.
+**Development candidate (0.5.1):** Controller and embedded Node payload are `0.5.1`
+(minimum Node remains `0.3.1`). Adds foreground `monitor`, cache-only `health`,
+`monitor/v1`, dedicated proxy probes and monitoring UI. Node 0.5.1 adds accountd
+privilege separation and an explicit restricted observer setup. Typed upgrade
+supports Node 0.3.1/0.3.2/0.5.0 → 0.5.1. Real VPS checks and 24h soak are pending;
+this candidate is not a published or production-accepted release.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
 
 Full operator guide (repo): `docs/user-guide.md`. Architecture and contracts:
-`docs/technical-guide.md`. Spec: `docs/specs/V0.5.0_Spec.md`. Evidence:
-`docs/evidence/0.5.0/SUMMARY.md`.
+`docs/technical-guide.md`. Spec: `docs/specs/V0.5.1_Spec.md`. Evidence:
+`docs/evidence/0.5.1/SUMMARY.md`. Monitoring and dedicated probe setup:
+`docs/operations/monitoring-runbook.md`.
 
 ## Windows 11
 

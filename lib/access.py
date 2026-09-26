@@ -296,6 +296,8 @@ def node_identity_file_for_class(
 
     if observe_ref:
         return _identity_from_ref(observe_ref)
+    if node.get("observe_ssh_user"):
+        _host.die("restricted observe SSH user requires an explicit observe credential")
     # A node with no credential refs uses OpenSSH's default identity for both
     # classes. Once an admin ref is configured, observe must be explicit.
     if not admin_ref and not observe_ref:

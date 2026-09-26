@@ -38,6 +38,10 @@ FILES=(
   lib/observation/capabilities.py
   lib/observation/telemetry.py
   lib/observation/schema_validate.py
+  lib/observation/health.py
+  lib/observation/store.py
+  lib/observation/monitor.py
+  lib/observation/probe.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css

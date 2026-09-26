@@ -2460,6 +2460,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 self._send_json(200, api_overview())
                 return
+            if path == "/api/monitor":
+                self._send_json(200, fleet().monitor_cached_health())
+                return
             if path in ("/api/health", "/api/nodes"):
                 self._send_json(200, api_nodes())
                 return

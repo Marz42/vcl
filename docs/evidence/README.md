@@ -4,7 +4,8 @@
 
 | 目录 | 说明 |
 | --- | --- |
-| [`0.5.0/`](0.5.0/SUMMARY.md) | 0.5.0 Observation Foundation（G0 模板，待编码/LIVE） |
+| [`0.5.1/`](0.5.1/SUMMARY.md) | 0.5.1 本地开发交付；真实 VPS / 24h soak / 发布保留 PENDING |
+| [`0.5.0/`](0.5.0/SUMMARY.md) | Observation Foundation 已有离线/Live/soak记录；以原文适用候选和测量限制为准 |
 | [`0.4.5/`](0.4.5/SUMMARY.md) | Controller 0.4.5 / Node 0.3.2（含 LIVE） |
 | [`0.4.4/`](0.4.4/SUMMARY.md) | UI v2 |
 | [`0.4.3/`](0.4.3/SUMMARY.md) | Adopt / Provision |

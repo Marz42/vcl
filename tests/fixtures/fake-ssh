@@ -32,7 +32,7 @@ NODES = HERE / "nodes"
 
 FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
 KNOWN_KINDS = ("identity", "status", "verify", "capabilities", "telemetry_snapshot", "user", "audit", "backup", "restore", "upgrade")
-NODE_PAYLOAD_VERSION = os.environ.get("VCL_FAKE_NODE_VERSION", "0.5.0").strip() or "0.5.0"
+NODE_PAYLOAD_VERSION = os.environ.get("VCL_FAKE_NODE_VERSION", "0.5.1").strip() or "0.5.1"
 NODE_TARBALL_BASENAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 USER_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

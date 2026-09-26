@@ -128,7 +128,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.5.0" \
+assert_equal "runs when read from standard input" "vincula 0.5.1" \
   "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -158,7 +158,8 @@ assert_success "migrates from 0.3.1-rc1" is_supported_upgrade_from 0.3.1-rc1
 assert_success "migrates from 0.3.1-rc2" is_supported_upgrade_from 0.3.1-rc2
 assert_success "migrates from 0.3.1" is_supported_upgrade_from 0.3.1
 assert_success "migrates from 0.3.2" is_supported_upgrade_from 0.3.2
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.5.0
+assert_success "migrates from 0.5.0" is_supported_upgrade_from 0.5.0
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.5.1
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -391,8 +392,8 @@ else
   pass "verify_existing_install does not remint instance_id"
 fi
 
-# 0.3.1→0.5.0 shaped migration fixture: preserve UUID / Reality / users / accounting
-assert_success "0.3.1→0.5.0 shaped migrate fixture preserves identity" python3 - \
+# 0.3.1→0.5.1 shaped migration fixture: preserve UUID / Reality / users / accounting
+assert_success "0.3.1→0.5.1 shaped migrate fixture preserves identity" python3 - \
   "${TEST_TMP}/migrate-031-050" \
   "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" \
   "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY'
@@ -402,7 +403,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 uuid, priv, pub, sid, node_id, instance_id = sys.argv[2:8]
 src = root / "src-0.3.1"
-dst = root / "dst-0.5.0"
+dst = root / "dst-0.5.1"
 src.mkdir(parents=True)
 (src / "VERSION").write_text("0.3.1\n", encoding="utf-8")
 state = {
@@ -465,11 +466,11 @@ acct_bytes = db.read_bytes()
 import shutil
 
 shutil.copytree(src, dst)
-(dst / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+(dst / "VERSION").write_text("0.5.1\n", encoding="utf-8")
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
-dst_state["project_version"] = "0.5.0"
+dst_state["project_version"] = "0.5.1"
 (dst / "state.json").write_text(json.dumps(dst_state, indent=2) + "\n", encoding="utf-8")
-toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.5.0")
+toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.5.1")
 (dst / "config.toml").write_text(toml, encoding="utf-8")
 
 # Preserve assertions (same invariants migrate_existing_install guards).
@@ -477,7 +478,7 @@ src_state = json.loads((src / "state.json").read_text(encoding="utf-8"))
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
 for key in ("uuid", "private_key", "public_key", "short_id", "node_id", "instance_id"):
     assert src_state[key] == dst_state[key], key
-assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.5.0"
+assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.5.1"
 src_users = json.loads((src / "users.json").read_text(encoding="utf-8"))
 dst_users = json.loads((dst / "users.json").read_text(encoding="utf-8"))
 assert src_users == dst_users
@@ -515,7 +516,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.5.0"$' "${TEST_TMP}/config.toml"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.5.1"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -600,7 +601,7 @@ assert_success "capabilities/v1 valid fixture parses" \
 assert_success "telemetry/v1 valid fixture parses" \
   python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
   "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json"
-assert_success "0.5.0 capabilities contract assembly" python3 - "$VINCULA_VERSION" <<'PY'
+assert_success "0.5.1 capabilities contract assembly" python3 - "$VINCULA_VERSION" <<'PY'
 import json, sys
 version = sys.argv[1]
 doc = {
@@ -951,7 +952,7 @@ assert_success "installer defines TELEMETRY_PY" \
   grep -q 'TELEMETRY_PY=' "${PROJECT_DIR}/vincula.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 12 first-party files" "12" \
+assert_equal "release.lock has 16 first-party files" "16" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -1053,8 +1054,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.5.0" \
-  grep -q 'Vincula-Version: 0.5.0' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.5.1" \
+  grep -q 'Vincula-Version: 0.5.1' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -1250,7 +1251,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 12 first-party files" "12" \
+assert_equal "dist node release.lock has 16 first-party files" "16" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
@@ -6562,7 +6563,7 @@ else
   fail "vcl backup unknown subcommand dies (rc=${bogus_rc}, err='${bogus_err}')"
 fi
 
-# --- 0.5.0 upgrade checkpoint / fail-closed rollback ---
+# --- 0.5.1 upgrade checkpoint / fail-closed rollback ---
 assert_success "helper implements upgrade checkpoint" \
   grep -q '^cmd_upgrade_checkpoint()' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper rollback verifies service active" \
@@ -6670,7 +6671,7 @@ if [[ -n "$upg_ck2_path" && "$upg_ck2_path" != "$upg_ck_path" ]]; then
 else
   fail "vcl upgrade checkpoint directories are unique ('${upg_ck_path}' vs '${upg_ck2_path}')"
 fi
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.1" > "${upg_state}/VERSION"
 upg_rb_ok_rc=0
 rm -f "${upg_ctl_state}/phase"
 VCL_UPGRADE_SKIP_SERVICE=1 cli_upgrade rollback "$upg_ck_path" --json >/dev/null 2>&1 || upg_rb_ok_rc=$?
@@ -6680,7 +6681,7 @@ else
   fail "vcl upgrade rollback restores VERSION with skip-service (rc=${upg_rb_ok_rc})"
 fi
 # Stop failure: services remain active → refuse to overwrite VERSION.
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.1" > "${upg_state}/VERSION"
 rm -f "${upg_ctl_state}/phase"
 upg_stop_rc=0
 upg_stop_out=$(
@@ -6691,12 +6692,12 @@ upg_stop_parse=1
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("ok") is False; assert d.get("error")=="service_still_active"' \
   "$upg_stop_out" 2>/dev/null && upg_stop_parse=0 || true
 if (( upg_stop_rc != 0 && upg_stop_parse == 0 )) \
-    && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.5.0" ]]; then
+    && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.5.1" ]]; then
   pass "vcl upgrade rollback fail-closes on stop failure without overwriting state"
 else
   fail "vcl upgrade rollback fail-closes on stop failure without overwriting state (rc=${upg_stop_rc} out=${upg_stop_out} ver=$(tr -d '[:space:]' <"${upg_state}/VERSION"))"
 fi
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.1" > "${upg_state}/VERSION"
 rm -f "${upg_ctl_state}/phase"
 upg_rb_fail_rc=0
 upg_rb_fail_out=$(
@@ -8374,6 +8375,15 @@ if [[ -n "${restore_cli_root:-}" && -x "${restore_cli_root}/bin/vincula" ]]; the
 else
   fail "restore acquires node lock (busy while held) (cli wrapper missing)"
 fi
+
+assert_success "0.5.1 monitoring state storage scheduler regression" \
+  python3 "${TEST_DIR}/test_monitor.py"
+assert_success "0.5.1 minimal accountd runtime contracts" \
+  python3 "${TEST_DIR}/test_accountd_runtime.py"
+assert_success "0.5.1 observer command and credential boundaries" \
+  python3 "${TEST_DIR}/test_observer.py"
+assert_success "0.5.1 monitor JSON schema contract" \
+  python3 "${TEST_DIR}/test_monitor_schema.py"
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
   # shellcheck disable=SC1091

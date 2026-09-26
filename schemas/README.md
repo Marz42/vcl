@@ -6,6 +6,7 @@ JSON Schema 定义 Controller ↔ Node 的只读 observation 协议。
 | --- | --- | --- | --- |
 | `capabilities/v1` | [`capabilities/v1.schema.json`](capabilities/v1.schema.json) | 0.5.0 | `vcl capabilities --json` |
 | `telemetry/v1` | [`telemetry/v1.schema.json`](telemetry/v1.schema.json) | 0.5.0 | `vcl telemetry snapshot --json` |
+| `monitor/v1` | [`monitor/v1.schema.json`](monitor/v1.schema.json) | 0.5.1 开发中 | Controller `health --json` / `GET /api/monitor`（本机派生视图） |
 
 **规则：**
 
