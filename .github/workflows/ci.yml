@@ -19,6 +19,16 @@ permissions:
   contents: read
 
 jobs:
+  unit-windows:
+    name: unit (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Controller monitoring and portable contracts
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      # Linux UID/GID and SO_PEERCRED checks run in the Linux jobs below.
+
   unit:
     name: unit (ubuntu-latest)
     runs-on: ubuntu-latest

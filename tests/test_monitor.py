@@ -89,6 +89,19 @@ class HealthTests(unittest.TestCase):
         result["snapshot"]["instance_id"] = "33333333-3333-4333-8333-333333333333"
         self.assertIsNone(health.build(NODE, result, first, NOW + 30)["metrics"]["tx_bytes_per_second"])
 
+    def test_delayed_and_replayed_samples_do_not_replace_rate_baseline(self):
+        first = health.build(NODE, ok(), {}, NOW)
+        for observed in (NOW - 1, NOW):
+            result = ok(observed)
+            result["snapshot"]["network"]["rx_bytes"] += 300
+            delayed = health.build(NODE, result, first, NOW + 30)
+            self.assertEqual(delayed["health"]["observation"]["state"], "DEGRADED")
+            self.assertEqual(delayed["sampled_at"], NOW)
+            self.assertEqual(delayed["metrics"], first["metrics"])
+            resumed = ok(NOW + 60)
+            resumed["snapshot"]["network"]["rx_bytes"] += 600
+            self.assertEqual(health.build(NODE, resumed, delayed, NOW + 60)["metrics"]["rx_bytes_per_second"], 10)
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
@@ -193,8 +206,94 @@ class StoreTests(unittest.TestCase):
         self.store.record(NODE, ok(NOW + 1), NOW + 1)
         self.assertEqual(self.store.read([NODE], NOW + 1)["nodes"][0]["observation_state"], "OK")
 
+    def test_deeply_nested_cache_row_is_isolated_and_replaceable(self):
+        self.store.record(NODE, ok(), NOW)
+        bad = '[' * 7000 + '0' + ']' * 7000
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute("UPDATE health_latest SET payload=?", (bad,))
+        before = self.path.read_bytes()
+        doc = self.store.read([NODE], NOW)
+        self.assertEqual(doc["cache_state"], "PARTIAL")
+        self.assertEqual(doc["nodes"][0]["overall"], "UNKNOWN")
+        self.assertEqual(before, self.path.read_bytes())
+        self.store.record(NODE, ok(NOW + 1), NOW + 1)
+        self.assertEqual(self.store.read([NODE], NOW + 1)["cache_state"], "OK")
+
+    def test_deeply_nested_rollup_does_not_abort_new_observation(self):
+        self.store.record(NODE, ok(), NOW)
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute("UPDATE telemetry_rollup_5m SET payload=?", ('[' * 7000 + '0' + ']' * 7000,))
+        self.store.record(NODE, ok(NOW + 1), NOW + 1)
+        self.assertEqual(self.store.read([NODE], NOW + 1)["nodes"][0]["received_at"], health.utc(NOW + 1))
+
+    def test_registry_churn_evicts_oldest_latest_with_truncation_marker(self):
+        nodes = [{"name": f"n{i}", "node_id": f"{i:08d}-1111-4111-8111-111111111111"} for i in range(3)]
+        with mock.patch.object(store_mod, "LATEST_CAP", 2):
+            for i, node in enumerate(nodes):
+                self.store.record(node, ok(NOW + i, node_id=node["node_id"]), NOW + i)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT node_id FROM health_latest ORDER BY at").fetchall(), [(n["node_id"],) for n in nodes[1:]])
+            self.assertIsNotNone(conn.execute("SELECT value FROM metadata WHERE key='truncated_health_latest'").fetchone())
+            self.assertEqual(conn.execute("SELECT count(*) FROM telemetry_samples").fetchone()[0], 3)
+
+    def test_locked_cache_preserves_health_and_recovers(self):
+        self.store.record(NODE, ok(), NOW)
+        real_connect = sqlite3.connect
+        def short_timeout(*args, **kwargs):
+            kwargs["timeout"] = .01
+            return real_connect(*args, **kwargs)
+        with closing(real_connect(self.path)) as lock:
+            lock.execute("BEGIN IMMEDIATE")
+            with mock.patch.object(store_mod.sqlite3, "connect", side_effect=short_timeout):
+                service = monitor.Monitor([NODE], self.store, lambda node, **kw: {"state": "TIMEOUT"}, wall_clock=lambda: NOW + 1)
+                self.assertEqual(service.run(once=True)["cache_write_errors"], 1)
+            lock.rollback()
+        viewed = self.store.read([NODE], NOW + 1)["nodes"][0]
+        self.assertEqual(viewed["health"]["node"]["state"], "HEALTHY")
+        self.assertEqual(viewed["received_at"], health.utc(NOW))
+        self.store.record(NODE, ok(NOW + 2), NOW + 2)
+        self.assertEqual(self.store.read([NODE], NOW + 2)["nodes"][0]["received_at"], health.utc(NOW + 2))
+
+    def test_disk_full_mid_transaction_rolls_back_samples_and_health(self):
+        self.store.record(NODE, ok(), NOW)
+        before = self.path.read_bytes()
+        # The second prune occurs after latest, raw and both rollups were written.
+        with mock.patch.object(self.store, "prune", side_effect=[None, sqlite3.OperationalError("database or disk is full")]):
+            service = monitor.Monitor([NODE], self.store, lambda node, **kw: {"state": "TIMEOUT"}, wall_clock=lambda: NOW + 1)
+            self.assertEqual(service.run(once=True)["cache_write_errors"], 1)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.store.read([NODE], NOW + 1)["nodes"][0]["health"]["node"]["state"], "HEALTHY")
+        self.store.record(NODE, ok(NOW + 2), NOW + 2)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM telemetry_samples").fetchone()[0], 2)
+
 
 class SchedulerTests(unittest.TestCase):
+    def test_malformed_fetch_is_isolated_without_probe_or_raw_error(self):
+        for bad in (None, [], {"state": []}, {"state": "OK", "snapshot": {}}):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                other = {"name": "other", "node_id": "33333333-3333-4333-8333-333333333333"}
+                def fetch(node, **kwargs):
+                    return bad if node == NODE else ok(node_id=other["node_id"])
+                probe = mock.Mock(return_value={"success": True, "reason": "OK"})
+                store = monitor.Store(Path(tmp) / "observation.db")
+                service = monitor.Monitor([NODE, other], store, fetch, probe=probe, wall_clock=lambda: NOW)
+                self.assertEqual(service.run(once=True)["cache_write_errors"], 0)
+                self.assertEqual(store.read([NODE], NOW)["nodes"][0]["observation_state"], "ERROR")
+                self.assertEqual(service.failures[NODE["node_id"]], 1)
+                probe.assert_called_once_with(other, timeout=5)
+
+    def test_received_at_is_capture_time_before_slow_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [NOW]
+            def probe(node, **kwargs):
+                now[0] += 30
+                return {"success": True, "reason": "OK"}
+            store = monitor.Store(Path(tmp) / "observation.db")
+            service = monitor.Monitor([NODE], store, lambda node, **kw: ok(), probe=probe, wall_clock=lambda: now[0])
+            service.run(once=True)
+            self.assertEqual(store.read([NODE], NOW + 30)["nodes"][0]["received_at"], health.utc(NOW))
+
     def test_bounded_concurrency_and_one_node_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             nodes = [{"name": f"n{i}", "node_id": f"{i:08d}-1111-4111-8111-111111111111"} for i in range(12)]
@@ -338,6 +437,22 @@ class ProbeTests(unittest.TestCase):
             result = self.probe.ProxyProbe({NODE["name"]: self.profile})(NODE, timeout=1)
         self.assertEqual(result, {"success": False, "reason": "TIMEOUT"})
         child.terminate.assert_called_once()
+
+    def test_dns_tls_and_connect_failures_only_degrade_proxy(self):
+        for code, reason in ((6, "DNS_FAILED"), (35, "TLS_FAILED"), (60, "TLS_FAILED"), (7, "CONNECT_FAILED")):
+            with self.subTest(code=code):
+                child = mock.Mock()
+                child.poll.return_value = None
+                with mock.patch.object(self.probe.shutil, "which", side_effect=lambda x: x), \
+                     mock.patch.object(self.probe.subprocess, "Popen", return_value=child), \
+                     mock.patch.object(self.probe.socket, "create_connection"), \
+                     mock.patch.object(self.probe.subprocess, "run", return_value=subprocess.CompletedProcess([], code, "private-error")):
+                    result = self.probe.ProxyProbe({NODE["name"]: self.profile})(NODE, timeout=1)
+                self.assertEqual(result, {"success": False, "reason": reason})
+                record = health.build(NODE, ok(), {}, NOW, result)
+                self.assertEqual(record["health"]["proxy"]["state"], "DEGRADED")
+                self.assertEqual(record["health"]["node"]["state"], "HEALTHY")
+                child.terminate.assert_called_once()
 
 
 if __name__ == "__main__":

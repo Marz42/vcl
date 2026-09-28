@@ -21,6 +21,7 @@ health = sibling("health")
 validator = sibling("schema_validate")
 RAW_CAP = 100_000
 ROLLUP_CAP = 200_000
+LATEST_CAP = 1024
 TABLES = {"telemetry_samples": (86400, RAW_CAP), "telemetry_rollup_5m": (7 * 86400, ROLLUP_CAP),
           "telemetry_rollup_hourly": (90 * 86400, ROLLUP_CAP)}
 DDL = """
@@ -35,10 +36,23 @@ def encode(value) -> str:
     return json.dumps(value, separators=(",", ":"), allow_nan=False)
 
 
+def clean_result(node: dict, result) -> dict:
+    if not isinstance(result, dict) or not isinstance(result.get("state"), str) or result["state"] not in health.OBSERVATION_STATES:
+        return {"state": "ERROR"}
+    if result["state"] == "OK":
+        snapshot = result.get("snapshot")
+        if validator.validate_telemetry_v1(snapshot) or snapshot["node_id"] != node["node_id"]:
+            return {"state": "ERROR"}
+    return result
+
+
 def decode_record(payload: str) -> dict:
     if len(payload) > 16384:
         raise ValueError("oversize cache row")
-    value = json.loads(payload)
+    try:
+        value = json.loads(payload)
+    except RecursionError:
+        raise ValueError("invalid cache nesting") from None
     # Regenerate rather than echo unknown/cache-injected fields to a UI.
     if not isinstance(value, dict) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", value.get("name", "")):
         raise ValueError("invalid node name")
@@ -120,10 +134,7 @@ class Store:
     def record(self, node: dict, result: dict, now: float, probe=None) -> dict:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", node["name"]) or not validator.UUID_RE.fullmatch(node["node_id"]):
             raise ValueError("invalid monitoring target")
-        if result.get("state") == "OK":
-            snapshot = result.get("snapshot")
-            if validator.validate_telemetry_v1(snapshot) or snapshot["node_id"] != node["node_id"]:
-                result = {"state": "ERROR"}
+        result = clean_result(node, result)
         conn = self.writer()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -139,8 +150,11 @@ class Store:
             if previous and now <= previous["received_at"]:
                 conn.rollback()
                 return previous
-            if not row and conn.execute("SELECT count(*) FROM health_latest").fetchone()[0] >= 1024:
-                raise ValueError("monitor node capacity reached")
+            if not row:
+                excess = conn.execute("SELECT count(*) FROM health_latest").fetchone()[0] - LATEST_CAP + 1
+                if excess > 0:
+                    conn.execute("DELETE FROM health_latest WHERE rowid IN (SELECT rowid FROM health_latest ORDER BY at,rowid LIMIT ?)", (excess,))
+                    conn.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("truncated_health_latest", str(now)))
             # Reclaim expired rows before inserting, including after a previous SQLITE_FULL.
             self.prune(conn, now)
             record = health.build(node, result, previous, now, probe)
@@ -156,7 +170,7 @@ class Store:
                         count, aggregate = int(row[0]), json.loads(row[1])
                         if not isinstance(aggregate, dict):
                             aggregate = {}
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, RecursionError):
                         count, aggregate = 0, {}
                 values = record["metrics"] if record["sampled_at"] == now else {}
                 # Each metric has its own sample count: failed/missing polls are not zeroes.

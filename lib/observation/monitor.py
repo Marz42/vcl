@@ -82,11 +82,14 @@ class Monitor:
     def collect(self, node):
         try:
             result = self.fetch(node, timeout=self.timeout)
+            # Validate before scheduling backoff or invoking the independent probe.
+            result = store_module.clean_result(node, result)
         except subprocess.TimeoutExpired:
             result = {"state": "TIMEOUT"}
         except (Exception, SystemExit):
             # Do not expose exceptions, argv, SSH stderr, or user credentials.
             result = {"state": "ERROR"}
+        received_at = self.wall_clock()
         probe_result = None
         if self.probe and result.get("state") == "OK":
             try:
@@ -95,7 +98,7 @@ class Monitor:
                 probe_result = {"success": False, "reason": "TIMEOUT"}
             except (Exception, SystemExit):
                 probe_result = {"success": None, "reason": "INVALID_CONFIG"}
-        return result, probe_result
+        return result, probe_result, received_at
 
     def run(self, *, once=False, stop=None, emit=None):
         stop = stop or threading.Event()
@@ -121,11 +124,11 @@ class Monitor:
                         done, _ = concurrent.futures.wait(pending, timeout=.25, return_when=concurrent.futures.FIRST_COMPLETED)
                         for future in done:
                             node = pending.pop(future)
-                            result, probe = future.result()
+                            result, probe, received_at = future.result()
                             self.due[node["node_id"]] = self.clock() + self.delay(node["node_id"], result)
                             completed.add(node["node_id"])
                             try:
-                                record = self.store.record(node, result, self.wall_clock(), probe)
+                                record = self.store.record(node, result, received_at, probe)
                                 if emit:
                                     emit({"name": node["name"], "state": record["overall"], "observation_state": record["observation_state"]})
                             except (sqlite3.Error, OSError, ValueError):

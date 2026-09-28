@@ -4,6 +4,8 @@
 
 ## 0.5.1 — local development candidate (2026-09-27, unreleased)
 
+- 2026-09-28 续开发：隔离非法采集结果并正确退避；received_at 排除 probe 等待；拒绝乱序/重复 telemetry 改写速率基线；深层坏 JSON 隔离；latest 缓存随节点更替淘汰并标记截断。补锁/满盘事务及 DNS/TLS probe 失败回归，新增 Windows CI。见[续开发验证](docs/evidence/0.5.1/CONTINUATION.md)。
+
 - Controller/Node stamp `0.5.1`，minimum Node仍为`0.3.1`；typed upgrade allowlist覆盖0.3.1/0.3.2/0.5.0→0.5.1。
 - 前台`monitor [NODE]`：每节点总SSH deadline、并发上限、jitter/backoff、进程锁、单节点故障隔离；`health`与UI `/api/monitor`只读本地缓存。
 - 分离Node/Observation/Proxy/Accounting健康，明确UNKNOWN、陈旧与恢复状态；进程active不冒充代理可用。新增专用VLESS/Reality→HTTPS probe，凭据只存本机私有文件，禁止direct fallback。

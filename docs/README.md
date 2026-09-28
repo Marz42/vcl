@@ -1,6 +1,6 @@
 # Vincula 文档导航
 
-本地主线开发基线：**Controller/Node 0.5.0**；当前开发候选：**Controller/Node 0.5.1**；最低兼容 Node **0.3.1**。0.5.1 仅收口本地交付，真实 VPS / soak / 发布门禁尚未完成，见 [`0.5.1 evidence`](evidence/0.5.1/SUMMARY.md)。
+主线 `main`：**Controller/Node 0.5.0**；主力开发基线 `codex/0.5.1`：**Controller/Node 0.5.1**；最低兼容 Node **0.3.1**。真实 VPS / soak / 发布门禁尚未完成，见 [`0.5.1 evidence`](evidence/0.5.1/SUMMARY.md)与[续开发记录](evidence/0.5.1/CONTINUATION.md)。旧分支已按[分支清理记录](plans/BRANCH_CLEANUP_2026-09-28.md)处理。
 
 ## 按受众阅读
 

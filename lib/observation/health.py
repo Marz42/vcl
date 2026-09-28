@@ -125,6 +125,11 @@ def build(node: dict, result: dict, previous: dict, now: float, probe: dict | No
     if snapshot:
         age = now - timestamp(snapshot["observed_at"])
         fresh = -30 <= age <= 90
+        if (previous.get("instance_id") == snapshot["instance_id"]
+                and previous.get("observed_at") is not None
+                and timestamp(snapshot["observed_at"]) <= timestamp(previous["observed_at"])):
+            # A delayed/replayed snapshot must not rewind the rate baseline.
+            fresh = False
         signals["node"] = ("HEALTHY", "SSH_RESPONDED")
         signals["observation"] = ("HEALTHY", "FRESH") if fresh else ("DEGRADED", "TELEMETRY_STALE")
         if fresh:

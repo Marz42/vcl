@@ -25,6 +25,8 @@ INSTANCE = "22222222-2222-4222-8222-222222222222"
 USER = "33333333-3333-4333-8333-333333333333"
 
 
+@unittest.skipUnless(sys.platform == "linux" and getattr(os, "geteuid", lambda: -1)() == 0,
+                     "requires Linux root; exercised by the dedicated CI privilege gate")
 class PrivilegeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="vcl-accountd-permissions-")
