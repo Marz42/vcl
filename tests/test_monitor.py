@@ -57,6 +57,15 @@ class HealthTests(unittest.TestCase):
         record = health.build(NODE, ok(), {}, NOW, {"success": False, "reason": "TLS_FAILED"})
         self.assertEqual(record["health"]["proxy"]["state"], "DEGRADED")
 
+    def test_malformed_or_unconfigured_probe_is_unknown(self):
+        for probe in ([], {"success": False, "reason": []}, {"success": False, "reason": "NOT_CONFIGURED"},
+                      {"success": False, "reason": "RUNTIME_UNAVAILABLE"}, {"success": True, "reason": "TLS_FAILED"}):
+            with self.subTest(probe=probe):
+                record = health.build(NODE, ok(), {}, NOW, probe)
+                self.assertIsNone(record["probe"]["success"])
+                self.assertEqual(record["health"]["proxy"]["state"], "UNKNOWN")
+                self.assertEqual(record["health"]["node"]["state"], "HEALTHY")
+
     def test_accounting_failure_is_separate(self):
         result = ok()
         result["snapshot"]["accountd"]["active"] = False

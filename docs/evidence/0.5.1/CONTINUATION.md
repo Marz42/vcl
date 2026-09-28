@@ -15,6 +15,7 @@
 | §3 latest 上限与截断 | 历史 registry 累计到 1024 个身份后，新节点永久无法写入。现按最旧 at 淘汰 latest 并记录 truncated_health_latest，raw 历史遵循原保留期 | `test_registry_churn_evicts_oldest_latest_with_truncation_marker` |
 | §3 锁/满盘属于本机错误 | 增加真实 SQLite 写锁及事务末尾 SQLITE_FULL 注入；保留旧健康/历史，解除后恢复写入 | `test_locked_cache_preserves_health_and_recovers`、`test_disk_full_mid_transaction_rolls_back_samples_and_health` |
 | G1 独立 probe 失败分类 | 增加 DNS/TLS/connect 返回码检查，确认仅代理维度降级，子进程回收且不暴露原始输出 | `test_dns_tls_and_connect_failures_only_degrade_proxy` |
+| §4 缺 probe 证据为 UNKNOWN | 无效 reason 类型不再抛异常；缺配置/运行时不能因 false 标志而显示代理故障 | `test_malformed_or_unconfigured_probe_is_unknown` |
 
 Linux root 权限测试增加 discovery 的平台条件：Windows/非 root 环境明确 skip；直接运行该独立测试文件仍拒绝不合适的环境。Linux CI root gate 继续实际执行这些测试。新增 Windows CI 检查，避免只覆盖 Linux Controller。
 
@@ -28,7 +29,7 @@ node --check lib/vincula-ui/static/app.js
 git diff --check
 ```
 
-结果：**51 tests，45 PASS，6 平台 skip，0 failure/error**。6 skip 为 5 项真实 Linux UID/GID 权限测试及 1 项 SO_PEERCRED，不能折算为 Windows 通过。JS 语法与 diff 检查通过。
+结果：**52 tests，46 PASS，6 平台 skip，0 failure/error**。6 skip 为 5 项真实 Linux UID/GID 权限测试及 1 项 SO_PEERCRED，不能折算为 Windows 通过。JS 语法与 diff 检查通过。
 
 新增关键回归先在旧实现上复现了乱序样本误判 HEALTHY、malformed fetch 中断/错误退避、probe 推迟 received_at、latest 无淘汰能力，再修复并通过。
 

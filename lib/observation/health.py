@@ -90,10 +90,11 @@ def clean_probe(probe: Any) -> dict:
     if not isinstance(probe, dict):
         probe = {}
     reason = probe.get("reason")
-    if reason not in reasons:
+    if not isinstance(reason, str) or reason not in reasons:
         reason = "NOT_CONFIGURED"
     success = probe.get("success")
-    if type(success) is not bool or (success and reason != "OK"):
+    if (type(success) is not bool or (success and reason != "OK")
+            or (success is False and reason not in {"TIMEOUT", "TLS_FAILED", "DNS_FAILED", "CONNECT_FAILED", "HTTP_FAILED"})):
         success = None
     return {"success": success, "reason": reason,
             **{key: number(probe.get(key)) for key in ("connect_ms", "ttfb_ms", "total_ms")}}
