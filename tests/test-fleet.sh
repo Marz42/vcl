@@ -728,9 +728,9 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.5.0" "0.5.0" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.5.1" "0.5.1" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
-assert_equal "NODE 0.5.0" "0.5.0" "$VINCULA_NODE_VERSION"
+assert_equal "NODE 0.5.1" "0.5.1" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
 assert_equal "vcl-fleet.py version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -10727,7 +10727,7 @@ print("ok")
 PY
 
 # --- AC-4.0-M04: post-migrate verify / sync / status / audit / stats / ui ---
-# 0.5.0 requires an explicit observe ref after migrating a pre-workspace
+# 0.5.1 requires an explicit observe ref after migrating a pre-workspace
 # identity_file; the old admin key may be shared only by this explicit choice.
 AC041_ADMIN_REF=$(fleet node show lax | sed -n 's/^admin_credential_ref=//p')
 assert_success "AC-4.0-M04 explicitly bind migrated observe credential" \
@@ -13321,7 +13321,7 @@ assert rows and rows[0]["status"] == "pass" and "20687" in rows[0]["detail"], ro
 PY
 
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
-B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz"
 if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then
   assert_success "B3 build node release for payload tests" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -13343,22 +13343,22 @@ fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
 
-src = Path(project) / "dist" / "vincula-node-0.5.0.tar.gz"
+src = Path(project) / "dist" / "vincula-node-0.5.1.tar.gz"
 root = Path(tmp) / "b3-mismatch"
 root.mkdir(parents=True, exist_ok=True)
-tarball = root / "vincula-node-0.5.0.tar.gz"
+tarball = root / "vincula-node-0.5.1.tar.gz"
 shutil.copy2(src, tarball)
 actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
 # Wrong sidecar hex (flip first nibble) — fail-closed local verify.
 bad = ("0" if actual[0] != "0" else "1") + actual[1:]
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{bad}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.1",
             "sha256": actual,
             "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
             "supported_arch": ["amd64", "arm64"],
@@ -13402,18 +13402,18 @@ fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
 
-src = Path(project) / "dist" / "vincula-node-0.5.0.tar.gz"
+src = Path(project) / "dist" / "vincula-node-0.5.1.tar.gz"
 root = Path(tmp) / "b3-arch"
 root.mkdir(parents=True, exist_ok=True)
-tarball = root / "vincula-node-0.5.0.tar.gz"
+tarball = root / "vincula-node-0.5.1.tar.gz"
 shutil.copy2(src, tarball)
 actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{actual}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{actual}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 mani = {
     "controller_version": "0.4.2",
-    "node_payload_version": "0.5.0",
+    "node_payload_version": "0.5.1",
     "sha256": actual,
     "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
     "supported_arch": ["riscv64"],
@@ -13458,8 +13458,8 @@ import zipfile
 archive = sys.argv[1]
 names = zipfile.ZipFile(archive).namelist()
 patterns = (
-    r"payload/vincula-node-0\.5\.0\.tar\.gz$",
-    r"payload/vincula-node-0\.5\.0\.tar\.gz\.sha256$",
+    r"payload/vincula-node-0\.5\.1\.tar\.gz$",
+    r"payload/vincula-node-0\.5\.1\.tar\.gz\.sha256$",
     r"payload/payload-manifest\.json$",
 )
 for pat in patterns:
@@ -13473,8 +13473,8 @@ assert_success "B3 build-controller installs payload triple to dist for source p
   bash -c '
 set -euo pipefail
 cd "'"$PROJECT_DIR"'"
-test -f dist/vincula-node-0.5.0.tar.gz
-test -f dist/vincula-node-0.5.0.tar.gz.sha256
+test -f dist/vincula-node-0.5.1.tar.gz
+test -f dist/vincula-node-0.5.1.tar.gz.sha256
 test -f dist/payload-manifest.json
 python3 - "'"$PROJECT_DIR"'/lib/vincula-fleet.py" <<'"'"'PY'"'"'
 import importlib.util
@@ -13494,14 +13494,14 @@ for key in ("tarball", "sha256_sidecar", "manifest_path"):
     assert p.is_file(), f"missing {key}: {p}"
     assert "dist" in p.parts, f"{key} not under dist: {p}"
 loaded = prov.verify_local_payload(resolved)
-assert loaded["node_payload_version"] == "0.5.0"
+assert loaded["node_payload_version"] == "0.5.1"
 print("ok resolve from dist flat")
 PY
 '
 
 # --- 0.4.3 B4 provision install path (SCP→verify→install→commit→sync --full) ---
 B4_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
-B4_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B4_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz"
 if [[ ! -f "$B4_PAYLOAD_SRC" ]]; then
   assert_success "B4 build node release for provision tests" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -13510,21 +13510,21 @@ fi
 b4_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$B4_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$B4_PAYLOAD_SRC" "$root/vincula-node-0.5.1.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.1",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -13553,7 +13553,7 @@ assert_success "B4 remote digest mismatch refuses installer" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-digest-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-digest.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-digest-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-digest-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-digest-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -13595,7 +13595,7 @@ assert_success "B4 provision success registers node" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-ok-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-ok.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-ok-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-ok-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-ok-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -13639,7 +13639,7 @@ assert_success "B4 REMOTE_READY_LOCAL_UNCOMMITTED on registry commit fail" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-commit-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-commit-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-commit-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-commit-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -13675,7 +13675,7 @@ assert_success "B4 success path calls sync --full once" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sync-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sync-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sync-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sync-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13717,7 +13717,7 @@ assert_success "P1-2 sudo install invokes sudo -n env VCL_SERVER bash vincula.sh
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sudo-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-sudo.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sudo-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -13766,7 +13766,7 @@ assert_success "P1-3 duplicate name blocked before remote install" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-dupname-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-dupname.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-dupname-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-dupname-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-dupname-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -13813,7 +13813,7 @@ assert_success "P1-3 SystemExit on commit returns REMOTE_READY_LOCAL_UNCOMMITTED
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sysexit-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sysexit-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sysexit-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sysexit-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13846,7 +13846,7 @@ assert_success "P1-4 provision PARTIAL when initial sync fails" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-partial-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-partial-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-partial-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-partial-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13920,7 +13920,7 @@ assert_success "P2-5 provision happy path cleans random staging dir" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-ok-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-ok-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-ok-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-ok-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -13971,7 +13971,7 @@ assert_success "P2-5 digest failure cleans random staging dir" \
     VCL_FAKE_REMOTE_DIGEST_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-digest-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-digest-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-digest-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-digest-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
@@ -14022,7 +14022,7 @@ assert_success "P2-5 verify failure cleans random staging dir" \
     VCL_FAKE_PROVISION_VERIFY_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-verify-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-verify-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-verify-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-verify-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
@@ -14067,7 +14067,7 @@ PY
 
 # --- 0.4.5 legacy seed E2E (root/sudo harden + dual-user + clean-host) ---
 SEED_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
-SEED_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+SEED_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz"
 if [[ ! -f "$SEED_PAYLOAD_SRC" ]]; then
   assert_success "0.4.5 seed E2E build node release" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -14075,21 +14075,21 @@ fi
 seed_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$SEED_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$SEED_PAYLOAD_SRC" "$root/vincula-node-0.5.1.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.5",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.1",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -14143,7 +14143,7 @@ assert_success "0.4.5 seed E2E root harden + dual-user" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-root-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-root.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-root-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-root-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-root-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, json, os, subprocess, sys
@@ -14213,7 +14213,7 @@ assert_success "0.4.5 seed E2E sudo harden chown/chmod" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-sudo-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-sudo.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-sudo-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-sudo-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-sudo-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, os, subprocess, sys
@@ -14259,7 +14259,7 @@ assert_success "0.4.5 seed E2E chown fail is zero-install" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chown-fail-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-chown-fail.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-chown-fail-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chown-fail-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chown-fail-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
@@ -14318,7 +14318,7 @@ assert_success "0.4.5 seed E2E chmod fail is zero-install" \
     VCL_FAKE_CHMOD_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chmod-fail-state" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-chmod-fail-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chmod-fail-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chmod-fail-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, os, subprocess, sys
@@ -14367,7 +14367,7 @@ assert_success "0.4.5 seed E2E refuse existing VERSION clean host" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-existing-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-existing.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-existing-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-existing-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-existing-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, os, subprocess, sys
@@ -14408,40 +14408,40 @@ assert not any(
 )
 PY
 
-# Installer source guard + 0.3.x→0.5.0 migrate pin (identity preserve)
-assert_success "0.5.0 vincula.sh refuses seed when VERSION exists" \
+# Installer source guard + 0.3.x→0.5.1 migrate pin (identity preserve)
+assert_success "0.5.1 vincula.sh refuses seed when VERSION exists" \
   grep -Fq 'Legacy seed requires a clean host.' "${PROJECT_DIR}/vincula.sh"
-assert_success "0.5.0 is_supported_upgrade_from 0.3.1" \
+assert_success "0.5.1 is_supported_upgrade_from 0.3.1" \
   bash -c '
     set -euo pipefail
     # shellcheck disable=SC1091
     source "'"${PROJECT_DIR}"'/vincula.sh"
-    [[ "$VINCULA_VERSION" == "0.5.0" ]]
+    [[ "$VINCULA_VERSION" == "0.5.1" ]]
     is_supported_upgrade_from 0.3.1
   '
-assert_success "0.5.0 is_supported_upgrade_from 0.3.2" \
+assert_success "0.5.1 is_supported_upgrade_from 0.3.2" \
   bash -c '
     set -euo pipefail
     # shellcheck disable=SC1091
     source "'"${PROJECT_DIR}"'/vincula.sh"
     is_supported_upgrade_from 0.3.2
   '
-assert_success "0.5.0 migrate preserves UUID/Reality guards present" \
+assert_success "0.5.1 migrate preserves UUID/Reality guards present" \
   bash -c '
     grep -Fq "Migration attempted to change the UUID" "'"${PROJECT_DIR}"'/vincula.sh" &&
     grep -Fq "Migration attempted to change the REALITY private key" "'"${PROJECT_DIR}"'/vincula.sh" &&
     grep -Fq "Migration attempted to change the REALITY public key" "'"${PROJECT_DIR}"'/vincula.sh"
   '
 
-# --- 0.5.0 Controller observation + upgrade (G1) ---
-assert_success "0.5.0 build-controller packs observation modules" \
+# --- 0.5.1 Controller observation + upgrade (G1) ---
+assert_success "0.5.1 build-controller packs observation modules" \
   grep -q 'lib/observation/capabilities.py' "${PROJECT_DIR}/scripts/build-controller.sh"
-assert_success "0.5.0 build-controller packs node_upgrade" \
+assert_success "0.5.1 build-controller packs node_upgrade" \
   grep -q 'lib/node_upgrade.py' "${PROJECT_DIR}/scripts/build-controller.sh"
-assert_success "0.5.0 build-controller packs ssh_transport" \
+assert_success "0.5.1 build-controller packs ssh_transport" \
   grep -q 'lib/ssh_transport.py' "${PROJECT_DIR}/scripts/build-controller.sh"
 
-assert_success "0.5.0 schema_validate fixtures" python3 - \
+assert_success "0.5.1 schema_validate fixtures" python3 - \
   "${PROJECT_DIR}/lib/observation/schema_validate.py" \
   "${PROJECT_DIR}/tests/fixtures/schemas/capabilities/v1-valid.json" \
   "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json" <<'PY'
@@ -14494,7 +14494,7 @@ assert any("load1" in e for e in sv.validate_telemetry_v1(
 ))
 PY
 
-assert_success "0.5.0 parse_stdout_json rejects Infinity/NaN" python3 - \
+assert_success "0.5.1 parse_stdout_json rejects Infinity/NaN" python3 - \
   "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
 import importlib.util, json, sys
 from pathlib import Path
@@ -14506,12 +14506,12 @@ assert st == "ERROR" and pl is None, (st, pl)
 st2, pl2, _ = tr.parse_stdout_json('{"schema":"x","v":NaN}')
 assert st2 == "ERROR" and pl2 is None, (st2, pl2)
 # finite still OK
-body = {"schema": "capabilities/v1", "node_version": "0.5.0", "capabilities": ["telemetry/v1"]}
+body = {"schema": "capabilities/v1", "node_version": "0.5.1", "capabilities": ["telemetry/v1"]}
 st3, pl3, _ = tr.parse_stdout_json(json.dumps(body))
 assert st3 == "OK" and isinstance(pl3, dict)
 PY
 
-assert_success "0.5.0 observe/admin credential routing" python3 - \
+assert_success "0.5.1 observe/admin credential routing" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" \
   "${TEST_TMP}/obs-route-home" \
   "${TEST_TMP}/obs-route-admin.key" \
@@ -14586,9 +14586,9 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "UNSUPPORTED", doc
 PY
 
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.1
 obs_cap_ok=$(fleet capabilities lax --json)
-assert_success "obs050 capabilities OK when fake node 0.5.0" python3 - "$obs_cap_ok" <<'PY'
+assert_success "obs050 capabilities OK when fake node 0.5.1" python3 - "$obs_cap_ok" <<'PY'
 import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
@@ -14596,7 +14596,7 @@ assert "telemetry/v1" in (doc.get("capabilities") or []), doc
 PY
 
 obs_tel_ok=$(fleet telemetry lax --json)
-assert_success "obs050 telemetry OK when fake node 0.5.0" python3 - "$obs_tel_ok" <<'PY'
+assert_success "obs050 telemetry OK when fake node 0.5.1" python3 - "$obs_tel_ok" <<'PY'
 import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
@@ -14648,7 +14648,7 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "PLANNED", doc
 assert doc.get("allowlist_ok") is True, doc
 assert doc.get("current_version") == "0.3.1", doc
-assert doc.get("target_version") == "0.5.0", doc
+assert doc.get("target_version") == "0.5.1", doc
 assert doc.get("credential_class") == "observe", doc
 PY
 
@@ -14682,7 +14682,7 @@ for node in data.get("nodes") or []:
         node.pop("identity_file", None)
 p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.1
 export VCL_FAKE_OBSERVE_AUTH_FAIL=1
 export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
 obs_auth_rc=0
@@ -14728,7 +14728,7 @@ node = {
 identity = {
     "node_id": node["node_id"],
     "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-    "vincula_version": "0.5.0",
+    "vincula_version": "0.5.1",
     "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 responses = {
@@ -14764,7 +14764,7 @@ spec.loader.exec_module(mod)
 caps_mod = mod.load_observation_capabilities_module()
 big = {
     "schema": "capabilities/v1",
-    "node_version": "0.5.0",
+    "node_version": "0.5.1",
     "capabilities": [f"widget{i:03d}/v1" for i in range(80)],
 }
 
@@ -14790,7 +14790,7 @@ spec.loader.exec_module(tr)
 
 valid_cap = {
     "schema": "capabilities/v1",
-    "node_version": "0.5.0",
+    "node_version": "0.5.1",
     "capabilities": ["telemetry/v1"],
 }
 padded = (" " * 1_000_000) + json.dumps(valid_cap)
@@ -14929,7 +14929,7 @@ PY
 unset VCL_FAKE_STATE_DIR
 
 # Telemetry AUTH_FAILED → exit 1 (same as capabilities)
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.1
 export VCL_FAKE_OBSERVE_AUTH_FAIL=1
 export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
 obs_tel_auth_rc=0
@@ -14944,7 +14944,7 @@ unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH VCL_FAKE_NODE_VERSION
 export VCL_FLEET_HOME="$OBS050_HOME"
 
 # Upgrade: already-at-target → SKIPPED (admin plan path)
-assert_success "obs050 upgrade apply SKIPPED when already 0.5.0" python3 - \
+assert_success "obs050 upgrade apply SKIPPED when already 0.5.1" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
 import importlib.util, os
 from pathlib import Path
@@ -14963,7 +14963,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         return (
             "OK",
             {
-                "vincula_version": "0.5.0",
+                "vincula_version": "0.5.1",
                 "node_id": node["node_id"],
                 "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             },
@@ -15001,7 +15001,7 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.1"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
@@ -15070,13 +15070,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.1"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.1"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15165,13 +15165,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.1"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.1"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15270,13 +15270,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.1"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.1"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15290,7 +15290,7 @@ class FakeProv:
     def _remote_stage_paths(self, stage):
         return {
             "tar": f"{stage}/payload.tar.gz",
-            "unpack": f"{stage}/vincula-node-0.5.0",
+            "unpack": f"{stage}/vincula-node-0.5.1",
         }
 
     def installer_remote_argv(self, path, **kwargs):
@@ -15312,7 +15312,7 @@ def fake_obs(node, remote_cmd, **kwargs):
     calls.append(cmd)
     if cmd[:2] == ["vcl", "identity"]:
         ident_n["n"] += 1
-        ver = "0.3.1" if ident_n["n"] == 1 else "0.5.0"
+        ver = "0.3.1" if ident_n["n"] == 1 else "0.5.1"
         return (
             "OK",
             {
@@ -15330,7 +15330,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         and cmd[1].endswith("/bin/vincula")
         and cmd[2:4] == ["upgrade", "checkpoint"]
     ):
-        assert cmd[1] == "/tmp/vcl-stage/vincula-node-0.5.0/bin/vincula", cmd
+        assert cmd[1] == "/tmp/vcl-stage/vincula-node-0.5.1/bin/vincula", cmd
         return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
         raise AssertionError(f"must not call installed vcl upgrade checkpoint: {cmd}")
@@ -15341,7 +15341,7 @@ def fake_obs(node, remote_cmd, **kwargs):
             "OK",
             {
                 "schema": "capabilities/v1",
-                "node_version": "0.5.0",
+                "node_version": "0.5.1",
                 "capabilities": ["telemetry/v1"],
             },
             "",
@@ -15386,13 +15386,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.1"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.1"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15436,7 +15436,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         return (
             "OK",
             {
-                "vincula_version": "0.5.0",
+                "vincula_version": "0.5.1",
                 "node_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
                 "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             },
@@ -15461,7 +15461,7 @@ def fake_obs(node, remote_cmd, **kwargs):
             "OK",
             {
                 "schema": "capabilities/v1",
-                "node_version": "0.5.0",
+                "node_version": "0.5.1",
                 "capabilities": ["telemetry/v1"],
             },
             "",
@@ -15513,7 +15513,7 @@ node_id = sys.argv[2]
 (root / "config.toml").write_text("# minimal\n", encoding="utf-8")
 PY
 export VCL_FAKE_STATE_DIR="$UPG_STATE"
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.1
 export VCL_FAKE_TELEMETRY_AUDIT=1
 export VCL_FAKE_RESTART_COUNT=3
 fleet telemetry lax --json >/dev/null
@@ -15561,28 +15561,28 @@ assert_success "upg050-fail add lax" \
 export VCL_FAKE_STATE_DIR="$UPG_FAIL_STATE"
 export VCL_FAKE_UPGRADE=1
 export VCL_FAKE_MIGRATE_FAIL=1
-if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz" ]]; then
   bash "${PROJECT_DIR}/scripts/build-release.sh" >/dev/null
 fi
 UPG_FAIL_PAYLOAD="${TEST_TMP}/upg050-fail-payload"
 mkdir -p "$UPG_FAIL_PAYLOAD"
-cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_FAIL_PAYLOAD/"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz" "$UPG_FAIL_PAYLOAD/"
 python3 - "$UPG_FAIL_PAYLOAD" <<'PY'
 import hashlib, json
 from pathlib import Path
 root = Path(__import__("sys").argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
-    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+    json.dumps({"controller_version": "0.5.1", "node_payload_version": "0.5.1", "sha256": digest,
                 "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY
-export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.1.tar.gz"
 upg_fail_rc=0
 upg_fail_err=$(fleet node upgrade apply lax --yes --json 2>&1) || upg_fail_rc=$?
 assert_equal "upg050 migrate fail exits non-zero" 1 "$upg_fail_rc"
@@ -15616,28 +15616,28 @@ PY
 export VCL_FAKE_STATE_DIR="$UPG_OK_STATE"
 unset VCL_FAKE_NODE_VERSION
 UPG_PAYLOAD="${TEST_TMP}/upg050-payload"
-if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz" ]]; then
   assert_success "upg050 build node release" bash "${PROJECT_DIR}/scripts/build-release.sh"
 fi
 mkdir -p "$UPG_PAYLOAD"
-cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_PAYLOAD/"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz" "$UPG_PAYLOAD/"
 python3 - "$UPG_PAYLOAD" <<'PY'
 import hashlib, json
 from pathlib import Path
 root = Path(__import__("sys").argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
-    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+    json.dumps({"controller_version": "0.5.1", "node_payload_version": "0.5.1", "sha256": digest,
                 "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY
 export VCL_FLEET_HOME="$OBS050_HOME"
-export VCL_NODE_ARCHIVE="$UPG_PAYLOAD/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="$UPG_PAYLOAD/vincula-node-0.5.1.tar.gz"
 export VCL_FAKE_UPGRADE=1
 UPG_ARGV_LOG="${TEST_TMP}/upg050-argv.log"
 export VCL_FAKE_SSH_ARGV_LOG="$UPG_ARGV_LOG"
@@ -15647,7 +15647,7 @@ import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("ok") is True, doc
 assert doc.get("state") == "SUCCESS", doc
-assert doc.get("to_version") == "0.5.0", doc
+assert doc.get("to_version") == "0.5.1", doc
 assert doc.get("credential_class") == "admin", doc
 PY
 post_cap=$(fleet capabilities lax --json)
@@ -15677,7 +15677,7 @@ PY
 unset VCL_FAKE_UPGRADE VCL_NODE_ARCHIVE VCL_FAKE_SSH_ARGV_LOG
 unset VCL_FAKE_STATE_DIR VCL_FAKE_NODE_VERSION
 
-# --- G2 mixed-version fleet (0.3.x + 0.5.0) ---
+# --- G2 mixed-version fleet (0.3.x + 0.5.1) ---
 MIX050_HOME="${TEST_TMP}/mix050-fleet"
 MIX050_SAVED=$VCL_FLEET_HOME
 export VCL_FLEET_HOME="$MIX050_HOME"
@@ -15803,7 +15803,7 @@ assert ck.returncode == 0, ck.stderr
 doc = json.loads(ck.stdout)
 assert doc.get("ok") is True and doc.get("path"), doc
 # Simulate post-migrate VERSION bump
-(node / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+(node / "VERSION").write_text("0.5.1\n", encoding="utf-8")
 rb = subprocess.run(
     [
         sys.executable,
@@ -15840,7 +15840,7 @@ ck2 = subprocess.run(
         "root@203.0.113.10",
         "--",
         "bash",
-        "/tmp/stage/vincula-node-0.5.0/bin/vincula",
+        "/tmp/stage/vincula-node-0.5.1/bin/vincula",
         "upgrade",
         "checkpoint",
         "--json",
@@ -15869,7 +15869,7 @@ B6_SAVED_ALREADY=${VCL_FAKE_ALREADY_VINCULA:-}
 
 HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
 
-B6_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B6_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.1.tar.gz"
 if [[ ! -f "$B6_PAYLOAD_SRC" ]]; then
   assert_success "B6 build node release for offline suite" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -15878,21 +15878,21 @@ fi
 b6_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$B6_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$B6_PAYLOAD_SRC" "$root/vincula-node-0.5.1.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.1",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -15912,7 +15912,7 @@ PY
 }
 
 b6_stage_payload "${TEST_TMP}/b6-good-payload"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.1.tar.gz"
 
 # B6-T1: add≡adopt; add --offline≡register (SSH counter zero)
 B6A=$TEST_TMP/b6-alias
@@ -15957,11 +15957,11 @@ python3 - "${TEST_TMP}/b6-dig-payload" <<'PY'
 import hashlib, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.1.tar.gz"
 actual = hashlib.sha256(tar.read_bytes()).hexdigest()
 bad = ("0" if actual[0] != "0" else "1") + actual[1:]
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{bad}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.1.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.5.1.tar.gz\n", encoding="utf-8"
 )
 PY
 B6D=$TEST_TMP/b6-dig-home
@@ -15972,7 +15972,7 @@ assert_success "B6 dig home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-d.argv
 export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-dig-state"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-dig-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-dig-payload/vincula-node-0.5.1.tar.gz"
 b6_dig_rc=0
 b6_dig_err=$(fleet node provision dig --host 203.0.113.10 --host-key "$HK" 2>&1) || b6_dig_rc=$?
 if (( b6_dig_rc != 0 )); then
@@ -15984,7 +15984,7 @@ assert_success "B6 dig msg" grep -qi 'digest mismatch' <<<"$b6_dig_err"
 assert_failure "B6 no install" grep -q 'vincula.sh' "$TEST_TMP/b6-d.argv"
 
 # B6-T4: preflight failure modes + AC-4.2-03
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.1.tar.gz"
 unset VCL_FAKE_PROVISION
 unset VCL_FAKE_STATE_DIR
 B6PF=$TEST_TMP/b6-preflight
@@ -16026,7 +16026,7 @@ assert_success "B6 ok home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-ok.argv
 export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-ok-state"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.1.tar.gz"
 assert_success "B6 prov ok" \
   fleet node provision provn --host 203.0.113.10 --host-key "$HK" --server 203.0.113.10 --no-sync
 assert_success "B6 prov list" grep -q '^provn ' <<< "$(fleet node list)"
@@ -16067,7 +16067,7 @@ assert_success "LIVE-P1 missing python3 provision succeeds" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-py-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-py.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-py-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -16110,7 +16110,7 @@ assert_success "LIVE-P1 apt failure is zero install and zero register" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-apt-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-apt.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-apt-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -16154,7 +16154,7 @@ assert_success "LIVE-P1 root installer is env VCL_SERVER then bash" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-root-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-root.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-root-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -16196,7 +16196,7 @@ assert_success "LIVE-P2 human progress and heartbeat go to stderr" \
     VCL_PROVISION_HEARTBEAT_SECONDS=0.2 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-hb-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-hb-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 
@@ -16258,7 +16258,7 @@ assert_success "LIVE-P2 installer 1MiB stdout completes (not timeout)" \
     VCL_PROVISION_INSTALL_TIMEOUT=15 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-1m-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-1m-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, os, subprocess, sys, time
 
@@ -16288,7 +16288,7 @@ export HOME=$LIVE_JSON_HOME VCL_FLEET_HOME=$LIVE_JSON_HOME
 assert_success "LIVE-P2 json home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_STATE_DIR="$LIVE_JSON_STATE"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz"
 json_rc=0
 json_out=$(fleet node provision jsontest --host 203.0.113.10 --host-key "$LIVE_HK" \
   --server 203.0.113.10 --no-sync --json 2>"${TEST_TMP}/live-json.err") || json_rc=$?
@@ -16314,7 +16314,7 @@ assert_success "LIVE-P2 install failure redacts secrets" \
     VCL_FAKE_INSTALL_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-sec-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-sec-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.1.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 

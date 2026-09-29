@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.0"
+VCL_FLEET_VERSION = "0.5.1"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -229,6 +229,7 @@ NODE_KEYS = (
     "identity_file",
     "admin_credential_ref",
     "observe_credential_ref",
+    "observe_ssh_user",
     "enabled",
     "status",
 )
@@ -2068,6 +2069,8 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         if not isinstance(obr, str) or not obr.strip():
             die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
         record["observe_credential_ref"] = obr.strip()
+    if raw.get("observe_ssh_user") is not None:
+        record["observe_ssh_user"] = validate_ssh_user(raw["observe_ssh_user"])
     # Spec §7.2: do NOT implicitly copy admin → observe.
     return record
 
@@ -2404,6 +2407,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     clear_identity = bool(getattr(args, "clear_identity_file", False))
     observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
     observe_identity = _optional_text(getattr(args, "observe_identity_file", None))
+    observe_user = _optional_text(getattr(args, "observe_ssh_user", None))
     clear_observe = bool(getattr(args, "clear_observe_credential_ref", False))
     host = _optional_text(getattr(args, "host", None))
     if identity_raw and clear_identity:
@@ -2418,6 +2422,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
         and not clear_identity
         and not observe_ref
         and not observe_identity
+        and not observe_user
         and not clear_observe
     ):
         die(
@@ -2429,6 +2434,8 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     if host:
         set_host(registry, args.name, host, user=args.user, port=args.port)
     node = require_node(registry, args.name)
+    if observe_user:
+        node["observe_ssh_user"] = validate_ssh_user(observe_user)
     if clear_identity:
         node.pop("identity_file", None)
     elif identity_raw:
@@ -3714,7 +3721,7 @@ def ssh_remote_json(
     """
     proc = ssh_run(
         node["ssh_host"],
-        node["ssh_user"],
+        node.get("observe_ssh_user", node["ssh_user"]) if credential_class == "observe" else node["ssh_user"],
         node["ssh_port"],
         remote_cmd,
         batch=True,
@@ -6247,6 +6254,7 @@ def fetch_node_capabilities(
     node: dict[str, Any],
     *,
     credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     caps_mod = load_observation_capabilities_module()
 
@@ -6259,7 +6267,7 @@ def fetch_node_capabilities(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
-            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            timeout=kwargs.get("timeout", timeout),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
         )
 
@@ -6271,15 +6279,21 @@ def fetch_node_telemetry(
     *,
     capabilities: Optional[dict[str, Any]] = None,
     credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
+    import time
+    deadline = time.monotonic() + timeout
     caps = (
         capabilities
         if capabilities is not None
-        else fetch_node_capabilities(node, credential_class=credential_class)
+        else fetch_node_capabilities(node, credential_class=credential_class, timeout=timeout)
     )
     tel_mod = load_observation_telemetry_module()
 
     def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("observation", timeout)
         return observation_ssh_json(
             kwargs["node"],
             kwargs["remote_cmd"],
@@ -6288,11 +6302,19 @@ def fetch_node_telemetry(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
-            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            timeout=min(kwargs.get("timeout", timeout), remaining),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
         )
 
     return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
+
+
+def load_monitor_module() -> Any:
+    return _load_controller_sibling("vcl_observation_monitor", "observation/monitor.py")
+
+
+def monitor_cached_health(name: Optional[str] = None) -> dict[str, Any]:
+    return load_monitor_module().cached_health(_FLEET_HOST, name)
 
 
 def fleet_utc_today() -> date:
@@ -7391,6 +7413,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Spec §7.2 forbids implicit share)"
         ),
     )
+    p_set.add_argument("--observe-ssh-user", help="explicit restricted SSH username for observation only")
     p_set.add_argument(
         "--observe-identity-file",
         dest="observe_identity_file",
@@ -7511,6 +7534,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_telemetry.add_argument("name", help="registered node name")
     _add_json_flag(p_telemetry)
+
+    p_monitor = sub.add_parser("monitor", help="foreground telemetry monitoring (observe SSH; Ctrl-C to stop)")
+    p_monitor.add_argument("name", nargs="?", help="one enabled node; default all enabled nodes")
+    p_monitor.add_argument("--once", action="store_true", help="collect one bounded round and exit")
+    p_monitor.add_argument("--interval", type=float, default=30)
+    p_monitor.add_argument("--timeout", type=float, default=5)
+    p_monitor.add_argument("--concurrency", type=int, default=8)
+    p_monitor.add_argument("--probe-profiles", help="private workstation-local dedicated proxy probe profiles")
+    p_monitor.add_argument("--probe-sing-box", default="sing-box", help="pinned local sing-box executable for probes")
+    _add_json_flag(p_monitor)
+    p_health = sub.add_parser("health", help="read monitoring cache only; no SSH")
+    p_health.add_argument("name", nargs="?")
+    _add_json_flag(p_health)
 
     p_status = sub.add_parser(
         "status",
@@ -8204,6 +8240,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_capabilities(args)
     if command == "telemetry":
         return cmd_telemetry(args)
+    if command == "monitor":
+        try:
+            return load_monitor_module().run_cli(_FLEET_HOST, args)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            die(str(exc))
+    if command == "health":
+        doc = monitor_cached_health(args.name)
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc) + "\n")
+        else:
+            for node in doc["nodes"]:
+                dimensions = " ".join(f"{key}={value['state']}" for key, value in node["health"].items())
+                print(f"{node['name']}: {node['overall']} {dimensions}")
+        return 2 if doc["cache_state"] in ("CACHE_CORRUPT", "PARTIAL") else 0
     if command == "user":
         sub = args.user_command
         if sub is None:

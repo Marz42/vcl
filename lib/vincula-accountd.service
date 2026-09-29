@@ -1,5 +1,5 @@
 # Managed-By: vincula
-# Vincula-Version: 0.5.0
+# Vincula-Version: 0.5.1
 [Unit]
 Description=vincula local accounting daemon
 Documentation=file:///usr/local/lib/vincula/vincula-accountd.py
@@ -8,9 +8,11 @@ Wants=sing-box.service
 
 [Service]
 Type=simple
-User=root
-Group=root
-ExecStart=/usr/bin/python3 /usr/local/lib/vincula/vincula-accountd.py
+User=vincula-accountd
+Group=vincula-accountd
+# Fixed privileged projection step; the long-running daemon remains unprivileged.
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/vincula/accountd_runtime.py
+ExecStart=/usr/bin/python3 -I /usr/local/lib/vincula/vincula-accountd.py --runtime /etc/vincula-accountd/runtime.json
 Restart=on-failure
 RestartSec=5s
 UMask=0077

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.5.0
+# Vincula-Version: 0.5.1
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.5.0"
+readonly VINCULA_VERSION="0.5.1"
 readonly STATE_DIR="${VCL_STATE_DIR:-/etc/vincula}"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -23,6 +23,10 @@ readonly LOCK_FILE="${LIB_DIR}/sing-box.lock"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly OBSERVER_PY="${LIB_DIR}/observer.py"
+readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
+readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
@@ -545,7 +549,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -605,6 +609,10 @@ stop_runtime_for_uninstall() {
     systemctl disable vincula-accountd.service >/dev/null 2>&1 || true
     systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
     printf '✓ vincula-accountd.service stopped and disabled\n'
+  fi
+  if [[ -f "$OBSERVER_SOCKET" ]] && unit_has_vincula_marker "$OBSERVER_SOCKET"; then
+    systemctl disable --now vincula-observer.socket >/dev/null 2>&1 || true
+    systemctl stop 'vincula-observer@*.service' >/dev/null 2>&1 || true
   fi
   if systemctl cat sing-box.service >/dev/null 2>&1; then
     systemctl disable sing-box.service >/dev/null 2>&1 || true
@@ -790,6 +798,10 @@ cmd_uninstall() {
     "$CHECKSUM_FILE" \
     "$LOCK_FILE" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -802,6 +814,10 @@ cmd_uninstall() {
     remove_managed_file "$path"
   done
   printf '✓ Vincula-managed sing-box configuration removed\n'
+  if grep -qxF 'file=/etc/vincula-accountd/runtime.json' "$INSTALL_MANIFEST_FILE"; then
+    remove_managed_file /etc/vincula-accountd/runtime.json
+    remove_directory_if_empty /etc/vincula-accountd || preserved=1
+  fi
 
   if ! remove_managed_symlink "$HELPER_ALIAS_PATH" "$HELPER_PATH"; then
     preserved=1
@@ -1542,7 +1558,16 @@ restore_user_mutation() {
       install -m "$mode" -o "$owner" -g "$group" "${USER_MUTATION_BACKUP}/${name}" "$path"
     fi
   done
+  refresh_accountd_runtime || return 1
   systemctl restart sing-box.service >/dev/null 2>&1 || true
+}
+
+refresh_accountd_runtime() {
+  # Legacy root accountd has no projection. Never execute a repository fallback as root.
+  if [[ -f "$ACCOUNTD_UNIT" ]] && grep -q -- '--runtime /etc/vincula-accountd/runtime.json' "$ACCOUNTD_UNIT"; then
+    [[ -f "$ACCOUNTD_RUNTIME_PY" ]] || return 1
+    python3 "$ACCOUNTD_RUNTIME_PY" --state-dir "$STATE_DIR" --data-dir "$VAR_LIB_VINCULA"
+  fi
 }
 
 atomic_install_file() {
@@ -1603,6 +1628,10 @@ commit_user_mutation() {
   if [[ -n "$staged_state" && -f "$staged_state" ]]; then
     atomic_install_file "$staged_state" "$STATE_FILE" 0600 root root
   fi
+  if ! refresh_accountd_runtime; then
+    restore_user_mutation || true
+    die "accountd projection failed; user mutation rollback attempted."
+  fi
   systemctl restart sing-box.service
   if ! wait_healthy "$port"; then
     restore_user_mutation || true
@@ -1628,6 +1657,10 @@ user_mutation_apply() {
   # (add/disable/enable/rotate change users or UUIDs and take the full path).
   if cmp -s -- "$staged_config" "$CONFIG_FILE" && cmp -s -- "$staged_uri" "$URI_FILE"; then
     atomic_install_file "$staged_users" "$USERS_FILE" 0600 root root
+    if ! refresh_accountd_runtime; then
+      restore_user_mutation || true
+      die "accountd projection failed; user mutation rollback attempted."
+    fi
   else
     cp -a -- "$STATE_FILE" "$staged_state"
     # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
@@ -3365,6 +3398,10 @@ cmd_upgrade_checkpoint() {
     "$INSTALL_MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -3499,6 +3536,10 @@ cmd_upgrade_rollback() {
       install.manifest) path=$INSTALL_MANIFEST_FILE; mode=0644; owner=root; group=root ;;
       vincula-common.sh) path=$COMMON_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.py) path=$ACCOUNTD_PY; mode=0644; owner=root; group=root ;;
+      accountd_runtime.py) path=$ACCOUNTD_RUNTIME_PY; mode=0644; owner=root; group=root ;;
+      observer.py) path=$OBSERVER_PY; mode=0644; owner=root; group=root ;;
+      vincula-observer.socket) path=$OBSERVER_SOCKET; mode=0644; owner=root; group=root ;;
+      vincula-observer@.service) path=$OBSERVER_UNIT; mode=0644; owner=root; group=root ;;
       vincula-stats.py) path=$STATS_PY; mode=0644; owner=root; group=root ;;
       vincula-audit.py) path=$AUDIT_PY; mode=0644; owner=root; group=root ;;
       vincula-backup.py) path=$BACKUP_PY; mode=0644; owner=root; group=root ;;
@@ -3551,6 +3592,10 @@ cmd_upgrade_rollback() {
     install.manifest \
     vincula-common.sh \
     vincula-accountd.py \
+    accountd_runtime.py \
+    observer.py \
+    vincula-observer.socket \
+    vincula-observer@.service \
     vincula-stats.py \
     vincula-audit.py \
     vincula-backup.py \
@@ -3703,6 +3748,12 @@ main() {
           ;;
         telemetry)
           cmd_telemetry "$@"
+          ;;
+        observer)
+          [[ $# == 3 && "$1" == install-key && "$2" == --file ]] || die "usage: vcl observer install-key --file PUBLIC_KEY_FILE"
+          [[ -f "${LIB_DIR}/observer.py" ]] || die "observer helper is not installed"
+          acquire_vincula_op_lock || die "observer setup cannot acquire Node mutation lock"
+          python3 "${LIB_DIR}/observer.py" install-key --file "$3"
           ;;
         status)
           [[ $# -le 1 ]] || die "status accepts only --json."

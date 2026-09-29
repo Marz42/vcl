@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.5.0
+# vincula v0.5.1
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.5.0"
+readonly VINCULA_VERSION="0.5.1"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -45,6 +45,10 @@ readonly LIB_DIR="/usr/local/lib/vincula"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly OBSERVER_PY="${LIB_DIR}/observer.py"
+readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
+readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
 readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
@@ -210,6 +214,7 @@ rollback_install() {
   log_warn "Installation failed; removing files created by this transaction."
   systemctl disable --now sing-box.service >/dev/null 2>&1 || true
   systemctl disable --now vincula-accountd.service >/dev/null 2>&1 || true
+  systemctl disable --now vincula-observer.socket >/dev/null 2>&1 || true
 
   local path
   for path in \
@@ -229,6 +234,10 @@ rollback_install() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -247,6 +256,8 @@ rollback_install() {
 
   remove_product_pycache "$LIB_DIR"
   rmdir -- "$STATE_DIR" "$SING_BOX_DIR" "$LIB_DIR" >/dev/null 2>&1 || true
+  rm -f -- /etc/vincula-accountd/runtime.json
+  rmdir -- /etc/vincula-accountd >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_SING_BOX" >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_VINCULA" >/dev/null 2>&1 || true
   systemctl daemon-reload >/dev/null 2>&1 || true
@@ -289,6 +300,10 @@ rollback_migration() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -301,7 +316,7 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$OBSERVER_PY" || "$path" == "$OBSERVER_SOCKET" || "$path" == "$OBSERVER_UNIT" || "$path" == "$ACCOUNTD_RUNTIME_PY" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
@@ -512,7 +527,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2|0.5.0) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1143,6 +1158,11 @@ file=${MANIFEST_FILE}
 file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
+file=${ACCOUNTD_RUNTIME_PY}
+file=${OBSERVER_PY}
+file=${OBSERVER_SOCKET}
+file=${OBSERVER_UNIT}
+file=/etc/vincula-accountd/runtime.json
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
@@ -1178,6 +1198,11 @@ file=${MANIFEST_FILE}
 file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
+file=${ACCOUNTD_RUNTIME_PY}
+file=${OBSERVER_PY}
+file=${OBSERVER_SOCKET}
+file=${OBSERVER_UNIT}
+file=/etc/vincula-accountd/runtime.json
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
@@ -1491,6 +1516,11 @@ preflight_clean_install() {
     "$INSTALL_MANIFEST_FILE" \
     "$MANIFEST_FILE" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
+    /etc/vincula-accountd \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -1646,6 +1676,10 @@ backup_existing_install() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
@@ -2064,8 +2098,13 @@ install_accountd_artifacts() {
   install -m 0644 "${root}/lib/vincula-backup.py" "$staged_backup"
   install -m 0644 "${root}/lib/telemetry_snapshot.py" "$staged_telemetry"
   install -m 0644 "${root}/lib/vincula-accountd.service" "$staged_unit"
+  create_accountd_account
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
+  atomic_install "${root}/lib/accountd_runtime.py" "$ACCOUNTD_RUNTIME_PY" 0644 root root
+  atomic_install "${root}/lib/observer.py" "${LIB_DIR}/observer.py" 0644 root root
+  atomic_install "${root}/lib/vincula-observer.socket" /etc/systemd/system/vincula-observer.socket 0644 root root
+  atomic_install "${root}/lib/vincula-observer@.service" /etc/systemd/system/vincula-observer@.service 0644 root root
   atomic_install "$staged_stats" "$STATS_PY" 0644 root root
   atomic_install "$staged_audit" "$AUDIT_PY" 0644 root root
   atomic_install "$staged_backup" "$BACKUP_PY" 0644 root root
@@ -2075,6 +2114,23 @@ install_accountd_artifacts() {
   if [[ ! -f "$ACCOUNTING_DB_FILE" ]]; then
     : > "$ACCOUNTING_DB_FILE"
     chmod 0600 "$ACCOUNTING_DB_FILE"
+  fi
+}
+
+create_accountd_account() {
+  local entry uid shell gid group_entry
+  if entry=$(getent passwd vincula-accountd); then
+    uid=$(cut -d: -f3 <<< "$entry")
+    shell=$(cut -d: -f7 <<< "$entry")
+    (( uid > 0 && uid < 1000 )) || die "Existing accountd account is not a system account."
+    case "$shell" in */nologin|*/false) ;; *) die "Existing accountd account has an interactive shell." ;; esac
+    group_entry=$(getent group vincula-accountd) || die "Existing accountd account has no matching group."
+    gid=$(cut -d: -f4 <<< "$entry")
+    [[ "$gid" == "$(cut -d: -f3 <<< "$group_entry")" ]] || die "Existing accountd account has an unexpected primary group."
+  elif getent group vincula-accountd >/dev/null; then
+    useradd --system --gid vincula-accountd --home-dir "$VAR_LIB_VINCULA" --no-create-home --shell /usr/sbin/nologin vincula-accountd
+  else
+    useradd --system --user-group --home-dir "$VAR_LIB_VINCULA" --no-create-home --shell /usr/sbin/nologin vincula-accountd
   fi
 }
 

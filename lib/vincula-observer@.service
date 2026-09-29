@@ -1,0 +1,32 @@
+# Managed-By: vincula
+# Vincula-Version: 0.5.1
+[Unit]
+Description=Vincula bounded read-only observation broker
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/vincula/observer.py broker
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+RuntimeMaxSec=15s
+TimeoutStopSec=1s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+TasksMax=16
+MemoryMax=64M
+CPUQuota=10%

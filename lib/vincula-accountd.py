@@ -1894,17 +1894,24 @@ class AccountDaemon:
         """
         global TAG_TO_USER_ID
         try:
-            mtime = os.stat(self.users_path).st_mtime
+            info = os.stat(self.users_path)
+            mtime = (info.st_ino, info.st_mtime_ns, info.st_size)
         except OSError:
             return
         if self._users_mtime is not None and mtime == self._users_mtime:
             return
         try:
-            new_map = load_tag_to_user_id(self.users_path)
-        except SystemExit as exc:
+            runtime_loader = getattr(self, "runtime_loader", None)
+            if runtime_loader is not None:
+                runtime = runtime_loader()
+                if runtime["node"] != {"node_id": NODE_ID, "instance_id": INSTANCE_ID}:
+                    raise ValueError("accountd runtime identity changed; restart required")
+                new_map = {item["tag"]: item["user_id"] for item in runtime["users"]}
+            else:
+                new_map = load_tag_to_user_id(self.users_path)
+        except (SystemExit, ValueError, OSError):
             LOG.warning(
-                "users.json changed but failed to reload; keeping previous tag map (%s)",
-                exc,
+                "accounting identity mapping changed but failed validation; keeping previous map",
             )
             self._users_mtime = mtime
             return
@@ -2014,12 +2021,40 @@ def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> Account
     )
 
 
+def build_daemon_from_runtime(runtime_path: str) -> AccountDaemon:
+    """Restricted mode: no environment-secret or canonical settings/users/state fallback."""
+    import importlib.util
+    global NODE_ID, TAG_TO_USER_ID, INSTANCE_ID
+    spec = importlib.util.spec_from_file_location("vcl_accountd_runtime", Path(__file__).with_name("accountd_runtime.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    doc = module.read(Path(runtime_path))
+    NODE_ID, INSTANCE_ID = doc["node"]["node_id"], doc["node"]["instance_id"]
+    TAG_TO_USER_ID = {item["tag"]: item["user_id"] for item in doc["users"]}
+    daemon = AccountDaemon(
+        db_path=DEFAULT_DB_PATH,
+        clash_url=f"http://127.0.0.1:{doc['clash_api_port']}/connections",
+        clash_secret=doc["clash_api_secret"],
+        raw_retention_days=doc["raw_retention_days"],
+        daily_retention_days=doc["daily_retention_days"],
+        users_path=runtime_path,
+    )
+    # The mapping refresh must validate the entire projection and cannot turn a
+    # bad/replaced file into arbitrary canonical config reads.
+    daemon.runtime_loader = lambda: module.read(Path(runtime_path))
+    return daemon
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Vincula local accounting daemon. "
             "Polling Clash API is approximate and is not exact billing."
         )
+    )
+    parser.add_argument(
+        "--runtime",
+        help="root-owned minimal accountd-runtime/v1 projection (no canonical secret file fallback)",
     )
     parser.add_argument(
         "--settings",
@@ -2092,7 +2127,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     os.environ.setdefault("VCL_USERS_FILE", args.users)
     os.environ.setdefault("VCL_STATE_FILE", args.state)
-    daemon = build_daemon_from_settings(args.settings)
+    daemon = build_daemon_from_runtime(args.runtime) if args.runtime else build_daemon_from_settings(args.settings)
     if args.db:
         daemon.db_path = args.db
     if args.once:
