@@ -1,6 +1,6 @@
 # 0.5.1 续开发与验证
 
-日期：2026-09-28；基线：`112dfd3338f28c1f9ecdedf4fbcbde5342ad2a95`，分支 `codex/0.5.1`。用户确认本轮完成代码与本地验证，现场验收另行安排。状态：**IN PROGRESS / PENDING LIVE / UNRELEASED**。
+日期：2026-09-28～29；基线：`112dfd3338f28c1f9ecdedf4fbcbde5342ad2a95`，分支 `codex/0.5.1`。用户确认本轮完成代码与本地验证，现场验收另行安排。状态：**IN PROGRESS / PENDING LIVE / UNRELEASED**。
 
 [分支清理记录](../../plans/BRANCH_CLEANUP_2026-09-28.md)保存删除前 SHA、合并依据和本机恢复备份。2026-09-27 的 TESTS / ARTIFACTS / SOURCE_INPUTS 是历史基线证据，不作为本轮修改后的测试或制品结果。
 
@@ -33,4 +33,22 @@ git diff --check
 
 新增关键回归先在旧实现上复现了乱序样本误判 HEALTHY、malformed fetch 中断/错误退避、probe 推迟 received_at、latest 无淘汰能力，再修复并通过。
 
-Linux 全量 Bash/Fleet、root 权限和新候选制品通过 draft PR 的 CI 验证；实际结果与候选 SHA 待回填。未执行真实 VPS、2h/24h soak、升级回退、发布或主线合并。
+Linux 全量 Bash/Fleet、root 权限和新候选制品由 draft PR 的 CI 验证，实际结果见下文。未执行真实 VPS、2h/24h soak、升级回退、发布或主线合并。
+
+## CI 与制品追溯
+
+- [Draft PR #13](https://github.com/Marz42/vcl/pull/13)，测试代码提交 `b5a0b7f21d1bc0ab09e40433c99d24809b924382`。
+- [CI run #82](https://github.com/Marz42/vcl/actions/runs/36447639100) 实际 checkout PR merge ref `798e0e26b8f61c695baae4420bdfbbeace3dcd20`，合入基线 `d8734eb`；不表示 PR 已合并到 main。
+- Windows CI：52 tests，46 PASS / 6 Linux 专属 skip。
+- artifact job：Node/Controller 构建、sidecar / release.lock / controller.lock、脱离源码目录的 Controller black-box 全部 PASS。
+- Debian 12/13：各 1866 顶层断言通过；Ubuntu/concurrency/failure-injection：各 1868 顶层断言通过。Debian 容器以 root 运行，少的两条是 tests/test.sh 明确只在非 root 执行的 legacy seed UID 检查。既有 AC-4.0-M05 仍为 REQUIRES-LIVE，不能当现场通过。
+- Linux Python 子套件：monitor 34、runtime 5、observer 6、schema 2 均通过，共 47；这些已包含在顶层断言中，不重复计数。
+- **保留失败记录：**run #82 的 Ubuntu job 在最后独立权限步骤 4 PASS / 1 FAIL；降权子进程被 runner 的私有 `/home/runner` 路径挡住，无法读取 checkout 内的 daemon 源码。测试改为仅在其 TemporaryDirectory 中 staging 两个 root-owned 0644 库文件，并使用 Python `-I`；不放宽 runner HOME 权限。该步骤已前置，修复后的 CI 结果另行追加。
+
+| 此次 CI 制品 | SHA-256 |
+| --- | --- |
+| `vincula-node-0.5.1.tar.gz` | `1108fa4b99e1d044b394594084d7903f81979d381b533c739e15898ead67808a` |
+| `vincula-controller-0.5.1.zip` | `d8506e81c73e445c760d2877627ddfcd56d593d8852f2f116f11f3aa9fb9dedc` |
+| GitHub Actions 外层 `vincula-dist.zip` | `3a7f6195dede4057a4bc49565461c808d4ebb191ec0a5108b5e47a90b4736157` |
+
+[CI 制品下载](https://github.com/Marz42/vcl/actions/runs/36447639100/artifacts/10982190114)，artifact ID `10982190114`，保留至 2026-10-05。这些是 CI 候选制品，未作为 GitHub Release 发布。构建使用脚本默认的 checkout HEAD 时间；重建需使用该 merge ref 或显式固定对应 SOURCE_DATE_EPOCH，不可直接拿后续文档提交的默认时间比较摘要。

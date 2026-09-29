@@ -18,6 +18,8 @@ monitor 默认前台持续运行，Ctrl-C 停止并等待有界在途调用清�
 
 observation.db 位于同 Fleet 的 machine-local fleet.db 旁边，独立于 fleet-cache/v4；默认保留24h原样本、7d的5分钟聚合、90d小时聚合，另受行数/256MiB限制。cache_state=PARTIAL/CACHE_CORRUPT 需要检查本机缓存，不能当成 Node 损坏；不会通过 GET 自动修复。满盘/锁超时写入失败返回非零退出码。正常 accounting 仍使用原 fleet.db。
 
+`received_at` 是 telemetry 采集完成时间，不包含后续 probe 等待。同一 instance 返回重复或倒退的 `observed_at` 时，Observation 显示 `TELEMETRY_STALE`，最后有效指标保留，避免算出伪网络速率。历史身份累计超过 latest 的 1024 条上限时按最旧记录淘汰，metadata 中记录 `truncated_health_latest`；原始样本仍遵循独立保留期。
+
 ## 独立真实代理探测
 
 为每个待测 Node 显式创建仅用于监测的 `vcl-probe-*` 测试用户，不复制普通用户的 UUID。将其连接参数保存到**本机私有文件、位于 portable Workspace 之外**；不要提交到 Git。Windows 使用仅当前用户可读 ACL，Linux 使用0600。以下是字段示意，尖括号不是可用凭据：

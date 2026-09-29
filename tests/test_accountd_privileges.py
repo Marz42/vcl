@@ -62,6 +62,14 @@ class PrivilegeTests(unittest.TestCase):
         self.assertEqual(self.target.stat().st_uid, 0)
         self.assertEqual(self.target.stat().st_gid, 998)
         self.assertEqual(self.data.stat().st_uid, 998)
+        # Installed libraries are root-owned and traversable by the daemon.
+        # The checkout may live below a private runner HOME; never chmod it.
+        library = self.root / "installed-lib"
+        library.mkdir(mode=0o755)
+        for name in ("vincula-accountd.py", "accountd_runtime.py"):
+            staged = library / name
+            staged.write_bytes((ROOT / "lib" / name).read_bytes())
+            staged.chmod(0o644)
         script = '''
 import importlib.util, json, pathlib, sqlite3, sys
 root, library = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -86,7 +94,7 @@ print("BOUNDARY PASS")
             os.setgroups([])
             os.setgid(998)
             os.setuid(998)
-        result = subprocess.run([sys.executable, "-c", script, str(self.root), str(ROOT / "lib")],
+        result = subprocess.run([sys.executable, "-I", "-c", script, str(self.root), str(library)],
                                 preexec_fn=drop, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "BOUNDARY PASS")
