@@ -2,6 +2,8 @@
 
 **2026-09-28 续开发：**以 `112dfd3` / `codex/0.5.1` 为基线继续修复并补验证；当前结果以[续开发记录](CONTINUATION.md)为准。以下 2026-09-27 结果保留为历史证据。用户再次明确本轮先完成代码和本地验证，现场验收另行安排。
 
+**2026-09-29 收口：**候选 `b61af9f` 的 [CI #84](https://github.com/Marz42/vcl/actions/runs/36558736474) 七项作业全部通过（含 Windows 与真实 Linux UID/GID 权限测试）；当前为 **PASS OFFLINE / PENDING LIVE / UNRELEASED**。制品摘要、两次 CI 环境失败及修复记录见续开发文档。
+
 状态：**LOCAL DELIVERY / PENDING LIVE / UNRELEASED**。用户于2026-09-27明确要求本轮只完成本地交付、文档与一次提交，真实VPS验收暂不执行。
 
 Controller：`0.5.1`；Node payload：`0.5.1`；minimum Node：`0.3.1`。基线提交：`f38b29260a459b8b252df9dd0774d5f754401946`；本次交付提交可由 `git log -1 -- docs/evidence/0.5.1/SUMMARY.md`定位。构建以逐文件source-input manifest绑定实际代码，避免将未提交工作树的测试错误归给旧HEAD。

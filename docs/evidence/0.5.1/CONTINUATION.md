@@ -1,6 +1,6 @@
 # 0.5.1 续开发与验证
 
-日期：2026-09-28～29；基线：`112dfd3338f28c1f9ecdedf4fbcbde5342ad2a95`，分支 `codex/0.5.1`。用户确认本轮完成代码与本地验证，现场验收另行安排。状态：**IN PROGRESS / PENDING LIVE / UNRELEASED**。
+日期：2026-09-28～29；基线：`112dfd3338f28c1f9ecdedf4fbcbde5342ad2a95`，分支 `codex/0.5.1`。用户确认本轮完成代码与本地验证，现场验收另行安排。状态：**PASS OFFLINE（本地 + CI）/ PENDING LIVE / UNRELEASED**。最终代码/测试候选 `b61af9f` 的 CI #84 七项作业全部通过；后续纯证据文档提交不改变此验证绑定。
 
 [分支清理记录](../../plans/BRANCH_CLEANUP_2026-09-28.md)保存删除前 SHA、合并依据和本机恢复备份。2026-09-27 的 TESTS / ARTIFACTS / SOURCE_INPUTS 是历史基线证据，不作为本轮修改后的测试或制品结果。
 
@@ -68,3 +68,22 @@ Linux 全量 Bash/Fleet、root 权限和新候选制品由 draft PR 的 CI 验�
 | Actions 外层 `vincula-dist.zip` | `45d3baa32ee0c01b58f35617ceafadeea8ed0f749d29c842199944e067813682` |
 
 [CI #83 制品下载](https://github.com/Marz42/vcl/actions/runs/36558005777/artifacts/11028896021)，保留至 2026-10-06。该轮 Ubuntu gate 失败，最终验收候选以之后通过全量 CI 的提交及制品为准。
+
+## 字节码隔离后的候选
+
+代码/测试提交 `b61af9fb8d6e3f4ff99e74c3644d057e41171300`；[CI run #84](https://github.com/Marz42/vcl/actions/runs/36558736474) 使用 PR merge ref `bd09742e14eebcec8f4448c6c6656eb5f6315f78`。**七项 job 全部 SUCCESS**：Ubuntu、Debian 12、Debian 13、Windows、concurrency、failure-injection、artifact。测试中的 root/非 root 子进程都禁止写 Python 字节码。
+
+- Ubuntu：1868 顶层断言通过；独立真实 UID/GID 权限 5/5 通过，0 skip；先前失败的 audit/accountd/backup 编译检查全部通过。
+- Debian 12/13：各 1866 顶层断言通过；concurrency/failure-injection：各 1868 顶层断言通过。
+- Linux 新 Python 套件 47/47 通过；Windows 46 PASS / 6 平台 skip。平台与既有 Live-only 测试边界不变。
+- artifact：Node/Controller 构建、摘要/lock、独立 Controller 包运行通过。以下为本轮候选制品。
+
+本轮代码、本地验证与 CI 门禁已收口。剩余 L1–L7、实际 systemd/sshd、升级/回退连续性、2h 混合节点及 24h soak 由用户另行安排；G4/G5 与发布仍为 PENDING LIVE。未合并 main，PR 保持 draft。
+
+| CI #84 制品 | SHA-256 |
+| --- | --- |
+| `vincula-node-0.5.1.tar.gz` | `2f21d3956346bb662927f7a2bbc2242fad96df37efa7cd696513c72e6063e03a` |
+| `vincula-controller-0.5.1.zip` | `6f7f06591ba3a6431bda5c6821bd0ccfdb6d12253cf9133f3980d2f7ad21369d` |
+| Actions 外层 `vincula-dist.zip` | `d93f9d460beb4092a698d62cfdd24e46ebca67233e1aeed2ad9280153a9103fa` |
+
+[CI #84 制品下载](https://github.com/Marz42/vcl/actions/runs/36558736474/artifacts/11028501740)，保留至 2026-10-06。后续证据文档提交不改写上述源码/制品绑定，也不将旧轮失败记录覆盖。
