@@ -52,3 +52,19 @@ Linux 全量 Bash/Fleet、root 权限和新候选制品由 draft PR 的 CI 验�
 | GitHub Actions 外层 `vincula-dist.zip` | `3a7f6195dede4057a4bc49565461c808d4ebb191ec0a5108b5e47a90b4736157` |
 
 [CI 制品下载](https://github.com/Marz42/vcl/actions/runs/36447639100/artifacts/10982190114)，artifact ID `10982190114`，保留至 2026-10-05。这些是 CI 候选制品，未作为 GitHub Release 发布。构建使用脚本默认的 checkout HEAD 时间；重建需使用该 merge ref 或显式固定对应 SOURCE_DATE_EPOCH，不可直接拿后续文档提交的默认时间比较摘要。
+
+## 权限测试修复后的复验
+
+提交 `068e668a0c39ebfb236b507661f98e77caeaf2e5`；[CI run #83](https://github.com/Marz42/vcl/actions/runs/36558005777)，checkout `54c39b8c17cd477ac598cc9a9df7cab669cffb46`。相对 `b5a0b7f` 仅改变测试、CI 顺序和文档，产品代码及打包脚本完全相同。
+
+真实 Linux UID/GID 权限步骤已全部通过，Windows 与 artifact job 通过。但前置 root 测试导入源码产生 root-owned `lib/__pycache__`，使后续普通用户的三项 py_compile 检查失败，Ubuntu job 因此 FAIL。修复为父/子 Python 均禁写字节码，测试模块自身在导入项目代码前设置 `sys.dont_write_bytecode`，保证直接运行与 discovery 都不污染 checkout。run #82/#83 的原始失败记录保留，不改写为成功。
+
+本轮制品绑定上述 merge ref；由于默认构建 epoch 改变，摘要与 run #82 不同：
+
+| CI #83 制品 | SHA-256 |
+| --- | --- |
+| `vincula-node-0.5.1.tar.gz` | `827f616eb393609b0d57f1291fc9a47a5e1416962e9c82e02a75bf119971759c` |
+| `vincula-controller-0.5.1.zip` | `2c1dd38f5ea8b7f139e5b562daf4ca4e20297fa3853b9226b7f7bec7cc8e9d7e` |
+| Actions 外层 `vincula-dist.zip` | `45d3baa32ee0c01b58f35617ceafadeea8ed0f749d29c842199944e067813682` |
+
+[CI #83 制品下载](https://github.com/Marz42/vcl/actions/runs/36558005777/artifacts/11028896021)，保留至 2026-10-06。该轮 Ubuntu gate 失败，最终验收候选以之后通过全量 CI 的提交及制品为准。

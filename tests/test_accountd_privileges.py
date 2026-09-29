@@ -16,6 +16,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# A root-run test must not leave root-owned bytecode in the user's checkout.
+# Set before loading any repository module, including under unittest discovery.
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("runtime_privileges", ROOT / "lib/accountd_runtime.py")
 runtime = importlib.util.module_from_spec(spec)
@@ -94,7 +98,7 @@ print("BOUNDARY PASS")
             os.setgroups([])
             os.setgid(998)
             os.setuid(998)
-        result = subprocess.run([sys.executable, "-I", "-c", script, str(self.root), str(library)],
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(self.root), str(library)],
                                 preexec_fn=drop, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "BOUNDARY PASS")
