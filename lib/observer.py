@@ -21,7 +21,8 @@ from pathlib import Path
 SOCKET = "/run/vincula-observer.sock"
 USER = "vincula-observer"
 ALLOWED = frozenset({("identity", "--json"), ("capabilities", "--json"),
-                     ("telemetry", "snapshot", "--json"), ("status", "--json"), ("verify", "--json")})
+                     ("telemetry", "snapshot", "--json"), ("telemetry", "audit", "--json"), ("telemetry", "users", "--json"),
+                     ("inspect", "--json"), ("status", "--json"), ("verify", "--json")})
 MAX_RESPONSE = 65536
 
 

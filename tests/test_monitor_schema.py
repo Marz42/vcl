@@ -17,11 +17,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads((ROOT / "schemas/monitor/v1.schema.json").read_text())
 SUPPORTED = {"$schema", "$id", "$defs", "$ref", "title", "description", "type", "additionalProperties", "required",
-             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "pattern", "format", "propertyNames"}
+             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "pattern", "format", "propertyNames", "if", "then", "allOf", "anyOf", "uniqueItems"}
 
 
 def validate(value, schema=SCHEMA):
     assert not set(schema) - SUPPORTED, "test evaluator needs new schema keyword support"
+    for child in schema.get("allOf", []):
+        validate(value, child)
+    if "anyOf" in schema:
+        matches = 0
+        for child in schema["anyOf"]:
+            try:
+                validate(value, child)
+            except AssertionError:
+                pass
+            else:
+                matches += 1
+        assert matches, "no schema branch matches"
+    if "if" in schema:
+        try:
+            validate(value, schema["if"])
+        except AssertionError:
+            pass
+        else:
+            validate(value, schema.get("then", {}))
     if "$ref" in schema:
         target = SCHEMA
         for key in schema["$ref"].split("/")[1:]:
@@ -51,6 +70,8 @@ def validate(value, schema=SCHEMA):
                 validate(item, additional)
     elif isinstance(value, list):
         assert len(value) <= schema.get("maxItems", len(value))
+        if schema.get("uniqueItems"):
+            assert not any(item == old for index, item in enumerate(value) for old in value[:index])
         for item in value:
             validate(item, schema.get("items", {}))
     elif isinstance(value, str):

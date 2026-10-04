@@ -19,6 +19,8 @@ def sibling(name: str):
 
 health = sibling("health")
 validator = sibling("schema_validate")
+audit_health = sibling("audit_health")
+user_traffic = sibling("user_traffic")
 RAW_CAP = 100_000
 ROLLUP_CAP = 200_000
 LATEST_CAP = 1024
@@ -47,7 +49,7 @@ def clean_result(node: dict, result) -> dict:
 
 
 def decode_record(payload: str) -> dict:
-    if len(payload) > 16384:
+    if len(payload) > 49152:
         raise ValueError("oversize cache row")
     try:
         value = json.loads(payload)
@@ -95,7 +97,11 @@ def decode_record(payload: str) -> dict:
             "metrics": {key: health.number(val) for key, val in numeric.items() if key in allowed_metrics},
             "services": {key: services.get(key) if type(services.get(key)) is bool else None
                          for key in ("sing_box_active", "accountd_active")},
-            "probe": health.clean_probe(value.get("probe"))}
+            "probe": health.clean_probe(value.get("probe")),
+            "audit_health": audit_health.clean(value.get("audit_health", {"state": "UNSUPPORTED"}), value["node_id"], value.get("instance_id")),
+            "audit_progress": audit_health.clean_progress(value.get("audit_progress")),
+            "audit_baseline": audit_health.clean_baseline(value.get("audit_baseline"), value["node_id"], value.get("instance_id")),
+            "user_traffic": user_traffic.clean(value.get("user_traffic", {"state": "UNSUPPORTED"}), value["node_id"], value.get("instance_id"))}
 
 
 class Store:
@@ -158,6 +164,39 @@ class Store:
             # Reclaim expired rows before inserting, including after a previous SQLITE_FULL.
             self.prune(conn, now)
             record = health.build(node, result, previous, now, probe)
+            record["user_traffic"] = user_traffic.clean(result.get("user_traffic", {"state": "UNSUPPORTED"}), node["node_id"], record.get("instance_id"))
+            record["audit_health"] = audit_health.clean(result.get("audit_health", {"state": "UNSUPPORTED"}), node["node_id"], record.get("instance_id"))
+            diagnostic = record["audit_health"]
+            record["audit_progress"], record["audit_baseline"] = audit_health.progression(
+                diagnostic, previous.get("audit_baseline"), now)
+            if diagnostic["state"] in ("ERROR", "AUTH_FAILED", "TIMEOUT"):
+                record["health"]["accounting"] = health.transition({}, "UNKNOWN", "NO_OBSERVATION")
+                record["overall"] = health.overall(record["health"])
+            if diagnostic["state"] == "OK":
+                snapshot = diagnostic["snapshot"]
+                age = now - health.timestamp(snapshot["observed_at"])
+                if (record["audit_progress"]["state"] in ("REPLAYED", "REGRESSED")
+                        or record["health"]["observation"]["reason"] != "FRESH"):
+                    record["health"]["accounting"] = health.transition({}, "UNKNOWN", "NO_OBSERVATION")
+                    record["overall"] = health.overall(record["health"])
+                elif -30 <= age <= 90:
+                    db = snapshot["db_state"]
+                    heartbeat, poll = snapshot["heartbeat_age_seconds"], snapshot["last_poll_age_seconds"]
+                    signal, reason = ("UNKNOWN", "NO_OBSERVATION")
+                    if db in ("CORRUPT", "SCHEMA_MISMATCH", "MISSING", "UNREADABLE"):
+                        signal, reason = "DEGRADED", "ERROR"
+                    elif db == "OK":
+                        if not snapshot["accountd_active"]:
+                            signal, reason = "DEGRADED", "SERVICE_INACTIVE"
+                        elif heartbeat is not None and poll is not None:
+                            signal, reason = ("DEGRADED", "POLL_STALLED") if max(heartbeat, poll) + max(0, age) > 90 else ("HEALTHY", "POLL_RECENT")
+                        else:
+                            signal, reason = "UNKNOWN", "POLL_AGE_MISSING"
+                    record["health"]["accounting"] = health.transition(previous.get("health", {}).get("accounting", {}), signal, reason)
+                    record["overall"] = health.overall(record["health"])
+                else:
+                    record["health"]["accounting"] = health.transition({}, "UNKNOWN", "TELEMETRY_STALE")
+                    record["overall"] = health.overall(record["health"])
             payload = encode(record)
             conn.execute("INSERT OR REPLACE INTO health_latest VALUES(?,?,?)", (node["node_id"], now, payload))
             conn.execute("INSERT INTO telemetry_samples(node_id,at,payload) VALUES(?,?,?)", (node["node_id"], now, payload))
@@ -202,7 +241,7 @@ class Store:
                 conn.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} ORDER BY at,rowid LIMIT ?)", (excess,))
                 conn.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("truncated_" + table, str(now)))
 
-    def read(self, nodes: list[dict], now: float) -> dict:
+    def read(self, nodes: list[dict], now: float, *, include_audit=False) -> dict:
         records, cache_state = {}, "EMPTY"
         conn = None
         try:
@@ -234,5 +273,8 @@ class Store:
                 item["observation_state"] = "UNKNOWN"
                 item["received_at"] = None
             item["name"] = node["name"]
+            if not include_audit:
+                for key in ("audit_health", "audit_progress", "audit_baseline", "user_traffic"):
+                    item.pop(key, None)  # Preserve the strict public monitor/v1 contract.
             out.append(item)
         return {"schema": "monitor/v1", "generated_at": health.utc(now), "cache_state": cache_state, "nodes": out}

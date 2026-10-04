@@ -22,6 +22,7 @@ files=(
   lib/vincula-audit.py
   lib/vincula-backup.py
   lib/telemetry_snapshot.py
+  lib/inspect_snapshot.py
   lib/vincula-accountd.service
 )
 

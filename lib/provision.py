@@ -49,18 +49,10 @@ LEGACY_KEY_REMOTE = "reality-private.key"
 
 PrivilegeMode = Literal["root", "sudo"]
 
-# D51: single arch-neutral node payload pinned to tree vincula.sh VINCULA_VERSION.
-def _node_payload_version_from_tree() -> str:
-    vincula_sh = Path(__file__).resolve().parent.parent / "vincula.sh"
-    match = re.search(
-        r'^readonly VINCULA_VERSION="([^"]+)"', vincula_sh.read_text(encoding="utf-8"), re.M
-    )
-    if not match:
-        raise RuntimeError("VINCULA_VERSION not found in vincula.sh")
-    return match.group(1)
-
-
-NODE_PAYLOAD_VERSION = _node_payload_version_from_tree()
+# D51: pin the carried Node payload independently of its mutable manifest.
+# The standalone Controller has no vincula.sh; build-controller verifies this
+# locked source constant against the canonical Node version before packaging.
+NODE_PAYLOAD_VERSION = "0.5.2"
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"

@@ -324,7 +324,7 @@ class SchedulerTests(unittest.TestCase):
             store = monitor.Store(Path(tmp) / "obs.db")
             service = monitor.Monitor(nodes, store, fetch, concurrency=3, wall_clock=lambda: NOW)
             result = service.run(once=True)
-            self.assertEqual(result, {"sampled_nodes": 12, "cache_write_errors": 0})
+            self.assertEqual(result, {"sampled_nodes": 12, "cache_write_errors": 0, "finding_write_errors": 0})
             self.assertEqual(len(set(calls)), 12)
             self.assertLessEqual(peak, 3)
             self.assertGreater(peak, 1)

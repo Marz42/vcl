@@ -2,9 +2,13 @@
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
-**节点** `VINCULA_VERSION=0.5.1`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.1`（CLI：`vcl-fleet`）。
+**节点** `VINCULA_VERSION=0.5.2`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.2`（CLI：`vcl-fleet`）。
 
-**当前为本地开发候选，尚未发布：**0.5.1 的真实 VPS 验收和 24h soak 保留 `PENDING LIVE`。本地交付状态见 [`0.5.1 evidence`](docs/evidence/0.5.1/SUMMARY.md)，监控与权限接入见 [`monitoring runbook`](docs/operations/monitoring-runbook.md)。
+**当前为本地开发候选，尚未发布：**真实 VPS 验收和 24h soak 保留 `PENDING LIVE`。当前交付与验证状态见 [`0.5.2 evidence`](docs/evidence/0.5.2/SUMMARY.md)，监控与权限接入见 [`monitoring runbook`](docs/operations/monitoring-runbook.md)。
+
+2026-10-04 在最新 `codex/0.5.1` 分支实现 **0.5.2 Findings / Audit / Anomalies**，包含14类Node/User Finding、独立审计/用户采样、正式JSON合同与本地时间轴；当前候选 stamp 0.5.2。状态见 [`evidence`](docs/evidence/0.5.2/SUMMARY.md)，操作见 [`findings runbook`](docs/operations/findings-runbook.md)。**Human Gate H05/H06/H07：PENDING HUMAN；实机与 soak：PENDING LIVE。**按[用户指令](docs/plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待并记录。
+
+**继续开发 0.5.3：**Node `vcl inspect --json`、正式 inspect/v1 合同与身份绑定 observe fetch 已实现；Controller 缓存、baseline/Drift 与增强 Verify 仍待实现，运行 stamp 暂保留0.5.2。新阶段验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)。
 
 协议固定：VLESS + REALITY + xtls-rprx-vision + TCP；sing-box **1.13.18**（不追 latest）。流量统计为 **approximate / Clash polling**，非计费级。
 
@@ -28,6 +32,7 @@
 - Secretless backup / restore / **node replace**（runtime-only 新机）
 - Legacy single-user seed（保留旧客户端 URI，严格受限）
 - 前台 Fleet monitor、分层 Health、只读监控缓存与专用真实代理 probe
+- Node/User Findings、审计可信度诊断、统计基线与本地 Timeline
 - 独立 accountd 用户、最小运行时输入、受限 observer SSH/本机 Unix socket（0.5.1 候选，待现场验证）
 
 ## 明确不做什么
@@ -63,8 +68,8 @@ flowchart LR
 
 | 项目 | 值 |
 | --- | --- |
-| Controller（开发候选） | **0.5.1** |
-| 新 provision Node（开发候选） | **0.5.1** |
+| Controller（开发候选） | **0.5.2** |
+| 新 provision Node（开发候选） | **0.5.2** |
 | 最低兼容 Node | **0.3.1** |
 | OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
 | Arch | amd64、arm64 |

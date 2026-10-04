@@ -20,6 +20,8 @@
       <button type="button" class="tab" data-page="traffic">Traffic</button>
       <button type="button" class="tab" data-page="audit">Audit</button>
       <button type="button" class="tab" data-page="operations">Operations</button>
+      <button type="button" class="tab" data-page="findings">Findings</button>
+      <button type="button" class="tab" data-page="timeline">Timeline</button>
     </nav>
     <div class="actions">
       <button type="button" id="btn-probe" class="btn" title="Live SSH probe (does not write last-status.json)">Probe</button>
@@ -195,6 +197,22 @@
           High-risk mutations remain CLI-only in the UI — use Recipes or Command Builder.
         </p>
         <div id="operations-table" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="page-findings" class="page">
+      <div class="card">
+        <h2>Observation findings</h2>
+        <p class="hint">Local cache from Monitor or CLI findings --refresh. UNKNOWN checks retain active findings until recovery is confirmed. No automatic action.</p>
+        <div id="findings-table" class="table-wrap"></div>
+        <h3>Detection evidence</h3>
+        <div id="finding-checks" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="page-timeline" class="page">
+      <div class="card">
+        <h2>Observation timeline</h2>
+        <p class="hint">Local finding transitions, health, services, proxy probe results and operation history. Newest first.</p>
+        <div id="timeline-table" class="table-wrap"></div>
       </div>
     </section>
   </main>

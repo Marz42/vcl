@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.5.1
+# Vincula-Version: 0.5.2
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.5.1"
+readonly VINCULA_VERSION="0.5.2"
 readonly STATE_DIR="${VCL_STATE_DIR:-/etc/vincula}"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -32,6 +32,7 @@ readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
 readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
 readonly TELEMETRY_PY="${LIB_DIR}/telemetry_snapshot.py"
+readonly INSPECT_PY="${LIB_DIR}/inspect_snapshot.py"
 readonly VAR_LIB_VINCULA="${VCL_VAR_LIB_VINCULA:-/var/lib/vincula}"
 readonly ACCOUNTING_DB_FILE="${VCL_ACCOUNTING_DB_FILE:-${VAR_LIB_VINCULA}/accounting.db}"
 readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
@@ -89,6 +90,11 @@ Usage:
                         Machine-readable capability discovery (capabilities/v1)
   vcl telemetry snapshot --json
                         Read-only resource/service snapshot (telemetry/v1)
+  vcl telemetry audit --json
+                        Bounded read-only accounting diagnostics (audit-health/v1)
+  vcl telemetry users --json
+                        Bounded per-user retained traffic samples (user-traffic/v1)
+  vcl inspect --json    Bounded read-only environment and fingerprints (inspect/v1)
   vcl status [--json]  Check service, port, and listener ownership
   vcl check            Fast static checks (binary SHA-256 and config syntax)
   vcl verify [--json]  Check canonical state against generated artifacts
@@ -549,7 +555,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$INSPECT_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -805,6 +811,8 @@ cmd_uninstall() {
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTING_DB_FILE" \
     "${ACCOUNTING_DB_FILE}-wal" \
@@ -958,7 +966,7 @@ print(
         {
             "schema": "capabilities/v1",
             "node_version": sys.argv[1],
-            "capabilities": ["telemetry/v1"],
+            "capabilities": ["telemetry/v1", "audit-health/v1", "user-traffic/v1", "inspect/v1"],
         },
         ensure_ascii=False,
         indent=2,
@@ -990,8 +998,36 @@ cmd_telemetry_snapshot_json() {
   python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE"
 }
 
+cmd_inspect() {
+  cli_require_json_flag inspect "$@"
+  [[ "${1:-}" == --json ]] || die "inspect requires --json."
+  local inspect_py="$INSPECT_PY" src=${BASH_SOURCE[0]-} root
+  if [[ ! -f "$inspect_py" && -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    inspect_py="${root}/lib/inspect_snapshot.py"
+  fi
+  [[ -f "$inspect_py" ]] || die "inspect helper is missing."
+  python3 -B "$inspect_py" "$STATE_DIR" "$CONFIG_FILE" "$BINARY_PATH" "$LIB_DIR" "$VINCULA_VERSION"
+}
+
 cmd_telemetry() {
   case "${1:-}" in
+    users)
+      shift
+      cli_require_json_flag "telemetry users" "$@"
+      [[ "${1:-}" == --json ]] || die "telemetry users requires --json."
+      local telemetry_py
+      telemetry_py=$(resolve_telemetry_py) || die "telemetry snapshot helper is missing."
+      python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE" --users
+      ;;
+    audit)
+      shift
+      cli_require_json_flag "telemetry audit" "$@"
+      [[ "${1:-}" == --json ]] || die "telemetry audit requires --json."
+      local telemetry_py
+      telemetry_py=$(resolve_telemetry_py) || die "telemetry snapshot helper is missing."
+      python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE" --audit
+      ;;
     snapshot)
       shift
       cli_require_json_flag "telemetry snapshot" "$@"
@@ -999,7 +1035,7 @@ cmd_telemetry() {
       cmd_telemetry_snapshot_json
       ;;
     *)
-      die "usage: vcl telemetry snapshot --json"
+      die "usage: vcl telemetry snapshot|audit|users --json"
       ;;
   esac
 }
@@ -3406,6 +3442,7 @@ cmd_upgrade_checkpoint() {
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -3544,6 +3581,7 @@ cmd_upgrade_rollback() {
       vincula-audit.py) path=$AUDIT_PY; mode=0644; owner=root; group=root ;;
       vincula-backup.py) path=$BACKUP_PY; mode=0644; owner=root; group=root ;;
       telemetry_snapshot.py) path=$TELEMETRY_PY; mode=0644; owner=root; group=root ;;
+      inspect_snapshot.py) path=$INSPECT_PY; mode=0644; owner=root; group=root ;;
       vincula-event.schema.json) path=$EVENT_SCHEMA_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.service) path=$ACCOUNTD_UNIT; mode=0644; owner=root; group=root ;;
       events.jsonl) path=$EVENTS_JSONL_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
@@ -3600,6 +3638,7 @@ cmd_upgrade_rollback() {
     vincula-audit.py \
     vincula-backup.py \
     telemetry_snapshot.py \
+    inspect_snapshot.py \
     vincula-event.schema.json \
     vincula-accountd.service \
     events.jsonl; do
@@ -3748,6 +3787,9 @@ main() {
           ;;
         telemetry)
           cmd_telemetry "$@"
+          ;;
+        inspect)
+          cmd_inspect "$@"
           ;;
         observer)
           [[ $# == 3 && "$1" == install-key && "$2" == --file ]] || die "usage: vcl observer install-key --file PUBLIC_KEY_FILE"

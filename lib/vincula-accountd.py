@@ -1979,11 +1979,16 @@ class AccountDaemon:
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
         self._reload_tag_map_if_changed()
+        # Liveness is independent from poll success; failed polls must not look like a dead collector.
+        meta_set(conn, "heartbeat_at", utc_now_iso())
+        conn.commit()
         success, new_known = self._collect(conn)
         if success:
             meta_set(conn, "last_success_at", utc_now_iso())
             # COMMIT collect first, then refresh cache. Never assign cache before COMMIT.
             commit_accounting(conn, new_known or {}, self._set_known_open)
+        else:
+            conn.rollback()
 
         if self._cycles == 1 or self._cycles % 720 == 0:
             rollup_daily_usage(conn)

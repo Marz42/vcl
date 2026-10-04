@@ -1,12 +1,14 @@
 # Specs index
 
-设计规格与路线图。**实现版本戳以代码为准**：当前开发候选 Controller/Node `0.5.1`，基于已合入本地main的0.5.0；0.5.1真实VPS验收/soak暂不执行，保持PENDING LIVE，不表示已发布。
+设计规格与路线图。**实现版本戳以代码为准**：当前开发候选 Controller/Node `0.5.2`，位于codex/0.5.1；真实VPS验收/soak保持PENDING LIVE、Human Gate保持PENDING HUMAN，本轮跳过等待，不表示已发布。
 
 | 文件 | 角色 |
 | --- | --- |
 | [`V0.4.5_Spec.md`](V0.4.5_Spec.md) | 0.4.5 稳定主线规格（Integration + Legacy seed） |
 | [`V0.5.0_Spec.md`](V0.5.0_Spec.md) | Observation Foundation 基线；原始验收结果见对应evidence |
-| [`V0.5.1_Spec.md`](V0.5.1_Spec.md) | **当前开发规格**：Monitor/Health、accountd/observer权限；本地交付与Live分开记录 |
+| [`V0.5.1_Spec.md`](V0.5.1_Spec.md) | Monitor/Health、accountd/observer权限基线；原证据保留 |
+| [`V0.5.2_Spec.md`](V0.5.2_Spec.md) | **当前候选规格**：14类Node/User Finding、Timeline、独立诊断与统计；正式合同/全量验证见M4，Human Gate / 实机待验收 |
+| [`V0.5.3_Spec.md`](V0.5.3_Spec.md) | Inspect/Drift/Verify进行中；M1 Node collector已实现并独立验证，Controller/Drift/增强Verify待实现；Human Gate / 实机延期 |
 | [`VCL_0.5-0.7_Master_SPEC.md`](VCL_0.5-0.7_Master_SPEC.md) | 0.5.x–0.7.x 总体规划（Observation → Declarative → Programmable） |
 | [`V0.4.4_ui_v2.md`](V0.4.4_ui_v2.md) | Local Audit UI v2 合同 |
 | [`vcl-spec-v0.4-v0.5-rev1.md`](vcl-spec-v0.4-v0.5-rev1.md) | 0.4→0.5 历史路线图与决策记录（D45–D58）；部分版本戳可能落后 |

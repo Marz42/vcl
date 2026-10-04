@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.1"
+VCL_FLEET_VERSION = "0.5.2"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -6306,7 +6306,26 @@ def fetch_node_telemetry(
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
         )
 
-    return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
+    result = tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
+    if result.get("state") == "OK" and "audit-health/v1" in (caps.get("capabilities") or []):
+        audit_module = _load_controller_sibling("vcl_observation_audit_health", "observation/audit_health.py")
+        try:
+            result["audit_health"] = audit_module.fetch(node, capabilities=caps,
+                instance_id=result["snapshot"]["instance_id"], ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["audit_health"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["audit_health"] = {"state": "ERROR"}
+    if result.get("state") == "OK" and "user-traffic/v1" in (caps.get("capabilities") or []):
+        user_module = _load_controller_sibling("vcl_observation_user_traffic", "observation/user_traffic.py")
+        try:
+            result["user_traffic"] = user_module.fetch(node, capabilities=caps,
+                instance_id=result["snapshot"]["instance_id"], ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["user_traffic"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["user_traffic"] = {"state": "ERROR"}
+    return result
 
 
 def load_monitor_module() -> Any:
@@ -6315,6 +6334,20 @@ def load_monitor_module() -> Any:
 
 def monitor_cached_health(name: Optional[str] = None) -> dict[str, Any]:
     return load_monitor_module().cached_health(_FLEET_HOST, name)
+
+
+def load_findings_module() -> Any:
+    return _load_controller_sibling("vcl_observation_findings", "observation/findings.py")
+
+
+def cached_findings(name: Optional[str] = None, *, state: Optional[str] = None, limit: int = 100) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_findings_module().cached(_FLEET_HOST, nodes, state=state, limit=limit)
+
+
+def cached_timeline(name: Optional[str] = None, *, limit: int = 100) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_findings_module().timeline(_FLEET_HOST, nodes, limit=limit, include_fleet=name is None)
 
 
 def fleet_utc_today() -> date:
@@ -7547,6 +7580,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="read monitoring cache only; no SSH")
     p_health.add_argument("name", nargs="?")
     _add_json_flag(p_health)
+    p_findings = sub.add_parser("findings", help="local observation findings; display never uses SSH")
+    p_findings.add_argument("name", nargs="?")
+    p_findings.add_argument("--refresh", action="store_true", help="explicitly analyze existing local caches; no SSH")
+    p_findings.add_argument("--state", choices=("ACTIVE", "RESOLVED"))
+    p_findings.add_argument("--limit", type=int, default=100)
+    _add_json_flag(p_findings)
+    p_timeline = sub.add_parser("timeline", help="read local finding, health, service and operation events; no SSH")
+    p_timeline.add_argument("name", nargs="?")
+    p_timeline.add_argument("--limit", type=int, default=100)
+    _add_json_flag(p_timeline)
 
     p_status = sub.add_parser(
         "status",
@@ -8245,6 +8288,29 @@ def main(argv: Optional[list[str]] = None) -> int:
             return load_monitor_module().run_cli(_FLEET_HOST, args)
         except (ValueError, OSError, sqlite3.Error) as exc:
             die(str(exc))
+    if command in ("findings", "timeline"):
+        if not 1 <= args.limit <= 1000:
+            die("limit must be 1..1000", 2)
+        refresh_state = None
+        if command == "findings" and args.refresh:
+            try:
+                nodes = load_monitor_module().active_nodes(_FLEET_HOST, args.name)
+                refresh_state = load_findings_module().refresh(_FLEET_HOST, nodes)
+            except (ValueError, OSError, sqlite3.Error):
+                die("FINDINGS_WRITE_FAILED: local findings cache could not be updated")
+        doc = cached_findings(args.name, state=args.state, limit=args.limit) if command == "findings" else cached_timeline(args.name, limit=args.limit)
+        if refresh_state is not None:
+            doc["observation_cache_state"] = refresh_state
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
+        else:
+            print(f"{doc['schema']}: cache={doc['cache_state']}")
+            for row in doc.get("findings", doc.get("events", [])):
+                name = (row.get("subject") or {}).get("name", "fleet")
+                if (row.get("subject") or {}).get("kind") == "user":
+                    name += "/" + row["subject"]["user_tag"]
+                print(f"{name}: {row.get('type', row.get('kind'))} {row.get('state', '')} {row.get('explanation', '')}")
+        return 2 if doc["cache_state"] in ("CACHE_CORRUPT", "PARTIAL") or refresh_state in ("CACHE_CORRUPT", "PARTIAL") else 0
     if command == "health":
         doc = monitor_cached_health(args.name)
         if args.as_json:

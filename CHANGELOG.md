@@ -2,6 +2,23 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.3 — in progress (2026-10-04, stamp remains 0.5.2, unreleased)
+
+- M1 实现有界只读 Node `vcl inspect --json` / inspect/v1：OS、资源、网络、service、listener/firewall 与受管脱敏指纹；未知/缺工具/权限/截断明确状态，受检 binary 不执行。
+- observer 固定命令、安装/升级/回滚/卸载清单和两端制品纳入 collector、合同与内部身份绑定 observe fetch。Controller cache/baseline/Drift/增强Verify尚待实现，不宣告完整版本完成。
+- [SPEC](docs/specs/V0.5.3_Spec.md) · [阶段验证](docs/evidence/0.5.3/SUMMARY.md)；Human Gate 与实机/soak 保留 PENDING。
+
+## 0.5.2 — local development candidate (2026-10-04, unreleased)
+
+- 在 `codex/0.5.1` 续开发 Findings / Audit / Anomalies / Timeline；Controller/Node stamp 0.5.2，最低Node仍0.3.1；typed upgrade支持0.3.1/0.3.2/0.5.0/0.5.1→0.5.2。
+- 新增本地 `findings.db`、稳定去重与 ACTIVE/RESOLVED；UNKNOWN 不误关告警。检测 audit stall、expired export gap、sync lag、disk/memory pressure 与 telemetry stale。
+- Monitor 自动接入并隔离 Findings 写入失败；CLI `findings` / `timeline` 和 UI 两页只读本地缓存，显式 `findings --refresh` 仅重分析本地数据。
+- 有界 retention/cap、截断标记、坏行隔离、稳定事件排序与脱敏白名单；Controller 包纳入新库。补生命周期、并发、事务失败和 cache-only 测试。
+- M2 增加 capability 协商的 `audit-health/v1` 只读 SQLite 诊断、独立 loop heartbeat、schema/corruption Finding、retention watermark 和 export progression；静止不误报，回退/回放不误关告警。缓存内部字段不扩展公共 monitor/v1；前台运行汇总使用新 monitor/v2。
+- M3 增加持久化 rolling median/MAD、网络速率异常、自动重启循环、SERVICE_RESTART Timeline，以及独立user-traffic/v1/三类用户异常；缺测/冷启动/复位明确 UNKNOWN，统计 spike 不训练自身；schema2事务迁移与用户容量覆盖标记。
+- M4 增加正式findings/v1、timeline/v1与14个fixture；八份公开schema随Controller ZIP锁定分发。修复独立ZIP provision模块依赖未打包installer的版本加载问题，扩展真实ZIP黑盒。
+- [当前验证](docs/evidence/0.5.2/M4.md) · [SPEC](docs/specs/V0.5.2_Spec.md)。Human Gate H05/H06/H07保持PENDING HUMAN，实机与soak保持PENDING LIVE；按用户指令跳过等待并记录。
+
 ## 0.5.1 — local development candidate (2026-09-27, unreleased)
 
 - 2026-09-28 续开发：隔离非法采集结果并正确退避；received_at 排除 probe 等待；拒绝乱序/重复 telemetry 改写速率基线；深层坏 JSON 隔离；latest 缓存随节点更替淘汰并标记截断。补锁/满盘事务及 DNS/TLS probe 失败回归，新增 Windows CI。见[续开发验证](docs/evidence/0.5.1/CONTINUATION.md)。

@@ -25,6 +25,11 @@ observer = load("observer_test", "lib/observer.py")
 
 class ObserverTests(unittest.TestCase):
     def test_only_exact_readonly_commands_are_accepted(self):
+        unit = (ROOT / "lib/vincula-observer@.service").read_text(encoding="utf-8")
+        families = next(line.partition("=")[2].split() for line in unit.splitlines() if line.startswith("RestrictAddressFamilies="))
+        self.assertIn("AF_NETLINK", families)
+        self.assertIn("CapabilityBoundingSet=CAP_DAC_READ_SEARCH\n", unit)
+        self.assertNotIn("CAP_NET_ADMIN", unit)
         for args in observer.ALLOWED:
             self.assertEqual(observer.parse_command("vcl " + " ".join(args)), list(args))
         for command in ("", "sh", "vcl link", "vcl user list --json", "vcl restart", "vcl telemetry snapshot --json; id",
@@ -91,10 +96,10 @@ class ObserverTests(unittest.TestCase):
 
     def test_upgrade_allowlist_includes_previous_minor_patch_only(self):
         upgrade = load("upgrade_minor_test", "lib/node_upgrade.py")
-        for source in ("0.3.1", "0.3.2", "0.5.0", "0.5.1"):
-            self.assertTrue(upgrade.is_upgrade_allowed(source, "0.5.1"))
-        for source in ("0.5.2", "0.6.0", "unknown", "0.4.0"):
-            self.assertFalse(upgrade.is_upgrade_allowed(source, "0.5.1"))
+        for source in ("0.3.1", "0.3.2", "0.5.0", "0.5.1", "0.5.2"):
+            self.assertTrue(upgrade.is_upgrade_allowed(source, "0.5.2"))
+        for source in ("0.5.3", "0.6.0", "unknown", "0.4.0"):
+            self.assertFalse(upgrade.is_upgrade_allowed(source, "0.5.2"))
 
 
 if __name__ == "__main__":

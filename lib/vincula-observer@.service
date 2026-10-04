@@ -1,5 +1,5 @@
 # Managed-By: vincula
-# Vincula-Version: 0.5.1
+# Vincula-Version: 0.5.2
 [Unit]
 Description=Vincula bounded read-only observation broker
 
@@ -24,7 +24,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Read-only ss/tc inventory uses Netlink; no network administration capability.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictSUIDSGID=true
 LockPersonality=true
 TasksMax=16

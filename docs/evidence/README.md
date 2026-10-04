@@ -4,6 +4,8 @@
 
 | 目录 | 说明 |
 | --- | --- |
+| [`0.5.3/`](0.5.3/SUMMARY.md) | Inspect/Drift/Verify开发中；M1 Node实现与独立验证，完整版本未完成，0.5.2结果不覆盖；当前阶段收尾见CLOSEOUT，手工项PENDING |
+| [`0.5.2/`](0.5.2/SUMMARY.md) | 当前0.5.2候选；M1～M3历史验证、M4全量收口与输入绑定；Human Gate / 实机延期记录 |
 | [`0.5.1/`](0.5.1/SUMMARY.md) | 0.5.1 本地开发交付；真实 VPS / 24h soak / 发布保留 PENDING |
 | [`0.5.0/`](0.5.0/SUMMARY.md) | Observation Foundation 已有离线/Live/soak记录；以原文适用候选和测量限制为准 |
 | [`0.4.5/`](0.4.5/SUMMARY.md) | Controller 0.4.5 / Node 0.3.2（含 LIVE） |

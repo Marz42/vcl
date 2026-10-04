@@ -56,7 +56,7 @@ class MonitorLock:
 
 class Monitor:
     def __init__(self, nodes, store, fetch, *, interval=30, timeout=5, concurrency=8,
-                 probe=None, clock=time.monotonic, wall_clock=time.time, rng=None):
+                 probe=None, on_record=None, clock=time.monotonic, wall_clock=time.time, rng=None):
         if not 1 <= len(nodes) <= 1024:
             raise ValueError("monitor requires 1..1024 enabled nodes")
         if not math.isfinite(interval) or not 1 <= interval <= 3600:
@@ -68,6 +68,7 @@ class Monitor:
         if len({n["node_id"] for n in nodes}) != len(nodes):
             raise ValueError("duplicate monitoring identity")
         self.nodes, self.store, self.fetch, self.probe = nodes, store, fetch, probe
+        self.on_record = on_record
         self.interval, self.timeout, self.concurrency = interval, timeout, concurrency
         self.clock, self.wall_clock, self.rng = clock, wall_clock, rng or random.Random()
         self.due = {node["node_id"]: clock() for node in nodes}
@@ -102,7 +103,7 @@ class Monitor:
 
     def run(self, *, once=False, stop=None, emit=None):
         stop = stop or threading.Event()
-        completed, write_errors, pending = set(), 0, {}
+        completed, write_errors, finding_errors, pending = set(), 0, 0, {}
         with MonitorLock(self.store.path.with_suffix(".lock")):
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.concurrency) as pool:
                 try:
@@ -129,6 +130,14 @@ class Monitor:
                             completed.add(node["node_id"])
                             try:
                                 record = self.store.record(node, result, received_at, probe)
+                                if self.on_record:
+                                    try:
+                                        self.on_record(node, record, received_at)
+                                    except (Exception, SystemExit):
+                                        # Findings persistence cannot discard valid telemetry or stop other nodes.
+                                        finding_errors += 1
+                                        if emit:
+                                            emit({"name": node["name"], "state": "FINDINGS_WRITE_FAILED"})
                                 if emit:
                                     emit({"name": node["name"], "state": record["overall"], "observation_state": record["observation_state"]})
                             except (sqlite3.Error, OSError, ValueError):
@@ -142,7 +151,7 @@ class Monitor:
                 finally:
                     for future in pending:
                         future.cancel()
-        return {"sampled_nodes": len(completed), "cache_write_errors": write_errors}
+        return {"sampled_nodes": len(completed), "cache_write_errors": write_errors, "finding_write_errors": finding_errors}
 
 
 def active_nodes(host, name=None):
@@ -179,11 +188,14 @@ def run_cli(host, args):
     def emit(event):
         if not args.as_json:
             print(f"{event['name']}: {event['state']}", flush=True)
+    findings_module = store_module.sibling("findings")
     monitor = Monitor(nodes, store, host.fetch_node_telemetry, interval=args.interval,
-                      timeout=args.timeout, concurrency=args.concurrency, probe=probe)
+                      timeout=args.timeout, concurrency=args.concurrency, probe=probe,
+                      on_record=lambda node, record, now: findings_module.record_observation(host, node, record, now))
     result = monitor.run(once=args.once, emit=emit)
     doc = store.read(nodes, time.time())
+    doc["schema"] = "monitor/v2"  # Foreground run counters extend v1; cache-only health remains v1.
     doc["run"] = result
     if args.as_json:
         sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
-    return 2 if result["cache_write_errors"] or any(n["observation_state"] in ("ERROR", "TIMEOUT", "AUTH_FAILED") for n in doc["nodes"]) else 0
+    return 2 if result["cache_write_errors"] or result["finding_write_errors"] or any(n["observation_state"] in ("ERROR", "TIMEOUT", "AUTH_FAILED") for n in doc["nodes"]) else 0
