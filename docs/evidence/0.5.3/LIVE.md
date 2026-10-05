@@ -1,10 +1,10 @@
 # 0.5.3 Live acceptance — PENDING LIVE
 
-日期2026-10-04。未执行真实VPS操作；按 [用户指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待。M1 Node Inspect fixture/WSL与制品证据见 [M1](M1_NODE.md)，不能替代本页现场记录。完整0.5.3的Controller/Drift/增强Verify仍待实现，现场候选未固定。
+日期2026-10-05。未执行真实VPS操作；按 [用户指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待。M1 Node Inspect fixture/WSL与制品证据见 [M1](M1_NODE.md)，不能替代本页现场记录。完整本地候选0.5.3已实现，离线证据和SHA见[RC](RC.md)；现场部署尚未执行。
 
 ## 固定现场输入（待执行者补齐）
 
-Node/Controller版本与SHA、源码commit与manifest、受管拓扑/节点数、OS/架构、observer路由、accountd运行身份、维护窗口、操作者、UTC起止时间均 **PENDING**。当前stamp0.5.2不表示完整0.5.3 RC。记录部署与恢复步骤后再执行，不能仅填最终截图。
+Node/Controller版本与SHA、源码commit与manifest、受管拓扑/节点数、OS/架构、observer路由、accountd运行身份、维护窗口、操作者、UTC起止时间均 **PENDING**。当前stamp0.5.3，版本、原始制品和固定源码输入见[RC](RC.md)，现场部署人员/拓扑/窗口仍待填。记录部署与恢复步骤后再执行，不能仅填最终截图。
 
 | 场景 / AC | 现场需要的原始证据 | 状态 |
 | --- | --- | --- |

@@ -4,7 +4,7 @@
 
 2026-10-04 实现 **0.5.2 Findings / Audit / Anomalies**，M1～M3离线验证通过，M4正式合同/版本/打包收口见[当前记录](evidence/0.5.2/M4.md)。**Human Gate H05/H06/H07 = PENDING HUMAN；实机与 soak = PENDING LIVE。**按[最新用户指令](plans/MANUAL_VALIDATION_DEFERRED.md)跳过等待并记录，正式验收状态保留。
 
-0.5.3继续开发中：Node Inspect 已实现，Controller缓存/Drift/增强Verify待实现；新代码独立验证见 [阶段记录](evidence/0.5.3/SUMMARY.md)，stamp仍0.5.2。
+0.5.3本地功能已完成：Node Inspect、Controller缓存/显式baseline/Drift与增强Verify；Node/Controller stamp0.5.3。完整离线验证见[RC记录](evidence/0.5.3/RC.md)，Human Gate/实机与24h soak仍PENDING。
 
 ## 按受众阅读
 

@@ -1,19 +1,19 @@
-# 0.5.3 Inspect / Drift / Verify — IN PROGRESS
+# 0.5.3 Inspect / Drift / Verify — 本地候选
 
-日期：2026-10-04；分支codex/0.5.1；当前Node/Controller stamp0.5.2。
+日期2026-10-05；分支codex/0.5.1；Node/Controller/payload stamp0.5.3，minimum Node0.3.1。
 
-**M1 Node Inspect 已实现，完整0.5.3仍在开发；M1 PASS OFFLINE / UNRELEASED / PENDING LIVE / PENDING HUMAN。**固定只读命令、公开 inspect/v1、16项脱敏指纹、权限/缺工具/预算边界与安装/回滚/制品清单已接入；内部 Controller observe fetch 核对当前身份且无 admin fallback。Windows完整Python 126项，117通过/9平台skip；Linux126/126 Python、1874/1874 Bash/Fleet、两端构建/lock和独立ZIP黑盒通过；全部绑定 [152个固定输入](SOURCE_INPUTS_M1.json)，结果与制品SHA见 [M1](M1_NODE.md)。
+**M1–M3 IMPLEMENTED / UNRELEASED / PENDING LIVE / PENDING HUMAN。**已完成Node只读Inspect、Controller低频采集与独立缓存、cache-only CLI/API/UI、显式基线SHA CAS与七类Drift Finding/Timeline、八项增强Verify及旧JSON兼容。当前完整离线验证、原始日志/制品SHA与固定输入见[RC](RC.md)。
 
-Controller缓存/inspect CLI/UI、显式baseline、Drift Finding/Timeline、增强Verify与其兼容回归仍 **UNIMPLEMENTED**，继续按 [SPEC](../../specs/V0.5.3_Spec.md)推进。Node M1不是完整0.5.3完成；0.5.2的114 Python / 1873 Bash与制品只证明其 [M4固定输入](../0.5.2/SOURCE_INPUTS_M4.json)，不能覆盖本阶段。
+[M2 Controller](M2_CONTROLLER.md)记录缓存/基线/Drift；[M3 Verify](M3_VERIFY.md)记录增强合同与边界。旧[M1](M1_NODE.md)、[当时CLOSEOUT](CLOSEOUT.md)及[SOURCE_INPUTS_M1](SOURCE_INPUTS_M1.json)保留为0.5.2 stamp的历史输入，不能替代当前RC。0.5.2 M4同样是历史快照。
 
-| 手工项 | 状态 / 本轮处理 |
+| 尚待完成的正式验收 | 状态 / 本轮处理 |
 | --- | --- |
-| AC-5.3-01 public/loopback listener与真实OS/主机核对 | PENDING LIVE；候选形成后固定版本/拓扑/测量窗口；本轮跳过等待 |
-| AC-5.3-03 真实managed file hash/mtime、restart count与代理前后对照 | PENDING LIVE；本轮仅可实施自动化fixture，现场另记 |
-| AC-5.3-04 人为listener、non-secret config/unit drift及恢复 | PENDING LIVE；明确可恢复维护步骤与原始证据后执行；本轮跳过 |
-| AC-5.3-05 全Observation链24h RC soak、实际accountd/observer权限 | PENDING LIVE；不复用1000次fake-SSH当24h结果；本轮跳过 |
-| H05签署 | PENDING HUMAN；[人工清单](../../plans/VCL_0.5-0.7_Human_Acceptance.md)；不代签 |
+| AC-5.3-01支持OS/IPv4/IPv6 listener与实际observer权限 | PENDING LIVE；离线fixture与WSL不替代真实主机 |
+| AC-5.3-03真实文件hash/mtime、restart count、实际客户端代理前后对照 | PENDING LIVE；本轮仅临时文件只读回归 |
+| AC-5.3-04人工listener/config/unit drift与恢复、Verify分项现场核对 | PENDING LIVE；保留可恢复维护步骤和原始证据要求 |
+| AC-5.3-05全Observation连续24h soak、实际accountd/observer权限 | PENDING LIVE；1000次fake-SSH不是24h现场证明 |
+| H05/H06/H07签署 | PENDING HUMAN；[人工清单](../../plans/VCL_0.5-0.7_Human_Acceptance.md)，未代签 |
+| 当前候选remote required CI | NOT RUN；定义已扩展Linux完整Python suite，待推送后的远端执行 |
+| 发布/生产apply/合并/tag | 未执行；本地候选与本地提交不等于正式发布 |
 
-依 [用户指令/延期记录](../../plans/MANUAL_VALIDATION_DEFERRED.md)继续实现与离线验证。2026-10-04用户要求当前阶段收尾并本地提交，见 [CLOSEOUT](CLOSEOUT.md)；未操作真实节点、push/merge/tag或发布。候选、测试、制品、Live和H05 evidence随着实际实施补齐，不预填PASS。
-
-具体待验收表：[LIVE](LIVE.md) · [SECURITY](SECURITY.md) · [SOAK](SOAK.md) · [H05](HUMAN_ACCEPTANCE.md)。这些页面均保留PENDING，不预填PASS。
+依[用户延期指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过人工等待，保留PENDING；最新用户要求继续完成0.5.3。具体记录：[LIVE](LIVE.md) · [SECURITY](SECURITY.md) · [SOAK](SOAK.md) · [H05](HUMAN_ACCEPTANCE.md)。

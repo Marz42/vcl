@@ -22,6 +22,7 @@
       <button type="button" class="tab" data-page="operations">Operations</button>
       <button type="button" class="tab" data-page="findings">Findings</button>
       <button type="button" class="tab" data-page="timeline">Timeline</button>
+      <button type="button" class="tab" data-page="inspect">Inspect</button>
     </nav>
     <div class="actions">
       <button type="button" id="btn-probe" class="btn" title="Live SSH probe (does not write last-status.json)">Probe</button>
@@ -197,6 +198,13 @@
           High-risk mutations remain CLI-only in the UI — use Recipes or Command Builder.
         </p>
         <div id="operations-table" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="page-inspect" class="page">
+      <div class="card">
+        <h2>Environment and drift</h2>
+        <p class="hint">Cached observations compared with an explicitly accepted local baseline. UNKNOWN means evidence is incomplete. Baseline acceptance does not complete live acceptance.</p>
+        <div id="inspect-table" class="table-wrap"></div>
       </div>
     </section>
     <section id="page-findings" class="page">

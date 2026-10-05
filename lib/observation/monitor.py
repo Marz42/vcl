@@ -56,7 +56,8 @@ class MonitorLock:
 
 class Monitor:
     def __init__(self, nodes, store, fetch, *, interval=30, timeout=5, concurrency=8,
-                 probe=None, on_record=None, clock=time.monotonic, wall_clock=time.time, rng=None):
+                 probe=None, on_record=None, inspection_store=None, inspect_interval=300,
+                 clock=time.monotonic, wall_clock=time.time, rng=None):
         if not 1 <= len(nodes) <= 1024:
             raise ValueError("monitor requires 1..1024 enabled nodes")
         if not math.isfinite(interval) or not 1 <= interval <= 3600:
@@ -69,6 +70,10 @@ class Monitor:
             raise ValueError("duplicate monitoring identity")
         self.nodes, self.store, self.fetch, self.probe = nodes, store, fetch, probe
         self.on_record = on_record
+        if not math.isfinite(inspect_interval) or not 60 <= inspect_interval <= 600:
+            raise ValueError("inspect interval must be 60..600 seconds")
+        self.inspection_store, self.inspect_interval = inspection_store, inspect_interval
+        self.inspect_due = {n["node_id"]: clock() for n in nodes}
         self.interval, self.timeout, self.concurrency = interval, timeout, concurrency
         self.clock, self.wall_clock, self.rng = clock, wall_clock, rng or random.Random()
         self.due = {node["node_id"]: clock() for node in nodes}
@@ -82,14 +87,22 @@ class Monitor:
 
     def collect(self, node):
         try:
-            result = self.fetch(node, timeout=self.timeout)
+            kwargs = {"timeout": self.timeout}
+            inspect_due = self.inspection_store is not None and self.inspect_due[node["node_id"]] <= self.clock()
+            if inspect_due:
+                kwargs["with_inspection"] = True
+                self.inspect_due[node["node_id"]] = self.clock() + self.inspect_interval
+            result = self.fetch(node, **kwargs)
+            inspection = result.pop("inspection", {"state": "ERROR"}) if inspect_due and isinstance(result, dict) else None
             # Validate before scheduling backoff or invoking the independent probe.
             result = store_module.clean_result(node, result)
         except subprocess.TimeoutExpired:
             result = {"state": "TIMEOUT"}
+            inspection = {"state": "TIMEOUT"} if self.inspection_store else None
         except (Exception, SystemExit):
             # Do not expose exceptions, argv, SSH stderr, or user credentials.
             result = {"state": "ERROR"}
+            inspection = {"state": "ERROR"} if self.inspection_store else None
         received_at = self.wall_clock()
         probe_result = None
         if self.probe and result.get("state") == "OK":
@@ -99,11 +112,11 @@ class Monitor:
                 probe_result = {"success": False, "reason": "TIMEOUT"}
             except (Exception, SystemExit):
                 probe_result = {"success": None, "reason": "INVALID_CONFIG"}
-        return result, probe_result, received_at
+        return result, probe_result, received_at, inspection
 
     def run(self, *, once=False, stop=None, emit=None):
         stop = stop or threading.Event()
-        completed, write_errors, finding_errors, pending = set(), 0, 0, {}
+        completed, write_errors, finding_errors, inspect_errors, pending = set(), 0, 0, 0, {}
         with MonitorLock(self.store.path.with_suffix(".lock")):
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.concurrency) as pool:
                 try:
@@ -125,11 +138,19 @@ class Monitor:
                         done, _ = concurrent.futures.wait(pending, timeout=.25, return_when=concurrent.futures.FIRST_COMPLETED)
                         for future in done:
                             node = pending.pop(future)
-                            result, probe, received_at = future.result()
+                            result, probe, received_at, inspection = future.result()
                             self.due[node["node_id"]] = self.clock() + self.delay(node["node_id"], result)
                             completed.add(node["node_id"])
                             try:
                                 record = self.store.record(node, result, received_at, probe)
+                                if self.inspection_store and inspection is not None:
+                                    try:
+                                        self.inspection_store.record(node, inspection, received_at, record.get("instance_id"))
+                                    except (sqlite3.Error, OSError, ValueError, TypeError):
+                                        record["_inspection_failed"] = True
+                                        inspect_errors += 1
+                                        if emit:
+                                            emit({"name": node["name"], "state": "INSPECTION_WRITE_FAILED"})
                                 if self.on_record:
                                     try:
                                         self.on_record(node, record, received_at)
@@ -151,7 +172,10 @@ class Monitor:
                 finally:
                     for future in pending:
                         future.cancel()
-        return {"sampled_nodes": len(completed), "cache_write_errors": write_errors, "finding_write_errors": finding_errors}
+        result = {"sampled_nodes": len(completed), "cache_write_errors": write_errors, "finding_write_errors": finding_errors}
+        if self.inspection_store:
+            result["inspection_write_errors"] = inspect_errors
+        return result
 
 
 def active_nodes(host, name=None):
@@ -189,13 +213,15 @@ def run_cli(host, args):
         if not args.as_json:
             print(f"{event['name']}: {event['state']}", flush=True)
     findings_module = store_module.sibling("findings")
+    inspection_module = store_module.sibling("inspection_cache")
     monitor = Monitor(nodes, store, host.fetch_node_telemetry, interval=args.interval,
                       timeout=args.timeout, concurrency=args.concurrency, probe=probe,
+                      inspection_store=inspection_module.Store(inspection_module.path(host)), inspect_interval=getattr(args, "inspect_interval", 300),
                       on_record=lambda node, record, now: findings_module.record_observation(host, node, record, now))
     result = monitor.run(once=args.once, emit=emit)
     doc = store.read(nodes, time.time())
-    doc["schema"] = "monitor/v2"  # Foreground run counters extend v1; cache-only health remains v1.
+    doc["schema"] = "monitor/v3"  # Cache-only health remains v1.
     doc["run"] = result
     if args.as_json:
         sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
-    return 2 if result["cache_write_errors"] or result["finding_write_errors"] or any(n["observation_state"] in ("ERROR", "TIMEOUT", "AUTH_FAILED") for n in doc["nodes"]) else 0
+    return 2 if result["cache_write_errors"] or result["finding_write_errors"] or result["inspection_write_errors"] or any(n["observation_state"] in ("ERROR", "TIMEOUT", "AUTH_FAILED") for n in doc["nodes"]) else 0

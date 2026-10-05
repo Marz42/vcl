@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads((ROOT / "schemas/monitor/v1.schema.json").read_text())
 SUPPORTED = {"$schema", "$id", "$defs", "$ref", "title", "description", "type", "additionalProperties", "required",
-             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "pattern", "format", "propertyNames", "if", "then", "allOf", "anyOf", "uniqueItems"}
+             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "pattern", "format", "propertyNames", "if", "then", "else", "allOf", "anyOf", "uniqueItems"}
 
 
 def validate(value, schema=SCHEMA):
@@ -38,7 +38,7 @@ def validate(value, schema=SCHEMA):
         try:
             validate(value, schema["if"])
         except AssertionError:
-            pass
+            validate(value, schema.get("else", {}))
         else:
             validate(value, schema.get("then", {}))
     if "$ref" in schema:

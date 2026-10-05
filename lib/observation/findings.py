@@ -40,10 +40,13 @@ TYPES = {
     "USER_CONNECTION_SPIKE": ("user", "WARNING", "Open user connections exceed the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."),
     "SUSTAINED_TRAFFIC_ANOMALY": ("user", "WARNING", "User traffic stayed above the rolling median/MAD threshold for at least 300 continuous seconds."),
 }
+DRIFT_TYPES = {"DRIFT_" + key.upper(): ("drift", "WARNING", "The observed " + key + " differs from the explicitly accepted local baseline.")
+               for key in ("listeners", "services", "versions", "config", "units", "runtime", "binary")}
+TYPES.update(DRIFT_TYPES)
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 ID_RE = re.compile(r"[0-9a-f]{64}")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-FINDING_CAP, EVENT_CAP, SUBJECT_CAP, USER_CAP = 32768, 10000, 1024, 4096
+FINDING_CAP, EVENT_CAP, SUBJECT_CAP, USER_CAP = 65536, 10000, 1024, 4096
 RETENTION = 90 * 86400
 EVIDENCE_KEYS = {"poll_age_seconds", "accountd_active", "remote_export_seq", "received_cursor",
                  "sync_age_seconds", "usage_ratio", "telemetry_age_seconds"}
@@ -51,6 +54,7 @@ EVIDENCE_KEYS |= {"db_schema", "heartbeat_age_seconds", "pruned_max_export_seq",
                   "last_event_age_seconds", "min_retained_export_seq", "diagnostic_age_seconds", "diagnostic_fresh"}
 EVIDENCE_KEYS |= {"value", "baseline_median", "baseline_mad", "threshold", "sample_count",
                   "baseline_span_seconds", "above_seconds", "restart_delta", "window_seconds"}
+EVIDENCE_KEYS |= {"changed_count"}
 DDL = """
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS findings(id TEXT PRIMARY KEY, at REAL NOT NULL, payload TEXT NOT NULL);
@@ -414,7 +418,7 @@ class Store:
                     conn.execute("DELETE FROM findings WHERE id=?", (fid,))
             except (ValueError, TypeError, KeyError):
                 conn.execute("DELETE FROM findings WHERE id=?", (fid,))
-        for table, cap in (("findings", FINDING_CAP), ("timeline", EVENT_CAP), ("evaluations", SUBJECT_CAP), ("user_evaluations", USER_CAP)):
+        for table, cap in (("timeline", EVENT_CAP), ("user_evaluations", USER_CAP)):
             # Finding payloads may be externally corrupted; never use JSON functions for cap pruning.
             excess = max(0, conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] - cap)
             if excess:
@@ -431,6 +435,8 @@ class Store:
             conn.execute("BEGIN IMMEDIATE")
             previous = {}
             row = conn.execute("SELECT payload FROM evaluations WHERE subject=?", (subject["key"],)).fetchone()
+            if row is None and conn.execute("SELECT count(*) FROM evaluations").fetchone()[0] >= SUBJECT_CAP:
+                raise ValueError("CAPACITY: findings Node admission refused")
             if row:
                 try:
                     previous = decode(row[0], "evaluation")
@@ -456,6 +462,11 @@ class Store:
             node_checks, detector_state, baselines, lifecycle = anomalies.evaluate(
                 record, previous.get("detector_state"), now, [typ for typ, item in existing.items() if item["state"] == "ACTIVE"])
             checks.update(node_checks)
+            for typ in DRIFT_TYPES:
+                item = (record.get("inspection") or {}).get("drift", {}).get("checks", {}).get(typ[6:].lower(), {})
+                state = item.get("state")
+                checks[typ] = (True if state == "DRIFT" else False if state == "MATCH" else None,
+                               {"changed_count": item.get("changed_count", 0)})
             for typ, (signal, evidence) in checks.items():
                 old = existing.get(typ)
                 if signal is None or (signal is False and (not old or old["state"] == "RESOLVED")):
@@ -467,6 +478,8 @@ class Store:
                 item = {"finding_id": fid, "type": typ, "category": category, "subject": subject,
                         "severity": severity, "state": state, "first_seen": first, "last_seen": now,
                         "evidence": clean_evidence(evidence), "explanation": explanation}
+                if not old and conn.execute("SELECT count(*) FROM findings").fetchone()[0] >= FINDING_CAP:
+                    raise ValueError("CAPACITY: findings admission refused")
                 conn.execute("INSERT OR REPLACE INTO findings VALUES(?,?,?)", (fid, now, encode(item)))
                 if not old or old["state"] != state:
                     self.event(conn, subject, now, "FINDING_OPEN" if signal else "FINDING_RESOLVED", {"type": typ})
@@ -540,6 +553,8 @@ class Store:
                 item = {"finding_id": fid, "type": typ, "category": category, "severity": severity, "subject": subject,
                         "state": state, "first_seen": previous_finding["first_seen"] if previous_finding else now,
                         "last_seen": now, "evidence": clean_evidence(evidence), "explanation": explanation}
+                if not previous_finding and conn.execute("SELECT count(*) FROM findings").fetchone()[0] >= FINDING_CAP:
+                    raise ValueError("CAPACITY: findings admission refused")
                 conn.execute("INSERT OR REPLACE INTO findings VALUES(?,?,?)", (fid, now, encode(item)))
                 if not previous_finding or previous_finding["state"] != state:
                     self.event(conn, subject, now, "FINDING_OPEN" if signal else "FINDING_RESOLVED", {"type": typ})
@@ -570,7 +585,7 @@ class Store:
         if state not in (None, "ACTIVE", "RESOLVED"):
             raise ValueError("state must be ACTIVE or RESOLVED")
         subjects = {target(node)["key"]: target(node) for node in nodes} if nodes is not None else None
-        out = {"schema": "findings/v1", "cache_state": "EMPTY", "findings": [], "evaluations": [], "events": [], "truncated": []}
+        out = {"schema": "findings/v2", "cache_state": "EMPTY", "findings": [], "evaluations": [], "events": [], "truncated": []}
         if not self.path.is_file():
             return out
         conn = None
@@ -649,6 +664,11 @@ def paths(host):
 
 
 def record_observation(host, node, record, now):
+    spec = importlib.util.spec_from_file_location("vcl_drift_cache", Path(__file__).with_name("inspection_cache.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    record = dict(record)
+    record["inspection"] = module.empty(node) if record.get("_inspection_failed") else module.cached(host, [node], now=now)["nodes"][0]
     store, _ = paths(host)
     Store(store).evaluate(node, record, cursor_snapshot(host.fleet_db_path(), node), now)
 
@@ -675,6 +695,13 @@ def timeline(host, nodes, *, limit=100, include_fleet=True):
     """Merge bounded local journal data without invoking its lock-file writer."""
     doc = cached(host, nodes, limit=limit)
     rows = list(doc["events"])
+    spec = importlib.util.spec_from_file_location("vcl_timeline_inspection", Path(__file__).with_name("inspection_cache.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    baseline_events, inspection_state = module.Store(module.path(host)).events(nodes, limit)
+    rows.extend(baseline_events)
+    if inspection_state in ("PARTIAL", "CACHE_CORRUPT"):
+        doc["cache_state"] = "PARTIAL"
     path = host.operation_journal_path(create=False)
     names = {node["name"] for node in nodes}
     try:
@@ -716,5 +743,5 @@ def timeline(host, nodes, *, limit=100, include_fleet=True):
         doc["cache_state"] = "PARTIAL"
     # Stable ordering even when observations/journal entries share the same timestamp.
     rows.sort(key=lambda item: (-item["at"], item["id"]))
-    return {"schema": "timeline/v1", "cache_state": doc["cache_state"],
+    return {"schema": "timeline/v2", "cache_state": doc["cache_state"],
             "events": rows[:max(1, min(int(limit), 1000))], "truncated": doc["truncated"]}

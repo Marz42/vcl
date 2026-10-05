@@ -1,5 +1,8 @@
 # VCL 0.5.x～0.7.x 大阶段人工验收
 
+
+**2026-10-05 更新：**0.5.3 Inspect/cache/显式baseline/七类Drift/八项Verify本地实现完成，Node/Controller/payload stamp0.5.3。固定输入、自动化和制品见[0.5.3 RC](../evidence/0.5.3/RC.md)。Human Gate H05/H06/H07仍PENDING HUMAN，实机/24h soak PENDING LIVE，remote required CI NOT RUN；按用户指令跳过人工等待，未代签或发布。
+
 2026-10-04 用户要求持续开发并跳过/记录所有手工验证；本轮开发等待依[延期记录](MANUAL_VALIDATION_DEFERRED.md)跳过。H05/H06/H07 仍为 PENDING HUMAN，原签署条件不变，不代签、不标通过。
 
 > 对应方案：[实施与验收方案](VCL_0.5-0.7_Implementation_Plan.md)。本文件是待执行清单与签署模板，不是已经通过的验收证据。

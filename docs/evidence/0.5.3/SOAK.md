@@ -1,6 +1,6 @@
 # 0.5.3 Observation RC soak — PENDING LIVE
 
-日期2026-10-04。**NOT RUN / PENDING LIVE / UNRELEASED**。完整0.5.3尚未形成RC；按 [用户延期指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过24h人工现场等待，继续实现。1000次fake-SSH是离线回归，不是24h soak。
+日期2026-10-05。**NOT RUN / PENDING LIVE / UNRELEASED**。本地0.5.3 RC见[RC](RC.md)，现场未启动；按 [用户延期指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过24h人工现场等待，继续实现。1000次fake-SSH是离线回归，不是24h soak。
 
 AC-5.3-05需固定Node/Controller版本、制品SHA、源码manifest、OS/架构、Node数量、实际proxy client路径、账户身份、monitor/probe/inspect间隔和UTC窗口。连续至少24h覆盖 monitor→health→finding→inspect→timeline；包含Drift/UNKNOWN/恢复和混合Node降级，并关联 [LIVE](LIVE.md) 的accountd/observer实际权限验证。
 

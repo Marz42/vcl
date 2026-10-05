@@ -10,28 +10,31 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Development candidate (0.5.2):** Controller and embedded Node payload are `0.5.2`
-(minimum Node remains `0.3.1`). Adds cache-only `findings` and `timeline`, Node/User
-anomalies, independent audit diagnostics and bounded user traffic samples.
-`monitor --json` uses `monitor/v2`; `health --json` and the read-only monitoring API
-retain `monitor/v1`. All public JSON schemas ship under `schemas/` and are covered
-by `controller.lock`. Older Nodes retain capability-based observation support;
-unavailable diagnostics show UNKNOWN. Typed upgrade supports Node
-0.3.1/0.3.2/0.5.0/0.5.1 → 0.5.2. Human Gate and real VPS/24h soak checks are
-pending and recorded as deferred; this candidate remains unreleased.
+**Development candidate (0.5.3):** Controller and embedded Node payload are `0.5.3`
+(minimum Node remains `0.3.1`). Includes read-only Inspect, machine-local inspection
+cache, explicit SHA-based baseline acceptance, seven Drift findings and baseline
+Timeline events. `inspect [NODE] --json` and `GET /api/inspect` read local caches.
+The UI displays observation, baseline and comparison summaries.
 
-**0.5.3 work in progress:** Node `inspect/v1` and the internal identity-bound
-observe fetch are included in this development tree and its packages. Controller
-inspect/cache/baseline/Drift and enhanced Verify remain unimplemented. Runtime
-stamps stay 0.5.2 until the full version is complete; 0.5.2 evidence does not
-validate these additions. See `docs/evidence/0.5.3/SUMMARY.md`.
+`monitor --json` uses `monitor/v3`; `health` and `GET /api/monitor` remain `monitor/v1`.
+`findings` and `timeline` use v2; frozen v1 schemas remain packaged.
+`verify --extended [--name NODE] --json` uses observe credentials and eight explicit
+checks. Data Plane stays UNKNOWN unless `--probe-profiles` explicitly runs a
+private dedicated proxy probe and the post-probe identity still matches.
+Legacy `verify --json` is unchanged for upgrade/restore consumers.
+
+Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2 → 0.5.3. Sixteen public schemas
+ship under `schemas/` with `controller.lock`. Real VPS and 24h soak remain PENDING
+LIVE, Human Gate remains PENDING HUMAN, and remote required CI is NOT RUN.
+The candidate is unreleased. See `docs/evidence/0.5.3/SUMMARY.md`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
 
 Full operator guide (repo): `docs/user-guide.md`. Architecture and contracts:
-`docs/technical-guide.md`. Spec: `docs/specs/V0.5.2_Spec.md`. Evidence:
-`docs/evidence/0.5.2/SUMMARY.md`. Findings: `docs/operations/findings-runbook.md`.
+`docs/technical-guide.md`. Spec: `docs/specs/V0.5.3_Spec.md`. Evidence:
+`docs/evidence/0.5.3/SUMMARY.md`. Findings: `docs/operations/findings-runbook.md`.
+Inspect / baseline / Drift / Verify: `docs/operations/inspect-runbook.md`.
 Monitoring and dedicated probe setup: `docs/operations/monitoring-runbook.md`.
 
 ## Windows 11

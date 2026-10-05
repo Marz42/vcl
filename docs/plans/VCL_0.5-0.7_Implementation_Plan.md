@@ -1,5 +1,8 @@
 # VCL 0.5.x～0.7.x 实施与验收方案
 
+
+**2026-10-05 更新：**0.5.3 Inspect/cache/显式baseline/七类Drift/八项Verify本地实现完成，Node/Controller/payload stamp0.5.3。固定输入、自动化和制品见[0.5.3 RC](../evidence/0.5.3/RC.md)。Human Gate H05/H06/H07仍PENDING HUMAN，实机/24h soak PENDING LIVE，remote required CI NOT RUN；按用户指令跳过人工等待，未代签或发布。
+
 > 编制日期：2026-09-26。状态：实施计划；不代表功能已经实现、现场已验收或版本已发布。
 >
 > 规划依据：[Master SPEC](../specs/VCL_0.5-0.7_Master_SPEC.md)；0.5.0 细则以 [V0.5.0 SPEC](../specs/V0.5.0_Spec.md) 为准。

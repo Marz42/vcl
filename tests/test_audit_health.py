@@ -271,7 +271,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_monitor_run_json_obeys_new_schema_and_cache_stays_v1(self):
         schema_test = load("audit_monitor_schema", "tests/test_monitor_schema.py")
-        schema_test.SCHEMA = json.loads((ROOT / "schemas/monitor/v2.schema.json").read_text())
+        schema_test.SCHEMA = json.loads((ROOT / "schemas/monitor/v3.schema.json").read_text())
         fleet = load("audit_monitor_fleet", "lib/vincula-fleet.py")
         with tempfile.TemporaryDirectory() as tmp:
             fleet.fleet_db_path = lambda: Path(tmp) / "fleet.db"
@@ -284,7 +284,7 @@ class PipelineTests(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(fleet.load_monitor_module().run_cli(fleet._FLEET_HOST, args), 0)
             doc = json.loads(output.getvalue())
-            self.assertEqual(doc["schema"], "monitor/v2")
+            self.assertEqual(doc["schema"], "monitor/v3")
             schema_test.validate(doc, schema_test.SCHEMA)
             self.assertEqual(fleet.monitor_cached_health()["schema"], "monitor/v1")
 

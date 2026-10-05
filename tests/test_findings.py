@@ -203,16 +203,22 @@ class StoreTests(unittest.TestCase):
             conn.commit()
         self.evaluate(NOW + findings.RETENTION + 2)
         self.assertEqual(self.store.read()["findings"], [])
-        with mock.patch.object(findings, "FINDING_CAP", 2), mock.patch.object(findings, "EVENT_CAP", 3), mock.patch.object(findings, "SUBJECT_CAP", 2):
+        with mock.patch.object(findings, "FINDING_CAP", 2), mock.patch.object(findings, "EVENT_CAP", 1), mock.patch.object(findings, "SUBJECT_CAP", 2):
+            admitted = 0
             for n in range(4):
                 node = {**NODE, "name": "n" + str(n), "node_id": f"{n+4:08d}-3333-4333-8333-333333333333"}
-                self.store.evaluate(node, record(NOW + n, last_poll_age_seconds=100), cursor(), NOW + n)
+                if admitted == 1:
+                    with self.assertRaisesRegex(ValueError, "CAPACITY"):
+                        self.store.evaluate(node, record(NOW + n, last_poll_age_seconds=100), cursor(), NOW + n)
+                else:
+                    self.store.evaluate(node, record(NOW + n, last_poll_age_seconds=100), cursor(), NOW + n)
+                    admitted += 1
             with closing(self.store.writer()) as conn:
                 self.assertLessEqual(conn.execute("SELECT count(*) FROM timeline").fetchone()[0], 3)
                 self.assertLessEqual(conn.execute("SELECT count(*) FROM evaluations").fetchone()[0], 2)
                 self.assertLessEqual(conn.execute("SELECT count(*) FROM findings").fetchone()[0], 2)
             self.assertIn("timeline", self.store.read()["truncated"])
-            self.assertIn("findings", self.store.read()["truncated"])
+            self.assertTrue(any(r["state"] == "ACTIVE" for r in self.store.read()["findings"]))
 
     def test_service_and_probe_changes_only_emit_transitions(self):
         doc = record()

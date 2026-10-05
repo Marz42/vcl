@@ -545,8 +545,8 @@ def firewall(reader):
 
 def build_snapshot(*, state_dir=Path("/etc/vincula"), config_path=Path("/etc/sing-box/config.json"),
                    binary_path=Path("/usr/local/bin/sing-box"), lib_dir=Path("/usr/local/lib/vincula"),
-                   root=Path("/"), version="0.5.2", seconds=6, runner=None):
-    reader = Reader(seconds, runner)
+                   root=Path("/"), version="0.5.3", seconds=6, runner=None, reader=None):
+    reader = reader or Reader(seconds, runner)
     schema = contract()
     def empty(rule):
         if rule.get("type") == "array":
@@ -564,14 +564,15 @@ def build_snapshot(*, state_dir=Path("/etc/vincula"), config_path=Path("/etc/sin
         if "truncated" in doc[key]:
             doc[key]["truncated"] = False
     doc["versions"]["sing_box_source"] = "UNKNOWN"
-    state, reason, settings = reader.read(state_dir / "config.toml")
+    state, reason, settings = reader.read(state_dir / "config.toml", no_symlink=True)
     if settings:
         match = re.search(r'^node_id\s*=\s*"(' + UUID + r')"\s*$', settings, re.M)
         doc["node_id"] = match[1] if match else None
-    state, reason, text = reader.read(state_dir / "state.json")
+    state, reason, text = reader.read(state_dir / "state.json", no_symlink=True)
     try:
-        doc["instance_id"] = safe_text(json.loads(text)["instance_id"], UUID) if text else None
-    except (ValueError, TypeError, KeyError, RecursionError):
+        state_doc = json.loads(text) if text else {}
+        doc["instance_id"] = safe_text(state_doc.get("node", state_doc)["instance_id"], UUID) if text else None
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
         pass
     def read_field(path, pattern=None, maximum=2**63 - 1):
         state, reason, value = reader.read(path, 65536)

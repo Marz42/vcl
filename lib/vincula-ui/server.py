@@ -2463,6 +2463,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             if path == "/api/monitor":
                 self._send_json(200, fleet().monitor_cached_health())
                 return
+            if path == "/api/inspect":
+                self._send_json(200, fleet().cached_inspection(one("node") or None))
+                return
             if path in ("/api/findings", "/api/timeline"):
                 try:
                     limit = int(one("limit") or "100")
@@ -2557,6 +2560,7 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                             "operations",
                             "findings",
                             "timeline",
+                            "inspect",
                         ],
                         "identity_mutations": False,
                         "cache_writes": ["refresh", "sync_full"],

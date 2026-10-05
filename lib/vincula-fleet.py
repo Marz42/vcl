@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.2"
+VCL_FLEET_VERSION = "0.5.3"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -6280,6 +6280,7 @@ def fetch_node_telemetry(
     capabilities: Optional[dict[str, Any]] = None,
     credential_class: str = "observe",
     timeout: float = SSH_TIMEOUT_SECONDS,
+    with_inspection: bool = False,
 ) -> dict[str, Any]:
     import time
     deadline = time.monotonic() + timeout
@@ -6325,7 +6326,24 @@ def fetch_node_telemetry(
             result["user_traffic"] = {"state": "TIMEOUT"}
         except (Exception, SystemExit):
             result["user_traffic"] = {"state": "ERROR"}
+    if with_inspection:
+        inspect_module = _load_controller_sibling("vcl_observation_inspection", "observation/inspection.py")
+        try:
+            result["inspection"] = inspect_module.fetch(node, capabilities=caps, ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["inspection"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["inspection"] = {"state": "ERROR"}
     return result
+
+
+def load_inspection_module() -> Any:
+    return _load_controller_sibling("vcl_inspection_cache", "observation/inspection_cache.py")
+
+
+def cached_inspection(name: Optional[str] = None) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_inspection_module().cached(_FLEET_HOST, nodes, detail=name is not None)
 
 
 def load_monitor_module() -> Any:
@@ -7572,7 +7590,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_monitor.add_argument("name", nargs="?", help="one enabled node; default all enabled nodes")
     p_monitor.add_argument("--once", action="store_true", help="collect one bounded round and exit")
     p_monitor.add_argument("--interval", type=float, default=30)
-    p_monitor.add_argument("--timeout", type=float, default=5)
+    p_monitor.add_argument("--inspect-interval", type=float, default=300, help="inspect cadence 60..600 seconds within the same Node deadline")
+    p_monitor.add_argument("--timeout", type=float, default=15)
     p_monitor.add_argument("--concurrency", type=int, default=8)
     p_monitor.add_argument("--probe-profiles", help="private workstation-local dedicated proxy probe profiles")
     p_monitor.add_argument("--probe-sing-box", default="sing-box", help="pinned local sing-box executable for probes")
@@ -7580,6 +7599,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="read monitoring cache only; no SSH")
     p_health.add_argument("name", nargs="?")
     _add_json_flag(p_health)
+    p_inspect = sub.add_parser("inspect", help="read local inspection and drift cache; no SSH")
+    p_inspect.add_argument("name", nargs="?")
+    _add_json_flag(p_inspect)
+    p_baseline = sub.add_parser("baseline", help="explicit workstation-local comparison baseline; no SSH")
+    p_baseline.add_argument("action", choices=("accept", "clear"))
+    p_baseline.add_argument("name")
+    p_baseline.add_argument("--sha256", required=True, help="snapshot SHA for accept; current baseline SHA for clear")
+    _add_json_flag(p_baseline)
     p_findings = sub.add_parser("findings", help="local observation findings; display never uses SSH")
     p_findings.add_argument("name", nargs="?")
     p_findings.add_argument("--refresh", action="store_true", help="explicitly analyze existing local caches; no SSH")
@@ -7664,6 +7691,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include disabled and retired nodes (retired SSH=-; no SSH)",
     )
+    p_verify.add_argument("--extended", action="store_true", help="explicit verify/v2 via observe; optional dedicated data-plane probe")
+    p_verify.add_argument("--name", help="one enabled node for extended Verify")
+    p_verify.add_argument("--timeout", type=float, default=15, help="extended Verify shared Node deadline, 1..300 seconds")
+    p_verify.add_argument("--probe-profiles", help="explicit private dedicated proxy profiles for extended Verify")
+    p_verify.add_argument("--probe-sing-box", default="sing-box")
     user = sub.add_parser(
         "user",
         help="provision and inspect users across fleet nodes",
@@ -8158,6 +8190,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
         )
     if command == "verify":
+        if args.extended:
+            if args.all or not 1 <= args.timeout <= 300:
+                die("extended verify requires enabled nodes and timeout 1..300", 2)
+            module = _load_controller_sibling("vcl_verification", "observation/verification.py")
+            return run_journaled("verify", lambda: module.run_cli(_FLEET_HOST, args))
+        if args.name or args.probe_profiles:
+            die("--name/--probe-profiles require --extended", 2)
         return run_journaled(
             "verify",
             lambda: cmd_verify(
@@ -8288,6 +8327,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             return load_monitor_module().run_cli(_FLEET_HOST, args)
         except (ValueError, OSError, sqlite3.Error) as exc:
             die(str(exc))
+    if command == "inspect":
+        doc = cached_inspection(args.name)
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
+        else:
+            print(f"Inspection cache: {doc['cache_state']}")
+            for n in doc["nodes"]:
+                print(f"{n['name']}: {n['state']} {n['reason']} drift={n['drift']['state']} snapshot={n['snapshot_sha256'] or '-'}")
+        return 2 if doc["cache_state"] in ("PARTIAL", "CACHE_CORRUPT") else 0
+    if command == "baseline":
+        node = require_node(load_registry(), args.name)
+        try:
+            event = load_inspection_module().baseline(_FLEET_HOST, node, args.sha256, clear=args.action == "clear")
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            die(f"Local baseline refused: {exc}")
+        if args.as_json:
+            print(json.dumps(event, allow_nan=False))
+        else:
+            print(f"{node['name']}: {event['kind']}; LOCAL_ACCEPTED does not sign Human Gate or live acceptance")
+        return 0
     if command in ("findings", "timeline"):
         if not 1 <= args.limit <= 1000:
             die("limit must be 1..1000", 2)

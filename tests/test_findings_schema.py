@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 findings = support.findings
 
 
-def validate(doc, kind):
-    schema = json.loads((ROOT / "schemas" / kind / "v1.schema.json").read_text())
+def validate(doc, kind, version=None):
+    schema = json.loads((ROOT / "schemas" / kind / ((version or doc.get("schema", kind + "/v1").split("/")[-1]) + ".schema.json")).read_text(encoding="utf-8"))
     previous = evaluator.SCHEMA
     try:
         evaluator.SCHEMA = schema
@@ -53,9 +53,9 @@ class FindingsSchemaTests(unittest.TestCase):
                     doc = json.loads(fixture.read_text())
                     if "invalid" in fixture.name:
                         with self.assertRaises(AssertionError):
-                            validate(doc, kind)
+                            validate(doc, kind, fixture.name.split("-")[0])
                     else:
-                        validate(doc, kind)
+                        validate(doc, kind, fixture.name.split("-")[0])
 
     def test_real_node_user_lifecycle_and_timeline_are_cache_only(self):
         with tempfile.TemporaryDirectory() as tmp:

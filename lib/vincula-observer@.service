@@ -1,5 +1,5 @@
 # Managed-By: vincula
-# Vincula-Version: 0.5.2
+# Vincula-Version: 0.5.3
 [Unit]
 Description=Vincula bounded read-only observation broker
 

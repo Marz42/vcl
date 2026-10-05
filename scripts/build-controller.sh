@@ -28,6 +28,7 @@ FILES=(
   lib/vincula-audit-archive.py
   lib/provision.py
   lib/inspect_snapshot.py
+  lib/verify_snapshot.py
   lib/legacy_seed.py
   lib/sing_box_release.py
   lib/workspace.py
@@ -48,6 +49,8 @@ FILES=(
   lib/observation/anomalies.py
   lib/observation/user_traffic.py
   lib/observation/inspection.py
+  lib/observation/inspection_cache.py
+  lib/observation/verification.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
@@ -61,6 +64,13 @@ FILES=(
   schemas/findings/v1.schema.json
   schemas/timeline/v1.schema.json
   schemas/inspect/v1.schema.json
+  schemas/inspect-cache/v1.schema.json
+  schemas/baseline/v1.schema.json
+  schemas/findings/v2.schema.json
+  schemas/timeline/v2.schema.json
+  schemas/monitor/v3.schema.json
+  schemas/verify/v2.schema.json
+  schemas/fleet-verify/v2.schema.json
 )
 
 command -v python3 >/dev/null 2>&1 || {

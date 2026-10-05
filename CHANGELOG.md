@@ -2,11 +2,14 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
-## 0.5.3 — in progress (2026-10-04, stamp remains 0.5.2, unreleased)
+## 0.5.3 — local development candidate (2026-10-05, unreleased)
 
-- M1 实现有界只读 Node `vcl inspect --json` / inspect/v1：OS、资源、网络、service、listener/firewall 与受管脱敏指纹；未知/缺工具/权限/截断明确状态，受检 binary 不执行。
-- observer 固定命令、安装/升级/回滚/卸载清单和两端制品纳入 collector、合同与内部身份绑定 observe fetch。Controller cache/baseline/Drift/增强Verify尚待实现，不宣告完整版本完成。
-- [SPEC](docs/specs/V0.5.3_Spec.md) · [阶段验证](docs/evidence/0.5.3/SUMMARY.md)；Human Gate 与实机/soak 保留 PENDING。
+- 完成有界只读 Node Inspect / inspect/v1、安装/升级/回滚/卸载与 observer 固定 argv；修复真实安装态嵌套 `state.node.instance_id` 的读取。
+- Controller 前台 monitor 低频采集 Inspect，共享每 Node deadline；独立 inspection.db、只读 inspect CLI/API/UI、显式 snapshot SHA CAS 接受/清除基线，baseline 事件与写入同事务。
+- 七类 listeners/services/versions/config/units/runtime/binary Drift 与稳定 Finding 生命周期；陈旧/重放/换机/缺权限为 UNKNOWN，保留 ACTIVE。Findings 容量拒绝新目标，避免驱逐既有 ACTIVE。
+- 八项 verify/v2，通过 `vcl verify --extended --json` 和 Controller `verify --extended` 使用；旧 verify JSON 保持兼容。无显式代理探测的 Data Plane 为 UNKNOWN；probe 后重新核对 instance。
+- Node/Controller/payload pin 更新0.5.3，typed upgrade 加入0.5.2→0.5.3；新增版本化合同与正反 fixture，16份 schema 纳入 Controller ZIP。
+- [SPEC](docs/specs/V0.5.3_Spec.md) · [完整离线验证](docs/evidence/0.5.3/RC.md)。Human Gate 为 PENDING HUMAN，实机与24h soak 为 PENDING LIVE，远端 required CI 未执行。
 
 ## 0.5.2 — local development candidate (2026-10-04, unreleased)
 

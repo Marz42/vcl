@@ -14,3 +14,5 @@
 | 人工批准执行高风险生产策略/路径/升级/发布 | PENDING HUMAN；本轮不执行 | 仅实现可审查的本地 contract/plan/guard；实际执行另有授权与运行环境 |
 
 新增手工项必须补到对应版本的证据矩阵；完成自动化仅可标 PASS OFFLINE。目标仍是继续整个授权开发范围，不将未实现功能记作“手工项已跳过”。
+
+2026-10-05：0.5.3本地功能与离线RC收口见[RC](../evidence/0.5.3/RC.md)。支持OS/observer/accountd现场、listener/config/unit drift恢复与真实代理前后、AC-5.3-05连续24h soak均PENDING LIVE；H05/H06/H07 PENDING HUMAN，remote required CI NOT RUN。

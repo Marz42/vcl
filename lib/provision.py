@@ -52,7 +52,7 @@ PrivilegeMode = Literal["root", "sudo"]
 # D51: pin the carried Node payload independently of its mutable manifest.
 # The standalone Controller has no vincula.sh; build-controller verifies this
 # locked source constant against the canonical Node version before packaging.
-NODE_PAYLOAD_VERSION = "0.5.2"
+NODE_PAYLOAD_VERSION = "0.5.3"
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
