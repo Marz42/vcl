@@ -1,6 +1,6 @@
 # Vincula 文档导航
 
-主线 `main`：**Controller/Node 0.5.0**；当前开发分支 `codex/0.5.1`：**Controller/Node 0.5.2 候选**；最低兼容 Node **0.3.1**。真实 VPS / soak / 发布门禁尚未完成，见 [`0.5.2 evidence`](evidence/0.5.2/SUMMARY.md)。旧分支已按[分支清理记录](plans/BRANCH_CLEANUP_2026-09-28.md)处理。
+主线 `main`：**Controller/Node 0.5.0**；当前开发分支 `codex/0.5.1`：**Controller/Node 0.5.3 候选**；最低兼容 Node **0.3.1**。0.5.x 的本地收口、当前修复与远端 CI 适用范围见[阶段记录](evidence/0.5.3/PHASE_05_CLOSEOUT.md)。实机 / soak / H05 仍待验收；按 2026-10-07 用户指令停在 0.6.x 之前。旧分支见[清理记录](plans/BRANCH_CLEANUP_2026-09-28.md)。
 
 2026-10-04 实现 **0.5.2 Findings / Audit / Anomalies**，M1～M3离线验证通过，M4正式合同/版本/打包收口见[当前记录](evidence/0.5.2/M4.md)。**Human Gate H05/H06/H07 = PENDING HUMAN；实机与 soak = PENDING LIVE。**按[最新用户指令](plans/MANUAL_VALIDATION_DEFERRED.md)跳过等待并记录，正式验收状态保留。
 
@@ -16,6 +16,7 @@
 | 做换机等高风险操作 | [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md) |
 | 使用 0.5.1 监控、专用 probe 与 observer | [`operations/monitoring-runbook.md`](operations/monitoring-runbook.md) |
 | 使用首批 Findings 与本地时间轴 | [`operations/findings-runbook.md`](operations/findings-runbook.md) |
+| 使用 Inspect、显式基线、Drift 与增强 Verify | [`operations/inspect-runbook.md`](operations/inspect-runbook.md) |
 | 核对规格或验收 | [`specs/`](specs/README.md) · [`evidence/`](evidence/README.md) |
 | 推进 0.5.x～0.7.x 开发与阶段验收 | [`实施方案`](plans/VCL_0.5-0.7_Implementation_Plan.md) · [`人工验收清单`](plans/VCL_0.5-0.7_Human_Acceptance.md) |
 | 查历史冻结 / 旧 known-issues | [`legacy/`](legacy/README.md)（只读，非当前操作依据） |

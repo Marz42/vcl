@@ -1,5 +1,6 @@
 # 0.5.3 完整本地 RC — PASS OFFLINE
 
+**后续证据（2026-10-07）：**本页冻结2026-10-05本地输入和制品，不改写原始结果。该提交`a9655e2`已由[CI #86](https://github.com/Marz42/vcl/actions/runs/37327307690)七项通过；新的Verify修复、可复现制品门禁与最新候选另见[阶段收口](PHASE_05_CLOSEOUT.md)。旧SHA/测试数量不能绑定新的源码。
 日期2026-10-05，分支codex/0.5.1；开发起点`dc7f0b24c3953f376c34abbf6907d410f7f94de4`。Node/Controller/payload stamp0.5.3，minimum Node0.3.1，sing-box1.13.18。M1–M3功能实现已收口；当前本地候选 **UNRELEASED / PENDING LIVE / PENDING HUMAN**，远端required CI NOT RUN。
 
 ## 自动化与固定输入

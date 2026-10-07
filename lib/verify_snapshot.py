@@ -147,10 +147,16 @@ def accounting(reader, path, instance_id, node_id):
         if conn.execute("PRAGMA quick_check(1)").fetchone() != ("ok",):
             return check("FAIL", "INVALID", 1)
         for key in ("heartbeat_at", "last_success_at"):
-            dt = datetime.fromisoformat(meta[key].replace("Z", "+00:00"))
-            if not dt.tzinfo:
+            try:
+                value = meta.get(key)
+                if not isinstance(value, str):
+                    raise ValueError
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if not dt.tzinfo:
+                    raise ValueError
+                age = time.time() - dt.timestamp()
+            except (OSError, ValueError, TypeError, OverflowError):
                 return check("UNKNOWN", "INVALID", 1)
-            age = time.time() - dt.timestamp()
             if age < -30:
                 return check("UNKNOWN", "INVALID", 1)
             if age > 90:
@@ -232,12 +238,14 @@ def build_snapshot(*, state_dir=Path("/etc/vincula"), config_path=Path("/etc/sin
         try:
             bind = actual["experimental"]["clash_api"]["external_controller"]
             address, port = bind.rsplit(":", 1)
-            loopback = ipaddress.ip_address(address.strip("[]")).is_loopback
+            api_address = ipaddress.ip_address(address.strip("[]"))
+            loopback = api_address.is_loopback
             api_port = int(port)
             exposed = not loopback or any(r["protocol"] == "TCP" and r["port"] == api_port and r["scope"] != "LOOPBACK" for r in listeners["items"])
             wanted = actual["inbounds"][0]
-            listening = any(r["protocol"] == "TCP" and r["port"] == wanted["listen_port"] and r["address"] == wanted["listen"] for r in listeners["items"])
-            api_listening = any(r["protocol"] == "TCP" and r["port"] == api_port and r["scope"] == "LOOPBACK" for r in listeners["items"])
+            wanted_address = ipaddress.ip_address(wanted["listen"])
+            listening = any(r["protocol"] == "TCP" and r["port"] == wanted["listen_port"] and r["address"] is not None and ipaddress.ip_address(r["address"]) == wanted_address for r in listeners["items"])
+            api_listening = any(r["protocol"] == "TCP" and r["port"] == api_port and r["address"] is not None and ipaddress.ip_address(r["address"]) == api_address for r in listeners["items"])
             passed = not exposed and listening and api_listening
             checks["listeners"] = check("PASS" if passed else "FAIL", "OK" if passed else "EXPOSED" if exposed else "MISSING", 2)
         except (ValueError, KeyError, TypeError, IndexError):

@@ -16,3 +16,5 @@
 新增手工项必须补到对应版本的证据矩阵；完成自动化仅可标 PASS OFFLINE。目标仍是继续整个授权开发范围，不将未实现功能记作“手工项已跳过”。
 
 2026-10-05：0.5.3本地功能与离线RC收口见[RC](../evidence/0.5.3/RC.md)。支持OS/observer/accountd现场、listener/config/unit drift恢复与真实代理前后、AC-5.3-05连续24h soak均PENDING LIVE；H05/H06/H07 PENDING HUMAN，remote required CI NOT RUN。
+
+2026-10-07：用户限定“继续完成0.5.x的目前开发。停在0.6.x之前”。本轮收口到0.5.3；H05、全部现有实机与持续soak项继续保留PENDING。`a9655e2`的远端CI #86已七项PASS，后续本地修复须另跑CI，见[最新交付](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。不按此前持续开发目标进入0.6.x，也不将延期记录视为发布、主线合并或现场操作授权。

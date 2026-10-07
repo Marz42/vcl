@@ -4,8 +4,8 @@
 
 | 目录 | 说明 |
 | --- | --- |
-| [`0.5.3/`](0.5.3/SUMMARY.md) | Inspect/cache/显式baseline/Drift/Verify本地候选0.5.3；完整离线RC，历史M1/CLOSEOUT保留；Human/实机/soak仍PENDING |
-| [`0.5.2/`](0.5.2/SUMMARY.md) | 当前0.5.2候选；M1～M3历史验证、M4全量收口与输入绑定；Human Gate / 实机延期记录 |
+| [`0.5.3/`](0.5.3/SUMMARY.md) | 当前0.5.x候选；[2026-10-07收口](0.5.3/PHASE_05_CLOSEOUT.md)、Verify修复与CI绑定；历史RC/M1/CLOSEOUT保留；Human/实机/soak仍PENDING |
+| [`0.5.2/`](0.5.2/SUMMARY.md) | 0.5.2历史候选；M1～M3历史验证、M4全量收口与输入绑定；Human Gate / 实机延期记录 |
 | [`0.5.1/`](0.5.1/SUMMARY.md) | 0.5.1 本地开发交付；真实 VPS / 24h soak / 发布保留 PENDING |
 | [`0.5.0/`](0.5.0/SUMMARY.md) | Observation Foundation 已有离线/Live/soak记录；以原文适用候选和测量限制为准 |
 | [`0.4.5/`](0.4.5/SUMMARY.md) | Controller 0.4.5 / Node 0.3.2（含 LIVE） |

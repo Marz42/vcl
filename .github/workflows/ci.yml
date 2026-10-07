@@ -166,6 +166,11 @@ jobs:
             python3 -s -c "import importlib.util,sys; p=sys.argv[1]; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.load_provision_module()" \
             "${UNPACK}/lib/vincula-fleet.py" 2>&1) || true
           [[ "$provision_err" != *"provision.py not found"* ]]
+      - name: Complete 0.5.x distributed contracts and cache-only surfaces
+        run: |
+          set -euo pipefail
+          CTRL_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' lib/vincula-fleet.py | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+          sudo -n python3 -B scripts/check-controller-artifact.py "dist/vincula-controller-${CTRL_VERSION}.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vincula-dist

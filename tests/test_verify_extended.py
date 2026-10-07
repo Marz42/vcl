@@ -112,6 +112,26 @@ class VerifyTests(unittest.TestCase):
         self.db.write_bytes(b"not a database")
         self.assertNotEqual(self.build()["checks"]["accounting"]["state"], "PASS")
 
+    def test_accounting_invalid_heartbeat_preserves_json_and_readonly_files(self):
+        for value in (None, "", "not-a-date", "2026-10-07T00:00:00", b"private-invalid-time"):
+            with self.subTest(value=value):
+                with closing(sqlite3.connect(self.db)) as conn, conn:
+                    conn.execute("UPDATE meta SET value=? WHERE key='heartbeat_at'", (value,))
+                before = self.db.read_bytes()
+                doc = self.build()
+                self.assertEqual(doc["checks"]["accounting"], verify.check("UNKNOWN", "INVALID", 1))
+                self.assertFalse(verify.validate(doc))
+                self.assertNotIn("private-invalid", json.dumps(doc))
+                self.assertEqual(self.db.read_bytes(), before)
+
+    def test_listener_requires_the_configured_loopback_address(self):
+        for replacement in ("127.0.0.2:9090", "[::1]:9090"):
+            with self.subTest(replacement=replacement):
+                def wrong_address(argv, **kw):
+                    state, reason, text = runner(argv, **kw)
+                    return state, reason, text.replace("127.0.0.1:9090", replacement) if argv[0] == "ss" else text
+                self.assertEqual(self.build(runner=wrong_address)["checks"]["listeners"], verify.check("FAIL", "MISSING", 2))
+
     @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Linux root permissions fixture")
     def test_secret_permissions_and_runtime_writeability_fail(self):
         self.assertEqual(self.build()["checks"]["permissions"]["state"], "PASS")
@@ -163,7 +183,9 @@ class VerifyTests(unittest.TestCase):
             fetch_node_capabilities=lambda *a, **kw: {"state": "OK", "capabilities": ["verify/v2"]})
         for probe_result, changed, expected in (({"success": True, "reason": "OK"}, False, "PASS"),
                 ({"success": False, "reason": "TLS_FAILED"}, False, "FAIL"),
-                ({"success": True, "reason": "OK"}, True, "UNKNOWN"),
+                ({"success": True, "reason": "OK"}, True, None),
+                ({"success": True, "reason": "TLS_FAILED"}, False, "UNKNOWN"),
+                ({"success": False, "reason": "OK"}, False, "UNKNOWN"),
                 ({"success": None, "reason": "RUNTIME_UNAVAILABLE"}, False, "UNKNOWN")):
             calls = []
             def rpc(n, cmd, **kw):
@@ -180,13 +202,48 @@ class VerifyTests(unittest.TestCase):
             stub = SimpleNamespace(read_profiles=lambda p: {}, ProxyProbe=lambda *a, **kw: probe)
             with mock.patch.object(transport.monitor_module.store_module, "sibling", return_value=stub), redirect_stdout(io.StringIO()) as out:
                 transport.run_cli(host, args)
-            result = json.loads(out.getvalue())["nodes"][0]["snapshot"]
+            row = json.loads(out.getvalue())["nodes"][0]
+            if expected is None:
+                self.assertEqual(row, {"name": "test", "state": "ERROR", "snapshot": None})
+                continue
+            result = row["snapshot"]
             self.assertEqual(result["checks"]["data_plane"]["state"], expected)
             self.assertFalse(verify.validate(result))
         args.probe_profiles = None
         with redirect_stdout(io.StringIO()) as out:
             transport.run_cli(host, args)
         self.assertEqual(json.loads(out.getvalue())["nodes"][0]["snapshot"]["checks"]["data_plane"]["state"], "UNKNOWN")
+
+    def test_post_probe_identity_failure_discards_all_pre_probe_checks(self):
+        import io
+        from contextlib import redirect_stdout
+        node = {"name": "test", "node_id": support.NODE_ID, "enabled": True}
+        args = SimpleNamespace(name=None, probe_profiles=str(self.root / "profiles.json"), probe_sing_box="pinned", timeout=15, as_json=True)
+        wire = self.build()
+        host = SimpleNamespace(load_registry=lambda: {"nodes": [node]}, node_is_active=lambda n: True,
+            workspace_manifest_path=lambda: self.root / "missing", fleet_home=lambda: self.root / "workspace",
+            fetch_node_capabilities=lambda *a, **kw: {"state": "OK", "capabilities": ["verify/v2"]})
+        for after, outcome in (("AUTH_FAILED", {"success": True, "reason": "OK"}),
+                               ("TIMEOUT", {"success": False, "reason": "TIMEOUT"}),
+                               ("AUTH_FAILED", {"success": None, "reason": "RUNTIME_UNAVAILABLE"}),
+                               ("ERROR", RuntimeError("private-probe-error"))):
+            with self.subTest(after=after, outcome=outcome):
+                identities = [0]
+                def rpc(n, cmd, **kw):
+                    self.assertEqual(kw["credential_class"], "observe")
+                    if cmd == transport.REMOTE_CMD:
+                        return "OK", copy.deepcopy(wire), ""
+                    identities[0] += 1
+                    if identities[0] == 1:
+                        return "OK", {"node_id": support.NODE_ID, "instance_id": support.INSTANCE_ID}, ""
+                    return after, None, "private-identity-error"
+                host.observation_ssh_json = rpc
+                probe = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+                stub = SimpleNamespace(read_profiles=lambda p: {}, ProxyProbe=lambda *a, **kw: probe)
+                with mock.patch.object(transport.monitor_module.store_module, "sibling", return_value=stub), redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(transport.run_cli(host, args), 2)
+                self.assertEqual(json.loads(out.getvalue())["nodes"][0], {"name": "test", "state": after, "snapshot": None})
+                self.assertNotIn("private-", out.getvalue())
 
     @unittest.skipUnless(sys.platform == "linux", "Bash Node CLI")
     def test_packaged_style_extended_cli_argv_and_legacy_dispatch_are_separate(self):

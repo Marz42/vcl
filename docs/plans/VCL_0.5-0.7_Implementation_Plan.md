@@ -1,5 +1,6 @@
 # VCL 0.5.x～0.7.x 实施与验收方案
 
+**最新执行边界（2026-10-07）：**用户要求“检查一下目前开发主线的进展，然后继续完成0.5.x的目前开发。停在0.6.x之前。”当前仅完成0.5.x本地实现、缺陷修复与可自动化交付，停在0.5.3，不进入0.6.x实现。进展、当前制品和验证绑定见[0.5.x收口](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。`a9655e2`的远端CI #86七项通过，后续本地修复仍待新的远端CI；G4/G5/H05保留PENDING，未代签、发布或合并。下文更早的执行约定和验证状态按日期作为历史记录保留。
 
 **2026-10-05 更新：**0.5.3 Inspect/cache/显式baseline/七类Drift/八项Verify本地实现完成，Node/Controller/payload stamp0.5.3。固定输入、自动化和制品见[0.5.3 RC](../evidence/0.5.3/RC.md)。Human Gate H05/H06/H07仍PENDING HUMAN，实机/24h soak PENDING LIVE，remote required CI NOT RUN；按用户指令跳过人工等待，未代签或发布。
 

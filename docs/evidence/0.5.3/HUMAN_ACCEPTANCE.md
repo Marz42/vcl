@@ -1,5 +1,6 @@
 # H05 — Observation Plane human acceptance
 
+2026-10-07更新：当前本地候选与新SHA见[阶段收口](PHASE_05_CLOSEOUT.md)。`a9655e2`远端CI #86七项PASS，后续本地修复的CI尚待执行；H05未签署。最新用户指令限定停在0.6.x之前，下文更早的持续开发目标由此收窄。
 日期2026-10-05。**PENDING HUMAN / NOT SIGNED**。0.5.3本地功能与离线RC见[RC](RC.md)；远端required CI、[Live](LIVE.md)与[24h soak](SOAK.md)尚未完成。按 [用户指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过开发等待；该指令不等于H05 PASS、生产apply、合并、tag或发布授权。
 
 权威人工清单：[VCL_0.5-0.7_Human_Acceptance](../../plans/VCL_0.5-0.7_Human_Acceptance.md)。本页只关联具体候选，不替代该清单。
@@ -13,4 +14,4 @@
 | 风险/例外与最终交付检查 | PENDING HUMAN |
 | 验收人 / UTC日期 / 结论 / 签署 | PENDING HUMAN；未代填 |
 
-H06（Declarative阶段）、H07（Programmable阶段）同样PENDING HUMAN；其实现工作仍在持续开发目标内，不能因本页待签而把未实现内容归为手工跳过。
+H06（Declarative阶段）、H07（Programmable阶段）同样PENDING HUMAN；其清单仅供后续使用。本轮按2026-10-07用户指令停在0.6.x之前，不开始对应实现。

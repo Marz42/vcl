@@ -1,5 +1,6 @@
 # 0.5.3 Inspect / Drift / Verify — 本地候选
 
+**2026-10-07当前记录：**已复核完整0.5.x实现并修复Verify的坏heartbeat、准确loopback监听与probe后身份失效；独立ZIP的16份合同和四个cache-only入口检查纳入artifact CI。开发停在0.5.3，不进入0.6.x。最新本地输入/制品/回归与远端CI的适用范围见[PHASE_05_CLOSEOUT](PHASE_05_CLOSEOUT.md)；下列2026-10-05状态是当时快照。
 日期2026-10-05；分支codex/0.5.1；Node/Controller/payload stamp0.5.3，minimum Node0.3.1。
 
 **M1–M3 IMPLEMENTED / UNRELEASED / PENDING LIVE / PENDING HUMAN。**已完成Node只读Inspect、Controller低频采集与独立缓存、cache-only CLI/API/UI、显式基线SHA CAS与七类Drift Finding/Timeline、八项增强Verify及旧JSON兼容。当前完整离线验证、原始日志/制品SHA与固定输入见[RC](RC.md)。

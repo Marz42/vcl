@@ -1,5 +1,6 @@
 # VCL 0.5.x～0.7.x 大阶段人工验收
 
+**2026-10-07 当前范围：**0.5.x本地开发收口到0.5.3，按用户指令停在0.6.x实现之前。H05仍PENDING HUMAN，实机/24h soak PENDING LIVE；`a9655e2`远端CI #86七项通过，后续本地修复的CI需重新绑定。当前候选见[阶段收口](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。下文H06/H07为未来验收模板，不代表本轮已进入后续开发。
 
 **2026-10-05 更新：**0.5.3 Inspect/cache/显式baseline/七类Drift/八项Verify本地实现完成，Node/Controller/payload stamp0.5.3。固定输入、自动化和制品见[0.5.3 RC](../evidence/0.5.3/RC.md)。Human Gate H05/H06/H07仍PENDING HUMAN，实机/24h soak PENDING LIVE，remote required CI NOT RUN；按用户指令跳过人工等待，未代签或发布。
 

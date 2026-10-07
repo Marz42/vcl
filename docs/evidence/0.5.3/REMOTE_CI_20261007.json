@@ -1,0 +1,83 @@
+{
+  "checked_date": "2026-10-07",
+  "repository": "Marz42/vcl",
+  "main": {
+    "head_sha": "d8734ebd2f41a87c0fd874bb7f21604e6e708248",
+    "required_contexts": [
+      "unit (ubuntu-latest)",
+      "unit (debian:12)",
+      "unit (debian:13)",
+      "concurrency",
+      "failure-injection",
+      "artifact"
+    ]
+  },
+  "development": {
+    "branch": "codex/0.5.1",
+    "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+    "pull_request": "https://github.com/Marz42/vcl/pull/13",
+    "draft": true,
+    "merged": false
+  },
+  "workflow": {
+    "run_number": 86,
+    "id": 37327307690,
+    "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/Marz42/vcl/actions/runs/37327307690"
+  },
+  "check_runs": [
+    {
+      "name": "unit (debian:12)",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214963"
+    },
+    {
+      "name": "failure-injection",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214681"
+    },
+    {
+      "name": "unit (debian:13)",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214669"
+    },
+    {
+      "name": "unit (ubuntu-latest)",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214639"
+    },
+    {
+      "name": "artifact",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214622"
+    },
+    {
+      "name": "concurrency",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214411"
+    },
+    {
+      "name": "unit (windows-latest)",
+      "head_sha": "a9655e2e5234deb88a1215ba99d4c630aae928c0",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Marz42/vcl/actions/runs/37327307690/job/111821214201"
+    }
+  ],
+  "binding": "Only a9655e2; subsequent local fixes require a new remote run."
+}

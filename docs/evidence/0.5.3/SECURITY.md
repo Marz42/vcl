@@ -1,5 +1,6 @@
 # 0.5.3 Security / coverage — PENDING LIVE
 
+2026-10-07补充：增强Verify现拒绝其他loopback地址代替实际配置地址；非法审计时间保持JSON/UNKNOWN；probe尝试后身份失效时清除旧snapshot，且observe AUTH_FAILED/TIMEOUT不fallback。本地回归与新制品见[阶段收口](PHASE_05_CLOSEOUT.md)。`a9655e2`的CI #86已PASS；以下2026-10-05状态保留，当前修复另待远端CI，实际权限仍PENDING LIVE。
 日期2026-10-05。M1–M3本地实现完成，新增cache/CAS/Drift/Verify离线证据见[RC](RC.md)；实机权限待完成。当前候选unreleased，remote required CI未执行。
 
 | 项目 | 离线证据 / 实际限制 | 现场状态 |

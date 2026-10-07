@@ -4,6 +4,7 @@
 
 ## 0.5.3 — local development candidate (2026-10-05, unreleased)
 
+- 2026-10-07收口：审计heartbeat为NULL/非法时间不再使增强Verify崩溃；Clash检查配置的准确loopback地址/端口；复用Health的probe一致性校验；每次probe尝试后复核身份，失效即清除旧snapshot并返回真实transport状态。独立ZIP的16份合同、四个cache-only入口和embedded Node只读CLI纳入制品CI。最新验证见[阶段收口](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)；停在0.6.x之前。
 - 完成有界只读 Node Inspect / inspect/v1、安装/升级/回滚/卸载与 observer 固定 argv；修复真实安装态嵌套 `state.node.instance_id` 的读取。
 - Controller 前台 monitor 低频采集 Inspect，共享每 Node deadline；独立 inspection.db、只读 inspect CLI/API/UI、显式 snapshot SHA CAS 接受/清除基线，baseline 事件与写入同事务。
 - 七类 listeners/services/versions/config/units/runtime/binary Drift 与稳定 Finding 生命周期；陈旧/重放/换机/缺权限为 UNKNOWN，保留 ACTIVE。Findings 容量拒绝新目标，避免驱逐既有 ACTIVE。

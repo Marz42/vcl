@@ -43,6 +43,8 @@ vcl-fleet verify --extended --name NODE --json
 vcl-fleet verify --extended --name NODE --json --probe-profiles /PRIVATE/probe-profiles.json
 ```
 
-增强接口包含Identity/Configuration/Integrity/Permissions/Services/Listeners/Accounting/Data Plane。配置一致性、安装lock SHA、权限/服务/listener/poll不替代真实代理证据。无显式专用probe时Data Plane为UNKNOWN；probe需符合[专用profile约束](monitoring-runbook.md)，不要使用普通用户UUID或把私有profile放进portable Workspace。probe后再次核对identity，换机或budget不足保留UNKNOWN。Controller仅全部PASS返回0，其余返回2；Node已有FAIL返回1，UNKNOWN可返回0但必须读JSON状态。
+增强接口包含Identity/Configuration/Integrity/Permissions/Services/Listeners/Accounting/Data Plane。配置一致性、安装lock SHA、权限/服务/listener/poll不替代真实代理证据。Clash必须在配置的实际loopback地址和端口监听；只在另一个IPv4/IPv6 loopback地址出现不算通过。审计heartbeat缺失、NULL或非法时间为UNKNOWN/INVALID，仍输出完整JSON。
+
+无显式专用probe时Data Plane为UNKNOWN；probe需符合[专用profile约束](monitoring-runbook.md)，不要使用普通用户UUID或把私有profile放进portable Workspace。矛盾/非法probe结果保持UNKNOWN。每次尝试probe后均再次核对identity，包括probe异常或runtime不可用；身份变化返回ERROR、认证失败返回AUTH_FAILED、总budget耗尽返回TIMEOUT，并清除旧snapshot。身份仍一致时才保留分项并采用合法probe结果。Controller仅全部PASS返回0，其余返回2；Node已有FAIL返回1，UNKNOWN可返回0但必须读JSON状态。
 
 旧`vcl verify --json`保持兼容，升级/恢复继续使用旧合同。没有自动reconcile/重启。支持OS实机对照、actual observer/accountd权限、文件与restart count/实际代理前后、人工Drift恢复和连续24h soak均待现场执行，不能以WSL或临时fixture签署PASS。

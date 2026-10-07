@@ -67,24 +67,29 @@ def run_cli(host, args):
             caps = host.fetch_node_capabilities(node, credential_class="observe", timeout=args.timeout)
             result = fetch(node, capabilities=caps, ssh_json=ssh_json)
             if result["state"] == "OK" and probe:
+                outcome = None
                 try:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired("verify", args.timeout)
                     outcome = probe(node, timeout=remaining)
-                    success = outcome.get("success") if isinstance(outcome, dict) else None
-                    # Authentication/invalid profile/unavailable runtime remain UNKNOWN.
-                    reason = outcome.get("reason") if isinstance(outcome, dict) else None
-                    if type(success) is bool and reason in ("OK", "TIMEOUT", "TLS_FAILED", "DNS_FAILED", "CONNECT_FAILED", "HTTP_FAILED"):
-                        doc = result["snapshot"]
-                        # A replacement during the probe invalidates its result.
-                        state, identity, _ = ssh_json(remote_cmd=["vcl", "identity", "--json"])
-                        if state == "OK" and isinstance(identity, dict) and all(identity.get(k) == doc[k] for k in ("node_id", "instance_id")):
-                            doc["checks"]["data_plane"] = contract.check("PASS" if success and reason == "OK" else "FAIL", "OK" if success and reason == "OK" else "PROBE_FAILED", 1)
-                            doc["data_plane_source"] = "EXPLICIT_CONTROLLER_PROBE"
-                            doc["state"] = contract.overall(doc["checks"])
                 except (Exception, SystemExit):
                     pass
+                # Every attempted probe can span a replacement or revocation,
+                # including an invalid outcome or a probe exception. Do not
+                # publish the pre-probe checks without a current identity.
+                doc = result["snapshot"]
+                state, identity, _ = ssh_json(remote_cmd=["vcl", "identity", "--json"], require_exit_0=True)
+                if state != "OK":
+                    result = {"state": state if state in ("AUTH_FAILED", "TIMEOUT") else "ERROR", "snapshot": None}
+                elif not isinstance(identity, dict) or any(identity.get(k) != doc[k] for k in ("node_id", "instance_id")):
+                    result = {"state": "ERROR", "snapshot": None}
+                else:
+                    success = module.store_module.health.clean_probe(outcome)["success"]
+                    if type(success) is bool:
+                        doc["checks"]["data_plane"] = contract.check("PASS" if success else "FAIL", "OK" if success else "PROBE_FAILED", 1)
+                        doc["data_plane_source"] = "EXPLICIT_CONTROLLER_PROBE"
+                        doc["state"] = contract.overall(doc["checks"])
         except subprocess.TimeoutExpired:
             result = {"state": "TIMEOUT", "snapshot": None}
         except (Exception, SystemExit):

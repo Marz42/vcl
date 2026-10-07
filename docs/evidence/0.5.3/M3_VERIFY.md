@@ -11,3 +11,5 @@ Node Data Plane固定UNKNOWN/NO_PROBE。Controller`verify --extended --name NODE
 自动化覆盖实际installer嵌套node身份、canonical配置的凭据/秘密/路由不一致、binary漂移不执行替换binary、Clash自定义端口与非loopback暴露、缺工具/权限/安装artifact、accounting陈旧/损坏、root权限、schema秘密与伪PASS拒绝、observe降级/认证/时间/身份、显式probe成功/失败/换instance、真实临时CLI argv与文件bytes/mtime不变。verify/v2及fleet-verify/v2正式schema/正反fixture随Controller打包。
 
 限制：canonical一致性不是sing-box语法执行；binary lock不是管理员不可改写的信任根；listener不核对process归属或公网可达；权限与services摘要不代表完整systemd隔离；accounting不证明计费级准确。Inspect固定runtime投影仍为M1的10项，新增Verify collector由制品lock和Node生命周期清单覆盖。真正代理前后对照与OS/observer现场PENDING LIVE，H05 PENDING HUMAN。
+
+2026-10-07后续：修复NULL/非法heartbeat容错、Clash准确地址核对、矛盾probe结果UNKNOWN及任何probe尝试后的身份再绑定。后验身份失败现在返回AUTH_FAILED/TIMEOUT/ERROR并丢弃整个旧snapshot；不再发布换机前分项。新增失败用例、原始FAIL及复验见[阶段收口](PHASE_05_CLOSEOUT.md)，以最新[SPEC](../../specs/V0.5.3_Spec.md)为准。

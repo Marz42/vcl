@@ -21,12 +21,17 @@ The UI displays observation, baseline and comparison summaries.
 `verify --extended [--name NODE] --json` uses observe credentials and eight explicit
 checks. Data Plane stays UNKNOWN unless `--probe-profiles` explicitly runs a
 private dedicated proxy probe and the post-probe identity still matches.
+Invalid or contradictory probe results remain UNKNOWN. A failed post-probe
+identity check discards the earlier snapshot and reports AUTH_FAILED, TIMEOUT
+or ERROR; checks from a replaced instance are not shown as current evidence.
 Legacy `verify --json` is unchanged for upgrade/restore consumers.
 
 Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2 → 0.5.3. Sixteen public schemas
 ship under `schemas/` with `controller.lock`. Real VPS and 24h soak remain PENDING
-LIVE, Human Gate remains PENDING HUMAN, and remote required CI is NOT RUN.
-The candidate is unreleased. See `docs/evidence/0.5.3/SUMMARY.md`.
+LIVE and Human Gate remains PENDING HUMAN. Remote CI #86 passed all seven jobs
+for a9655e2; subsequent local fixes still require a new remote CI run.
+Development stops at 0.5.3 before 0.6.x. The candidate is unreleased.
+See `docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md` and `SUMMARY.md`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.

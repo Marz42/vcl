@@ -6,7 +6,9 @@
 
 **0.5.3 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。
 
-**Human Gate H05/H06/H07：PENDING HUMAN；实机与连续24h soak：PENDING LIVE；远端 required CI：NOT RUN。**按[用户指令](docs/plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待并记录。本地实现与离线回归不代替实机、人工签署或发布。
+**2026-10-07 收口：**0.5.x 开发停在 0.5.3，未进入 0.6.x。已修复增强 Verify 的坏 heartbeat 容错、Clash 监听地址误判和 probe 后身份失效，并将独立 ZIP 的完整合同/缓存查询检查纳入制品 CI。远端 `a9655e2` 的 [CI #86](https://github.com/Marz42/vcl/actions/runs/37327307690) 七项通过；后续本地修复尚待新的远端 CI。当前交付和固定输入见[阶段收口记录](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)。
+
+**Human Gate H05：PENDING HUMAN；实机与连续24h soak：PENDING LIVE。**按[用户指令](docs/plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待并记录。本地实现与离线回归不代替实机、人工签署或发布。
 
 协议固定：VLESS + REALITY + xtls-rprx-vision + TCP；sing-box **1.13.18**（不追 latest）。流量统计为 **approximate / Clash polling**，非计费级。
 
