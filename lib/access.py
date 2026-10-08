@@ -491,7 +491,7 @@ def ssh_run(
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace")
         detail = (stderr or "").strip()
-        timeout_msg = f"ssh timed out after {timeout}s"
+        timeout_msg = _host.ssh_timeout_message(timeout)
         stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
         return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
     except OSError as exc:
@@ -624,7 +624,7 @@ def _ssh_run_bounded_stdout(
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace")
     if overflow:
-        marker = f"stdout exceeds {max_stdout_bytes} bytes"
+        marker = _host.ssh_output_limit_message(max_stdout_bytes)
         stderr = f"{stderr}\n{marker}".strip() if stderr.strip() else marker
         # Non-zero so callers treat as transport/protocol failure.
         rc = proc.returncode if proc.returncode not in (0, None) else 1
@@ -689,7 +689,7 @@ def scp_run(
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace")
         detail = (stderr or "").strip()
-        timeout_msg = f"scp timed out after {timeout}s"
+        timeout_msg = _host.scp_timeout_message(timeout)
         stderr = f"{detail}\n{timeout_msg}".strip() if detail else timeout_msg
         return subprocess.CompletedProcess(argv, 255, stdout or "", stderr)
     except OSError as exc:

@@ -4,6 +4,7 @@
 
 ## 0.5.3 — local development candidate (2026-10-05, unreleased)
 
+- 2026-10-08修复FR-03/FR-04认证分类与错误摘要：`AUTH_FAILED`顶层状态不变并新增`reason=AUTH_LIMIT|AUTH_DENIED`，补充`Too many authentication failures`、移除过宽的独立`publickey`匹配，capabilities/probe/verify给出"明确公钥+`IdentitiesOnly=yes`"的最小密钥选择提示；新增phase/code/state/retryable/summary(/hint)统一错误对象，本地transport事实（超时/超量）优先，audit meta按协议解析，失败不再回显stdout，摘要用固定模板且不含端点或逻辑身份（`node_id/instance_id`留在机器合同），sync行新增`error_code/error_phase/retryable`。见[FR-03/04记录](docs/evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；现场复验仍PENDING。
 - 2026-10-08修复FR-01凭据引用互相覆盖：新Node/新用途默认分配独立ref（`<node>-admin`/`<node>-observe`），节点级换钥改为copy-on-write，只切换目标用途并保留旧ref给其他消费者；adopt只在远端identity校验通过后绑定，provision在安装与verify成功后的提交回调内绑定；replace用新ref访问新endpoint、旧ref继续服务旧主机的final sync与backup；`access bind`保留为显式共享入口并列出受影响节点/用途。绑定先落盘、registry后落盘，失败最多留下未引用绑定。新增19项回归并改写F7-3旧预期，见[FR-01记录](docs/evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)；`7836b14` 的远端 required CI 七个 job 全绿（[CI #88](https://github.com/Marz42/vcl/actions/runs/37731099502)），现场复验、soak 与 H05 仍 PENDING。
 - 2026-10-07收口：审计heartbeat为NULL/非法时间不再使增强Verify崩溃；Clash检查配置的准确loopback地址/端口；复用Health的probe一致性校验；每次probe尝试后复核身份，失效即清除旧snapshot并返回真实transport状态。独立ZIP的16份合同、四个cache-only入口和embedded Node只读CLI纳入制品CI。最新验证见[阶段收口](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)；停在0.6.x之前。
 - 完成有界只读 Node Inspect / inspect/v1、安装/升级/回滚/卸载与 observer 固定 argv；修复真实安装态嵌套 `state.node.instance_id` 的读取。

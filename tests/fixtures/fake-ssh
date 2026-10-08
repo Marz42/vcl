@@ -222,14 +222,20 @@ def _ssh_identity_path(argv: list[str]) -> str | None:
     return None
 
 
-def _observe_auth_failed(full_argv: list[str]) -> bool:
-    if os.environ.get("VCL_FAKE_OBSERVE_AUTH_FAIL", "").strip() != "1":
-        return False
+def _observe_auth_failure_kind(full_argv: list[str]) -> str | None:
+    """None | "denied" | "limit" for the configured observe identity (G1)."""
+    kind = None
+    if os.environ.get("VCL_FAKE_OBSERVE_AUTH_FAIL", "").strip() == "1":
+        kind = "denied"
+    elif os.environ.get("VCL_FAKE_OBSERVE_AUTH_LIMIT", "").strip() == "1":
+        kind = "limit"
+    if kind is None:
+        return None
     observe_path = os.environ.get("VCL_FAKE_OBSERVE_KEY_PATH", "").strip()
     ident_path = _ssh_identity_path(full_argv)
     if observe_path and ident_path:
-        return Path(ident_path).resolve() == Path(observe_path).resolve()
-    return True
+        return kind if Path(ident_path).resolve() == Path(observe_path).resolve() else None
+    return kind
 
 
 def _apply_upgrade_identity(alias: str) -> None:
@@ -1877,8 +1883,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("this is not identity JSON\n")
         return 0
 
-    if _observe_auth_failed(argv):
+    auth_kind = _observe_auth_failure_kind(argv)
+    if auth_kind == "denied":
         sys.stderr.write("Permission denied (publickey).\n")
+        return 255
+    if auth_kind == "limit":
+        sys.stderr.write(
+            "Received disconnect from 203.0.113.10 port 22:2: "
+            "Too many authentication failures\n"
+            "Disconnected from 203.0.113.10 port 22\n"
+        )
         return 255
 
     kind, rest = _remote_kind(remote)

@@ -1915,12 +1915,15 @@ def parse_identity_json(payload: str) -> dict[str, Any]:
 
 
 def _ssh_failure_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    """Remote stderr for a failed command; stdout is never used (FR-04).
+
+    A failed command's stdout may carry protocol payload (audit rows, user
+    lists); echoing it as an error detail leaks data and can even make an
+    "ok":true fragment look like a success hint.
+    """
     err = (proc.stderr or "").strip()
     if err:
         return err
-    out = (proc.stdout or "").strip()
-    if out:
-        return out
     return f"exit {proc.returncode}"
 
 
@@ -3328,6 +3331,10 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
             )
         else:
             sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+            if result.get("reason"):
+                sys.stderr.write(f"{args.name}: reason: {result['reason']}\n")
+            if result.get("hint"):
+                sys.stderr.write(f"{args.name}: next: {result['hint']}\n")
     state = result.get("state")
     if state in ("ERROR", "AUTH_FAILED"):
         return 1
@@ -3754,6 +3761,7 @@ def ssh_remote_json(
     extra: list[str] | None = None,
     require_exit_0: bool = False,
     credential_class: str = "admin",
+    facts: Optional[dict[str, Any]] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
@@ -3762,6 +3770,9 @@ def ssh_remote_json(
     Mutation commands (restore, backup create, user add/rotate/disable)
     pass require_exit_0=True: any non-zero remote exit is FAIL even if
     stdout is valid JSON.
+
+    ``facts`` optionally receives the structured FR-04 classification
+    (phase/code/state/retryable/summary/hint).
     """
     proc = ssh_run(
         node["ssh_host"],
@@ -3773,10 +3784,29 @@ def ssh_remote_json(
         identity_file=node_identity_file_for_class(node, credential_class),
         timeout=timeout,
     )
-    detail = _ssh_failure_detail(proc)
+    raw_detail = _ssh_failure_detail(proc)
+    classified = classify_ssh_failure(
+        phase=load_ssh_transport_module().phase_for_command(remote_cmd),
+        detail=raw_detail,
+        returncode=proc.returncode,
+    )
+    if facts is not None:
+        facts.clear()
+        facts.update(classified)
+    detail = raw_detail
+    if proc.returncode == 255 and classified["code"] in (
+        "AUTH_LIMIT",
+        "AUTH_DENIED",
+        "TIMEOUT",
+        "OUTPUT_LIMIT",
+        "HOST_KEY",
+        "TRANSPORT",
+    ):
+        # Fixed-template text; remote text never reaches the operator here.
+        detail = failure_summary_text(classified)
     if proc.returncode == 255:
         if credential_class == "observe" and load_ssh_transport_module().is_auth_failure(
-            detail
+            raw_detail
         ):
             return "AUTH_FAILED", None, detail
         return "FAIL", None, detail
@@ -3853,6 +3883,16 @@ def verify_is_fail(row: dict[str, Any]) -> bool:
     return status_is_fail(row) or row.get("registry") == "FAIL" or row.get("clock") == "FAIL"
 
 
+def _record_ssh_facts(row: dict[str, Any], facts: dict[str, Any]) -> None:
+    """Attach the machine code and operator hint for an SSH failure (FR-03/04)."""
+    code = _optional_text(facts.get("code"))
+    if code:
+        row["ssh_reason"] = code
+    hint = _optional_text(facts.get("hint"))
+    if hint:
+        row["ssh_hint"] = hint
+
+
 def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": node["name"],
@@ -3868,6 +3908,8 @@ def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
         "clock_detail": "",
         "clock_skew_seconds": None,
         "ssh_detail": "",
+        "ssh_reason": None,
+        "ssh_hint": None,
         "warnings": [],
         "checks": [],
         "ok": True,
@@ -3900,13 +3942,18 @@ def probe_node(
         return row
 
     identity_started_utc = datetime.now(timezone.utc)
+    ident_facts: dict[str, Any] = {}
     ssh_state, ident, ident_detail = ssh_remote_json(
-        node, ["vcl", "identity", "--json"], credential_class="observe"
+        node,
+        ["vcl", "identity", "--json"],
+        credential_class="observe",
+        facts=ident_facts,
     )
     identity_finished_utc = datetime.now(timezone.utc)
     if ssh_state != "OK":
         row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = ident_detail
+        _record_ssh_facts(row, ident_facts)
         row["ok"] = False
         return row
     if ident is None:
@@ -3947,12 +3994,17 @@ def probe_node(
     else:
         row["registry"] = "FAIL"
 
+    status_facts: dict[str, Any] = {}
     ssh_state, status_doc, status_detail = ssh_remote_json(
-        node, ["vcl", "status", "--json"], credential_class="observe"
+        node,
+        ["vcl", "status", "--json"],
+        credential_class="observe",
+        facts=status_facts,
     )
     if ssh_state != "OK":
         row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = status_detail
+        _record_ssh_facts(row, status_facts)
         row["proxy"] = "UNKNOWN"
         row["accounting"] = "UNKNOWN"
         row["ok"] = False
@@ -4017,6 +4069,11 @@ def format_status_table(rows: list[dict[str, Any]]) -> str:
             f"{row['name']:<8} {short_id(row.get('node_id')):<8} {instance:<8} "
             f"{row['ssh']:<11} {row['proxy']:<7} {row['accounting']}"
         )
+        if row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            if row.get("ssh_reason"):
+                lines.append(f"  {row['name']}: ssh_reason={row['ssh_reason']}")
+            if row.get("ssh_hint"):
+                lines.append(f"  {row['name']}: next: {row['ssh_hint']}")
     return "\n".join(lines) + "\n"
 
 
@@ -4044,6 +4101,10 @@ def format_verify_report(rows: list[dict[str, Any]]) -> str:
             parts.append(f"  clock_detail: {row['clock_detail']}")
         if row.get("ssh_detail") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
             parts.append(f"  ssh_detail: {row['ssh_detail']}")
+        if row.get("ssh_reason") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            parts.append(f"  ssh_reason: {row['ssh_reason']}")
+        if row.get("ssh_hint") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            parts.append(f"  next: {row['ssh_hint']}")
         for warning in row.get("warnings") or []:
             parts.append(f"  WARN: {warning}")
         if row["ssh"] == "FAIL":
@@ -4074,6 +4135,8 @@ def _status_json_node(row: dict[str, Any]) -> dict[str, Any]:
     }
     if row.get("ssh_detail"):
         doc["ssh_detail"] = row["ssh_detail"]
+    if row.get("ssh_reason"):
+        doc["ssh_reason"] = row["ssh_reason"]
     return doc
 
 
@@ -4086,6 +4149,7 @@ def _verify_json_node(row: dict[str, Any]) -> dict[str, Any]:
         "instance_id": row.get("instance_id"),
         "enabled": row.get("enabled", True),
         "ssh": row["ssh"],
+        "ssh_reason": row.get("ssh_reason"),
         "proxy": row["proxy"],
         "accounting": row["accounting"],
         "registry": row["registry"],
@@ -5484,6 +5548,9 @@ def _sync_result(
     max_event_id: Any = None,
     max_export_seq: Any = None,
     pruned_max_export_seq: Any = None,
+    error_code: Optional[str] = None,
+    error_phase: Optional[str] = None,
+    retryable: Optional[bool] = None,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": node["name"],
@@ -5498,6 +5565,11 @@ def _sync_result(
         "ignored": ignored,
         "skipped_unlabeled": skipped_unlabeled,
         "error": error,
+        # FR-04 machine codes: the error string is a fixed-template summary,
+        # these carry the classification. Additive to sync/v1 consumers.
+        "error_code": error_code,
+        "error_phase": error_phase,
+        "retryable": retryable,
         "earliest_available_event_id": earliest,
         "max_event_id": max_event_id,
         "max_export_seq": max_export_seq,
@@ -5667,7 +5739,7 @@ def sync_one_node(
         )
 
     proc = ssh_audit_export(node, after, stamp_identity=stamp_identity)
-    detail = _ssh_failure_detail(proc)
+    # Protocol meta is parsed as data; it is never concatenated into a summary.
     meta = parse_export_meta(proc.stderr or "")
     earliest = None if meta is None else meta.get("earliest_available_event_id")
     max_event_id = None if meta is None else meta.get("max_event_id")
@@ -5684,6 +5756,7 @@ def sync_one_node(
         error: Optional[str],
         *,
         cursor_status: str = SYNC_STATUS_ERROR,
+        facts: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         last_export_seq = mark_cursor_status(
             conn,
@@ -5700,6 +5773,9 @@ def sync_one_node(
             last_export_seq=last_export_seq,
             instance_id=remote_iid,
             error=error,
+            error_code=(facts or {}).get("code"),
+            error_phase=(facts or {}).get("phase"),
+            retryable=(facts or {}).get("retryable"),
             earliest=earliest,
             max_event_id=max_event_id,
             max_export_seq=max_export_seq,
@@ -5707,7 +5783,8 @@ def sync_one_node(
         )
 
     if proc.returncode == 255:
-        return _fail(SYNC_STATUS_ERROR, detail or "ssh unreachable")
+        facts = classify_ssh_proc(proc, phase="audit_export")
+        return _fail(SYNC_STATUS_ERROR, failure_summary_text(facts), facts=facts)
 
     if meta_error == "CURSOR_EXPIRED":
         return _fail(
@@ -5720,10 +5797,8 @@ def sync_one_node(
         return _fail(SYNC_STATUS_ERROR, "CURSOR_AHEAD")
 
     if proc.returncode != 0:
-        return _fail(
-            SYNC_STATUS_ERROR,
-            detail or f"audit export exit {proc.returncode}",
-        )
+        facts = classify_ssh_proc(proc, phase="audit_export")
+        return _fail(SYNC_STATUS_ERROR, failure_summary_text(facts), facts=facts)
 
     try:
         rows = parse_export_jsonl(proc.stdout or "")
@@ -5848,13 +5923,17 @@ def sync_full_one_node(
     proc = ssh_audit_export(node, after)
     meta = parse_export_meta(proc.stderr or "")
     if proc.returncode == 255:
+        facts = classify_ssh_proc(proc, phase="audit_export")
         return _sync_result(
             node,
             status=SYNC_STATUS_ERROR,
             after=after,
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
-            error=_ssh_failure_detail(proc) or "ssh unreachable",
+            error=failure_summary_text(facts),
+            error_code=facts["code"],
+            error_phase=facts["phase"],
+            retryable=facts["retryable"],
         )
     if isinstance(meta, dict) and meta.get("error") in (
         "CURSOR_AHEAD",
@@ -5873,16 +5952,17 @@ def sync_full_one_node(
             error=str(meta["error"]),
         )
     if proc.returncode != 0:
+        facts = classify_ssh_proc(proc, phase="audit_export")
         return _sync_result(
             node,
             status=SYNC_STATUS_ERROR,
             after=after,
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
-            error=(
-                _ssh_failure_detail(proc)
-                or f"audit export exit {proc.returncode}"
-            ),
+            error=failure_summary_text(facts),
+            error_code=facts["code"],
+            error_phase=facts["phase"],
+            retryable=facts["retryable"],
         )
     try:
         rows = parse_export_jsonl(proc.stdout or "")
@@ -6058,6 +6138,12 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
                 remediations.append(str(row["remediation"]))
         elif row["status"] == SYNC_STATUS_ERROR and row.get("error"):
             lines.append(f"  ERROR: {row['error']}")
+            if row.get("error_code"):
+                lines.append(
+                    f"  CODE: {row['error_code']} "
+                    f"phase={row.get('error_phase') or '-'} "
+                    f"retryable={'true' if row.get('retryable') else 'false'}"
+                )
     if remediations:
         lines.append("Remediation:")
         for cmd in remediations:
@@ -6238,6 +6324,59 @@ def load_ssh_transport_module() -> Any:
     return _SSH_TRANSPORT_MOD
 
 
+# Transport message helpers: ssh_transport owns the marker strings so no
+# downstream module has to re-derive local transport facts from free text.
+def ssh_timeout_message(timeout: float) -> str:
+    return load_ssh_transport_module().timeout_message(timeout)
+
+
+def scp_timeout_message(timeout: float) -> str:
+    return load_ssh_transport_module().scp_timeout_message(timeout)
+
+
+def ssh_output_limit_message(max_stdout_bytes: int) -> str:
+    return load_ssh_transport_module().output_limit_message(max_stdout_bytes)
+
+
+def classify_ssh_failure(
+    *,
+    phase: str,
+    detail: str,
+    returncode: Optional[int],
+    unsupported: bool = False,
+    protocol_invalid: bool = False,
+) -> dict[str, Any]:
+    """Structured FR-04 failure facts (phase/code/state/retryable/summary)."""
+    return load_ssh_transport_module().classify_failure(
+        phase=phase,
+        detail=detail,
+        returncode=returncode,
+        unsupported=unsupported,
+        protocol_invalid=protocol_invalid,
+    )
+
+
+def classify_ssh_proc(
+    proc: subprocess.CompletedProcess[str],
+    *,
+    phase: str,
+    unsupported: bool = False,
+    protocol_invalid: bool = False,
+) -> dict[str, Any]:
+    return classify_ssh_failure(
+        phase=phase,
+        detail=_ssh_failure_detail(proc),
+        returncode=proc.returncode,
+        unsupported=unsupported,
+        protocol_invalid=protocol_invalid,
+    )
+
+
+def failure_summary_text(facts: dict[str, Any]) -> str:
+    """Shareable fixed-template summary (no endpoint, no logical identity)."""
+    return str(facts.get("summary") or "SSH failure")
+
+
 def load_observation_capabilities_module() -> Any:
     global _OBS_CAP_MOD
     if _OBS_CAP_MOD is not None:
@@ -6277,6 +6416,7 @@ def observation_ssh_json(
     require_exit_0: bool = False,
     unsupported_on_missing_command: bool = False,
     max_stdout_bytes: Optional[int] = None,
+    facts: Optional[dict[str, Any]] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     transport = load_ssh_transport_module()
     return transport.ssh_remote_json_for_class(
@@ -6291,6 +6431,7 @@ def observation_ssh_json(
         require_exit_0=require_exit_0,
         unsupported_on_missing_command=unsupported_on_missing_command,
         max_stdout_bytes=max_stdout_bytes,
+        facts=facts,
     )
 
 
@@ -6313,6 +6454,7 @@ def fetch_node_capabilities(
             require_exit_0=kwargs.get("require_exit_0", False),
             timeout=kwargs.get("timeout", timeout),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+            facts=kwargs.get("facts"),
         )
 
     return caps_mod.fetch_capabilities(node, ssh_json=_ssh_json)
@@ -6349,6 +6491,7 @@ def fetch_node_telemetry(
             require_exit_0=kwargs.get("require_exit_0", False),
             timeout=min(kwargs.get("timeout", timeout), remaining),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+            facts=kwargs.get("facts"),
         )
 
     result = tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)

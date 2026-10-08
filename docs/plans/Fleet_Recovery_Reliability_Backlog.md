@@ -21,8 +21,8 @@ FR-01/02是新现场情景暴露的缺口，需要重新开启0.5.x补修和RC�
 
 - [x] **FR-01 / P1：隔离凭据引用。**本地已修复并回归：默认ref按Node+用途分配，换钥copy-on-write，adopt/provision先校验后提交，replace新旧凭据分离，写入顺序为绑定先于registry。19项新用例+F7-3预期改写，`tests/test-fleet.sh` 1077项全通过，见[FR-01记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)。远端required CI已在`7836b14`全绿（[CI #88](https://github.com/Marz42/vcl/actions/runs/37731099502)，脱敏快照见[REMOTE_CI_20261008.json](../evidence/0.5.3/REMOTE_CI_20261008.json)）；现场混合Fleet复验仍归入下方两项，未在本次完成。
 - [ ] **FR-02 / P1：正式有界同步。**将分页、deadline、stdout cap、页数/运行预算、续传和MORE_PENDING接入sync/full管线；超时、中断、超量、锁、满盘、身份变化与retention gap不得跳过游标或破坏已提交页，不自动reseed。提交多页与失败恢复证据。
-- [ ] **FR-03 / P2：补齐认证失败分类。**识别Too many authentication failures，与连接/超时错误区分；给出密钥选择建议，保持observe失败不回退admin。提交正反例回归。
-- [ ] **FR-04 / P2：结构化、可分享的错误摘要。**将远端stderr/meta与用户摘要分离，保留必要机器合同；摘要不带端点、逻辑身份或秘密，拒绝用自由文本拼出假成功。提交脱敏与旧消费路径兼容检查。
+- [x] **FR-03 / P2：补齐认证失败分类。**本地已修复并回归：顶层仍为`AUTH_FAILED`，新增`reason=AUTH_LIMIT|AUTH_DENIED`；补充Too many authentication failures并移除过宽的独立`publickey`匹配；capabilities/probe/verify给出固定模板的密钥选择提示（明确公钥+`IdentitiesOnly=yes`），假SSH只对observe键失败即证明未回退admin。见[FR-03/04记录](../evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)。远端CI与现场复验仍归入下方两项。
+- [x] **FR-04 / P2：结构化、可分享的错误摘要。**本地已修复并回归：`ssh_transport`新增phase/code/state/retryable/summary(/hint)统一错误对象，本地transport事实（超时、stdout超量）优先于远端文本；audit meta继续按协议数据解析；失败不再回显stdout；摘要用固定模板且不含端点或逻辑身份，`node_id/instance_id`保留在机器合同；sync行新增`error_code/error_phase/retryable`。见[FR-03/04记录](../evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)。
 - [ ] **最小诊断入口与版本格式。**支持agent公钥选择与本地doctor，默认只读、零SSH；版本报告保留来源并接受0.3.1-rc2等已知格式，未知格式明确说明，不能静默改写。详细验收见下方功能候选2/3/5。
 - [ ] **补修候选离线交付。**上述变更完成后，重新绑定源码、测试、schema、Node/Controller制品与独立ZIP验证结果；原始失败记录保留，新增提交单独核对远端CI。
 - [ ] **补修候选现场与阶段验收。**固定候选后，以现有混合版本Fleet执行对应Live/权限/升级兼容、24h soak与H05；保留PENDING LIVE/PENDING HUMAN直到实际完成。当前恢复回传不替代这些验收。

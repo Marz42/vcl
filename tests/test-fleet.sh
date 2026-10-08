@@ -3504,10 +3504,11 @@ assert "controller_utc" in doc
 nodes = {n["name"]: n for n in doc["nodes"]}
 need = [
     "name", "ok", "vincula_version", "node_id", "instance_id", "enabled",
-    "ssh", "proxy", "accounting", "registry", "clock", "clock_skew_seconds",
-    "warnings", "checks",
+    "ssh", "ssh_reason", "proxy", "accounting", "registry", "clock",
+    "clock_skew_seconds", "warnings", "checks",
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
+assert nodes["lax"]["ssh_reason"] is None  # FR-04 machine code, null on success
 assert nodes["lax"]["ok"] is True
 assert nodes["lax"]["vincula_version"] == "0.3.1"
 assert nodes["lax"]["node_id"] == lax_id
@@ -15055,6 +15056,220 @@ assert [cmd[0][1] for cmd in calls] == ["identity", "status", "verify"], calls
 assert all(key == "observe-key" for _, key in calls), calls
 PY
 unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH
+
+# --- FR-03: AUTH_LIMIT reason on top of the existing AUTH_FAILED state ---
+assert_success "FR-03 classifier separates limit, denial and ordinary text" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("tr", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+
+assert tr.auth_failure_reason("Permission denied (publickey).") == "AUTH_DENIED"
+assert tr.auth_failure_reason("Too many authentication failures") == "AUTH_LIMIT"
+assert tr.auth_failure_reason(
+    "Received disconnect from 203.0.113.10 port 22:2: "
+    "Too many authentication failures"
+) == "AUTH_LIMIT"
+# Over-broad "publickey" no longer misclassifies ordinary diagnostics.
+assert tr.auth_failure_reason("no matching publickey type found") is None
+assert tr.auth_failure_reason("debug1: Offering public key: /home/u/id_ed25519") is None
+assert tr.is_auth_failure("Permission denied (publickey).") is True
+
+limit = tr.classify_failure(
+    phase="identity", detail="Too many authentication failures", returncode=255
+ )
+assert limit["state"] == "AUTH_FAILED", limit
+assert limit["code"] == "AUTH_LIMIT", limit
+assert limit["retryable"] is False, limit
+assert "IdentitiesOnly=yes" in limit["hint"], limit
+assert "can exhaust" in limit["hint"], limit
+
+denied = tr.classify_failure(
+    phase="identity", detail="Permission denied (publickey).", returncode=255
+)
+assert denied["state"] == "AUTH_FAILED" and denied["code"] == "AUTH_DENIED", denied
+
+# Local transport facts win over partial remote text.
+mixed = tr.classify_failure(
+    phase="audit_export",
+    detail="Connection closed by 203.0.113.10\nssh timed out after 60s",
+    returncode=255,
+)
+assert mixed["code"] == "TIMEOUT" and mixed["retryable"] is True, mixed
+assert tr.timeout_message(60) == "ssh timed out after 60s"
+assert tr.scp_timeout_message(60) == "scp timed out after 60s"
+assert tr.output_limit_message(4096) == "stdout exceeds 4096 bytes"
+assert tr.phase_for_command(["vcl", "audit", "export", "--jsonl"]) == "audit_export"
+assert tr.phase_for_command(["vcl", "status", "--json"]) == "status"
+PY
+
+export VCL_FAKE_OBSERVE_AUTH_LIMIT=1
+export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
+obs_limit_rc=0
+obs_limit_json=$(fleet capabilities lax --json) || obs_limit_rc=$?
+assert_equal "FR-03 capabilities exits non-zero on AUTH_LIMIT" 1 "$obs_limit_rc"
+assert_success "FR-03 capabilities keeps AUTH_FAILED and adds AUTH_LIMIT" python3 - \
+  "$obs_limit_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "AUTH_FAILED", doc
+assert doc.get("reason") == "AUTH_LIMIT", doc
+assert doc.get("credential_class") == "observe", doc
+assert "IdentitiesOnly=yes" in (doc.get("hint") or ""), doc
+detail = doc.get("detail") or ""
+for leaked in ("Received disconnect", "203.0.113.10", "Too many authentication"):
+    assert leaked not in detail, (leaked, detail)
+PY
+obs_limit_probe_rc=0
+obs_limit_probe=$(fleet probe --json) || obs_limit_probe_rc=$?
+assert_equal "FR-03 probe exits non-zero on AUTH_LIMIT" 1 "$obs_limit_probe_rc"
+assert_success "FR-03 probe carries ssh_reason without raw remote text" python3 - \
+  "$obs_limit_probe" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert node["ssh"] == "AUTH_FAILED", node
+assert node.get("ssh_reason") == "AUTH_LIMIT", node
+detail = node.get("ssh_detail") or ""
+for leaked in ("Received disconnect", "203.0.113.10", "Too many authentication"):
+    assert leaked not in detail, (leaked, detail)
+# The observe key is the only identity that fails here: had the code fallen
+# back to the admin credential the probe would have reported OK.
+assert doc["ok"] is False, doc
+PY
+obs_limit_verify_rc=0
+obs_limit_verify=$(fleet verify --json) || obs_limit_verify_rc=$?
+assert_equal "FR-03 verify exits non-zero on AUTH_LIMIT" 1 "$obs_limit_verify_rc"
+assert_success "FR-03 verify reports AUTH_FAILED/AUTH_LIMIT" python3 - \
+  "$obs_limit_verify" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["ssh"] == "AUTH_FAILED", node
+assert node.get("ssh_reason") == "AUTH_LIMIT", node
+PY
+unset VCL_FAKE_OBSERVE_AUTH_LIMIT VCL_FAKE_OBSERVE_KEY_PATH
+
+# --- FR-04: structured facts, safe summary, no stdout as error text ---
+assert_success "FR-04 failure detail never echoes stdout" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+audit_row = '{"event_id":1,"user_tag":"alice","destination_host":"secret.example"}'
+proc = subprocess.CompletedProcess(["ssh"], 1, audit_row, "")
+detail = fleet._ssh_failure_detail(proc)
+assert "secret.example" not in detail, detail
+assert detail == "exit 1", detail
+
+# A failing command whose stderr claims success must not produce a success
+# document or state.
+def fake_ssh_run(*_args, **_kwargs):
+    return subprocess.CompletedProcess(
+        ["ssh"], 1, "", '{"ok": true, "note": "not a success signal"}\n'
+    )
+
+fleet.ssh_run = fake_ssh_run
+facts = {}
+state, payload, detail = fleet.ssh_remote_json(
+    {
+        "name": "lax",
+        "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "ssh_host": "203.0.113.10",
+        "ssh_user": "root",
+        "ssh_port": 22,
+    },
+    ["vcl", "audit", "export", "--jsonl"],
+    require_exit_0=True,
+    facts=facts,
+)
+assert state == "FAIL", (state, detail)
+assert payload is None, payload
+assert facts["phase"] == "audit_export", facts
+assert facts["code"] == "REMOTE_ERROR", facts
+assert facts["retryable"] is False, facts
+assert "ok" not in str(payload or ""), payload
+PY
+
+assert_success "FR-04 shareable summary keeps identity out of the text" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("tr", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+
+detail = (
+    '{"protocol_version":2,"ok":false,"error":"CURSOR_EXPIRED",'
+    '"node_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+    '"instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}\n'
+    "Connection closed by 203.0.113.10 port 22\nssh timed out after 60s"
+)
+facts = tr.classify_failure(phase="audit_export", detail=detail, returncode=255)
+text = tr.operator_failure_text(facts)
+for leaked in (
+    "203.0.113.10",
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "CURSOR_EXPIRED",
+):
+    assert leaked not in text, (leaked, text)
+assert facts["code"] == "TIMEOUT", facts
+machine = tr.machine_failure_facts(
+    facts,
+    node_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    instance_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+)
+# Machine contract keeps the logical identity; the summary stays shareable.
+assert machine["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", machine
+assert machine["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", machine
+assert machine["summary"] == facts["summary"], machine
+PY
+
+assert_success "FR-04 sync row carries codes next to a safe error string" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node = {
+    "name": "lax",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "203.0.113.10",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+row = fleet._sync_result(
+    node,
+    status=fleet.SYNC_STATUS_ERROR,
+    after=10,
+    error="SSH transport timed out",
+    error_code="TIMEOUT",
+    error_phase="audit_export",
+    retryable=True,
+)
+assert row["error_code"] == "TIMEOUT", row
+assert row["error_phase"] == "audit_export", row
+assert row["retryable"] is True, row
+table = fleet.format_sync_table([row])
+assert "ERROR: SSH transport timed out" in table, table
+assert "CODE: TIMEOUT phase=audit_export retryable=true" in table, table
+# node_id/instance_id remain part of the machine row
+assert row["node_id"] == node["node_id"], row
+assert "instance_id" in row, row
+PY
 
 # G1: oversize fail-closed (unit-level)
 assert_success "obs050 oversize capabilities rejected" python3 - \
