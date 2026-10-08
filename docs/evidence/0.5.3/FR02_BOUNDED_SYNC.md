@@ -2,7 +2,7 @@
 
 日期：2026-10-08（Asia/Shanghai）。分支 `codex/0.5.1`，基线 `4bf2fcb`（FR-01/FR-03/FR-04 已推送）。范围：[可靠性待办](../../plans/Fleet_Recovery_Reliability_Backlog.md) 的 **FR-02 / P1**，即本轮补修的最后一项 P1。
 
-**IMPLEMENTED / UNRELEASED / PENDING CI / PENDING LIVE / PENDING HUMAN。**本记录是本地源码与测试证据；远端 required CI、现场混合 Fleet 复验、参数实测、24h soak 与 H05 仍未完成。
+**IMPLEMENTED / UNRELEASED / REMOTE CI PASS / PENDING LIVE / PENDING HUMAN。**`fd6ab89` 的远端 required CI 七个 job 全绿（[CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)，脱敏快照见 [REMOTE_CI_20261008_FR02.json](REMOTE_CI_20261008_FR02.json)）；现场混合 Fleet 复验、参数实测、24h soak 与 H05 仍未完成。
 
 ## 缺陷
 
@@ -92,6 +92,10 @@
 - `bash tests/test-fleet.sh`：**All 1115 tests passed，exit 0**。
 - `SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh`：**All 1933 tests passed，exit 0**。
 - `python3 -m unittest discover -s tests -p 'test_*.py'`：155 项，2 项失败为 `test_verify_extended` 的 root 权限 fixture，已在 `5054e51` 原始工作树复现为既存环境限制。
+
+## 远端 CI
+
+`fd6ab89` 推送后由 Draft PR #13 触发 [CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)（`event=pull_request`，2026-10-08T09:12:48Z→09:21:52Z），**七个 job 全部 success**：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact；脱敏快照见 [REMOTE_CI_20261008_FR02.json](REMOTE_CI_20261008_FR02.json)。
 
 ## 未关闭边界
 
