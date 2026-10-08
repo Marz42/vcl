@@ -2,7 +2,7 @@
 
 日期：2026-10-08（Asia/Shanghai）。分支 `codex/0.5.1`，基线 `7836b14`（FR-01 已推送并通过 [CI #88](REMOTE_CI_20261008.json)）。范围：只处理 [可靠性待办](../../plans/Fleet_Recovery_Reliability_Backlog.md) 的 **FR-03 / P2** 与 **FR-04 / P2**；FR-02 有界同步仍未实现。
 
-**IMPLEMENTED / UNRELEASED / PENDING CI / PENDING LIVE / PENDING HUMAN。**本记录是本地源码与测试证据；远端 required CI、现场混合 Fleet 复验、24h soak 与 H05 仍未完成。
+**IMPLEMENTED / UNRELEASED / REMOTE CI PASS / PENDING LIVE / PENDING HUMAN。**`4e5d27f` 的远端 required CI 七个 job 全绿（[CI #90](https://github.com/Marz42/vcl/actions/runs/37738068581)，脱敏快照见 [REMOTE_CI_20261008_FR0304.json](REMOTE_CI_20261008_FR0304.json)）；现场混合 Fleet 复验、24h soak 与 H05 仍未完成。
 
 ## 缺陷
 
@@ -73,6 +73,10 @@
 - `bash tests/test-fleet.sh`：**All 1087 tests passed，exit 0**（含本轮新增 10 项，0 失败）。
 - `SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh`：**All 1905 tests passed，exit 0**（本机沙箱需指定可写的 SQLite 临时目录，理由与 FR-01 记录相同）。
 - `python3 -m unittest discover -s tests -p 'test_*.py'`：155 项，2 项失败均为 `test_verify_extended` 的 root 权限 fixture，已在 `5054e51` 原始工作树复现为既存环境限制，与本轮改动无关。
+
+## 远端 CI
+
+`4e5d27f` 推送后由 Draft PR #13 触发 [CI #90](https://github.com/Marz42/vcl/actions/runs/37738068581)（`event=pull_request`，2026-10-08T06:31:21Z→06:39:02Z），**七个 job 全部 success**：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact；脱敏快照见 [REMOTE_CI_20261008_FR0304.json](REMOTE_CI_20261008_FR0304.json)。`push` 事件本身不触发 CI（`ci.yml` 只对 `main` 的 push 生效）。
 
 ## 未关闭边界
 
