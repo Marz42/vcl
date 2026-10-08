@@ -2,7 +2,7 @@
 
 日期：2026-10-08（Asia/Shanghai）。分支 `codex/0.5.1`，基线 `5054e51`。范围：只处理 [可靠性待办](../../plans/Fleet_Recovery_Reliability_Backlog.md) 的 **FR-01 / P1**；FR-02/03/04 未在本轮实现。
 
-**IMPLEMENTED / UNRELEASED / PENDING RC / PENDING LIVE / PENDING HUMAN。**本记录是本地源码与测试证据，不替代新候选的远端 CI、现场混合 Fleet 复验、24h soak 或 H05；产品版本号仍为 0.5.3 候选，未发布。
+**IMPLEMENTED / UNRELEASED / REMOTE CI PASS / PENDING LIVE / PENDING HUMAN。**本地源码与测试证据加上 `7836b14` 的远端 required CI 全绿，但不替代现场混合 Fleet 复验、24h soak 或 H05；产品版本号仍为 0.5.3 候选，未发布。
 
 ## 缺陷与复现
 
@@ -45,8 +45,15 @@
 
 本机沙箱下 SQLite 默认临时目录不可写，会让 node 侧 100k 行 `top_users` 用例以 `sqlite3.OperationalError: unable to open database file` 失败并中断 `test.sh`；该失败在 `5054e51` 原始工作树同样复现（两处均为 594 passed / 1 failed 后停止），指定可写的 `SQLITE_TMPDIR`（或 CI 环境）后 1895 项全通过。这是执行环境差异，不是源码或测试缺陷。
 
+## 远端 CI
+
+`7836b14` 推送后由 Draft PR #13 触发 [CI #88](https://github.com/Marz42/vcl/actions/runs/37731099502)（`event=pull_request`，全程 2026-10-08T05:11:07Z→05:19:14Z），**七个 job 全部 success**：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact。artifact 的构建、sidecar/release.lock 校验、独立 ZIP 黑盒与 0.5.3 合同检查步骤均为 success。脱敏快照见 [REMOTE_CI_20261008.json](REMOTE_CI_20261008.json)。
+
+`push` 事件本身不触发 CI（`ci.yml` 只对 `main` 的 push 生效）；本分支靠 PR #13 的 `pull_request` 事件运行。后续仅证据/文档的提交不会改变本 run 的绑定。
+
 ## 未关闭边界
 
-- 本记录不构成 0.5.3 或新 0.5.x 候选的验收：远端 required CI、现有混合版本 Fleet 现场复验、Live/H05、24h soak 仍 PENDING。
+- 本记录不构成 0.5.3 或新 0.5.x 候选的验收：现有混合版本 Fleet 现场复验、Live/H05、24h soak 仍 PENDING。
+- 远端 CI #88 只覆盖 `7836b14` 的源码与测试字节；任何后续源码提交都需要新的 run。
 - FR-01 的产品行为已在本地修复并回归；FR-02/03/04 仍按待办清单未实现。
 - 旧 ref 与未引用绑定不会自动清理；显式共享的更新入口与受影响范围提示保留在 `access bind`。

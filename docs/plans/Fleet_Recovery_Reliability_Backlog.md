@@ -19,7 +19,7 @@ FR-01/02是新现场情景暴露的缺口，需要重新开启0.5.x补修和RC�
 
 下列未勾选项尚未完成；本次仅记录和提交，不将临时恢复成功记为正式修复。FR-01/02关闭前，不将0.5.x候选标为无P1或已满足G5。产品版本号与新增CLI/JSON合同在补修的G0确定，范围仍限于0.5.x。
 
-- [x] **FR-01 / P1：隔离凭据引用。**本地已修复并回归：默认ref按Node+用途分配，换钥copy-on-write，adopt/provision先校验后提交，replace新旧凭据分离，写入顺序为绑定先于registry。19项新用例+F7-3预期改写，`tests/test-fleet.sh` 1077项全通过，见[FR-01记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)。远端CI与现场混合Fleet复验仍归入下方两项，未在本次完成。
+- [x] **FR-01 / P1：隔离凭据引用。**本地已修复并回归：默认ref按Node+用途分配，换钥copy-on-write，adopt/provision先校验后提交，replace新旧凭据分离，写入顺序为绑定先于registry。19项新用例+F7-3预期改写，`tests/test-fleet.sh` 1077项全通过，见[FR-01记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)。远端required CI已在`7836b14`全绿（[CI #88](https://github.com/Marz42/vcl/actions/runs/37731099502)，脱敏快照见[REMOTE_CI_20261008.json](../evidence/0.5.3/REMOTE_CI_20261008.json)）；现场混合Fleet复验仍归入下方两项，未在本次完成。
 - [ ] **FR-02 / P1：正式有界同步。**将分页、deadline、stdout cap、页数/运行预算、续传和MORE_PENDING接入sync/full管线；超时、中断、超量、锁、满盘、身份变化与retention gap不得跳过游标或破坏已提交页，不自动reseed。提交多页与失败恢复证据。
 - [ ] **FR-03 / P2：补齐认证失败分类。**识别Too many authentication failures，与连接/超时错误区分；给出密钥选择建议，保持observe失败不回退admin。提交正反例回归。
 - [ ] **FR-04 / P2：结构化、可分享的错误摘要。**将远端stderr/meta与用户摘要分离，保留必要机器合同；摘要不带端点、逻辑身份或秘密，拒绝用自由文本拼出假成功。提交脱敏与旧消费路径兼容检查。
