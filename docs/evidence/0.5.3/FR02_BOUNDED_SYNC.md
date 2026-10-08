@@ -2,7 +2,7 @@
 
 日期：2026-10-08（Asia/Shanghai）。分支 `codex/0.5.1`，基线 `4bf2fcb`（FR-01/FR-03/FR-04 已推送）。范围：[可靠性待办](../../plans/Fleet_Recovery_Reliability_Backlog.md) 的 **FR-02 / P1**，即本轮补修的最后一项 P1。
 
-**IMPLEMENTED / UNRELEASED / REMOTE CI PASS / PENDING LIVE / PENDING HUMAN。**`fd6ab89` 的远端 required CI 七个 job 全绿（[CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)，脱敏快照见 [REMOTE_CI_20261008_FR02.json](REMOTE_CI_20261008_FR02.json)）；现场混合 Fleet 复验、参数实测、24h soak 与 H05 仍未完成。
+**IMPLEMENTED / UNRELEASED / REMOTE CI PASS / PENDING LIVE / PENDING HUMAN。**当前绑定 `f37c50a`（评审补修后的 FR-02 修订）：其树等价的空提交重跑 [CI #97](https://github.com/Marz42/vcl/actions/runs/37766606635) 七个 job 全绿，首次提交 [CI #96](https://github.com/Marz42/vcl/actions/runs/37765485255) 仅 Windows unittest job 失败（与本轮改动无关的既有偶发，见下），脱敏快照见 [REMOTE_CI_20261008_FR02_FIXES.json](REMOTE_CI_20261008_FR02_FIXES.json)；首版 `fd6ab89` 的 [CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557) 亦为七 job 全绿。现场混合 Fleet 复验、参数实测、24h soak 与 H05 仍未完成。
 
 ## 缺陷
 
@@ -119,7 +119,8 @@
 
 ## 远端 CI
 
-`fd6ab89` 推送后由 Draft PR #13 触发 [CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)（`event=pull_request`，2026-10-08T09:12:48Z→09:21:52Z），**七个 job 全部 success**：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact；脱敏快照见 [REMOTE_CI_20261008_FR02.json](REMOTE_CI_20261008_FR02.json)。
+- 首版 `fd6ab89`：[CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)（`event=pull_request`），七个 job 全部 success。脱敏快照 [REMOTE_CI_20261008_FR02.json](REMOTE_CI_20261008_FR02.json)。
+- 评审补修 `f37c50a`：[CI #96](https://github.com/Marz42/vcl/actions/runs/37765485255) 仅 `unit (windows-latest)` 的 unittest job 失败；该 job 只跑 `python -m unittest discover -s tests -p 'test_*.py'`，本轮改动只涉及 `lib/*.py`、shell 套件与 fixture，且同一命令在本地 Windows Python 3.12 下通过（155 项、11 skipped），[CI #91](https://github.com/Marz42/vcl/actions/runs/37738882013) 也曾在纯文档提交上以同样方式失败。以树等价的空提交 `8842095` 重跑得到 [CI #97](https://github.com/Marz42/vcl/actions/runs/37766606635) 七个 job 全绿，判定为 Windows runner 偶发；失败的 #96 原样保留。脱敏快照见 [REMOTE_CI_20261008_FR02_FIXES.json](REMOTE_CI_20261008_FR02_FIXES.json)。
 
 ## 未关闭边界
 
