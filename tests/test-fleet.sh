@@ -11455,7 +11455,7 @@ c.commit(); c.close()
 print(ident["instance_id"])
 PY
 f71_rc=0
-f71_out=$(VCL_SYNC_FULL_FAIL_AFTER=audit-import fleet sync --full --json 2>/dev/null) || f71_rc=$?
+f71_out=$(VCL_SYNC_FULL_FAIL_AFTER=snapshot fleet sync --full --json 2>/dev/null) || f71_rc=$?
 assert_equal "F7-1 T2 sync --full injected failure exit 2" "2" "$f71_rc"
 python3 - "$f71_out" "$F71_PRE" "$PROJECT_DIR/lib/vincula-fleet.py" "$F71_IID" <<'PY' || f71_assert_rc=$?
 import hashlib, importlib.util, json, sys
@@ -11468,7 +11468,13 @@ assert doc["state"] == "PARTIAL", doc
 assert doc["operation"] == "sync_full"
 by = {n["name"]: n for n in doc["nodes"]}
 assert by["lax"]["status"] == "error", by["lax"]
-assert "full sync txn failed" in (by["lax"].get("error") or ""), by["lax"]
+f71_err = by["lax"].get("error") or ""
+assert "full sync snapshot txn failed" in f71_err, by["lax"]
+# FR-02 contract: the snapshot txn failed but the audit pages stay committed,
+# and the row says exactly that.
+assert by["lax"]["error_phase"] == "snapshot", by["lax"]
+assert "audit advanced" in f71_err, by["lax"]
+assert "full snapshot refresh did not complete" in f71_err, by["lax"]
 # DB rolled back: no instance_history, cursor untouched
 c = m.open_cache_readonly()
 n = c.execute(
@@ -15270,6 +15276,399 @@ assert "CODE: TIMEOUT phase=audit_export retryable=true" in table, table
 assert row["node_id"] == node["node_id"], row
 assert "instance_id" in row, row
 PY
+
+# --- FR-02: bounded audit catch-up, per-page commits and MORE_PENDING ---
+FR2_SAVED_HOME=$VCL_FLEET_HOME
+FR2_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+FR2_SAVED_CFG=${XDG_CONFIG_HOME:-}
+FR2_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+FR2H=$TEST_TMP/fr2-home
+FR2X=$TEST_TMP/fr2-state
+FR2C=$TEST_TMP/fr2-cfg
+FR2S=$TEST_TMP/fr2-fake
+rm -rf "$FR2H" "$FR2X" "$FR2C" "$FR2S"
+mkdir -p "$FR2H" "$FR2X" "$FR2C" "$FR2S"
+export VCL_FLEET_HOME=$FR2H VCL_FLEET_LOCAL_STATE=$FR2X
+export XDG_CONFIG_HOME=$FR2C VCL_FAKE_STATE_DIR=$FR2S
+export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
+export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
+assert_success "FR-02 fleet init" fleet init
+FR2_NID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["node_id"])' \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json")
+assert_success "FR-02 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$FR2_NID"
+
+fr2_seed() {
+  python3 - "${PROJECT_DIR}" "$FR2S" "$FR2_NID" "$1" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+project, state, node_id, count = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+)
+ident = json.loads(
+    (project / "tests/fixtures/nodes/lax/identity.json").read_text(encoding="utf-8")
+)
+iid = ident["instance_id"]
+spec = importlib.util.spec_from_file_location(
+    "accountd", project / "lib/vincula-accountd.py"
+)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+for i in range(1, count + 1):
+    conn.execute(
+        """INSERT OR REPLACE INTO connections (
+             connection_id,generation,user_id,node_id,instance_id,user_tag,
+             started_at,last_seen_at,closed_at,destination_host,destination_ip,
+             destination_port,network,upload_bytes,download_bytes,export_seq)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            f"lax-{i}", 0, "u-alice", node_id, iid, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z",
+            "2026-08-10T09:00:00Z", "example.com", "203.0.113.10", 443, "tcp",
+            100 * i, 200 * i, i,
+        ),
+    )
+acct.meta_set(conn, "audit_export_seq", str(count))
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+conn.close()
+PY
+}
+
+fr2_reset() { rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls"; }
+fr2_seed 5
+
+fr2_t1_rc=0
+fr2_t1=$(fleet sync --node lax --page-size 2 --json) || fr2_t1_rc=$?
+assert_equal "FR-02 multi-page catch-up exit 0" 0 "$fr2_t1_rc"
+assert_success "FR-02 multi-page catch-up imports every page" python3 - \
+  "$fr2_t1" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+home = Path(sys.argv[2])
+node = doc["nodes"][0]
+assert doc["ok"] is True and doc["state"] == "SUCCESS", doc
+assert node["status"] == "ok", node
+assert node["audit_pages"] == 3, node
+assert node["inserted"] == 5, node
+assert node["last_export_seq"] == 5, node
+assert node["more_pending"] is False, node
+conn = sqlite3.connect(str(home / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq, status FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 5, rows
+assert int(cursor[0]) == 5 and cursor[1] == "ok", cursor
+PY
+
+fr2_reset
+fr2_t2_rc=0
+fr2_t2=$(fleet sync --node lax --page-size 2 --max-pages 1 --json) || fr2_t2_rc=$?
+assert_equal "FR-02 page cap exits 2" 2 "$fr2_t2_rc"
+assert_success "FR-02 page cap reports MORE_PENDING, never success" python3 - \
+  "$fr2_t2" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False and doc["state"] == "PARTIAL", doc
+assert doc["more_pending"] == ["lax"], doc
+assert node["status"] == "more_pending", node
+assert node["more_pending"] is True, node
+assert node["error_code"] == "MORE_PENDING", node
+assert node["audit_pages"] == 1, node
+assert node["last_export_seq"] == 2 and node["inserted"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+fr2_t3_rc=0
+fr2_t3=$(fleet sync --node lax --page-size 2 --json) || fr2_t3_rc=$?
+assert_equal "FR-02 resume from committed cursor exits 0" 0 "$fr2_t3_rc"
+assert_success "FR-02 resume finishes the backlog" python3 - "$fr2_t3" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "ok" and node["more_pending"] is False, node
+assert node["last_export_seq"] == 5 and node["inserted"] == 3, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 5, rows
+PY
+
+# Run budget exhausted with a backlog still present: MORE_PENDING, not a
+# spurious timeout, and nothing is imported for the pages never requested.
+fr2_reset
+fr2_t3b_rc=0
+fr2_t3b=$(fleet sync --node lax --page-size 2 --budget 0.5 --json) || fr2_t3b_rc=$?
+assert_equal "FR-02 exhausted run budget exits 2" 2 "$fr2_t3b_rc"
+assert_success "FR-02 exhausted run budget reports MORE_PENDING" python3 - \
+  "$fr2_t3b" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["state"] == "PARTIAL" and doc["ok"] is False, doc
+assert node["status"] == "more_pending", node
+assert node["error_code"] == "MORE_PENDING", node
+assert node["audit_pages"] == 0, node
+assert "budget" in (node["error"] or ""), node
+assert node["remediation"], node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+
+# Second page fails (rc=1): the first committed page must survive untouched.
+fr2_reset
+export VCL_FAKE_EXPORT_FAIL_PAGE=2
+fr2_t4_rc=0
+fr2_t4=$(fleet sync --node lax --page-size 2 --json) || fr2_t4_rc=$?
+unset VCL_FAKE_EXPORT_FAIL_PAGE
+assert_equal "FR-02 second-page failure exits 2" 2 "$fr2_t4_rc"
+assert_success "FR-02 second-page failure keeps the committed first page" python3 - \
+  "$fr2_t4" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "REMOTE_ERROR", node
+assert node["audit_pages"] == 1, node
+assert node["last_export_seq"] == 2 and node["inserted"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 2, rows
+assert int(cursor[0]) == 2, cursor
+PY
+
+# Second page times out: the page is rejected whole, first page stays.
+fr2_reset
+export VCL_FAKE_EXPORT_HANG_PAGE=2
+fr2_t5_rc=0
+fr2_t5=$(fleet sync --node lax --page-size 2 --timeout 1 --budget 30 --json) \
+  || fr2_t5_rc=$?
+unset VCL_FAKE_EXPORT_HANG_PAGE
+assert_equal "FR-02 second-page timeout exits 2" 2 "$fr2_t5_rc"
+assert_success "FR-02 second-page timeout is TIMEOUT with first page kept" python3 - \
+  "$fr2_t5" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "TIMEOUT", node
+assert node["retryable"] is True, node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# Oversized page: rejected whole, nothing imported, no cursor movement.
+fr2_reset
+export VCL_FAKE_EXPORT_PAD_BYTES=4096
+fr2_t6_rc=0
+fr2_t6=$(fleet sync --node lax --page-size 5 --stdout-cap 1024 --json) \
+  || fr2_t6_rc=$?
+unset VCL_FAKE_EXPORT_PAD_BYTES
+assert_equal "FR-02 oversized page exits 2" 2 "$fr2_t6_rc"
+assert_success "FR-02 oversized page imports nothing" python3 - "$fr2_t6" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "OUTPUT_LIMIT", node
+assert node["audit_pages"] == 0 and node["inserted"] == 0, node
+assert node["last_export_seq"] == 0, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+
+# Identity changes between pages: the changed page is rejected.
+fr2_reset
+export VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE=2
+export VCL_FAKE_EXPORT_ALT_INSTANCE="99999999-9999-4999-8999-999999999999"
+fr2_t7_rc=0
+fr2_t7=$(fleet sync --node lax --page-size 2 --json) || fr2_t7_rc=$?
+unset VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE VCL_FAKE_EXPORT_ALT_INSTANCE
+assert_equal "FR-02 identity change exits 2" 2 "$fr2_t7_rc"
+assert_success "FR-02 identity change rejects the page and keeps prior pages" python3 - \
+  "$fr2_t7" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "PROTOCOL_INVALID", node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# Retention gap appears between pages.
+fr2_reset
+export VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE=2
+fr2_t8_rc=0
+fr2_t8=$(fleet sync --node lax --page-size 2 --json) || fr2_t8_rc=$?
+unset VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE
+assert_equal "FR-02 mid-run retention gap exits 2" 2 "$fr2_t8_rc"
+assert_success "FR-02 mid-run retention gap is EXPIRED with prior pages kept" python3 - \
+  "$fr2_t8" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert node["status"] == "expired", node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# MORE_PENDING must block retire and replace. A remote that always reports a
+# higher top-of-stream keeps every run pending without breaking validation.
+fr2_reset
+export VCL_FAKE_EXPORT_LIE_MAX_SEQ=999
+fr2_ret_rc=0
+fr2_ret_err=$(fleet node retire lax 2>&1) || fr2_ret_rc=$?
+assert_equal "FR-02 retire exits non-zero while MORE_PENDING" 1 "$fr2_ret_rc"
+assert_success "FR-02 retire reports MORE_PENDING" \
+  grep -q 'MORE_PENDING' <<< "$fr2_ret_err"
+assert_success "FR-02 retire did not mark the node retired" \
+  grep -q 'status=active' <<< "$(fleet node show lax)"
+fr2_rep_rc=0
+fr2_rep_err=$(fleet node replace lax --host 203.0.113.11 \
+  --host-key "$TOKYO_HOST_KEY" 2>&1) || fr2_rep_rc=$?
+assert_equal "FR-02 replace exits non-zero while MORE_PENDING" 1 "$fr2_rep_rc"
+assert_success "FR-02 replace reports MORE_PENDING" \
+  grep -q 'MORE_PENDING' <<< "$fr2_rep_err"
+assert_success "FR-02 replace left the endpoint unchanged" \
+  grep -q 'ssh_host=203.0.113.10' <<< "$(fleet node show lax)"
+unset VCL_FAKE_EXPORT_LIE_MAX_SEQ
+
+assert_success "FR-02 final-sync gate rejects anything not caught up" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.require_final_sync_ok(
+    {"status": "ok"}, action="retire", name="lax", tail="not marking retired"
+)
+for status in ("more_pending", "error", "expired"):
+    try:
+        fleet.require_final_sync_ok(
+            {"status": status, "error": "boom", "audit_pages": 2,
+             "last_export_seq": 7},
+            action="retire", name="lax", tail="not marking retired",
+        )
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError(f"{status} must stop retire/replace")
+PY
+
+assert_success "FR-02 database errors fail one node, not the run" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, json, sqlite3, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+conn = fleet.open_fleet_db()
+try:
+    start = fleet._cursor_last_export_seq(conn, node_id)
+finally:
+    conn.close()
+next_seq = start + 1
+row = {"event_id": next_seq, "export_seq": next_seq, "node_id": node_id,
+       "instance_id": iid}
+meta = {
+    "ok": True, "protocol_version": 2, "cursor_kind": "export_seq",
+    "after": start, "max_export_seq": next_seq, "pruned_max_export_seq": 0,
+    "count": 1, "node_id": node_id, "instance_id": iid,
+    "next_cursor": next_seq,
+}
+fleet.ssh_audit_page = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 0, json.dumps(row) + "\n", json.dumps(meta) + "\n"
+)
+
+def locked(*_a, **_k):
+    raise sqlite3.OperationalError("database is locked")
+
+fleet.import_export_jsonl = locked
+conn = fleet.open_fleet_db()
+try:
+    outcome = fleet.catch_up_audit_pages(
+        conn, node, now_iso="2026-10-08T00:00:00Z", remote_iid=iid,
+        options=fleet.audit_page_options(None),
+    )
+finally:
+    conn.close()
+assert outcome["status"] == "error", outcome
+assert outcome["error_code"] == "DATABASE_ERROR", outcome
+assert outcome["retryable"] is True, outcome
+assert outcome["pages"] == 0, outcome
+
+# A node-local DB failure must not stop the following node.
+def flaky(conn, target, **kwargs):
+    if target["name"] == "lax":
+        raise sqlite3.OperationalError("database or disk is full")
+    return fleet._sync_result(target, status="ok")
+
+other = {"name": "tokyo", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
+rows = fleet.sync_nodes_isolated(
+    None, [node, other], sync_one=flaky, now_iso="2026-10-08T00:00:00Z"
+)
+assert rows[0]["status"] == "error", rows[0]
+assert rows[0]["error_code"] == "DATABASE_ERROR", rows[0]
+assert "disk is full" in (rows[0]["error"] or ""), rows[0]
+assert rows[1]["status"] == "ok", rows[1]
+assert fleet.sync_report(rows)["state"] == "PARTIAL", rows
+PY
+
+export VCL_FLEET_HOME=$FR2_SAVED_HOME
+if [[ -n "$FR2_SAVED_STATE" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$FR2_SAVED_STATE
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+if [[ -n "$FR2_SAVED_CFG" ]]; then
+  export XDG_CONFIG_HOME=$FR2_SAVED_CFG
+else
+  export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+  mkdir -p "$XDG_CONFIG_HOME"
+fi
+if [[ -n "$FR2_SAVED_FAKE" ]]; then
+  export VCL_FAKE_STATE_DIR=$FR2_SAVED_FAKE
+else
+  unset VCL_FAKE_STATE_DIR
+fi
 
 # G1: oversize fail-closed (unit-level)
 assert_success "obs050 oversize capabilities rejected" python3 - \

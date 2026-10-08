@@ -213,6 +213,32 @@ def _installer_mode() -> str | None:
     return None
 
 
+def _env_int(name: str) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _bump_export_call(alias: str) -> int:
+    """1-based counter of audit-export invocations for this alias (FR-02 tests)."""
+    path = _alias_dir(alias) / "export-calls"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = int(path.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        current = 0
+    current += 1
+    try:
+        path.write_text(f"{current}\n", encoding="utf-8")
+    except OSError:
+        pass
+    return current
+
+
 def _ssh_identity_path(argv: list[str]) -> str | None:
     i = 1
     while i < len(argv):
@@ -836,6 +862,36 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
 
     meta["node_id"] = node_id
     meta["instance_id"] = instance_id
+
+    # FR-02 fault injection: deterministic per-page behaviour for bounded
+    # catch-up tests. The counter is per alias and survives across processes.
+    page_no = _bump_export_call(alias)
+    fail_page = _env_int("VCL_FAKE_EXPORT_FAIL_PAGE")
+    hang_page = _env_int("VCL_FAKE_EXPORT_HANG_PAGE")
+    prune_page = _env_int("VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE")
+    alt_page = _env_int("VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE")
+    pad_bytes = _env_int("VCL_FAKE_EXPORT_PAD_BYTES")
+    if hang_page and page_no >= hang_page:
+        time.sleep(3600)
+        return 255
+    if fail_page and page_no >= fail_page:
+        sys.stderr.write("fake-ssh: audit export failed\n")
+        return 1
+    if prune_page and page_no >= prune_page:
+        meta["ok"] = False
+        meta["error"] = "CURSOR_EXPIRED"
+        meta["count"] = 0
+        meta["next_cursor"] = after
+        status = "CURSOR_EXPIRED"
+    if alt_page and page_no >= alt_page:
+        alt = os.environ.get("VCL_FAKE_EXPORT_ALT_INSTANCE", "").strip()
+        if alt:
+            meta["instance_id"] = alt
+    if pad_bytes:
+        for row in rows:
+            row["destination_host"] = "p" * pad_bytes
+            break
+
     if stamp_identity:
         audit_mod = _load_audit()
         if audit_mod is not None and hasattr(audit_mod, "stamp_export_rows"):
@@ -859,6 +915,15 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
             meta["count"] = int(lie_count)
         except ValueError:
             sys.stderr.write("fake-ssh: VCL_FAKE_EXPORT_LIE_COUNT must be an integer\n")
+            return 1
+    lie_max = os.environ.get("VCL_FAKE_EXPORT_LIE_MAX_SEQ", "").strip()
+    if lie_max:
+        try:
+            meta["max_export_seq"] = int(lie_max)
+        except ValueError:
+            sys.stderr.write(
+                "fake-ssh: VCL_FAKE_EXPORT_LIE_MAX_SEQ must be an integer\n"
+            )
             return 1
     lie_next = os.environ.get("VCL_FAKE_EXPORT_LIE_NEXT_CURSOR", "").strip()
     if lie_next:

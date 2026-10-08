@@ -4,7 +4,7 @@
 
 | 目录 | 说明 |
 | --- | --- |
-| [`0.5.3/`](0.5.3/SUMMARY.md) | 当前0.5.x候选；[2026-10-07收口](0.5.3/PHASE_05_CLOSEOUT.md)、Verify修复与CI绑定；[2026-10-08 FR-01凭据隔离](0.5.3/FR01_CREDENTIAL_ISOLATION.md)（`7836b14`，[远端CI #88](0.5.3/REMOTE_CI_20261008.json)全绿）、[FR-03/04认证分类与错误摘要](0.5.3/FR03_FR04_ERROR_MODEL.md)（`4e5d27f`，[远端CI #90](0.5.3/REMOTE_CI_20261008_FR0304.json)全绿；未发布、现场未验）；历史RC/M1/CLOSEOUT保留；Human/实机/soak仍PENDING |
+| [`0.5.3/`](0.5.3/SUMMARY.md) | 当前0.5.x候选；[2026-10-07收口](0.5.3/PHASE_05_CLOSEOUT.md)、Verify修复与CI绑定；[2026-10-08 FR-01凭据隔离](0.5.3/FR01_CREDENTIAL_ISOLATION.md)（`7836b14`，[远端CI #88](0.5.3/REMOTE_CI_20261008.json)全绿）、[FR-03/04认证分类与错误摘要](0.5.3/FR03_FR04_ERROR_MODEL.md)（`4e5d27f`，[远端CI #90](0.5.3/REMOTE_CI_20261008_FR0304.json)全绿）、[FR-02有界审计同步](0.5.3/FR02_BOUNDED_SYNC.md)（本地，未发布、现场未验）；历史RC/M1/CLOSEOUT保留；Human/实机/soak仍PENDING |
 | [`0.5.2/`](0.5.2/SUMMARY.md) | 0.5.2历史候选；M1～M3历史验证、M4全量收口与输入绑定；Human Gate / 实机延期记录 |
 | [`0.5.1/`](0.5.1/SUMMARY.md) | 0.5.1 本地开发交付；真实 VPS / 24h soak / 发布保留 PENDING |
 | [`0.5.0/`](0.5.0/SUMMARY.md) | Observation Foundation 已有离线/Live/soak记录；以原文适用候选和测量限制为准 |

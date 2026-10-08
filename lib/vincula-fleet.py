@@ -62,6 +62,19 @@ SYNC_FULL_FAIL_AFTER_ENV = "VCL_SYNC_FULL_FAIL_AFTER"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
+# FR-02: the run stopped inside its budget/page cap with data still pending.
+# It is never reported as success, and retires/replaces must not proceed on it.
+SYNC_STATUS_MORE_PENDING = "more_pending"
+
+# FR-02 bounded audit catch-up. Live-validated starting points (1000 and 5000
+# rows per page, 60 s per request, 16 MiB stdout cap); the VPS tool run used
+# 5000/300 pages. These are ceilings, not measured guarantees.
+SYNC_AUDIT_PAGE_SIZE_DEFAULT = 1000
+SYNC_AUDIT_PAGE_SIZE_MAX = 5000
+SYNC_AUDIT_MAX_PAGES_DEFAULT = 300
+SYNC_AUDIT_TIMEOUT_DEFAULT = 60.0
+SYNC_AUDIT_STDOUT_CAP_DEFAULT = 16 * 1024 * 1024
+SYNC_AUDIT_BUDGET_DEFAULT = 3600.0
 CURSOR_KIND_EVENT_ID = "event_id"
 CURSOR_KIND_EXPORT_SEQ = "export_seq"
 EXPORT_PROTOCOL_VERSION = 2
@@ -1215,8 +1228,15 @@ def _record_instance_db_pending(
 
 
 def _sync_full_fail_after(step: str) -> None:
-    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER)."""
-    if os.environ.get(SYNC_FULL_FAIL_AFTER_ENV) == step:
+    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER).
+
+    The legacy value ``audit-import`` still injects at the snapshot txn; since
+    FR-02 the audit pages are committed before that txn, so the injection can
+    no longer roll them back.
+    """
+    configured = os.environ.get(SYNC_FULL_FAIL_AFTER_ENV)
+    aliases = {"snapshot": ("snapshot", "audit-import")}.get(step, (step,))
+    if configured and configured in aliases:
         raise RuntimeError(f"injected sync --full failure at {step}")
 
 
@@ -2670,12 +2690,19 @@ def disable_remote_users_except_last(
     return disabled, keep_tag, err_s
 
 
-def _run_final_sync(node: dict[str, Any], *, write_table: bool = True) -> dict[str, Any]:
+def _run_final_sync(
+    node: dict[str, Any],
+    *,
+    write_table: bool = True,
+    options: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Same machinery as `vcl-fleet sync --node NAME` for one node."""
     now_iso = format_utc(datetime.now(timezone.utc))
     conn = open_fleet_db()
     try:
-        row = sync_one_node(conn, node, now_iso=now_iso)
+        row = sync_one_node(
+            conn, node, now_iso=now_iso, options=options or audit_page_options(None)
+        )
     finally:
         conn.close()
     if write_table:
@@ -2726,17 +2753,13 @@ def cmd_node_retire(name: str) -> int:
             )
         identity = ident
         sync_row = _run_final_sync(node)
-        status = sync_row.get("status")
-        if status == SYNC_STATUS_EXPIRED:
-            die(
-                f"cannot retire {name}: CURSOR_EXPIRED; "
-                f"run: vcl-fleet sync --reseed {name}"
-            )
-        if status != SYNC_STATUS_OK:
-            die(
-                f"cannot retire {name}: final sync failed "
-                f"({sync_row.get('error') or status}); not marking retired"
-            )
+        require_final_sync_ok(
+            sync_row,
+            action="retire",
+            name=name,
+            tail="not marking retired",
+            reseed_hint=f"vcl-fleet sync --reseed {name}",
+        )
 
     last_status = _last_status_slice(name)
     if last_status is None:
@@ -2979,17 +3002,12 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             )
         old_instance_id = _optional_text(ident.get("instance_id")) or old_instance_id
         sync_row = _run_final_sync(old_node, write_table=not as_json)
-        status = sync_row.get("status")
-        if status == SYNC_STATUS_EXPIRED:
-            die(
-                f"cannot replace {args.name}: CURSOR_EXPIRED; "
-                f"run: {remediation_sync_reseed(args.name)}"
-            )
-        if status != SYNC_STATUS_OK:
-            die(
-                f"cannot replace {args.name}: final sync failed "
-                f"({sync_row.get('error') or status}); not creating backup"
-            )
+        require_final_sync_ok(
+            sync_row,
+            action="replace",
+            name=args.name,
+            tail="not creating backup",
+        )
         ssh_state, backup_doc, backup_detail = ssh_remote_json(
             old_node,
             ["vcl", "backup", "create", "--json"],
@@ -5551,6 +5569,8 @@ def _sync_result(
     error_code: Optional[str] = None,
     error_phase: Optional[str] = None,
     retryable: Optional[bool] = None,
+    audit_pages: int = 0,
+    more_pending: bool = False,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": node["name"],
@@ -5570,13 +5590,22 @@ def _sync_result(
         "error_code": error_code,
         "error_phase": error_phase,
         "retryable": retryable,
+        # FR-02: bounded catch-up progress. audit_pages counts pages committed
+        # by this run; more_pending means the run stopped inside its budget.
+        "audit_pages": audit_pages,
+        "more_pending": more_pending,
         "earliest_available_event_id": earliest,
         "max_event_id": max_event_id,
         "max_export_seq": max_export_seq,
         "pruned_max_export_seq": pruned_max_export_seq,
         "remediation": None,
     }
-    if status == SYNC_STATUS_EXPIRED or error in (
+    if status == SYNC_STATUS_MORE_PENDING:
+        row["remediation"] = (
+            f"rerun: vcl-fleet sync --node {node['name']} "
+            "(raise --max-pages/--budget if it keeps stopping early)"
+        )
+    elif status == SYNC_STATUS_EXPIRED or error in (
         "CURSOR_AHEAD",
         "CURSOR_PROTOCOL_MISMATCH",
     ):
@@ -5587,6 +5616,111 @@ def _sync_result(
     ):
         row["remediation"] = remediation_sync_reseed(node["name"])
     return row
+
+
+def _emit_sync_warning(node: dict[str, Any], message: str) -> None:
+    sys.stderr.write(f"WARNING: {node['name']}: {message}\n")
+
+
+def mark_cursor_status_best_effort(
+    conn: sqlite3.Connection,
+    node_id: str,
+    *,
+    instance_id: Optional[str],
+    status: str,
+    now_iso: str,
+) -> None:
+    """Record a failure status without masking the original failure (FR-02).
+
+    A locked or full database cannot be assumed to accept this write; the
+    caller's report already carries the real status.
+    """
+    try:
+        mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=instance_id,
+            status=status,
+            now_iso=now_iso,
+        )
+    except sqlite3.Error:
+        pass
+
+
+def require_final_sync_ok(
+    sync_row: dict[str, Any],
+    *,
+    action: str,
+    name: str,
+    tail: str,
+    reseed_hint: Optional[str] = None,
+) -> None:
+    """Retire/replace gate: a final sync must be caught up, not just ended.
+
+    FR-02: MORE_PENDING stops the caller instead of letting a backup, replace
+    or retire proceed on a partially imported audit window.
+    """
+    status = sync_row.get("status")
+    if status == SYNC_STATUS_EXPIRED:
+        hint = reseed_hint or remediation_sync_reseed(name)
+        die(f"cannot {action} {name}: CURSOR_EXPIRED; run: {hint}")
+    if status == SYNC_STATUS_MORE_PENDING:
+        die(
+            f"cannot {action} {name}: audit is still behind "
+            f"(MORE_PENDING after {sync_row.get('audit_pages') or 0} page(s), "
+            f"cursor {sync_row.get('last_export_seq')}); rerun sync until it "
+            f"reports ok, then {action}"
+        )
+    if status != SYNC_STATUS_OK:
+        die(
+            f"cannot {action} {name}: final sync failed "
+            f"({sync_row.get('error') or status}); {tail}"
+        )
+
+
+# A locked or full database must fail one node, not the whole run.
+NODE_LOCAL_SYNC_ERRORS = (sqlite3.Error, OSError)
+
+
+def sync_nodes_isolated(
+    conn: sqlite3.Connection,
+    targets: Sequence[dict[str, Any]],
+    *,
+    sync_one: Callable[..., dict[str, Any]],
+    now_iso: str,
+    options: Optional[dict[str, Any]] = None,
+    stamp_identity_for: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Run a per-node sync over every target, isolating node-local DB errors.
+
+    A node whose transaction hits a lock, a full disk or a vanished data
+    directory yields an ERROR row with no committed progress claimed; the
+    remaining nodes still run.
+    """
+    rows: list[dict[str, Any]] = []
+    for node in targets:
+        kwargs: dict[str, Any] = {"now_iso": now_iso}
+        if options is not None:
+            kwargs["options"] = options
+        if stamp_identity_for is not None:
+            kwargs["stamp_identity"] = node.get("name") == stamp_identity_for
+        try:
+            rows.append(sync_one(conn, node, **kwargs))
+        except NODE_LOCAL_SYNC_ERRORS as exc:
+            _emit_sync_warning(
+                node, f"sync aborted before commit: {exc!r}; continuing"
+            )
+            row = _sync_result(
+                node,
+                status=SYNC_STATUS_ERROR,
+                error=f"sync aborted before commit: {exc}",
+                error_code="DATABASE_ERROR",
+                error_phase="audit_import",
+                retryable=True,
+            )
+            row["remediation"] = f"rerun: vcl-fleet sync --node {node['name']}"
+            rows.append(row)
+    return rows
 
 
 def sync_target_nodes(
@@ -5609,12 +5743,47 @@ def sync_target_nodes(
     return _selected_nodes(registry, include_all)
 
 
+def ssh_audit_page(
+    node: dict[str, Any],
+    after: int,
+    *,
+    page_size: int,
+    timeout: float,
+    max_stdout_bytes: int,
+    stamp_identity: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """One bounded Protocol v2 page: --limit + deadline + stdout cap (FR-02)."""
+    remote = [
+        "vcl",
+        "audit",
+        "export",
+        "--after",
+        str(after),
+        "--limit",
+        str(page_size),
+        "--jsonl",
+    ]
+    if stamp_identity:
+        remote.append("--stamp-identity")
+    return ssh_run(
+        node["ssh_host"],
+        node["ssh_user"],
+        node["ssh_port"],
+        remote,
+        batch=True,
+        identity_file=_node_identity_file(node),
+        timeout=timeout,
+        max_stdout_bytes=max_stdout_bytes,
+    )
+
+
 def ssh_audit_export(
     node: dict[str, Any],
     after: int,
     *,
     stamp_identity: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    """Unbounded legacy export (kept for diagnostics/tests; sync uses pages)."""
     remote = ["vcl", "audit", "export", "--after", str(after), "--jsonl"]
     if stamp_identity:
         remote.append("--stamp-identity")
@@ -5629,12 +5798,235 @@ def ssh_audit_export(
     )
 
 
+def audit_page_options(args: Optional[argparse.Namespace] = None) -> dict[str, Any]:
+    """Bounded catch-up options from CLI flags, clamped to safe ceilings (FR-02)."""
+    def _num(name: str, default: Any, cast: Callable[[Any], Any]) -> Any:
+        raw = getattr(args, name, None) if args is not None else None
+        return default if raw is None else cast(raw)
+
+    page_size = int(_num("page_size", SYNC_AUDIT_PAGE_SIZE_DEFAULT, int))
+    if page_size < 1:
+        die("--page-size must be >= 1")
+    if page_size > SYNC_AUDIT_PAGE_SIZE_MAX:
+        die(f"--page-size must be <= {SYNC_AUDIT_PAGE_SIZE_MAX}")
+    max_pages = int(_num("max_pages", SYNC_AUDIT_MAX_PAGES_DEFAULT, int))
+    if max_pages < 1:
+        die("--max-pages must be >= 1")
+    timeout = float(_num("timeout", SYNC_AUDIT_TIMEOUT_DEFAULT, float))
+    if timeout <= 0:
+        die("--timeout must be > 0")
+    stdout_cap = int(_num("stdout_cap", SYNC_AUDIT_STDOUT_CAP_DEFAULT, int))
+    if stdout_cap < 1:
+        die("--stdout-cap must be >= 1")
+    budget = float(_num("budget", SYNC_AUDIT_BUDGET_DEFAULT, float))
+    if budget <= 0:
+        die("--budget must be > 0")
+    return {
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "timeout": timeout,
+        "stdout_cap": stdout_cap,
+        "budget": budget,
+    }
+
+
+def catch_up_audit_pages(
+    conn: sqlite3.Connection,
+    node: dict[str, Any],
+    *,
+    now_iso: str,
+    remote_iid: Optional[str],
+    options: dict[str, Any],
+    stamp_identity: bool = False,
+) -> dict[str, Any]:
+    """Import bounded audit pages until caught up, out of budget, or failed (FR-02).
+
+    Each accepted page is validated as a complete Protocol v2 batch and then
+    imported in its own transaction (audit rows + daily summary + durable
+    cursor). A rejected page imports nothing; earlier committed pages stay.
+    The loop never reseeds and never treats partial stdout as a batch.
+    """
+    node_id = node["node_id"]
+    start = _cursor_last_export_seq(conn, node_id)
+    after = start
+    pages = 0
+    outcome: dict[str, Any] = {
+        "status": SYNC_STATUS_OK,
+        "start_cursor": start,
+        "cursor": after,
+        "pages": 0,
+        "more_pending": False,
+        "inserted": 0,
+        "updated": 0,
+        "ignored": 0,
+        "skipped_unlabeled": 0,
+        "last_event_id": _cursor_last_event_id(conn, node_id),
+        "earliest_available_event_id": None,
+        "max_event_id": None,
+        "max_export_seq": None,
+        "pruned_max_export_seq": None,
+        "error": None,
+        "error_code": None,
+        "error_phase": None,
+        "retryable": None,
+    }
+
+    def _finish(status: str, **fields: Any) -> dict[str, Any]:
+        outcome["status"] = status
+        outcome["pages"] = pages
+        outcome["cursor"] = after
+        outcome["last_event_id"] = _cursor_last_event_id(conn, node_id)
+        outcome.update(fields)
+        return outcome
+
+    def _pending(message: str) -> dict[str, Any]:
+        return _finish(
+            SYNC_STATUS_MORE_PENDING,
+            more_pending=True,
+            error=message,
+            error_code="MORE_PENDING",
+            error_phase="audit_export",
+            retryable=True,
+        )
+
+    deadline = time.monotonic() + float(options["budget"])
+    while True:
+        if pages >= int(options["max_pages"]):
+            return _pending(
+                f"reached the per-node page cap ({options['max_pages']} pages); "
+                "audit data is still pending"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining < 1.0:
+            # Too little budget left to start a meaningful page: stop pending
+            # instead of turning a budget stop into a spurious TIMEOUT.
+            return _pending(
+                f"reached the per-node run budget ({options['budget']:g}s); "
+                "audit data is still pending"
+            )
+        page_after = after
+        proc = ssh_audit_page(
+            node,
+            page_after,
+            page_size=int(options["page_size"]),
+            timeout=min(float(options["timeout"]), remaining),
+            max_stdout_bytes=int(options["stdout_cap"]),
+            stamp_identity=stamp_identity,
+        )
+        meta = parse_export_meta(proc.stderr or "")
+        if isinstance(meta, dict):
+            outcome["earliest_available_event_id"] = meta.get(
+                "earliest_available_event_id"
+            )
+            outcome["max_event_id"] = meta.get("max_event_id")
+            outcome["max_export_seq"] = meta.get("max_export_seq")
+            outcome["pruned_max_export_seq"] = meta.get("pruned_max_export_seq")
+        if proc.returncode == 255:
+            facts = classify_ssh_proc(proc, phase="audit_export")
+            if facts["code"] == "OUTPUT_LIMIT":
+                facts["summary"] = (
+                    "audit page exceeded the configured stdout cap; lower "
+                    "--page-size or raise --stdout-cap"
+                )
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=failure_summary_text(facts),
+                error_code=facts["code"],
+                error_phase=facts["phase"],
+                retryable=facts["retryable"],
+            )
+        if isinstance(meta, dict) and meta.get("error") in (
+            "CURSOR_AHEAD",
+            "CURSOR_EXPIRED",
+        ):
+            return _finish(
+                SYNC_STATUS_EXPIRED
+                if meta["error"] == "CURSOR_EXPIRED"
+                else SYNC_STATUS_ERROR,
+                error=str(meta["error"]),
+            )
+        if proc.returncode != 0:
+            facts = classify_ssh_proc(proc, phase="audit_export")
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=failure_summary_text(facts),
+                error_code=facts["code"],
+                error_phase=facts["phase"],
+                retryable=facts["retryable"],
+            )
+        try:
+            rows = parse_export_jsonl(proc.stdout or "")
+            next_cursor = validate_export_batch(
+                meta,
+                rows,
+                expected_after=page_after,
+                expected_node_id=node_id,
+                expected_instance_id=remote_iid,
+            )
+        except ValueError as exc:
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=str(exc),
+                error_code="PROTOCOL_INVALID",
+                error_phase="audit_export",
+                retryable=False,
+            )
+        try:
+            imported = import_export_jsonl(
+                node_id,
+                remote_iid,
+                rows,
+                now_iso,
+                conn=conn,
+                next_cursor=next_cursor,
+            )
+        except SystemExit as exc:
+            # The page is rejected as a whole; nothing from it is committed.
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=f"audit import rejected the page (exit {exc.code})",
+                error_code="IMPORT_REJECTED",
+                error_phase="audit_import",
+                retryable=False,
+            )
+        except sqlite3.Error as exc:
+            # Locked/full DB: this node fails, previous pages stay committed.
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=f"audit import database error: {exc}",
+                error_code="DATABASE_ERROR",
+                error_phase="audit_import",
+                retryable=True,
+            )
+        pages += 1
+        after = int(imported["last_export_seq"])
+        outcome["inserted"] += int(imported["inserted"])
+        outcome["updated"] += int(imported.get("updated", 0))
+        outcome["ignored"] += int(imported["ignored"])
+        outcome["skipped_unlabeled"] += int(imported["skipped_unlabeled"])
+        max_seq = outcome["max_export_seq"]
+        caught_up = isinstance(max_seq, int) and not isinstance(max_seq, bool) and (
+            after >= max_seq
+        )
+        if caught_up:
+            return _finish(SYNC_STATUS_OK)
+        if after <= page_after:
+            # No forward progress but the remote still reports pending work.
+            return _pending(
+                "remote reports pending audit data but the cursor did not advance"
+            )
+        if max_seq is None and len(rows) < int(options["page_size"]):
+            # No top-of-stream marker and a short page: nothing more to read.
+            return _finish(SYNC_STATUS_OK)
+
+
 def sync_one_node(
     conn: sqlite3.Connection,
     node: dict[str, Any],
     *,
     now_iso: str,
     stamp_identity: bool = False,
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Sync one node. Cursor advances only after a successful import commit.
 
@@ -5738,114 +6130,49 @@ def sync_one_node(
             now_iso=now_iso,
         )
 
-    proc = ssh_audit_export(node, after, stamp_identity=stamp_identity)
-    # Protocol meta is parsed as data; it is never concatenated into a summary.
-    meta = parse_export_meta(proc.stderr or "")
-    earliest = None if meta is None else meta.get("earliest_available_event_id")
-    max_event_id = None if meta is None else meta.get("max_event_id")
-    max_export_seq = None if meta is None else meta.get("max_export_seq")
-    pruned_max = None if meta is None else meta.get("pruned_max_export_seq")
-    meta_error = None
-    if isinstance(meta, dict):
-        raw_err = meta.get("error")
-        if isinstance(raw_err, str) and raw_err.strip():
-            meta_error = raw_err.strip()
-
-    def _fail(
-        status: str,
-        error: Optional[str],
-        *,
-        cursor_status: str = SYNC_STATUS_ERROR,
-        facts: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        last_export_seq = mark_cursor_status(
+    outcome = catch_up_audit_pages(
+        conn,
+        node,
+        now_iso=now_iso,
+        remote_iid=remote_iid,
+        options=options or audit_page_options(None),
+        stamp_identity=stamp_identity,
+    )
+    if outcome["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
+        # Keep the cursor row's failure status truthful, but never roll back
+        # pages that were already committed in their own transactions.
+        mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=remote_iid,
-            status=cursor_status,
+            status=(
+                SYNC_STATUS_EXPIRED
+                if outcome["status"] == SYNC_STATUS_EXPIRED
+                else SYNC_STATUS_ERROR
+            ),
             now_iso=now_iso,
         )
-        return _sync_result(
-            node,
-            status=status,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=last_export_seq,
-            instance_id=remote_iid,
-            error=error,
-            error_code=(facts or {}).get("code"),
-            error_phase=(facts or {}).get("phase"),
-            retryable=(facts or {}).get("retryable"),
-            earliest=earliest,
-            max_event_id=max_event_id,
-            max_export_seq=max_export_seq,
-            pruned_max_export_seq=pruned_max,
-        )
-
-    if proc.returncode == 255:
-        facts = classify_ssh_proc(proc, phase="audit_export")
-        return _fail(SYNC_STATUS_ERROR, failure_summary_text(facts), facts=facts)
-
-    if meta_error == "CURSOR_EXPIRED":
-        return _fail(
-            SYNC_STATUS_EXPIRED,
-            "CURSOR_EXPIRED",
-            cursor_status=SYNC_STATUS_EXPIRED,
-        )
-
-    if meta_error == "CURSOR_AHEAD":
-        return _fail(SYNC_STATUS_ERROR, "CURSOR_AHEAD")
-
-    if proc.returncode != 0:
-        facts = classify_ssh_proc(proc, phase="audit_export")
-        return _fail(SYNC_STATUS_ERROR, failure_summary_text(facts), facts=facts)
-
-    try:
-        rows = parse_export_jsonl(proc.stdout or "")
-    except ValueError as exc:
-        return _fail(SYNC_STATUS_ERROR, str(exc))
-
-    try:
-        next_cursor = validate_export_batch(
-            meta,
-            rows,
-            expected_after=after,
-            expected_node_id=node_id,
-            expected_instance_id=remote_iid,
-        )
-    except ValueError as exc:
-        return _fail(SYNC_STATUS_ERROR, str(exc))
-
-    try:
-        imported = import_export_jsonl(
-            node_id,
-            remote_iid,
-            rows,
-            now_iso,
-            conn=conn,
-            next_cursor=next_cursor,
-        )
-    except SystemExit as exc:
-        return _fail(
-            SYNC_STATUS_ERROR,
-            f"audit import failed (exit {exc.code})",
-        )
-
     return _sync_result(
         node,
-        status=SYNC_STATUS_OK,
+        status=outcome["status"],
         after=after,
-        last_event_id=int(imported["last_event_id"]),
-        last_export_seq=int(imported["last_export_seq"]),
-        inserted=int(imported["inserted"]),
-        updated=int(imported.get("updated", 0)),
-        ignored=int(imported["ignored"]),
-        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        last_event_id=int(outcome["last_event_id"]),
+        last_export_seq=int(outcome["cursor"]),
+        inserted=int(outcome["inserted"]),
+        updated=int(outcome["updated"]),
+        ignored=int(outcome["ignored"]),
+        skipped_unlabeled=int(outcome["skipped_unlabeled"]),
         instance_id=remote_iid,
-        earliest=earliest,
-        max_event_id=max_event_id,
-        max_export_seq=max_export_seq,
-        pruned_max_export_seq=pruned_max,
+        error=outcome["error"],
+        error_code=outcome["error_code"],
+        error_phase=outcome["error_phase"],
+        retryable=outcome["retryable"],
+        earliest=outcome["earliest_available_event_id"],
+        max_event_id=outcome["max_event_id"],
+        max_export_seq=outcome["max_export_seq"],
+        pruned_max_export_seq=outcome["pruned_max_export_seq"],
+        audit_pages=int(outcome["pages"]),
+        more_pending=bool(outcome["more_pending"]),
     )
 
 
@@ -5864,8 +6191,14 @@ def sync_full_one_node(
     node: dict[str, Any],
     *,
     now_iso: str,
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Pull identity/status/users/audit → one DB txn; fail-closed; no cursor advance on error."""
+    """Bounded audit catch-up, then one snapshot txn (FR-02 contract).
+
+    The audit pages commit in their own transactions; the identity/status/users
+    snapshot commits last. A snapshot failure keeps every committed audit page
+    and the previous snapshot, and the row reports that audit advanced.
+    """
     node_id = node["node_id"]
     after = _cursor_last_export_seq(conn, node_id)
     life = node_lifecycle_status(node)
@@ -5920,67 +6253,46 @@ def sync_full_one_node(
             last_export_seq=after,
             error=uerr,
         )
-    proc = ssh_audit_export(node, after)
-    meta = parse_export_meta(proc.stderr or "")
-    if proc.returncode == 255:
-        facts = classify_ssh_proc(proc, phase="audit_export")
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=failure_summary_text(facts),
-            error_code=facts["code"],
-            error_phase=facts["phase"],
-            retryable=facts["retryable"],
-        )
-    if isinstance(meta, dict) and meta.get("error") in (
-        "CURSOR_AHEAD",
-        "CURSOR_EXPIRED",
-    ):
-        return _sync_result(
-            node,
+    # FR-02: bounded audit catch-up first, each accepted page committed in its
+    # own transaction. The audit rows no longer ride inside the snapshot txn,
+    # so a later snapshot failure keeps every committed page (the snapshot
+    # itself stays at its previous value).
+    audit = catch_up_audit_pages(
+        conn,
+        node,
+        now_iso=now_iso,
+        remote_iid=remote_iid,
+        options=options or audit_page_options(None),
+    )
+    if audit["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
+        mark_cursor_status_best_effort(
+            conn,
+            node_id,
+            instance_id=remote_iid,
             status=(
                 SYNC_STATUS_EXPIRED
-                if meta["error"] == "CURSOR_EXPIRED"
+                if audit["status"] == SYNC_STATUS_EXPIRED
                 else SYNC_STATUS_ERROR
             ),
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=str(meta["error"]),
+            now_iso=now_iso,
         )
-    if proc.returncode != 0:
-        facts = classify_ssh_proc(proc, phase="audit_export")
         return _sync_result(
             node,
-            status=SYNC_STATUS_ERROR,
+            status=audit["status"],
             after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=failure_summary_text(facts),
-            error_code=facts["code"],
-            error_phase=facts["phase"],
-            retryable=facts["retryable"],
-        )
-    try:
-        rows = parse_export_jsonl(proc.stdout or "")
-        next_cursor = validate_export_batch(
-            meta,
-            rows,
-            expected_after=after,
-            expected_node_id=node_id,
-            expected_instance_id=remote_iid,
-        )
-    except ValueError as exc:
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=str(exc),
+            last_event_id=int(audit["last_event_id"]),
+            last_export_seq=int(audit["cursor"]),
+            inserted=int(audit["inserted"]),
+            updated=int(audit["updated"]),
+            ignored=int(audit["ignored"]),
+            skipped_unlabeled=int(audit["skipped_unlabeled"]),
+            instance_id=remote_iid,
+            error=audit["error"],
+            error_code=audit["error_code"],
+            error_phase=audit["error_phase"],
+            retryable=audit["retryable"],
+            audit_pages=int(audit["pages"]),
+            more_pending=bool(audit["more_pending"]),
         )
     clock_state, _, skew = clock_skew_from_identity_window(
         identity_started_utc, identity_finished_utc, ident
@@ -6041,29 +6353,37 @@ def sync_full_one_node(
                 ssh_host=_optional_text(node.get("ssh_host")),
                 now_iso=now_iso,
             )
-        _sync_full_fail_after("audit-import")
-        imported = import_audit_batch(
-            node_id,
-            remote_iid,
-            rows,
-            now_iso,
-            conn=conn,
-            next_cursor=next_cursor,
-            manage_txn=False,
-        )
+        _sync_full_fail_after("snapshot")
         conn.commit()
     except BaseException as exc:
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
+        # Contract change (FR-02): audit pages are already committed, the
+        # snapshot stays at its previous value, and the report says so.
+        progressed = (
+            f"audit advanced {audit['pages']} page(s) to cursor "
+            f"{audit['cursor']}; full snapshot refresh did not complete"
+        )
+        _emit_sync_warning(node, progressed)
         return _sync_result(
             node,
             status=SYNC_STATUS_ERROR,
             after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=f"full sync txn failed: {exc}",
+            last_event_id=int(audit["last_event_id"]),
+            last_export_seq=int(audit["cursor"]),
+            inserted=int(audit["inserted"]),
+            updated=int(audit["updated"]),
+            ignored=int(audit["ignored"]),
+            skipped_unlabeled=int(audit["skipped_unlabeled"]),
+            instance_id=remote_iid,
+            error=f"full sync snapshot txn failed: {exc}; {progressed}",
+            error_code="DATABASE_ERROR",
+            error_phase="snapshot",
+            retryable=True,
+            audit_pages=int(audit["pages"]),
+            more_pending=bool(audit["more_pending"]),
         )
     # 3) portable history after successful DB commit (F7-1); not pseudo-atomic
     if pending_history_events:
@@ -6079,26 +6399,38 @@ def sync_full_one_node(
                 node,
                 status=SYNC_STATUS_ERROR,
                 after=after,
-                last_event_id=int(imported["last_event_id"]),
-                last_export_seq=int(imported["last_export_seq"]),
-                inserted=int(imported["inserted"]),
-                updated=int(imported.get("updated", 0)),
-                ignored=int(imported["ignored"]),
-                skipped_unlabeled=int(imported["skipped_unlabeled"]),
+                last_event_id=int(audit["last_event_id"]),
+                last_export_seq=int(audit["cursor"]),
+                inserted=int(audit["inserted"]),
+                updated=int(audit["updated"]),
+                ignored=int(audit["ignored"]),
+                skipped_unlabeled=int(audit["skipped_unlabeled"]),
                 instance_id=remote_iid,
                 error=f"history flush failed: {detail}",
+                audit_pages=int(audit["pages"]),
+                more_pending=bool(audit["more_pending"]),
             )
     return _sync_result(
         node,
-        status=SYNC_STATUS_OK,
+        status=(
+            SYNC_STATUS_MORE_PENDING
+            if audit["more_pending"]
+            else SYNC_STATUS_OK
+        ),
         after=after,
-        last_event_id=int(imported["last_event_id"]),
-        last_export_seq=int(imported["last_export_seq"]),
-        inserted=int(imported["inserted"]),
-        updated=int(imported.get("updated", 0)),
-        ignored=int(imported["ignored"]),
-        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        last_event_id=int(audit["last_event_id"]),
+        last_export_seq=int(audit["cursor"]),
+        inserted=int(audit["inserted"]),
+        updated=int(audit["updated"]),
+        ignored=int(audit["ignored"]),
+        skipped_unlabeled=int(audit["skipped_unlabeled"]),
         instance_id=remote_iid,
+        error=audit["error"],
+        error_code=audit["error_code"],
+        error_phase=audit["error_phase"],
+        retryable=audit["retryable"],
+        audit_pages=int(audit["pages"]),
+        more_pending=bool(audit["more_pending"]),
     )
 
 
@@ -6136,6 +6468,17 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
             )
             if row.get("remediation"):
                 remediations.append(str(row["remediation"]))
+        elif row["status"] == SYNC_STATUS_MORE_PENDING:
+            lines.append(
+                f"  MORE_PENDING after={row.get('after')} "
+                f"cursor={row.get('last_export_seq')} "
+                f"pages={row.get('audit_pages', 0)}"
+            )
+            if row.get("error"):
+                lines.append(f"  {row['error']}")
+            lines.append(
+                "  audit is not caught up; rerun sync before retire/replace"
+            )
         elif row["status"] == SYNC_STATUS_ERROR and row.get("error"):
             lines.append(f"  ERROR: {row['error']}")
             if row.get("error_code"):
@@ -6152,16 +6495,21 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
 
 
 def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate sync rows. MORE_PENDING is never success (FR-02)."""
     failed = [
         row
         for row in rows
-        if row.get("status") in (SYNC_STATUS_EXPIRED, SYNC_STATUS_ERROR)
+        if row.get("status")
+        in (SYNC_STATUS_EXPIRED, SYNC_STATUS_ERROR, SYNC_STATUS_MORE_PENDING)
     ]
     state = OP_SUCCESS if not failed else OP_PARTIAL
     remediation = [
         row["remediation"]
         for row in rows
         if row.get("remediation")
+    ]
+    pending = [
+        row["name"] for row in rows if row.get("more_pending")
     ]
     return {
         "schema_version": SYNC_JSON_SCHEMA_VERSION,
@@ -6170,6 +6518,8 @@ def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "state": state,
         "nodes": rows,
         "remediation": remediation,
+        # Names only; never a computed "remaining rows" number.
+        "more_pending": pending,
     }
 
 
@@ -6185,6 +6535,7 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     include_all = bool(getattr(args, "all", False))
     as_json = bool(getattr(args, "as_json", False))
     now_iso = format_utc(datetime.now(timezone.utc))
+    options = audit_page_options(args)
 
     if reseed_name:
         validate_name(reseed_name)
@@ -6210,15 +6561,14 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     f"reseed {reseed_name}: local audit_events and "
                     "daily_usage deleted; cursor=0\n"
                 )
-        rows = [
-            sync_one_node(
-                conn,
-                node,
-                now_iso=now_iso,
-                stamp_identity=bool(reseed_name and node.get("name") == reseed_name),
-            )
-            for node in targets
-        ]
+        rows = sync_nodes_isolated(
+            conn,
+            targets,
+            sync_one=sync_one_node,
+            now_iso=now_iso,
+            options=options,
+            stamp_identity_for=reseed_name,
+        )
     finally:
         conn.close()
 
@@ -6237,12 +6587,16 @@ def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]
         include_all=bool(getattr(args, "all", False)),
         reseed_name=None,
     )
+    options = audit_page_options(args)
     conn = open_cache_for_sync()
     try:
-        rows = [
-            sync_full_one_node(conn, n, now_iso=now_iso)
-            for n in targets
-        ]  # sequential; no --jobs
+        rows = sync_nodes_isolated(
+            conn,
+            targets,
+            sync_one=sync_full_one_node,
+            now_iso=now_iso,
+            options=options,
+        )  # sequential; no --jobs
     finally:
         conn.close()
     doc = sync_report(rows)
@@ -8102,10 +8456,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="incremental audit import from enabled nodes",
         description=(
             "For each enabled node (or --node NAME / --all), read the "
-            "durable sync_cursor (0 if none), SSH "
-            "`vcl audit export --after CURSOR --jsonl`, and import via "
-            "INSERT OR IGNORE in one transaction. The cursor advances "
-            "only after a successful import COMMIT. Remote CURSOR_EXPIRED "
+            "durable sync_cursor (0 if none), then page through "
+            "`vcl audit export --after CURSOR --limit N --jsonl` with a "
+            "per-page deadline, a per-page stdout ceiling and a total run "
+            "budget. Each accepted page is validated as a complete Protocol "
+            "v2 batch and imported in its own transaction (audit rows, daily "
+            "summary and durable cursor together), so a rejected page keeps "
+            "every earlier page. A run that stops inside its page cap or "
+            "budget with data still pending reports MORE_PENDING, which is "
+            "not success (exit 2) and blocks retire/replace. The cursor "
+            "advances only after a successful import COMMIT. Remote "
+            "CURSOR_EXPIRED "
             "(exit 3, meta.error=CURSOR_EXPIRED) does not import; "
             "status=expired and overall exit 2. Remote CURSOR_AHEAD "
             "(exit 3, meta.error=CURSOR_AHEAD: after > MAX(event_id)) "
@@ -8147,6 +8508,65 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "identity+health+users+audit delta → cache "
             "(0.4.2; default sync stays legacy)"
+        ),
+    )
+    p_sync.add_argument(
+        "--page-size",
+        dest="page_size",
+        type=int,
+        default=SYNC_AUDIT_PAGE_SIZE_DEFAULT,
+        metavar="N",
+        help=(
+            "audit rows per bounded page, 1.."
+            f"{SYNC_AUDIT_PAGE_SIZE_MAX} "
+            f"(default {SYNC_AUDIT_PAGE_SIZE_DEFAULT}; 5000 is the largest "
+            "live-validated page)"
+        ),
+    )
+    p_sync.add_argument(
+        "--max-pages",
+        dest="max_pages",
+        type=int,
+        default=SYNC_AUDIT_MAX_PAGES_DEFAULT,
+        metavar="N",
+        help=(
+            "stop a node after N committed pages "
+            f"(default {SYNC_AUDIT_MAX_PAGES_DEFAULT}); status becomes "
+            "MORE_PENDING, never success"
+        ),
+    )
+    p_sync.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=SYNC_AUDIT_TIMEOUT_DEFAULT,
+        metavar="SECONDS",
+        help=(
+            "per-page SSH deadline "
+            f"(default {SYNC_AUDIT_TIMEOUT_DEFAULT:.0f}s)"
+        ),
+    )
+    p_sync.add_argument(
+        "--stdout-cap",
+        dest="stdout_cap",
+        type=int,
+        default=SYNC_AUDIT_STDOUT_CAP_DEFAULT,
+        metavar="BYTES",
+        help=(
+            "per-page stdout ceiling in bytes "
+            f"(default {SYNC_AUDIT_STDOUT_CAP_DEFAULT}); an oversized page is "
+            "rejected whole"
+        ),
+    )
+    p_sync.add_argument(
+        "--budget",
+        dest="budget",
+        type=float,
+        default=SYNC_AUDIT_BUDGET_DEFAULT,
+        metavar="SECONDS",
+        help=(
+            "total wall-clock budget per node covering SSH, lock wait and "
+            f"import (default {SYNC_AUDIT_BUDGET_DEFAULT:.0f}s)"
         ),
     )
 

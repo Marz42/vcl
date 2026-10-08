@@ -49,6 +49,8 @@
 
 随后使用`tmp/fleet-observation-finalize.py refresh-cache`调用原0.5.0完整identity/status/users/audit事务管线，审计仍限制每Node≤5000条、stdout≤16MiB、60秒deadline；缓存刷新结果如下。版本来源核对单独记录，保留最初UNKNOWN与后续查证的区别。
 
+> 工具侧的分页、deadline、stdout上限与MORE_PENDING现已进入正式`sync`/`sync --full`管线（FR-02，见[FR-02记录](../evidence/0.5.3/FR02_BOUNDED_SYNC.md)）：默认每页1000、每页60秒、stdout 16MiB、每节点300页与3600秒预算（`--page-size`/`--timeout`/`--stdout-cap`/`--max-pages`/`--budget`）。预算或页数用尽而仍有积压时状态为`MORE_PENDING`（PARTIAL、退出码2，阻止`retire`/`replace`），不再汇总成成功；被拒页整页不导入，已提交页与游标保留。上面回传中的`CAUGHT_UP_CLOSED_WINDOW`只描述当次已关闭连接窗口，不代表以后不会再有新记录。
+
 ## 2026-10-08 完整缓存刷新回传
 
 用户执行`refresh-cache --page-size 5000 --timeout 60`，本地数据库备份OK；七台均返回CACHE_REFRESH OK，汇总nodes=7、not_complete=0。缓存中的SSH、proxy、accounting、clock七台全部OK。统一cached_last_sync_at为`2026-10-07T17:06:51Z`，即Asia/Shanghai的2026-10-08 01:06:51。
