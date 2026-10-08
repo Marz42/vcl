@@ -2,7 +2,7 @@
 
 主线 `main`：**Controller/Node 0.5.0**；当前开发分支 `codex/0.5.1`：**Controller/Node 0.5.3 候选**；最低兼容 Node **0.3.1**。0.5.x 的本地收口、当前修复与远端 CI 适用范围见[阶段记录](evidence/0.5.3/PHASE_05_CLOSEOUT.md)。实机 / soak / H05 仍待验收；按 2026-10-07 用户指令停在 0.6.x 之前。旧分支见[清理记录](plans/BRANCH_CLEANUP_2026-09-28.md)。
 
-2026-10-08：现场混合版本Fleet已恢复七台管理面与审计观测，见[恢复记录](operations/fleet-recovery-status.md)和[脱敏汇总](operations/fleet-recovery-20261008.json)。恢复暴露的凭据引用与无界同步P1、认证分类与错误摘要P2尚待正式修复，统一跟踪于[0.5.x可靠性待办](plans/Fleet_Recovery_Reliability_Backlog.md)；临时工具恢复成功不关闭产品缺陷，也不替代新候选验收。
+2026-10-08：现场混合版本Fleet已恢复七台管理面与审计观测，见[恢复记录](operations/fleet-recovery-status.md)和[脱敏汇总](operations/fleet-recovery-20261008.json)。恢复暴露的凭据引用P1（FR-01）已在本地修复并回归，见[FR-01记录](evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)；无界同步P1与认证分类/错误摘要P2仍待正式修复，统一跟踪于[0.5.x可靠性待办](plans/Fleet_Recovery_Reliability_Backlog.md)。临时工具恢复成功不关闭产品缺陷，本地修复也不替代新候选的远端CI与现场验收。
 
 2026-10-04 实现 **0.5.2 Findings / Audit / Anomalies**，M1～M3离线验证通过，M4正式合同/版本/打包收口见[当前记录](evidence/0.5.2/M4.md)。**Human Gate H05/H06/H07 = PENDING HUMAN；实机与 soak = PENDING LIVE。**按[最新用户指令](plans/MANUAL_VALIDATION_DEFERRED.md)跳过等待并记录，正式验收状态保留。
 

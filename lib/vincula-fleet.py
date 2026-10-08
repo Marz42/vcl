@@ -500,6 +500,9 @@ bind_openssh_default = _AC.bind_openssh_default
 resolve_binding = _AC.resolve_binding
 list_bindings = _AC.list_bindings
 verify_bindings = _AC.verify_bindings
+allocate_node_credential_ref = _AC.allocate_node_credential_ref
+plan_node_credential_binding = _AC.plan_node_credential_binding
+affected_binding_consumers = _AC.affected_binding_consumers
 
 
 def ssh_argv(
@@ -2109,13 +2112,38 @@ def require_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
     return node
 
 
-def _bind_identity_for_workspace(
-    path: str, *, ref: Optional[str] = None
+def _commit_node_credential_ref(name: str, purpose: str, path: str) -> str:
+    """Bind ``path`` under a fresh per-node/per-purpose ref and return it (FR-01).
+
+    Copy-on-write: the binding file is written before the registry references
+    the ref, and an existing ref other consumers may resolve is never
+    re-targeted. A failed later registry commit may leave an unreferenced
+    binding, which is safe; the reverse order is not.
+    """
+    ref = allocate_node_credential_ref(name, purpose)
+    bind_identity_file(ref, path)
+    return ref
+
+
+def _apply_node_credential(
+    node: dict[str, Any],
+    purpose: str,
+    path: str,
+    *,
+    name: Optional[str] = None,
 ) -> str:
-    """Machine-local binding via access bind flow; return credential ref (F7-3)."""
-    key = _optional_text(ref) or DEFAULT_ADMIN_CREDENTIAL_REF
-    bind_identity_file(key, path)
-    return key
+    """Plan (and if needed write) the binding, then point ``node`` at it."""
+    view = dict(node)
+    if name and not _optional_text(view.get("name")):
+        view["name"] = name
+    ref, needs_write = plan_node_credential_binding(view, purpose, path)
+    if needs_write:
+        bind_identity_file(ref, path)
+    key = "admin_credential_ref" if purpose == "admin" else "observe_credential_ref"
+    node[key] = ref
+    if purpose == "admin":
+        node.pop("identity_file", None)
+    return ref
 
 
 def add_node(
@@ -2214,29 +2242,29 @@ def cmd_init() -> int:
 
 def _node_identity_binding(
     args: argparse.Namespace,
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Resolve --identity-file for SSH vs registry (F7-3).
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve --identity-file for SSH vs registry (F7-3, FR-01).
 
-    Returns ``(ssh_identity, reg_identity, admin_credential_ref)``.
+    Returns ``(ssh_identity, reg_identity)``. Workspace credential refs are
+    committed by the caller only after remote verification (or, for the
+    offline register path, immediately before the registry write); nothing is
+    bound during this resolve step.
     """
     ssh_identity: Optional[str] = None
     reg_identity: Optional[str] = None
-    admin_ref: Optional[str] = None
     raw_ident = _optional_text(getattr(args, "identity_file", None))
     if raw_ident:
         ssh_identity = validate_identity_file(raw_ident, must_exist=True)
-        if workspace_trust_active():
-            admin_ref = _bind_identity_for_workspace(ssh_identity)
-        else:
+        if not workspace_trust_active():
             reg_identity = ssh_identity
-    return ssh_identity, reg_identity, admin_ref
+    return ssh_identity, reg_identity
 
 
 @with_fleet_op_lock
 def cmd_node_adopt(args: argparse.Namespace) -> int:
     """SSH identity verify + register (D49). Non-interactive requires --host-key (D34)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, reg_identity = _node_identity_binding(args)
     extra, batch = prepare_ssh_host_key(
         ssh_host, ssh_port, getattr(args, "host_key", None)
     )
@@ -2263,6 +2291,13 @@ def cmd_node_adopt(args: argparse.Namespace) -> int:
     if want_id and want_id != node_id:
         die(f"remote node_id {node_id} does not match --node-id {want_id}")
     registry = load_registry()
+    # FR-01: bind only after the remote identity verified, and only then let
+    # the registry reference the ref.
+    admin_ref = (
+        _commit_node_credential_ref(args.name, "admin", ssh_identity)
+        if ssh_identity and workspace_trust_active()
+        else None
+    )
     add_node(
         registry,
         node_id=node_id,
@@ -2282,13 +2317,19 @@ def cmd_node_adopt(args: argparse.Namespace) -> int:
 def cmd_node_register(args: argparse.Namespace) -> int:
     """Registry-only register; no SSH (D49)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    _ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, reg_identity = _node_identity_binding(args)
     node_id = getattr(args, "node_id", None)
     if not node_id:
         if getattr(args, "offline", False):
             die("--offline requires --node-id UUID", 2)
         die("register requires --node-id UUID", 2)
     registry = load_registry()
+    # FR-01: no SSH here, so the binding is committed at registry-write time.
+    admin_ref = (
+        _commit_node_credential_ref(args.name, "admin", ssh_identity)
+        if ssh_identity and workspace_trust_active()
+        else None
+    )
     add_node(
         registry,
         node_id=node_id,
@@ -2315,7 +2356,15 @@ def cmd_node_add(args: argparse.Namespace) -> int:
 def cmd_node_provision(args: argparse.Namespace) -> int:
     """Fresh VPS install+verify+register via lib/provision.py (D33/D35)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    ssh_identity, _reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, _reg_identity = _node_identity_binding(args)
+    # FR-01: plan the ref now (no binding yet); the workspace binding is
+    # written inside run_provision at registry-commit time, after install and
+    # remote verify succeeded.
+    admin_ref: Optional[str] = None
+    bind_admin_at_commit = False
+    if ssh_identity and workspace_trust_active():
+        admin_ref = allocate_node_credential_ref(args.name, "admin")
+        bind_admin_at_commit = True
     vcl = _optional_text(getattr(args, "vcl_server", None)) or os.environ.get(
         "VCL_SERVER"
     )
@@ -2338,6 +2387,7 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
         identity_file=ssh_identity,
         host_key=getattr(args, "host_key", None),
         admin_credential_ref=admin_ref,
+        bind_admin_at_commit=bind_admin_at_commit,
         vcl_server=vcl,
         skip_sync=bool(getattr(args, "no_sync", False)),
         legacy_uri_file=legacy_uri,
@@ -2441,23 +2491,18 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     elif identity_raw:
         resolved = validate_identity_file(identity_raw, must_exist=True)
         if workspace_trust_active():
-            # F7-3: machine-local binding only; registry keeps refs.
-            existing = _optional_text(node.get("admin_credential_ref"))
-            ref = _bind_identity_for_workspace(resolved, ref=existing)
-            node["admin_credential_ref"] = ref
+            # F7-3/FR-01: machine-local binding only; registry keeps refs.
+            # A rotation gets its own ref so other consumers keep working.
+            _apply_node_credential(node, "admin", resolved)
             # Do not implicitly set observe_credential_ref (Spec §7.2).
-            node.pop("identity_file", None)
         else:
             node["identity_file"] = resolved
     if clear_observe:
         node.pop("observe_credential_ref", None)
     elif observe_identity:
-        resolved = validate_identity_file(observe_identity, must_exist=True)
         if not workspace_trust_active():
             die("--observe-identity-file requires an active workspace")
-        existing = _optional_text(node.get("observe_credential_ref"))
-        ref = _bind_identity_for_workspace(resolved, ref=existing)
-        node["observe_credential_ref"] = ref
+        _apply_node_credential(node, "observe", observe_identity)
     elif observe_ref:
         # Ref must already be bound on this machine (or operator accepts pending).
         node["observe_credential_ref"] = observe_ref
@@ -2886,15 +2931,14 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     if ident_path:
         resolved = validate_identity_file(ident_path, must_exist=True)
         if workspace_trust_active():
-            # SSH uses the path via binding after refs are set on new_node.
-            existing = _optional_text(new_node.get("admin_credential_ref"))
-            replace_admin_ref = _bind_identity_for_workspace(
-                resolved, ref=existing
+            # FR-01: give the new endpoint its own ref. The old ref stays
+            # untouched so old_node keeps using the old key for the final
+            # sync and backup below.
+            replace_admin_ref = _apply_node_credential(
+                new_node, "admin", resolved, name=args.name
             )
-            new_node["admin_credential_ref"] = replace_admin_ref
             # observe must be set explicitly after replace if needed
             new_node.pop("observe_credential_ref", None)
-            new_node.pop("identity_file", None)
         else:
             new_node["identity_file"] = resolved
     old_instance_id = _cursor_instance_id(node["node_id"])
@@ -7236,11 +7280,23 @@ def cmd_access_list(_args: argparse.Namespace) -> int:
 
 
 def cmd_access_bind(args: argparse.Namespace) -> int:
+    """Explicit shared-ref entry point (FR-01).
+
+    This is the only place that intentionally re-targets an existing ref;
+    node-level rotation never lands here. Consumers are reported so an
+    operator can see the blast radius.
+    """
     ref = str(args.ref)
+    consumers = affected_binding_consumers(ref)
     if getattr(args, "openssh_default", False):
         bind_openssh_default(ref)
     else:
         bind_identity_file(ref, str(args.identity_file))
+    if consumers:
+        sys.stderr.write(
+            f"note: {ref} is shared by {', '.join(consumers)}; "
+            f"all of them now use this credential\n"
+        )
     return 0
 
 

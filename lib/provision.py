@@ -1021,6 +1021,7 @@ def run_provision(
     identity_file: Optional[str] = None,
     host_key: Optional[str] = None,
     admin_credential_ref: Optional[str] = None,
+    bind_admin_at_commit: bool = False,
     vcl_server: Optional[str] = None,
     skip_preflight: bool = False,
     skip_sync: bool = False,
@@ -1247,6 +1248,12 @@ def run_provision(
         _progress("register")
 
         def _commit() -> None:
+            # FR-01: write the workspace binding first (after remote install
+            # and verify), then let the registry reference it. A failure here
+            # leaves the old registry intact and at worst an unreferenced
+            # binding; the registry never points at a missing binding.
+            if bind_admin_at_commit and admin_ref and identity_file:
+                host.bind_identity_file(admin_ref, identity_file)
             reg = host.load_registry()
             host.add_node(
                 reg,

@@ -147,6 +147,94 @@ def bind_openssh_default(ref: str) -> dict[str, Any]:
     return data["bindings"][key]
 
 
+_REF_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+CREDENTIAL_PURPOSES = ("admin", "observe")
+ADMIN_REF_KEY = "admin_credential_ref"
+OBSERVE_REF_KEY = "observe_credential_ref"
+
+
+def credential_ref_slug(name: str) -> str:
+    """Node name reduced to a stable, ref-safe token (FR-01)."""
+    slug = _REF_SLUG_RE.sub("-", (str(name) if name else "").strip()).strip("-._")
+    return slug or "node"
+
+
+def _referencing_nodes(ref: str) -> list[tuple[str, str]]:
+    """``(node_name, purpose)`` pairs whose registry record uses ``ref``."""
+    pairs: list[tuple[str, str]] = []
+    registry = _host.load_registry()
+    for node in registry.get("nodes") or []:
+        name = str(node.get("name") or "")
+        if _host._optional_text(node.get(ADMIN_REF_KEY)) == ref:
+            pairs.append((name, "admin"))
+        if _host._optional_text(node.get(OBSERVE_REF_KEY)) == ref:
+            pairs.append((name, "observe"))
+    return pairs
+
+
+def affected_binding_consumers(ref: str) -> list[str]:
+    """Human-readable consumers of a ref; used to flag explicit sharing."""
+    return [f"{name}:{purpose}" for name, purpose in _referencing_nodes(ref)]
+
+
+def _taken_credential_refs() -> set[str]:
+    """Every ref already bound locally or referenced by the registry."""
+    taken = set(list_bindings())
+    for node in _host.load_registry().get("nodes") or []:
+        for key in (ADMIN_REF_KEY, OBSERVE_REF_KEY):
+            value = _host._optional_text(node.get(key))
+            if value:
+                taken.add(value)
+    return taken
+
+
+def allocate_node_credential_ref(name: str, purpose: str) -> str:
+    """Return a fresh, unused ref for one node+purpose (FR-01).
+
+    Copy-on-write: a rotation must never re-target a ref another node or the
+    other purpose may still resolve, so an in-use name is never reused.
+    """
+    if purpose not in CREDENTIAL_PURPOSES:
+        _host.die(f"invalid credential purpose: {purpose}")
+    taken = _taken_credential_refs()
+    base = f"{credential_ref_slug(name)}-{purpose}"
+    if base not in taken:
+        return base
+    index = 2
+    while f"{base}-{index}" in taken:
+        index += 1
+    return f"{base}-{index}"
+
+
+def plan_node_credential_binding(
+    node: dict[str, Any], purpose: str, path: str
+) -> tuple[str, bool]:
+    """Plan the ref for ``node``/``purpose`` holding ``path`` (FR-01).
+
+    Returns ``(ref, needs_write)``. Unchanged key on an unshared ref keeps the
+    ref (no write); anything else gets a brand-new ref so every existing
+    consumer keeps its own credential.
+    """
+    if purpose not in CREDENTIAL_PURPOSES:
+        _host.die(f"invalid credential purpose: {purpose}")
+    resolved = validate_identity_file(str(path), must_exist=True)
+    key = ADMIN_REF_KEY if purpose == "admin" else OBSERVE_REF_KEY
+    current = _host._optional_text(node.get(key))
+    if current:
+        binding = list_bindings().get(current)
+        if isinstance(binding, dict) and binding.get("type") == "identity_file":
+            if binding.get("path") == resolved:
+                name = node.get("name")
+                shared = [
+                    pair
+                    for pair in _referencing_nodes(current)
+                    if pair != (name, purpose)
+                ]
+                if not shared:
+                    return current, False
+    return allocate_node_credential_ref(str(node.get("name") or ""), purpose), True
+
+
 def resolve_binding(ref: str) -> dict[str, Any]:
     key = _validate_credential_ref(ref)
     binding = load_bindings().get("bindings", {}).get(key)

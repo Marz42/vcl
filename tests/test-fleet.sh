@@ -11730,7 +11730,7 @@ raw = (home / "fleet.json").read_text(encoding="utf-8")
 assert '"identity_file"' not in raw and "'identity_file'" not in raw, raw
 n = reg["nodes"][0]
 assert "identity_file" not in n, n
-assert n.get("admin_credential_ref") == "admin-default", n
+assert n.get("admin_credential_ref") == "n-admin", n
 assert "observe_credential_ref" not in n, n  # must set observe explicitly
 print("ok")
 PY
@@ -11740,20 +11740,21 @@ else
   fail "F7-3 T1 add: fleet.json has refs, no identity_file"
 fi
 
+# FR-01: explicit sharing is still possible, but only via an explicit ref.
 assert_success "F7-3 T1 explicit observe=admin via node set" \
-  fleet node set n --observe-credential-ref admin-default
+  fleet node set n --observe-credential-ref n-admin
 assert_success "F7-3 T1 observe ref set" python3 - "$F73H" <<'PY'
 import json, sys
 from pathlib import Path
 reg = json.loads((Path(sys.argv[1]) / "fleet.json").read_text(encoding="utf-8"))
-assert reg["nodes"][0].get("observe_credential_ref") == "admin-default"
+assert reg["nodes"][0].get("observe_credential_ref") == "n-admin"
 PY
 
 F73_LIST=$(fleet access list)
-if [[ "$F73_LIST" == *"admin-default"* ]] && [[ "$F73_LIST" == *"identity_file"* ]]; then
-  pass "F7-3 T1 access list shows admin-default binding after add"
+if [[ "$F73_LIST" == *"n-admin"* ]] && [[ "$F73_LIST" == *"identity_file"* ]]; then
+  pass "F7-3 T1 access list shows per-node binding after add"
 else
-  fail "F7-3 T1 access list shows admin-default binding after add (${F73_LIST})"
+  fail "F7-3 T1 access list shows per-node binding after add (${F73_LIST})"
 fi
 F73_FID=$(python3 -c 'import json; print(json.load(open("'"$F73H"'/workspace.json"))["fleet_id"])')
 assert_success "F7-3 T1 CONFIG binding file exists" \
@@ -11764,16 +11765,28 @@ assert_failure "F7-3 T1 no identity_file string in fleet.json" \
 assert_success "F7-3 T1 node set --identity-file" \
   fleet node set n --identity-file "$F73_KEY2"
 f73_set_rc=0
-python3 - "$F73H" "$F73_KEY2" <<'PY' || f73_set_rc=$?
+python3 - "$F73H" "$F73_KEY" "$F73_KEY2" "${F73CFG}" <<'PY' || f73_set_rc=$?
 import json, sys
 from pathlib import Path
-home, key = Path(sys.argv[1]), Path(sys.argv[2]).resolve()
+home = Path(sys.argv[1])
+key_old, key_new = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+cfg = Path(sys.argv[4])
 reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
 raw = (home / "fleet.json").read_text(encoding="utf-8")
 assert "identity_file" not in raw, raw
 n = reg["nodes"][0]
 assert "identity_file" not in n, n
-assert n.get("admin_credential_ref") == "admin-default", n
+# FR-01 copy-on-write: rotation gets its own ref; the old ref is untouched.
+assert n.get("admin_credential_ref") == "n-admin-2", n
+assert n.get("observe_credential_ref") == "n-admin", n
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"
+    )
+)["bindings"]
+assert bindings["n-admin"]["path"] == str(key_old), bindings["n-admin"]
+assert bindings["n-admin-2"]["path"] == str(key_new), bindings["n-admin-2"]
 print("ok")
 PY
 if (( f73_set_rc == 0 )); then
@@ -11782,11 +11795,13 @@ else
   fail "F7-3 T1 set: fleet.json still has no identity_file"
 fi
 F73_LIST2=$(fleet access list)
+F73_ABS1=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$F73_KEY")
 F73_ABS2=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$F73_KEY2")
-if [[ "$F73_LIST2" == *"admin-default"* ]] && [[ "$F73_LIST2" == *"$F73_ABS2"* ]]; then
-  pass "F7-3 T1 access list updated binding path after set"
+if [[ "$F73_LIST2" == *"n-admin-2"* ]] && [[ "$F73_LIST2" == *"$F73_ABS2"* ]] \
+  && [[ "$F73_LIST2" == *"$F73_ABS1"* ]]; then
+  pass "F7-3 T1 access list keeps old ref and adds rotated ref"
 else
-  fail "F7-3 T1 access list updated binding path after set (${F73_LIST2})"
+  fail "F7-3 T1 access list keeps old ref and adds rotated ref (${F73_LIST2})"
 fi
 
 assert_success "F7-3 T1 workspace verify PASS" fleet workspace verify
@@ -11821,6 +11836,263 @@ if (( f73_inv_rc == 0 )); then
   pass "F7-3 T1 registry save refuses identity_file when workspace active"
 else
   fail "F7-3 T1 registry save refuses identity_file when workspace active"
+fi
+
+# --- FR-01: per-node/per-purpose credential isolation (copy-on-write) ---
+FR1_SAVED_HOME=$VCL_FLEET_HOME
+FR1_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+FR1_SAVED_CFG=${XDG_CONFIG_HOME:-}
+FR1_SAVED_SSH=${VCL_FLEET_SSH:-}
+FR1_SAVED_KEYSCAN=${VCL_FLEET_SSH_KEYSCAN:-}
+FR1H=$TEST_TMP/fr1-home
+FR1X=$TEST_TMP/fr1-state
+FR1C=$TEST_TMP/fr1-cfg
+FR1K1=$TEST_TMP/fr1-k1
+FR1K2=$TEST_TMP/fr1-k2
+FR1K1B=$TEST_TMP/fr1-k1-rotated
+FR1O1=$TEST_TMP/fr1-o1
+FR1O2=$TEST_TMP/fr1-o2
+rm -rf "$FR1H" "$FR1X" "$FR1C"
+mkdir -p "$FR1H" "$FR1X" "$FR1C"
+for fr1_spec in "$FR1K1:one" "$FR1K2:two" "$FR1K1B:one-rotated" \
+  "$FR1O1:observe-one" "$FR1O2:observe-two"; do
+  printf 'test-only-not-a-real-fr1-key-%s\n' "${fr1_spec#*:}" > "${fr1_spec%%:*}"
+  chmod 600 "${fr1_spec%%:*}"
+done
+export VCL_FLEET_HOME=$FR1H VCL_FLEET_LOCAL_STATE=$FR1X XDG_CONFIG_HOME=$FR1C
+
+assert_success "FR-01 workspace init" fleet workspace init
+assert_success "FR-01 add node one" \
+  fleet node add fr1-one --host 203.0.113.21 --offline \
+    --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0f81" --identity-file "$FR1K1"
+assert_success "FR-01 add node two" \
+  fleet node add fr1-two --host 203.0.113.22 --offline \
+    --node-id "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb81" --identity-file "$FR1K2"
+assert_success "FR-01 observe key for node one" \
+  fleet node set fr1-one --observe-identity-file "$FR1O1"
+assert_success "FR-01 observe key for node two" \
+  fleet node set fr1-two --observe-identity-file "$FR1O2"
+
+fr1_iso_rc=0
+python3 - "$FR1H" "$FR1C" "$FR1K1" "$FR1K2" "$FR1O1" "$FR1O2" <<'PY' || fr1_iso_rc=$?
+import json, sys
+from pathlib import Path
+home, cfg = Path(sys.argv[1]), Path(sys.argv[2])
+k1, k2, o1, o2 = (str(Path(p).resolve()) for p in sys.argv[3:7])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+by = {n["name"]: n for n in reg["nodes"]}
+one, two = by["fr1-one"], by["fr1-two"]
+refs = [one["admin_credential_ref"], one["observe_credential_ref"],
+        two["admin_credential_ref"], two["observe_credential_ref"]]
+assert len(set(refs)) == 4, refs
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"))["bindings"]
+paths = {r: bindings[r]["path"] for r in refs}
+assert paths[one["admin_credential_ref"]] == k1, paths
+assert paths[two["admin_credential_ref"]] == k2, paths
+assert paths[one["observe_credential_ref"]] == o1, paths
+assert paths[two["observe_credential_ref"]] == o2, paths
+print("ok")
+PY
+if (( fr1_iso_rc == 0 )); then
+  pass "FR-01 two nodes x two purposes use four distinct refs"
+else
+  fail "FR-01 two nodes x two purposes use four distinct refs"
+fi
+
+assert_success "FR-01 explicit shared ref via access bind" \
+  fleet access bind fr1-shared --identity-file "$FR1K1"
+assert_success "FR-01 node one observe via shared ref" \
+  fleet node set fr1-one --observe-credential-ref fr1-shared
+assert_success "FR-01 node two observe via shared ref" \
+  fleet node set fr1-two --observe-credential-ref fr1-shared
+assert_success "FR-01 rotate node one admin key" \
+  fleet node set fr1-one --identity-file "$FR1K1B"
+assert_success "FR-01 same-key re-set on node two" \
+  fleet node set fr1-two --identity-file "$FR1K2"
+
+fr1_cow_rc=0
+python3 - "$FR1H" "$FR1C" "$FR1K1" "$FR1K1B" "$FR1K2" <<'PY' || fr1_cow_rc=$?
+import json, sys
+from pathlib import Path
+home, cfg = Path(sys.argv[1]), Path(sys.argv[2])
+k1, k1b, k2 = (str(Path(p).resolve()) for p in sys.argv[3:6])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+by = {n["name"]: n for n in reg["nodes"]}
+one, two = by["fr1-one"], by["fr1-two"]
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"))["bindings"]
+# Rotation is copy-on-write: the node moved to a new ref, the old ref keeps
+# its original credential for every other consumer.
+assert one["admin_credential_ref"] == "fr1-one-admin-2", one
+assert bindings["fr1-one-admin"]["path"] == k1, bindings["fr1-one-admin"]
+assert bindings["fr1-one-admin-2"]["path"] == k1b, bindings["fr1-one-admin-2"]
+# Explicit sharing is preserved and is not rewritten by node-level rotation.
+assert one["observe_credential_ref"] == "fr1-shared", one
+assert two["observe_credential_ref"] == "fr1-shared", two
+assert bindings["fr1-shared"]["path"] == k1, bindings["fr1-shared"]
+# Unchanged key on an unshared ref reuses the ref (no ref churn).
+assert two["admin_credential_ref"] == "fr1-two-admin", two
+assert bindings["fr1-two-admin"]["path"] == k2, bindings["fr1-two-admin"]
+print("ok")
+PY
+if (( fr1_cow_rc == 0 )); then
+  pass "FR-01 rotation is copy-on-write and keeps shared consumers"
+else
+  fail "FR-01 rotation is copy-on-write and keeps shared consumers"
+fi
+
+fr1_reg_before=$(sha256sum "$FR1H/fleet.json" | awk '{print $1}')
+fr1_fid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fleet_id"])' \
+  "$FR1H/workspace.json")
+fr1_bind_file="${FR1C}/vincula/controllers/${fr1_fid}/credential-bindings.json"
+fr1_bind_before=$(sha256sum "$fr1_bind_file" | awk '{print $1}')
+# Keyscan still resolves the pinned host key; only the identity probe fails,
+# so the flow reaches (and stops at) the remote verification step.
+export VCL_FLEET_SSH=/bin/false VCL_FLEET_SSH_KEYSCAN="$FAKE_KEYSCAN"
+assert_failure "FR-01 failed adopt exits non-zero" \
+  fleet node add fr1-three --host 203.0.113.10 --host-key "$LAX_HOST_KEY" \
+    --node-id "cccccccc-cccc-4ccc-8ccc-cccccccc0f81" --identity-file "$FR1K1"
+fr1_after_rc=0
+python3 - "$FR1H" "$fr1_bind_file" "$fr1_reg_before" "$fr1_bind_before" <<'PY' \
+  || fr1_after_rc=$?
+import hashlib, json, sys
+from pathlib import Path
+home, bind_file = Path(sys.argv[1]), Path(sys.argv[2])
+reg_before, bind_before = sys.argv[3], sys.argv[4]
+digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+assert digest(home / "fleet.json") == reg_before, "registry changed by failed adopt"
+assert digest(bind_file) == bind_before, "bindings changed by failed adopt"
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+names = sorted(n["name"] for n in reg["nodes"])
+assert names == ["fr1-one", "fr1-two"], names
+print("ok")
+PY
+if (( fr1_after_rc == 0 )); then
+  pass "FR-01 failed adopt leaves registry and bindings untouched"
+else
+  fail "FR-01 failed adopt leaves registry and bindings untouched"
+fi
+
+# FR-01: a failed replace must not re-target the old ref; the old endpoint
+# keeps its old credential and the candidate ref stays unreferenced.
+FR1K1C=$TEST_TMP/fr1-k1-replace
+printf 'test-only-not-a-real-fr1-key-replace\n' > "$FR1K1C"
+chmod 600 "$FR1K1C"
+assert_failure "FR-01 failed replace exits non-zero" \
+  fleet node replace fr1-one --host 203.0.113.10 --host-key "$LAX_HOST_KEY" \
+    --identity-file "$FR1K1C"
+fr1_rep_rc=0
+python3 - "$FR1H" "$fr1_bind_file" "$FR1K1B" "$FR1K1C" <<'PY' || fr1_rep_rc=$?
+import json, sys
+from pathlib import Path
+home, bind_file = Path(sys.argv[1]), Path(sys.argv[2])
+old_key, new_key = (str(Path(p).resolve()) for p in sys.argv[3:5])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+one = {n["name"]: n for n in reg["nodes"]}["fr1-one"]
+# The registry keeps the old endpoint and the old credential ref...
+assert one["ssh_host"] == "203.0.113.21", one
+assert one["admin_credential_ref"] == "fr1-one-admin-2", one
+bindings = json.loads(bind_file.read_text(encoding="utf-8"))["bindings"]
+# ...the old ref still resolves to the old endpoint's key...
+assert bindings["fr1-one-admin-2"]["path"] == old_key, bindings["fr1-one-admin-2"]
+# ...and the candidate ref is at worst unreferenced, never dangling.
+referenced = {n.get("admin_credential_ref") for n in reg["nodes"]} | {
+    n.get("observe_credential_ref") for n in reg["nodes"]
+}
+candidates = [r for r, b in bindings.items() if b.get("path") == new_key]
+assert candidates, "expected a candidate binding for the new endpoint key"
+assert not (set(candidates) & referenced), "candidate ref is referenced by the registry"
+print("ok")
+PY
+if (( fr1_rep_rc == 0 )); then
+  pass "FR-01 failed replace keeps old credentials and orphans the candidate"
+else
+  fail "FR-01 failed replace keeps old credentials and orphans the candidate"
+fi
+export VCL_FLEET_SSH="$FR1_SAVED_SSH"
+if [[ -n "$FR1_SAVED_KEYSCAN" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="$FR1_SAVED_KEYSCAN"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+
+# FR-01 write order: binding first, registry second. A simulated registry
+# failure may leave an unreferenced binding, never a dangling reference.
+fr1_order_rc=0
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$FR1H" "$FR1C" "$FR1K1C" \
+  "$fr1_bind_file" <<'PY' || fr1_order_rc=$?
+import argparse, importlib.util, json, os, sys
+from pathlib import Path
+module_path, home, cfg, new_key, bind_file = sys.argv[1:6]
+os.environ["VCL_FLEET_HOME"] = home
+os.environ["XDG_CONFIG_HOME"] = cfg
+spec = importlib.util.spec_from_file_location("vf_fr1_order", module_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+before = json.loads(Path(home, "fleet.json").read_text(encoding="utf-8"))
+ref_before = {n["name"]: n.get("admin_credential_ref") for n in before["nodes"]}["fr1-one"]
+
+
+def boom(*_args, **_kwargs):
+    raise OSError("simulated registry write failure")
+
+
+mod.save_registry = boom
+args = argparse.Namespace(
+    name="fr1-one",
+    identity_file=new_key,
+    clear_identity_file=False,
+    observe_credential_ref=None,
+    observe_identity_file=None,
+    observe_ssh_user=None,
+    clear_observe_credential_ref=False,
+    host=None,
+    user=None,
+    port=None,
+)
+try:
+    mod.cmd_node_set(args)
+except OSError:
+    pass
+else:
+    raise SystemExit("expected the simulated registry failure to propagate")
+after = json.loads(Path(home, "fleet.json").read_text(encoding="utf-8"))
+ref_after = {n["name"]: n.get("admin_credential_ref") for n in after["nodes"]}["fr1-one"]
+assert ref_after == ref_before, (ref_before, ref_after)
+bindings = json.loads(Path(bind_file).read_text(encoding="utf-8"))["bindings"]
+resolved_new = str(Path(new_key).resolve())
+new_refs = [r for r, b in bindings.items() if b.get("path") == resolved_new]
+assert new_refs, "binding must be written before the registry commit"
+referenced = {n.get("admin_credential_ref") for n in after["nodes"]} | {
+    n.get("observe_credential_ref") for n in after["nodes"]
+}
+assert not (set(new_refs) & referenced), "registry must not point at a fresh binding"
+print("ok")
+PY
+if (( fr1_order_rc == 0 )); then
+  pass "FR-01 registry write failure leaves no dangling reference"
+else
+  fail "FR-01 registry write failure leaves no dangling reference"
+fi
+assert_success "FR-01 access verify" fleet access verify
+assert_success "FR-01 workspace verify" fleet workspace verify
+
+export VCL_FLEET_HOME=$FR1_SAVED_HOME
+if [[ -n "$FR1_SAVED_STATE" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$FR1_SAVED_STATE
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+if [[ -n "$FR1_SAVED_CFG" ]]; then
+  export XDG_CONFIG_HOME=$FR1_SAVED_CFG
+else
+  export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+  mkdir -p "$XDG_CONFIG_HOME"
 fi
 
 export VCL_FLEET_HOME=$F73_SAVED_HOME
