@@ -78,6 +78,10 @@
 
 `4e5d27f` 推送后由 Draft PR #13 触发 [CI #90](https://github.com/Marz42/vcl/actions/runs/37738068581)（`event=pull_request`，2026-10-08T06:31:21Z→06:39:02Z），**七个 job 全部 success**：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact；脱敏快照见 [REMOTE_CI_20261008_FR0304.json](REMOTE_CI_20261008_FR0304.json)。`push` 事件本身不触发 CI（`ci.yml` 只对 `main` 的 push 生效）。
 
+### 保留的未通过记录
+
+- [CI #91](https://github.com/Marz42/vcl/actions/runs/37738882013)（`2aa17ae`，纯文档提交）仅 `unit (windows-latest)` 的 unittest job 失败。与 #90 相比源码和测试字节完全相同，且没有任何 Python 用例读取 docs/CHANGELOG，因此不能由该差异解释。以空提交 `d786268` 重跑得到 [CI #92](https://github.com/Marz42/vcl/actions/runs/37739702311) 七个 job 全绿，判定为 Windows runner 偶发失败，不计为源码回归；失败的 #91 原样保留。
+
 ## 未关闭边界
 
 - FR-02 有界审计同步（分页、deadline、stdout cap、续传、MORE_PENDING 汇总）未在本轮实现。`sync_report` 目前仍只把 EXPIRED/ERROR 判为失败，MORE_PENDING 状态接入属于 FR-02 合同变更。

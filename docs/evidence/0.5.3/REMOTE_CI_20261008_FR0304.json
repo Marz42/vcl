@@ -84,5 +84,22 @@
     }
   ],
   "note": "The push event alone does not trigger ci.yml (push is limited to main); the run comes from the open draft PR #13 synchronising its head.",
+  "follow_up_runs": {
+    "run_91": {
+      "id": 37738882013,
+      "head_sha": "2aa17ae5b58cd31a0f5a1a5e1e6f8eaa8a5e5d3c",
+      "scope": "docs-only follow-up",
+      "conclusion": "failure",
+      "failed_job": "unit (windows-latest)",
+      "assessment": "Same source and test bytes as run 90; no Python test reads docs or CHANGELOG. Kept as a recorded failure."
+    },
+    "run_92": {
+      "id": 37739702311,
+      "head_sha": "d786268",
+      "scope": "empty retrigger commit, tree identical to 2aa17ae",
+      "conclusion": "success",
+      "assessment": "All seven jobs green; run 91's windows-latest failure is runner flakiness, not a source regression."
+    }
+  },
   "binding": "Only 4e5d27f (FR-03/FR-04). FR-02 bounded sync is still unimplemented; live fleet re-verification, soak and H05 remain PENDING."
 }
