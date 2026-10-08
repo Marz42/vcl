@@ -6060,7 +6060,9 @@ try:
     )
     raise AssertionError("lying count must fail")
 except ValueError as exc:
-    assert "count=5" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_COUNT_MISMATCH", exc
+    assert exc.expected == 3 and exc.actual == 5, exc
 
 try:
     mod.validate_export_batch(
@@ -6069,7 +6071,9 @@ try:
     )
     raise AssertionError("lying next_cursor must fail")
 except ValueError as exc:
-    assert "next_cursor=99" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NEXT_CURSOR_MISMATCH", exc
+    assert exc.actual == 99, exc
 
 # Descending export_seq fail-closed.
 descending = [row(6, 8), row(7, 7), row(8, 9)]
@@ -6080,7 +6084,8 @@ try:
     )
     raise AssertionError("descending export_seq must fail")
 except ValueError as exc:
-    assert "strictly increasing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_EXPORT_SEQ_NOT_INCREASING", exc
 
 # Duplicate export_seq fail-closed.
 dup = [row(6, 6), row(7, 6), row(8, 8)]
@@ -6091,7 +6096,8 @@ try:
     )
     raise AssertionError("duplicate export_seq must fail")
 except ValueError as exc:
-    assert "duplicate export_seq" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_EXPORT_SEQ_DUPLICATE", exc
 
 # Bad protocol_version fail-closed.
 try:
@@ -6101,7 +6107,9 @@ try:
     )
     raise AssertionError("protocol_version 1 must fail")
 except ValueError as exc:
-    assert "protocol_version" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "PROTOCOL_VERSION_MISMATCH", exc
+    assert exc.expected == 2 and exc.actual == 1, exc
 
 try:
     mod.validate_export_batch(
@@ -6110,7 +6118,9 @@ try:
     )
     raise AssertionError("meta.after mismatch must fail")
 except ValueError as exc:
-    assert "after=4" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_AFTER_MISMATCH", exc
+    assert exc.expected == 5 and exc.actual == 4, exc
 
 other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 try:
@@ -6120,7 +6130,11 @@ try:
     )
     raise AssertionError("meta node_id mismatch must fail")
 except ValueError as exc:
-    assert "node_id" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NODE_MISMATCH", exc
+    # Identity values stay in machine fields, never in the summary text.
+    assert exc.expected == nid and exc.actual == other, exc
+    assert other not in str(exc) and nid not in str(exc), exc
 
 try:
     mod.validate_export_batch(
@@ -6129,7 +6143,10 @@ try:
     )
     raise AssertionError("row node_id mismatch must fail")
 except ValueError as exc:
-    assert "node_id" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_NODE_MISMATCH", exc
+    assert exc.actual == other, exc
+    assert other not in str(exc), exc
 
 try:
     mod.validate_export_batch(
@@ -6138,7 +6155,8 @@ try:
     )
     raise AssertionError("missing meta node_id must fail")
 except ValueError as exc:
-    assert "node_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NODE_MISSING", exc
 
 try:
     mod.validate_export_batch(
@@ -6147,7 +6165,8 @@ try:
     )
     raise AssertionError("missing meta instance_id must fail")
 except ValueError as exc:
-    assert "instance_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_INSTANCE_MISSING", exc
 
 missing_row = [row(6), {**row(7), "node_id": ""}, row(8)]
 try:
@@ -6157,7 +6176,8 @@ try:
     )
     raise AssertionError("missing row node_id must fail")
 except ValueError as exc:
-    assert "node_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_NODE_MISSING", exc
 
 # after=0 may start at any remaining min; export_seq must still increase.
 from0 = meta(
@@ -6620,7 +6640,8 @@ doc = json.loads(sys.argv[1])
 assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
-assert "count=5" in (row.get("error") or ""), row.get("error")
+assert row["error_code"] == "META_COUNT_MISMATCH", row
+assert row["error_expected"] == 3 and row["error_actual"] == 5, row
 assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
@@ -6670,7 +6691,9 @@ doc = json.loads(sys.argv[1])
 assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
-assert "next_cursor=99" in (row.get("error") or ""), row.get("error")
+assert row["error_code"] == "META_NEXT_CURSOR_MISMATCH", row
+assert row["error_field"] == "next_cursor" and row["error_actual"] == 99, row
+assert "99" not in (row.get("error") or ""), row.get("error")
 assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
@@ -15338,7 +15361,10 @@ conn.close()
 PY
 }
 
-fr2_reset() { rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls"; }
+fr2_reset() {
+  rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls" \
+    "$FR2S/lax/identity-calls" "$FR2S/lax/status-calls"
+}
 fr2_seed 5
 
 fr2_t1_rc=0
@@ -15379,7 +15405,7 @@ assert doc["ok"] is False and doc["state"] == "PARTIAL", doc
 assert doc["more_pending"] == ["lax"], doc
 assert node["status"] == "more_pending", node
 assert node["more_pending"] is True, node
-assert node["error_code"] == "MORE_PENDING", node
+assert node["error_code"] == "PAGE_CAP", node
 assert node["audit_pages"] == 1, node
 assert node["last_export_seq"] == 2 and node["inserted"] == 2, node
 conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
@@ -15417,7 +15443,7 @@ doc = json.loads(sys.argv[1])
 node = doc["nodes"][0]
 assert doc["state"] == "PARTIAL" and doc["ok"] is False, doc
 assert node["status"] == "more_pending", node
-assert node["error_code"] == "MORE_PENDING", node
+assert node["error_code"] == "BUDGET_EXHAUSTED", node
 assert node["audit_pages"] == 0, node
 assert "budget" in (node["error"] or ""), node
 assert node["remediation"], node
@@ -15512,7 +15538,8 @@ import json, sqlite3, sys
 from pathlib import Path
 node = json.loads(sys.argv[1])["nodes"][0]
 assert node["status"] == "error", node
-assert node["error_code"] == "PROTOCOL_INVALID", node
+assert node["error_code"] == "META_INSTANCE_MISMATCH", node
+assert node["error_field"] == "instance_id", node
 assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
 conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
 rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
@@ -15650,6 +15677,402 @@ assert rows[0]["error_code"] == "DATABASE_ERROR", rows[0]
 assert "disk is full" in (rows[0]["error"] or ""), rows[0]
 assert rows[1]["status"] == "ok", rows[1]
 assert fleet.sync_report(rows)["state"] == "PARTIAL", rows
+PY
+
+# --- FR-02 review fixes: post-catch-up snapshot, real budget, watermark ---
+
+fr2_full_reset() {
+  rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls" \
+    "$FR2S/lax/identity-calls" "$FR2S/lax/status-calls"
+}
+fr2_counter_reset() {
+  rm -f "$FR2S/lax/export-calls" "$FR2S/lax/identity-calls" \
+    "$FR2S/lax/status-calls"
+}
+
+# (1) sync --full must collect the snapshot AFTER the catch-up. Identity call 2
+# is the post-catch-up read, so only a post-catch-up collection can see 0.5.9.
+fr2_full_reset
+fr2_t1a_rc=0
+fr2_t1a=$(VCL_FAKE_IDENTITY_ALT_AFTER=2 \
+  VCL_FAKE_IDENTITY_ALT_VERSION=0.5.9 \
+  fleet sync --full --node lax --page-size 1 --json) || fr2_t1a_rc=$?
+assert_equal "FR-02R post-catch-up full sync exits 0" 0 "$fr2_t1a_rc"
+assert_success "FR-02R snapshot reflects the post-catch-up state" python3 - \
+  "$fr2_t1a" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is True, doc
+assert node["status"] == "ok", node
+assert node["audit_pages"] == 5, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+row = conn.execute("SELECT vincula_version, synced_at FROM node_snapshot").fetchone()
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert row is not None, "snapshot missing"
+assert row[0] == "0.5.9", row
+assert rows == 5, rows
+PY
+
+# (1b) identity change during the catch-up: fail, keep the pages committed by
+# this run, keep the previous snapshot.
+fr2_full_reset
+fr2_seed 5
+fr2_old_snap_rc=0
+fr2_old_snap=$(fleet sync --full --node lax --page-size 5 --json) || fr2_old_snap_rc=$?
+assert_equal "FR-02R seed an old snapshot before the drift run" 0 "$fr2_old_snap_rc"
+fr2_seed 8            # three new closed rows for the drift run to commit
+fr2_counter_reset     # identity call 1 = binding, call 2 = post-catch-up
+fr2_t1b_rc=0
+fr2_t1b=$(VCL_FAKE_IDENTITY_ALT_AFTER=2 \
+  VCL_FAKE_IDENTITY_ALT_INSTANCE="99999999-9999-4999-8999-999999999999" \
+  fleet sync --full --node lax --page-size 1 --json) || fr2_t1b_rc=$?
+assert_equal "FR-02R identity drift during catch-up exits 2" 2 "$fr2_t1b_rc"
+assert_success "FR-02R identity drift keeps pages and the old snapshot" python3 - \
+  "$fr2_t1b" "$FR2H" "$FR2_NID" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["state"] == "PARTIAL" and doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "IDENTITY_CHANGED", node
+assert node["error_phase"] == "identity", node
+assert node["error_field"] == "instance_id", node
+# The three pages this run committed stay committed.
+assert node["audit_pages"] == 3, node
+assert node["inserted"] == 3, node
+assert node["last_export_seq"] == 8, node
+text = node.get("error") or ""
+for leaked in (sys.argv[3], "99999999-9999-4999-8999-999999999999",
+               "203.0.113.10"):
+    assert leaked not in text, (leaked, text)
+assert node["error_actual"] == "99999999-9999-4999-8999-999999999999", node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+snap = conn.execute("SELECT vincula_version, synced_at FROM node_snapshot").fetchone()
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 8, rows
+assert int(cursor[0]) == 8, cursor
+# The snapshot seeded before the drift run is still the old 0.3.1 state.
+assert snap is not None and snap[0] == "0.3.1", snap
+PY
+
+# (1c) the snapshot uses its actual collection time, not the run start.
+assert_success "FR-02R snapshot timestamp is the collection time" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+order = []
+
+
+def fake_ssh_json(target, cmd, **kwargs):
+    if cmd[1] == "identity":
+        order.append("identity")
+        return "OK", {"node_id": node_id, "instance_id": iid,
+                      "vincula_version": "0.5.3"}, ""
+    if cmd[1] == "status":
+        order.append("status")
+        return "OK", {"proxy": {"ok": True}, "accounting": {"ok": True}}, ""
+    raise AssertionError(cmd)
+
+
+def fake_catch_up(*_a, **_k):
+    order.append("catch_up")
+    return {
+        "status": "ok", "pages": 3, "cursor": 7, "more_pending": False,
+        "inserted": 0, "updated": 0, "ignored": 0, "skipped_unlabeled": 0,
+        "last_event_id": 7, "error": None, "error_code": None,
+        "error_phase": None, "retryable": None,
+        "earliest_available_event_id": None, "max_event_id": None,
+        "max_export_seq": 7, "pruned_max_export_seq": 0,
+    }
+
+
+stamps = iter([f"2026-10-08T00:00:0{i}Z" for i in range(10)])
+fleet.ssh_remote_json = fake_ssh_json
+fleet._list_users_on_node = lambda *a, **k: ([], None)
+fleet.catch_up_audit_pages = fake_catch_up
+fleet.node_deadline_iso = lambda: next(stamps)
+conn = fleet.open_fleet_db()
+row = fleet.sync_full_one_node(conn, node, now_iso="2026-01-01T00:00:00Z")
+conn.close()
+assert row["status"] == "ok", row
+assert order[0] == "identity", order
+assert order[1] == "catch_up", order
+assert order.count("identity") == 2, order
+assert order.index("catch_up") < order.index("status"), order
+conn = fleet.open_fleet_db()
+synced = conn.execute(
+    "SELECT synced_at FROM node_snapshot WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert synced is not None, "snapshot missing"
+assert synced[0] != "2026-01-01T00:00:00Z", synced
+assert synced[0].startswith("2026-10-08T00:00:0"), synced
+PY
+
+# (2) the run budget is a real per-node deadline, not a pre-page check.
+assert_success "FR-02R budget covers import, locks and the snapshot txn" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, sqlite3, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+home = Path(fleet.os.environ["VCL_FLEET_HOME"])
+
+
+def reset() -> None:
+    (home / "fleet.db").unlink(missing_ok=True)
+    Path(fleet.os.environ["VCL_FAKE_STATE_DIR"], "lax", "export-calls").unlink(
+        missing_ok=True
+    )
+
+
+# The guard bounds SQLite work: busy_timeout is clamped to the remaining
+# budget, a long statement is interruptible, and the settings are restored.
+conn = fleet.open_fleet_db()
+before = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+with fleet.sqlite_deadline_guard(conn, time.monotonic() + 1.0):
+    inner = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+after = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+assert inner <= 1100 and inner < before, (before, inner)
+assert after == before, (before, after)
+started = time.monotonic()
+try:
+    with fleet.sqlite_deadline_guard(conn, time.monotonic() + 0.2):
+        conn.execute(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
+            "WHERE x < 5000000) SELECT count(*) FROM c"
+        ).fetchone()
+except sqlite3.OperationalError:
+    pass
+else:
+    raise AssertionError("long statement was not interrupted")
+assert time.monotonic() - started < 5.0
+assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == before
+conn.close()
+
+# An import that overruns the budget rolls that page back and keeps the
+# earlier pages; it is a budget stop, not a generic database error.
+reset()
+real_rebuild = fleet.rebuild_daily_usage_for_node
+calls = {"n": 0}
+
+
+def slow_rebuild(c, n):
+    calls["n"] += 1
+    if calls["n"] >= 2:
+        time.sleep(2.0)
+    return real_rebuild(c, n)
+
+
+fleet.rebuild_daily_usage_for_node = slow_rebuild
+conn = fleet.open_fleet_db()
+opts = fleet.audit_page_options(None)
+opts["budget"] = 1.5
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "more_pending", out
+assert out["error_code"] == "BUDGET_EXHAUSTED", out
+assert out["error_phase"] == "audit_import", out
+assert out["retryable"] is True and out["more_pending"] is True, out
+assert out["pages"] == 1 and out["cursor"] == 1, out
+assert conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
+conn.close()
+fleet.rebuild_daily_usage_for_node = real_rebuild
+
+# A lock wait that outlives the budget is the same budget stop.
+reset()
+conn = fleet.open_fleet_db()
+blocker = fleet.open_fleet_db()
+real_page = fleet.ssh_audit_page
+held = {"done": False}
+
+
+def page_then_lock(*a, **k):
+    proc = real_page(*a, **k)
+    if not held["done"]:
+        held["done"] = True
+        blocker.execute("BEGIN EXCLUSIVE")
+    return proc
+
+
+fleet.ssh_audit_page = page_then_lock
+opts = fleet.audit_page_options(None)
+opts["budget"] = 1.5
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "more_pending", out
+assert out["error_code"] == "BUDGET_EXHAUSTED", out
+assert out["error_phase"] == "audit_import" and out["pages"] == 0, out
+fleet.ssh_audit_page = real_page
+blocker.rollback()
+blocker.close()
+conn.close()
+
+# A database error with budget left is still a database error.
+reset()
+conn = fleet.open_fleet_db()
+
+
+def broken(*_a, **_k):
+    raise sqlite3.OperationalError("database or disk is full")
+
+
+fleet.import_export_jsonl = broken
+opts = fleet.audit_page_options(None)
+opts["budget"] = 60
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "error", out
+assert out["error_code"] == "DATABASE_ERROR", out
+assert out["retryable"] is True, out
+conn.close()
+PY
+
+# (3) a missing watermark can never mean "caught up".
+fr2_full_reset
+fr2_t3_rc=0
+fr2_t3=$(VCL_FAKE_EXPORT_DROP_MAX_SEQ=1 fleet sync --node lax --page-size 5 --json) \
+  || fr2_t3_rc=$?
+assert_equal "FR-02R missing max_export_seq exits 2" 2 "$fr2_t3_rc"
+assert_success "FR-02R missing watermark is a protocol error, not success" python3 - \
+  "$fr2_t3" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "META_MAX_EXPORT_SEQ_MISSING", node
+assert node["error_field"] == "max_export_seq", node
+assert node["audit_pages"] == 0 and node["inserted"] == 0, node
+assert node["last_export_seq"] == 0, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+fr2_t3b_rc=0
+fr2_t3b_err=$(VCL_FAKE_EXPORT_DROP_MAX_SEQ=1 fleet node retire lax 2>&1) \
+  || fr2_t3b_rc=$?
+assert_equal "FR-02R retire is blocked without a watermark" 1 "$fr2_t3b_rc"
+assert_success "FR-02R retire reports the protocol failure" \
+  grep -q 'final sync failed' <<< "$fr2_t3b_err"
+
+# (4) FR-04 leftovers: no endpoint, port or identity in any summary.
+assert_success "FR-02R transport failures carry no endpoint or port" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 255, "",
+    "ssh: connect to host 198.51.100.7 port 2222: Connection refused\n",
+)
+facts = {}
+node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "ssh_host": "198.51.100.7", "ssh_user": "root", "ssh_port": 2222}
+state, payload, detail = fleet.ssh_remote_json(
+    node, ["vcl", "identity", "--json"], facts=facts
+)
+assert state == "FAIL" and payload is None, (state, payload)
+assert facts["code"] == "TRANSPORT", facts
+assert facts["retryable"] is True, facts
+for leaked in ("198.51.100.7", "2222", "Connection refused"):
+    assert leaked not in detail, (leaked, detail)
+assert detail == "SSH transport failed", detail
+PY
+
+assert_success "FR-02R protocol rejections keep identities out of the text" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+row = {"event_id": 1, "export_seq": 1, "node_id": other, "instance_id": iid}
+meta = {"ok": True, "protocol_version": 2, "cursor_kind": "export_seq",
+        "after": 0, "max_export_seq": 1, "pruned_max_export_seq": 0, "count": 1,
+        "node_id": other, "instance_id": iid, "next_cursor": 1}
+fleet.ssh_audit_page = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 0, json.dumps(row) + "\n", json.dumps(meta) + "\n"
+)
+conn = fleet.open_fleet_db()
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid,
+    options=fleet.audit_page_options(None),
+)
+conn.close()
+assert out["status"] == "error", out
+assert out["error_code"] == "META_NODE_MISMATCH", out
+assert out["error"] == "export meta node_id does not match the registry node", out
+assert out["error_field"] == "node_id", out
+assert out["error_expected"] == node_id, out
+assert out["error_actual"] == other, out
+for leaked in (node_id, other, iid, "203.0.113.10"):
+    assert leaked not in out["error"], (leaked, out["error"])
+PY
+
+assert_success "FR-02R probe reports an unreachable node without leaking it" \
+  python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 255, "",
+    "ssh: connect to host 203.0.113.12 port 22: Connection refused\n",
+)
+node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "ssh_host": "203.0.113.12", "ssh_user": "root", "ssh_port": 22,
+        "enabled": True}
+row = fleet.probe_node(node, want_verify=False)
+assert row["ssh"] == "FAIL", row
+assert row.get("ssh_reason") == "TRANSPORT", row
+detail = row.get("ssh_detail") or ""
+for leaked in ("203.0.113.12", "Connection refused", "port 22"):
+    assert leaked not in detail, (leaked, detail)
 PY
 
 export VCL_FLEET_HOME=$FR2_SAVED_HOME

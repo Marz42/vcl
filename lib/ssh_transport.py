@@ -140,6 +140,10 @@ def classify_failure(
         code = CODE_UNSUPPORTED
     elif protocol_invalid:
         code = CODE_PROTOCOL_INVALID
+    elif returncode == 255:
+        # OpenSSH's own failure exit: connect, host-key, DNS, pipe. It is a
+        # transport failure, never a remote command error.
+        code = CODE_TRANSPORT
     elif returncode not in (0, None):
         code = CODE_REMOTE_ERROR
     elif detail:
@@ -327,18 +331,11 @@ def ssh_remote_json_for_class(
             f"response exceeds {max_stdout_bytes} bytes",
         )
     if proc.returncode == 255:
+        # Every ssh-level failure returns a fixed summary: the operator text
+        # must never carry the endpoint, a logical identity or remote text.
         if is_auth_failure(raw_detail):
-            # Fixed template only; the caller reads the hint from ``facts``.
             return "AUTH_FAILED", None, classified["summary"]
-        if classified["code"] in (
-            CODE_TIMEOUT,
-            CODE_OUTPUT_LIMIT,
-            CODE_HOST_KEY,
-            CODE_TRANSPORT,
-        ):
-            # Local transport facts: never echo mixed remote text.
-            return "ERROR", None, classified["summary"]
-        return "ERROR", None, raw_detail
+        return "ERROR", None, classified["summary"]
     if unsupported_on_missing_command and proc.returncode != 0:
         if is_unsupported_remote(raw_detail, returncode=proc.returncode):
             return "UNSUPPORTED", None, raw_detail

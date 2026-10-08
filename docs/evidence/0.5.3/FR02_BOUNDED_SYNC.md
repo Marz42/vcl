@@ -34,9 +34,15 @@
 | `--max-pages` | 300 | 每节点最多提交页数 |
 | `--timeout` | 60s | 每页 SSH deadline（临场用 `min(timeout, 剩余预算)`） |
 | `--stdout-cap` | 16 MiB | 每页 stdout 上限；超量页整页拒收 |
-| `--budget` | 3600s | 每节点总墙钟预算，覆盖 SSH、SQLite 锁等待与导入 |
+| `--budget` | 3600s | 每节点**共享墙钟 deadline**，覆盖采集、分页、导入与最终快照 |
 
-预算在**进入下一页之前**检查，且用剩余预算收紧下一页的 SSH deadline；不是只在两页之间看一眼时间。默认值不是实测承诺，正式参数仍需现场复测。
+每节点只建立**一个** `deadline`，它同时约束：
+
+- 每次 SSH 采集/分页的 timeout（`min(配置值, 剩余预算)`）；
+- SQLite 工作：进入导入/快照事务前把 `busy_timeout` 收紧到剩余预算，并安装 progress handler，使长语句（如日汇总重建）可以按 deadline 中断；
+- 页提交本身：事务提交前若预算已耗尽，该页**整页回滚**，此前已提交的页与游标保持不动。
+
+预算停止与数据库失败是两种结果：预算耗尽 → `status=more_pending`、`error_code=BUDGET_EXHAUSTED`（phase 为 `audit_import`/`snapshot`/`collection`），可重试；预算未耗尽而 SQLite 报错 → `error_code=DATABASE_ERROR`。页数用尽是 `error_code=PAGE_CAP`，两者都不计入成功。默认值不是实测承诺，正式参数仍需现场复测。
 
 ### 状态与消费路径
 
@@ -50,6 +56,14 @@
 
 完成判定绑定**已校验批次的水位**：报告给出 `after`/`last_export_seq`/`audit_pages`，不把 `max_export_seq - cursor` 说成剩余条数，也不把"本次连接窗口追平"说成以后不会再有数据。
 
+`max_export_seq` 是完成合同的**必需**字段：它必须存在、为整数、非负、且不低于本页 `next_cursor`。缺失或非法时 `validate_export_batch` 直接以类型化协议错误拒绝（`META_MAX_EXPORT_SEQ_MISSING` 等），没有"短页即追平"的降级分支——短页不能代替水位证明。兼容性核验：最低兼容 Node **v0.3.1**（tag `v0.3.1`）已经包含 Export Protocol v2 与 `max_export_seq`（`git show v0.3.1:lib/vincula-audit.py | grep -c max_export_seq` → 14），所以此处没有旧版本降级合同的需要。
+
+### FR-04 收口（本轮补齐）
+
+- **所有** SSH 层失败（`exit 255`）都归入 transport 类并返回固定模板摘要（如 `SSH transport failed`）：端点、端口与远端文本不再出现在用户可见 detail 中；机器侧从 `facts` 读 `TRANSPORT`/`AUTH_*`/`TIMEOUT`/`HOST_KEY` 等码。
+- 协议拒收改为类型化异常 `ExportProtocolError(code, summary, field, expected, actual)`：摘要一律是固定模板（如 `export meta node_id does not match the registry node`），预期/实际身份只保留在 `error_expected`/`error_actual` 机器字段里；JSONL 解析错误也不再拼接原始行内容。
+- sync 行新增机器字段：`error_field`、`error_expected`、`error_actual`。
+
 ### final sync / retire / replace 门禁
 
 `require_final_sync_ok()` 统一三个分支：`CURSOR_EXPIRED`（提示 `--reseed`）、`MORE_PENDING`（提示重跑 sync 到 ok 再操作）、其他非 ok（final sync failed，不标记退役／不创建备份）。`retire` 与 `replace` 都在做备份/改状态之前调用它。
@@ -57,11 +71,15 @@
 ### `sync --full` 事务合同调整（合同变化）
 
 - 旧：identity/status/users/audit 挤在一个单节点事务；审计导入失败连快照一起回滚，无法说明审计是否有进展。
-- 新：先做有界分页追赶（每页独立事务、独立提交），再用**新采集的** identity/status/users 在最后一个事务里刷新快照。
-- 快照事务失败时：已提交的审计页与已推进的游标保留，快照保持上一次的值，行内明确报告
-  `full sync snapshot txn failed: …; audit advanced N page(s) to cursor C; full snapshot refresh did not complete`，并给出 `error_phase=snapshot`、`error_code=DATABASE_ERROR`、`retryable=true`。
-- 追赶阶段本身失败（超时/身份变化/retention gap 等）时不做快照刷新，直接返回对应状态。
-- 追赶以 `MORE_PENDING` 结束时仍然刷新快照（审计有进展），但整行状态保持 `more_pending`，不汇总成成功。
+- 新（顺序即合同）：
+  1. 先读一次 identity，**只**用于把审计批次绑定到某个 instance；
+  2. 有界分页追赶（每页独立事务、独立提交）；
+  3. 追赶**结束后重新采集** identity/status/users，并在提交前复核 `node_id` 与 `instance_id`；
+  4. 用**实际采集时间**提交快照事务（不再沿用整轮 Fleet 启动时的时间戳）。
+- 复核失败（读取失败、`node_id` 不符或追赶期间 `instance_id` 变化）：已提交的审计页与游标保留，快照保持上一次的值，返回明确失败（`IDENTITY_UNREACHABLE`/`IDENTITY_MISMATCH`/`IDENTITY_CHANGED`，`error_phase=identity`），并在行内报告 `audit advanced N page(s) to cursor C; snapshot refresh did not complete`。
+- 快照事务失败时：同样保留已提交审计页与旧快照，`error_phase=snapshot`，并区分 `BUDGET_EXHAUSTED`（预算）与 `DATABASE_ERROR`（数据库）。
+- 追赶阶段本身失败（超时/超量/坏 JSON/身份不匹配/retention gap）时不做快照刷新，直接返回对应状态。
+- 追赶以 `more_pending` 结束时仍然刷新快照（审计有进展），但整行状态保持 `more_pending`，不汇总成成功。
 - 测试注入点从 `VCL_SYNC_FULL_FAIL_AFTER=audit-import` 更名为 `=snapshot`（旧值仍作为别名注入到同一位置，但语义已是"此时审计页已提交"）。
 
 ### 节点边界
@@ -70,10 +88,16 @@
 
 ## 用例与结果
 
-`tests/test-fleet.sh` 新增 28 项 FR-02 断言，并改写 F7-1 T2 的 `sync --full` 事务断言；`tests/fixtures/fake-ssh` 新增按页故障注入（`VCL_FAKE_EXPORT_FAIL_PAGE`/`HANG_PAGE`/`PRUNE_AFTER_PAGE`/`ALT_INSTANCE_AFTER_PAGE`/`PAD_BYTES`/`LIE_MAX_SEQ`）与每别名调用计数。
+`tests/test-fleet.sh` 新增 42 项 FR-02 断言（含 14 项评审补修），并改写 F7-1 T2 的 `sync --full` 事务断言；`tests/fixtures/fake-ssh` 新增按页故障注入（`VCL_FAKE_EXPORT_FAIL_PAGE`/`HANG_PAGE`/`PRUNE_AFTER_PAGE`/`ALT_INSTANCE_AFTER_PAGE`/`PAD_BYTES`/`LIE_MAX_SEQ`/`DROP_MAX_SEQ`）、追赶期间远端漂移（`VCL_FAKE_IDENTITY_ALT_AFTER`/`ALT_VERSION`/`ALT_INSTANCE`、`VCL_FAKE_STATUS_ALT_AFTER`）与每别名调用计数。
 
 | 用例 | 覆盖 |
 | --- | --- |
+| **评审补修：追赶后重新采集快照** | `sync --full` 中 5 条积压 / 每页 1 条，第 2 次 identity 读到 0.5.9 → 快照记 0.5.9（顺序证明） |
+| **评审补修：追赶期间身份变化** | 追赶提交 3 页后第 2 次 identity 的 instance 变化 → `IDENTITY_CHANGED`、3 页与游标 8 保留、快照仍是旧的 0.3.1 |
+| **评审补修：快照使用实际采集时间** | 打桩 `node_deadline_iso` 递增，断言 `synced_at` 是追赶之后的那次采集值，而非整轮启动时间 |
+| **评审补修：预算覆盖导入/锁/快照** | `busy_timeout` 收紧并复原、长语句在 deadline 被 progress handler 中断；导入越预算 → 该页回滚且前页保留（`BUDGET_EXHAUSTED`/`audit_import`）；锁等待耗尽预算 → 同样预算停止；预算充足而 SQLite 报错 → `DATABASE_ERROR` |
+| **评审补修：缺水位不得算追平** | 删除 `max_export_seq` → `META_MAX_EXPORT_SEQ_MISSING`、0 行导入、游标不动，且 `retire` 被拒 |
+| **评审补修：摘要不再泄漏** | 普通连接失败（含 IP/端口）→ `SSH transport failed`/`TRANSPORT`；协议 `node_id` 不匹配 → 固定摘要 + `error_expected`/`error_actual`；probe 对不可达节点同样不含端点 |
 | 多页追赶成功 | 5 条 / 每页 2 条 → 3 页、全部导入、游标 5、`ok` |
 | 页数预算 → MORE_PENDING | 退出码 2、`state=PARTIAL`、`more_pending=[lax]`、只提交 1 页 |
 | 从已提交游标续传 | 重跑后补齐到 5，证明"页级提交"可用 |
@@ -89,8 +113,8 @@
 
 回归（本机 WSL2 / Debian 13.3 / Python 3.13.5）：
 
-- `bash tests/test-fleet.sh`：**All 1115 tests passed，exit 0**。
-- `SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh`：**All 1933 tests passed，exit 0**。
+- `bash tests/test-fleet.sh`：**All 1129 tests passed，exit 0**。
+- `SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh`：**All 1947 tests passed，exit 0**。
 - `python3 -m unittest discover -s tests -p 'test_*.py'`：155 项，2 项失败为 `test_verify_extended` 的 root 权限 fixture，已在 `5054e51` 原始工作树复现为既存环境限制。
 
 ## 远端 CI

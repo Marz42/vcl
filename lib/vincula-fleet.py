@@ -38,7 +38,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 VCL_FLEET_VERSION = "0.5.3"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
@@ -1450,6 +1450,7 @@ def import_audit_batch(
     next_cursor: Optional[int] = None,
     *,
     manage_txn: bool = True,
+    deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. UPSERT on (node_id, event_id).
 
@@ -1555,6 +1556,12 @@ def import_audit_batch(
                     SYNC_STATUS_OK,
                 ),
             )
+            if deadline is not None and budget_expired(deadline):
+                # FR-02: a page that would commit past the budget is rolled
+                # back whole; the caller reports a budget stop, not a commit.
+                raise BudgetExhausted(
+                    "per-node run budget exhausted before the page commit"
+                )
             if manage_txn:
                 conn.commit()
         except BaseException:
@@ -1594,6 +1601,7 @@ def import_export_jsonl(
     now_iso: str,
     conn: Optional[sqlite3.Connection] = None,
     next_cursor: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Import a node audit-export JSONL batch and advance the sync cursor."""
     return import_audit_batch(
@@ -1603,7 +1611,33 @@ def import_export_jsonl(
         now_iso=now_iso,
         conn=conn,
         next_cursor=next_cursor,
+        deadline=deadline,
     )
+
+
+class ExportProtocolError(ValueError):
+    """Typed Protocol v2 rejection with a fixed, shareable summary (FR-04).
+
+    ``summary`` never interpolates an endpoint, a logical identity or any other
+    remote string; expected/actual values ride along as separate machine fields
+    for consumers that legitimately need them.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        summary: str,
+        *,
+        field: Optional[str] = None,
+        expected: Any = None,
+        actual: Any = None,
+    ) -> None:
+        super().__init__(summary)
+        self.code = code
+        self.summary = summary
+        self.field = field
+        self.expected = expected
+        self.actual = actual
 
 
 def parse_export_jsonl(text: str) -> list[dict[str, Any]]:
@@ -1615,10 +1649,18 @@ def parse_export_jsonl(text: str) -> list[dict[str, Any]]:
             continue
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"JSONL line {lineno} is not JSON: {exc}") from exc
+        except json.JSONDecodeError:
+            raise ExportProtocolError(
+                "JSONL_NOT_JSON",
+                "export row is not valid JSON",
+                field=f"line[{lineno}]",
+            ) from None
         if not isinstance(obj, dict):
-            raise ValueError(f"JSONL line {lineno} is not an object")
+            raise ExportProtocolError(
+                "JSONL_NOT_OBJECT",
+                "export row is not a JSON object",
+                field=f"line[{lineno}]",
+            )
         rows.append(obj)
     return rows
 
@@ -1642,7 +1684,12 @@ def parse_export_meta(stderr: str) -> Optional[dict[str, Any]]:
 
 def _require_export_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"export meta {name} is not an int")
+        raise ExportProtocolError(
+            f"META_{name.upper()}_INVALID",
+            f"export meta {name} is not an integer",
+            field=name,
+            actual=value,
+        )
     return value
 
 
@@ -1666,100 +1713,207 @@ def validate_export_batch(
         raise ValueError("export meta ok is not true")
     err = meta.get("error")
     if err:
-        raise ValueError(f"export meta error={err}")
+        raise ExportProtocolError(
+            "META_ERROR",
+            "export meta reports an error",
+            field="error",
+            actual=str(err),
+        )
 
     protocol = meta.get("protocol_version")
     if protocol != EXPORT_PROTOCOL_VERSION:
-        raise ValueError(
-            f"export protocol_version={protocol!r} != {EXPORT_PROTOCOL_VERSION}"
+        raise ExportProtocolError(
+            "PROTOCOL_VERSION_MISMATCH",
+            "export protocol version mismatch",
+            field="protocol_version",
+            expected=EXPORT_PROTOCOL_VERSION,
+            actual=protocol,
         )
     cursor_kind = _optional_text(meta.get("cursor_kind"))
     if cursor_kind != CURSOR_KIND_EXPORT_SEQ:
-        raise ValueError(
-            f"export cursor_kind={cursor_kind!r} != {CURSOR_KIND_EXPORT_SEQ}"
+        raise ExportProtocolError(
+            "CURSOR_KIND_MISMATCH",
+            "export cursor kind mismatch",
+            field="cursor_kind",
+            expected=CURSOR_KIND_EXPORT_SEQ,
+            actual=cursor_kind,
         )
 
     meta_after = _require_export_int(meta.get("after"), "after")
     if meta_after != expected_after:
-        raise ValueError(
-            f"export meta after={meta_after} != cursor {expected_after}"
+        raise ExportProtocolError(
+            "META_AFTER_MISMATCH",
+            "export meta after does not match the requested cursor",
+            field="after",
+            expected=expected_after,
+            actual=meta_after,
         )
 
     delivered = list(rows)
     count = _require_export_int(meta.get("count"), "count")
     if count != len(delivered):
-        raise ValueError(
-            f"export meta count={count} != delivered {len(delivered)}"
+        raise ExportProtocolError(
+            "META_COUNT_MISMATCH",
+            "export meta count does not match the delivered rows",
+            field="count",
+            expected=len(delivered),
+            actual=count,
         )
     if count < 0:
-        raise ValueError("export meta count is negative")
+        raise ExportProtocolError(
+            "META_COUNT_RANGE",
+            "export meta count is negative",
+            field="count",
+            actual=count,
+        )
 
     meta_nid = _optional_text(meta.get("node_id"))
     if meta_nid is None:
-        raise ValueError("export meta node_id is missing")
+        raise ExportProtocolError(
+            "META_NODE_MISSING", "export meta node_id is missing", field="node_id"
+        )
     if meta_nid != expected_node_id:
-        raise ValueError(
-            f"export meta node_id={meta_nid} != {expected_node_id}"
+        raise ExportProtocolError(
+            "META_NODE_MISMATCH",
+            "export meta node_id does not match the registry node",
+            field="node_id",
+            expected=expected_node_id,
+            actual=meta_nid,
         )
     meta_iid = _optional_text(meta.get("instance_id"))
     if expected_instance_id:
         if meta_iid is None:
-            raise ValueError("export meta instance_id is missing")
-        if meta_iid != expected_instance_id:
-            raise ValueError(
-                f"export meta instance_id={meta_iid} != {expected_instance_id}"
+            raise ExportProtocolError(
+                "META_INSTANCE_MISSING",
+                "export meta instance_id is missing",
+                field="instance_id",
             )
+        if meta_iid != expected_instance_id:
+            raise ExportProtocolError(
+                "META_INSTANCE_MISMATCH",
+                "export meta instance_id does not match the bound instance",
+                field="instance_id",
+                expected=expected_instance_id,
+                actual=meta_iid,
+            )
+
+    # FR-02: the top-of-stream watermark is part of the completion contract.
+    # Without it "caught up" cannot be proven, so a short page is never enough.
+    if meta.get("max_export_seq") is None:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_MISSING",
+            "export meta max_export_seq is missing",
+            field="max_export_seq",
+        )
+    max_export_seq = _require_export_int(meta.get("max_export_seq"), "max_export_seq")
+    if max_export_seq < 0:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_RANGE",
+            "export meta max_export_seq is negative",
+            field="max_export_seq",
+            actual=max_export_seq,
+        )
 
     export_seqs: list[int] = []
     seen_seqs: set[int] = set()
     for i, row in enumerate(delivered):
         if not isinstance(row, dict):
-            raise ValueError(f"JSONL row {i} is not an object")
+            raise ExportProtocolError(
+                "ROW_NOT_OBJECT",
+                "export row is not a JSON object",
+                field=f"rows[{i}]",
+            )
         eid = row.get("event_id")
         if isinstance(eid, bool) or not isinstance(eid, int):
-            raise ValueError(f"JSONL row {i} event_id is not an int")
+            raise ExportProtocolError(
+                "ROW_EVENT_ID_INVALID",
+                "export row event_id is not an integer",
+                field=f"rows[{i}].event_id",
+                actual=eid,
+            )
         eseq = row.get("export_seq")
         if isinstance(eseq, bool) or not isinstance(eseq, int):
-            raise ValueError(f"JSONL row {i} export_seq is not an int")
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_INVALID",
+                "export row export_seq is not an integer",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
+            )
         if eseq <= expected_after:
-            raise ValueError(
-                f"JSONL row {i} export_seq={eseq} <= after {expected_after}"
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_NOT_AFTER",
+                "export row export_seq is not beyond the requested cursor",
+                field=f"rows[{i}].export_seq",
+                expected=expected_after,
+                actual=eseq,
             )
         if eseq in seen_seqs:
-            raise ValueError(f"duplicate export_seq {eseq}")
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_DUPLICATE",
+                "export batch repeats an export_seq",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
+            )
         seen_seqs.add(eseq)
         if export_seqs and eseq <= export_seqs[-1]:
-            raise ValueError(
-                f"export_seq not strictly increasing: {export_seqs[-1]} → {eseq}"
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_NOT_INCREASING",
+                "export rows are not ordered by export_seq",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
             )
         export_seqs.append(eseq)
 
         row_nid = _row_node_id(row)
         if row_nid is None:
-            raise ValueError(f"JSONL row {i} node_id is missing")
+            raise ExportProtocolError(
+                "ROW_NODE_MISSING",
+                "export row node_id is missing",
+                field=f"rows[{i}].node_id",
+            )
         if row_nid != expected_node_id:
-            raise ValueError(
-                f"JSONL row {i} node_id={row_nid} != {expected_node_id}"
+            raise ExportProtocolError(
+                "ROW_NODE_MISMATCH",
+                "export row node_id does not match the registry node",
+                field=f"rows[{i}].node_id",
+                expected=expected_node_id,
+                actual=row_nid,
             )
 
-    if export_seqs:
-        max_export_seq = meta.get("max_export_seq")
-        if max_export_seq is not None:
-            max_i = _require_export_int(max_export_seq, "max_export_seq")
-            if export_seqs[-1] > max_i:
-                raise ValueError("row export_seq exceeds meta max_export_seq")
+    if export_seqs and export_seqs[-1] > max_export_seq:
+        raise ExportProtocolError(
+            "ROW_EXPORT_SEQ_ABOVE_MAX",
+            "export row export_seq exceeds meta max_export_seq",
+            field="max_export_seq",
+            expected=max_export_seq,
+            actual=export_seqs[-1],
+        )
 
     next_cursor = _require_export_int(meta.get("next_cursor"), "next_cursor")
     if export_seqs:
         if next_cursor != export_seqs[-1]:
-            raise ValueError(
-                f"export meta next_cursor={next_cursor} != "
-                f"last export_seq {export_seqs[-1]}"
+            raise ExportProtocolError(
+                "META_NEXT_CURSOR_MISMATCH",
+                "export meta next_cursor does not match the batch",
+                field="next_cursor",
+                expected=export_seqs[-1],
+                actual=next_cursor,
             )
     elif next_cursor != expected_after:
-        raise ValueError(
-            f"export meta next_cursor={next_cursor} != after "
-            f"{expected_after} (empty batch)"
+        raise ExportProtocolError(
+            "META_NEXT_CURSOR_MISMATCH",
+            "export meta next_cursor does not match the empty batch",
+            field="next_cursor",
+            expected=expected_after,
+            actual=next_cursor,
+        )
+    if next_cursor > max_export_seq:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_BELOW_CURSOR",
+            "export meta max_export_seq is below next_cursor",
+            field="max_export_seq",
+            expected=next_cursor,
+            actual=max_export_seq,
         )
     return next_cursor
 
@@ -3811,17 +3965,12 @@ def ssh_remote_json(
     if facts is not None:
         facts.clear()
         facts.update(classified)
-    detail = raw_detail
-    if proc.returncode == 255 and classified["code"] in (
-        "AUTH_LIMIT",
-        "AUTH_DENIED",
-        "TIMEOUT",
-        "OUTPUT_LIMIT",
-        "HOST_KEY",
-        "TRANSPORT",
-    ):
-        # Fixed-template text; remote text never reaches the operator here.
-        detail = failure_summary_text(classified)
+    # FR-04: every ssh-level failure (exit 255) returns a fixed-template
+    # summary. Endpoints, logical identities and remote text never reach the
+    # operator-facing detail; machine callers read the codes from ``facts``.
+    detail = (
+        failure_summary_text(classified) if proc.returncode == 255 else raw_detail
+    )
     if proc.returncode == 255:
         if credential_class == "observe" and load_ssh_transport_module().is_auth_failure(
             raw_detail
@@ -3860,10 +4009,11 @@ def ssh_remote_text(
         identity_file=_node_identity_file(node),
         timeout=timeout,
     )
-    detail = _ssh_failure_detail(proc)
     stdout = proc.stdout or ""
     if proc.returncode == 255:
-        return "FAIL", "", detail
+        facts = classify_ssh_proc(proc, phase=load_ssh_transport_module().phase_for_command(remote_cmd))
+        return "FAIL", "", failure_summary_text(facts)
+    detail = _ssh_failure_detail(proc)
     if proc.returncode != 0:
         return "OK", stdout, detail
     return "OK", stdout, ""
@@ -4899,9 +5049,14 @@ def cmd_user_add(args: argparse.Namespace) -> int:
 
 def _list_users_on_node(
     node: dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
 ) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    kwargs: dict[str, Any] = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     ssh_state, payload, detail = ssh_remote_json(
-        node, ["vcl", "user", "list", "--json"]
+        node, ["vcl", "user", "list", "--json"], **kwargs
     )
     if ssh_state != "OK":
         return None, _ssh_error(255, detail)
@@ -5569,6 +5724,9 @@ def _sync_result(
     error_code: Optional[str] = None,
     error_phase: Optional[str] = None,
     retryable: Optional[bool] = None,
+    error_field: Optional[str] = None,
+    error_expected: Any = None,
+    error_actual: Any = None,
     audit_pages: int = 0,
     more_pending: bool = False,
 ) -> dict[str, Any]:
@@ -5590,6 +5748,11 @@ def _sync_result(
         "error_code": error_code,
         "error_phase": error_phase,
         "retryable": retryable,
+        # FR-04: protocol rejections keep expected/actual in machine fields;
+        # the error text itself is a fixed template without them.
+        "error_field": error_field,
+        "error_expected": error_expected,
+        "error_actual": error_actual,
         # FR-02: bounded catch-up progress. audit_pages counts pages committed
         # by this run; more_pending means the run stopped inside its budget.
         "audit_pages": audit_pages,
@@ -5620,6 +5783,34 @@ def _sync_result(
 
 def _emit_sync_warning(node: dict[str, Any], message: str) -> None:
     sys.stderr.write(f"WARNING: {node['name']}: {message}\n")
+
+
+def budget_stop_result(
+    node: dict[str, Any],
+    *,
+    after: int,
+    phase: str,
+    last_event_id: int = 0,
+    instance_id: Optional[str] = None,
+    cursor: Optional[int] = None,
+) -> dict[str, Any]:
+    """A node stopped by its run budget before committing new work (FR-02)."""
+    return _sync_result(
+        node,
+        status=SYNC_STATUS_MORE_PENDING,
+        after=after,
+        last_event_id=last_event_id,
+        last_export_seq=after if cursor is None else cursor,
+        instance_id=instance_id,
+        error=(
+            f"reached the per-node run budget during {phase}; "
+            "no further work was committed"
+        ),
+        error_code="BUDGET_EXHAUSTED",
+        error_phase=phase,
+        retryable=True,
+        more_pending=True,
+    )
 
 
 def mark_cursor_status_best_effort(
@@ -5798,6 +5989,59 @@ def ssh_audit_export(
     )
 
 
+class BudgetExhausted(RuntimeError):
+    """A node's run budget ran out while database work was in flight."""
+
+
+def node_deadline_iso() -> str:
+    """Actual collection time for one page/snapshot commit (FR-02)."""
+    return format_utc(datetime.now(timezone.utc))
+
+
+def remaining_timeout(deadline: float, default: float) -> float:
+    """Clamp one SSH deadline to the remaining per-node budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BudgetExhausted("per-node run budget exhausted")
+    return max(0.1, min(float(default), remaining))
+
+
+def budget_expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+@contextmanager
+def sqlite_deadline_guard(
+    conn: sqlite3.Connection, deadline: float
+) -> Iterator[None]:
+    """Bound SQLite work by the node deadline (FR-02).
+
+    Tightens ``busy_timeout`` to the remaining budget and installs a progress
+    handler so a long statement (for example the daily-usage rebuild) is
+    interruptible instead of overrunning the budget. The previous settings are
+    restored on the way out, including when the statement aborts.
+    """
+    try:
+        previous_busy = int(
+            (conn.execute("PRAGMA busy_timeout").fetchone() or [0])[0]
+        )
+    except sqlite3.Error:
+        previous_busy = 0
+    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {remaining_ms}")
+        conn.set_progress_handler(
+            lambda: 1 if budget_expired(deadline) else 0, 1000
+        )
+        yield
+    finally:
+        try:
+            conn.set_progress_handler(None, 0)
+            conn.execute(f"PRAGMA busy_timeout = {previous_busy}")
+        except sqlite3.Error:
+            pass
+
+
 def audit_page_options(args: Optional[argparse.Namespace] = None) -> dict[str, Any]:
     """Bounded catch-up options from CLI flags, clamped to safe ceilings (FR-02)."""
     def _num(name: str, default: Any, cast: Callable[[Any], Any]) -> Any:
@@ -5838,13 +6082,18 @@ def catch_up_audit_pages(
     remote_iid: Optional[str],
     options: dict[str, Any],
     stamp_identity: bool = False,
+    deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Import bounded audit pages until caught up, out of budget, or failed (FR-02).
 
-    Each accepted page is validated as a complete Protocol v2 batch and then
+    Every accepted page is validated as a complete Protocol v2 batch and then
     imported in its own transaction (audit rows + daily summary + durable
     cursor). A rejected page imports nothing; earlier committed pages stay.
     The loop never reseeds and never treats partial stdout as a batch.
+
+    ``deadline`` is a shared ``time.monotonic()`` instant covering collection,
+    paging and the caller's final snapshot; when omitted the node gets its own
+    budget from ``options["budget"]``.
     """
     node_id = node["node_id"]
     start = _cursor_last_export_seq(conn, node_id)
@@ -5872,29 +6121,35 @@ def catch_up_audit_pages(
     }
 
     def _finish(status: str, **fields: Any) -> dict[str, Any]:
+        # No database read here: a locked/full database must not stop the
+        # failure from being reported. ``last_event_id`` is carried forward
+        # from the last successful page (or the initial cursor read).
         outcome["status"] = status
         outcome["pages"] = pages
         outcome["cursor"] = after
-        outcome["last_event_id"] = _cursor_last_event_id(conn, node_id)
         outcome.update(fields)
         return outcome
 
-    def _pending(message: str) -> dict[str, Any]:
+    def _pending(
+        message: str, *, code: str, phase: str = "audit_export"
+    ) -> dict[str, Any]:
         return _finish(
             SYNC_STATUS_MORE_PENDING,
             more_pending=True,
             error=message,
-            error_code="MORE_PENDING",
-            error_phase="audit_export",
+            error_code=code,
+            error_phase=phase,
             retryable=True,
         )
 
-    deadline = time.monotonic() + float(options["budget"])
+    if deadline is None:
+        deadline = time.monotonic() + float(options["budget"])
     while True:
         if pages >= int(options["max_pages"]):
             return _pending(
                 f"reached the per-node page cap ({options['max_pages']} pages); "
-                "audit data is still pending"
+                "audit data is still pending",
+                code="PAGE_CAP",
             )
         remaining = deadline - time.monotonic()
         if remaining < 1.0:
@@ -5902,14 +6157,15 @@ def catch_up_audit_pages(
             # instead of turning a budget stop into a spurious TIMEOUT.
             return _pending(
                 f"reached the per-node run budget ({options['budget']:g}s); "
-                "audit data is still pending"
+                "audit data is still pending",
+                code="BUDGET_EXHAUSTED",
             )
         page_after = after
         proc = ssh_audit_page(
             node,
             page_after,
             page_size=int(options["page_size"]),
-            timeout=min(float(options["timeout"]), remaining),
+            timeout=remaining_timeout(deadline, float(options["timeout"])),
             max_stdout_bytes=int(options["stdout_cap"]),
             stamp_identity=stamp_identity,
         )
@@ -5963,61 +6219,94 @@ def catch_up_audit_pages(
                 expected_node_id=node_id,
                 expected_instance_id=remote_iid,
             )
+        except ExportProtocolError as exc:
+            # Typed reason, fixed summary, identities only in machine fields.
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=exc.summary,
+                error_code=exc.code,
+                error_phase="audit_export",
+                retryable=False,
+                error_field=exc.field,
+                error_expected=exc.expected,
+                error_actual=exc.actual,
+            )
         except ValueError as exc:
             return _finish(
                 SYNC_STATUS_ERROR,
-                error=str(exc),
+                error="export batch was rejected by protocol validation",
                 error_code="PROTOCOL_INVALID",
                 error_phase="audit_export",
                 retryable=False,
+                error_field=None,
+                error_expected=None,
+                error_actual=None,
             )
         try:
-            imported = import_export_jsonl(
-                node_id,
-                remote_iid,
-                rows,
-                now_iso,
-                conn=conn,
-                next_cursor=next_cursor,
+            with sqlite_deadline_guard(conn, deadline):
+                imported = import_export_jsonl(
+                    node_id,
+                    remote_iid,
+                    rows,
+                    node_deadline_iso(),
+                    conn=conn,
+                    next_cursor=next_cursor,
+                    deadline=deadline,
+                )
+        except BudgetExhausted:
+            # The page transaction rolled back before committing, so every
+            # earlier page and the durable cursor are unchanged.
+            return _pending(
+                "reached the per-node run budget during import; the page was "
+                "rolled back",
+                code="BUDGET_EXHAUSTED",
+                phase="audit_import",
             )
         except SystemExit as exc:
             # The page is rejected as a whole; nothing from it is committed.
             return _finish(
                 SYNC_STATUS_ERROR,
-                error=f"audit import rejected the page (exit {exc.code})",
+                error="audit import rejected the page",
                 error_code="IMPORT_REJECTED",
                 error_phase="audit_import",
                 retryable=False,
+                error_field=f"exit {exc.code}",
             )
-        except sqlite3.Error as exc:
-            # Locked/full DB: this node fails, previous pages stay committed.
+        except sqlite3.Error:
+            # The page transaction rolled back on its way out (import_audit_batch
+            # owns BEGIN/COMMIT/ROLLBACK), so earlier pages stay committed.
+            if budget_expired(deadline):
+                return _pending(
+                    "reached the per-node run budget during import; the "
+                    "page was rolled back",
+                    code="BUDGET_EXHAUSTED",
+                    phase="audit_import",
+                )
             return _finish(
                 SYNC_STATUS_ERROR,
-                error=f"audit import database error: {exc}",
+                error="audit import failed with a database error",
                 error_code="DATABASE_ERROR",
                 error_phase="audit_import",
                 retryable=True,
             )
         pages += 1
         after = int(imported["last_export_seq"])
+        outcome["last_event_id"] = int(imported["last_event_id"])
         outcome["inserted"] += int(imported["inserted"])
         outcome["updated"] += int(imported.get("updated", 0))
         outcome["ignored"] += int(imported["ignored"])
         outcome["skipped_unlabeled"] += int(imported["skipped_unlabeled"])
+        # max_export_seq was validated as an int, so caught-up is proven by
+        # the watermark rather than inferred from a short page.
         max_seq = outcome["max_export_seq"]
-        caught_up = isinstance(max_seq, int) and not isinstance(max_seq, bool) and (
-            after >= max_seq
-        )
-        if caught_up:
+        if after >= max_seq:
             return _finish(SYNC_STATUS_OK)
         if after <= page_after:
             # No forward progress but the remote still reports pending work.
             return _pending(
-                "remote reports pending audit data but the cursor did not advance"
+                "remote reports pending audit data but the cursor did not advance",
+                code="MORE_PENDING",
             )
-        if max_seq is None and len(rows) < int(options["page_size"]):
-            # No top-of-stream marker and a short page: nothing more to read.
-            return _finish(SYNC_STATUS_OK)
 
 
 def sync_one_node(
@@ -6075,11 +6364,20 @@ def sync_one_node(
             last_export_seq=after,
         )
 
-    ssh_state, ident, ident_detail = ssh_remote_json(
-        node, ["vcl", "identity", "--json"]
-    )
+    opts = options or audit_page_options(None)
+    deadline = time.monotonic() + float(opts["budget"])
+    try:
+        ssh_state, ident, ident_detail = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return budget_stop_result(
+            node, after=after, phase="identity", last_event_id=prior_event
+        )
     if ssh_state != "OK" or not isinstance(ident, dict):
-        last_export_seq = mark_cursor_status(
+        last_export_seq = mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=None,
@@ -6097,7 +6395,7 @@ def sync_one_node(
 
     remote_nid = ident.get("node_id")
     if not isinstance(remote_nid, str) or remote_nid != node_id:
-        last_export_seq = mark_cursor_status(
+        last_export_seq = mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=_optional_text(ident.get("instance_id")),
@@ -6135,8 +6433,9 @@ def sync_one_node(
         node,
         now_iso=now_iso,
         remote_iid=remote_iid,
-        options=options or audit_page_options(None),
+        options=opts,
         stamp_identity=stamp_identity,
+        deadline=deadline,
     )
     if outcome["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
         # Keep the cursor row's failure status truthful, but never roll back
@@ -6167,6 +6466,9 @@ def sync_one_node(
         error_code=outcome["error_code"],
         error_phase=outcome["error_phase"],
         retryable=outcome["retryable"],
+        error_field=outcome.get("error_field"),
+        error_expected=outcome.get("error_expected"),
+        error_actual=outcome.get("error_actual"),
         earliest=outcome["earliest_available_event_id"],
         max_event_id=outcome["max_event_id"],
         max_export_seq=outcome["max_export_seq"],
@@ -6193,14 +6495,23 @@ def sync_full_one_node(
     now_iso: str,
     options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Bounded audit catch-up, then one snapshot txn (FR-02 contract).
+    """Bounded audit catch-up, then a freshly collected snapshot txn (FR-02).
 
-    The audit pages commit in their own transactions; the identity/status/users
-    snapshot commits last. A snapshot failure keeps every committed audit page
-    and the previous snapshot, and the row reports that audit advanced.
+    Order matters and is part of the contract:
+
+    1. read identity once, only to bind the audit batches to an instance;
+    2. catch up the audit pages (each in its own transaction);
+    3. re-read identity/status/users *after* the catch-up and re-check the
+       instance identity before committing;
+    4. commit the snapshot with the actual collection timestamp.
+
+    A failure in step 3 or 4 keeps every committed audit page and the previous
+    snapshot, and the row says audit advanced while the refresh did not finish.
     """
     node_id = node["node_id"]
     after = _cursor_last_export_seq(conn, node_id)
+    opts = options or audit_page_options(None)
+    deadline = time.monotonic() + float(opts["budget"])
     life = node_lifecycle_status(node)
     if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
         return _sync_result(
@@ -6210,10 +6521,20 @@ def sync_full_one_node(
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
         )
-    # 1) pull (no writes)
-    identity_started_utc = datetime.now(timezone.utc)
-    st, ident, detail = ssh_remote_json(node, ["vcl", "identity", "--json"])
-    identity_finished_utc = datetime.now(timezone.utc)
+
+    # 1) binding identity only: it decides which instance the audit pages
+    # belong to, and is re-checked after the catch-up.
+    try:
+        st, ident, detail = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return budget_stop_result(
+            node, after=after, phase="identity",
+            last_event_id=_cursor_last_event_id(conn, node_id),
+        )
     if st != "OK" or not isinstance(ident, dict):
         return _sync_result(
             node,
@@ -6230,70 +6551,189 @@ def sync_full_one_node(
             after=after,
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
-            error="registry node_id mismatch",
+            error="remote node_id does not match the registry node",
+            error_code="IDENTITY_MISMATCH",
+            error_phase="identity",
+            error_field="node_id",
+            error_expected=node_id,
+            error_actual=ident.get("node_id"),
         )
-    remote_iid = _optional_text(ident.get("instance_id"))
-    st2, status_doc, sdetail = ssh_remote_json(node, ["vcl", "status", "--json"])
-    if st2 != "OK" or not isinstance(status_doc, dict):
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=sdetail or "status unreachable",
-        )
-    users, uerr = _list_users_on_node(node)
-    if uerr is not None:
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=uerr,
-        )
-    # FR-02: bounded audit catch-up first, each accepted page committed in its
-    # own transaction. The audit rows no longer ride inside the snapshot txn,
-    # so a later snapshot failure keeps every committed page (the snapshot
-    # itself stays at its previous value).
+    bound_iid = _optional_text(ident.get("instance_id"))
+
+    # 2) bounded audit catch-up against the bound instance.
     audit = catch_up_audit_pages(
         conn,
         node,
         now_iso=now_iso,
-        remote_iid=remote_iid,
-        options=options or audit_page_options(None),
+        remote_iid=bound_iid,
+        options=opts,
+        deadline=deadline,
     )
+
+    def _audit_fields() -> dict[str, Any]:
+        return {
+            "after": after,
+            "last_event_id": int(audit["last_event_id"]),
+            "last_export_seq": int(audit["cursor"]),
+            "inserted": int(audit["inserted"]),
+            "updated": int(audit["updated"]),
+            "ignored": int(audit["ignored"]),
+            "skipped_unlabeled": int(audit["skipped_unlabeled"]),
+            "audit_pages": int(audit["pages"]),
+            "more_pending": bool(audit["more_pending"]),
+        }
+
+    def _snapshot_failure(
+        error: str,
+        *,
+        code: str,
+        phase: str,
+        retryable: bool,
+        instance_id: Optional[str],
+        status: Optional[str] = None,
+        field: Optional[str] = None,
+        expected: Any = None,
+        actual: Any = None,
+    ) -> dict[str, Any]:
+        progressed = (
+            f"audit advanced {audit['pages']} page(s) to cursor "
+            f"{audit['cursor']}; full snapshot refresh did not complete"
+        )
+        _emit_sync_warning(node, progressed)
+        return _sync_result(
+            node,
+            status=(
+                status
+                or (
+                    SYNC_STATUS_MORE_PENDING
+                    if audit["more_pending"]
+                    else SYNC_STATUS_ERROR
+                )
+            ),
+            instance_id=instance_id,
+            error=f"{error}; {progressed}",
+            error_code=code,
+            error_phase=phase,
+            retryable=retryable,
+            error_field=field,
+            error_expected=expected,
+            error_actual=actual,
+            **_audit_fields(),
+        )
+
     if audit["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
         mark_cursor_status_best_effort(
             conn,
             node_id,
-            instance_id=remote_iid,
+            instance_id=bound_iid,
             status=(
                 SYNC_STATUS_EXPIRED
                 if audit["status"] == SYNC_STATUS_EXPIRED
                 else SYNC_STATUS_ERROR
             ),
-            now_iso=now_iso,
+            now_iso=node_deadline_iso(),
         )
         return _sync_result(
             node,
             status=audit["status"],
-            after=after,
-            last_event_id=int(audit["last_event_id"]),
-            last_export_seq=int(audit["cursor"]),
-            inserted=int(audit["inserted"]),
-            updated=int(audit["updated"]),
-            ignored=int(audit["ignored"]),
-            skipped_unlabeled=int(audit["skipped_unlabeled"]),
-            instance_id=remote_iid,
+            instance_id=bound_iid,
             error=audit["error"],
             error_code=audit["error_code"],
             error_phase=audit["error_phase"],
             retryable=audit["retryable"],
-            audit_pages=int(audit["pages"]),
-            more_pending=bool(audit["more_pending"]),
+            error_field=audit.get("error_field"),
+            error_expected=audit.get("error_expected"),
+            error_actual=audit.get("error_actual"),
+            **_audit_fields(),
         )
+
+    # 3) collect the snapshot AFTER the catch-up. The audit pages are already
+    # committed, so a failure here must not lose them.
+    identity_started_utc = datetime.now(timezone.utc)
+    try:
+        st2, ident2, detail2 = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return _snapshot_failure(
+            "reached the per-node run budget before the post-catch-up identity read",
+            code="BUDGET_EXHAUSTED",
+            phase="identity",
+            retryable=True,
+            instance_id=bound_iid,
+            status=SYNC_STATUS_MORE_PENDING,
+        )
+    identity_finished_utc = datetime.now(timezone.utc)
+    if st2 != "OK" or not isinstance(ident2, dict):
+        return _snapshot_failure(
+            "post-catch-up identity read failed",
+            code="IDENTITY_UNREACHABLE",
+            phase="identity",
+            retryable=True,
+            instance_id=bound_iid,
+        )
+    if ident2.get("node_id") != node_id:
+        return _snapshot_failure(
+            "remote node_id does not match the registry node",
+            code="IDENTITY_MISMATCH",
+            phase="identity",
+            retryable=False,
+            instance_id=bound_iid,
+            field="node_id",
+            expected=node_id,
+            actual=ident2.get("node_id"),
+        )
+    final_iid = _optional_text(ident2.get("instance_id"))
+    if bound_iid != final_iid:
+        return _snapshot_failure(
+            "remote instance_id changed during the audit catch-up",
+            code="IDENTITY_CHANGED",
+            phase="identity",
+            retryable=False,
+            instance_id=final_iid,
+            field="instance_id",
+            expected=bound_iid,
+            actual=final_iid,
+        )
+    try:
+        st3, status_doc, sdetail = ssh_remote_json(
+            node,
+            ["vcl", "status", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+        users, uerr = _list_users_on_node(
+            node, timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS)
+        )
+    except BudgetExhausted:
+        return _snapshot_failure(
+            "reached the per-node run budget before the post-catch-up status/users read",
+            code="BUDGET_EXHAUSTED",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+            status=SYNC_STATUS_MORE_PENDING,
+        )
+    if st3 != "OK" or not isinstance(status_doc, dict):
+        return _snapshot_failure(
+            "post-catch-up status read failed",
+            code="STATUS_UNREACHABLE",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+        )
+    if uerr is not None:
+        return _snapshot_failure(
+            "post-catch-up user list failed",
+            code="USERS_UNREACHABLE",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+        )
+    remote_iid = final_iid
+    ident = ident2
+    collection_iso = node_deadline_iso()
     clock_state, _, skew = clock_skew_from_identity_window(
         identity_started_utc, identity_finished_utc, ident
     )
@@ -6302,88 +6742,84 @@ def sync_full_one_node(
         ensure_ascii=False,
         sort_keys=True,
     )
-    # 2) single per-node txn (DB only; portable history flushed after commit)
+    # 4) snapshot txn under the same node deadline.
     pending_history_events: list[dict[str, Any]] = []
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            UPSERT_NODE_SNAPSHOT_SQL,
-            (
-                node_id,
-                remote_iid,
-                node["name"],
-                _optional_text(ident.get("vincula_version")),
-                "OK",
-                classify_proxy(status_doc),
-                classify_accounting(status_doc),
-                "OK",
-                clock_state,
-                skew,
-                payload,
-                now_iso,
-            ),
-        )
-        conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
-        for u in users or []:
-            uid = str(u.get("user_id") or "")
-            if not uid:
-                continue
+        with sqlite_deadline_guard(conn, deadline):
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                """INSERT INTO user_snapshot(
-                     node_id,user_id,tag,enabled,status,active_credential_id,
-                     payload_json,synced_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                UPSERT_NODE_SNAPSHOT_SQL,
                 (
                     node_id,
-                    uid,
-                    str(u.get("tag") or ""),
-                    1 if u.get("enabled") else 0,
-                    "active" if u.get("enabled") else "disabled",
-                    _optional_text(u.get("active_credential_id")),
-                    json.dumps(u, ensure_ascii=False, sort_keys=True),
-                    now_iso,
+                    remote_iid,
+                    node["name"],
+                    _optional_text(ident.get("vincula_version")),
+                    "OK",
+                    classify_proxy(status_doc),
+                    classify_accounting(status_doc),
+                    "OK",
+                    clock_state,
+                    skew,
+                    payload,
+                    collection_iso,
                 ),
             )
-        if remote_iid:
-            pending_history_events = _record_instance_db_pending(
-                conn,
-                node_id,
-                remote_iid,
-                endpoint=None,
-                ssh_host=_optional_text(node.get("ssh_host")),
-                now_iso=now_iso,
-            )
-        _sync_full_fail_after("snapshot")
-        conn.commit()
+            conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
+            for u in users or []:
+                uid = str(u.get("user_id") or "")
+                if not uid:
+                    continue
+                conn.execute(
+                    """INSERT INTO user_snapshot(
+                         node_id,user_id,tag,enabled,status,active_credential_id,
+                         payload_json,synced_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (
+                        node_id,
+                        uid,
+                        str(u.get("tag") or ""),
+                        1 if u.get("enabled") else 0,
+                        "active" if u.get("enabled") else "disabled",
+                        _optional_text(u.get("active_credential_id")),
+                        json.dumps(u, ensure_ascii=False, sort_keys=True),
+                        collection_iso,
+                    ),
+                )
+            if remote_iid:
+                pending_history_events = _record_instance_db_pending(
+                    conn,
+                    node_id,
+                    remote_iid,
+                    endpoint=None,
+                    ssh_host=_optional_text(node.get("ssh_host")),
+                    now_iso=collection_iso,
+                )
+            _sync_full_fail_after("snapshot")
+            conn.commit()
     except BaseException as exc:
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
-        # Contract change (FR-02): audit pages are already committed, the
-        # snapshot stays at its previous value, and the report says so.
-        progressed = (
-            f"audit advanced {audit['pages']} page(s) to cursor "
-            f"{audit['cursor']}; full snapshot refresh did not complete"
-        )
-        _emit_sync_warning(node, progressed)
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=int(audit["last_event_id"]),
-            last_export_seq=int(audit["cursor"]),
-            inserted=int(audit["inserted"]),
-            updated=int(audit["updated"]),
-            ignored=int(audit["ignored"]),
-            skipped_unlabeled=int(audit["skipped_unlabeled"]),
+        # FR-02: audit pages are already committed and the snapshot stays at
+        # its previous value; the row says audit advanced and distinguishes a
+        # budget stop from an ordinary database failure.
+        if budget_expired(deadline):
+            return _snapshot_failure(
+                "reached the per-node run budget inside the snapshot transaction",
+                code="BUDGET_EXHAUSTED",
+                phase="snapshot",
+                retryable=True,
+                instance_id=remote_iid,
+                status=SYNC_STATUS_MORE_PENDING,
+            )
+        crossed = isinstance(exc, sqlite3.Error)
+        return _snapshot_failure(
+            f"full sync snapshot txn failed: {exc}",
+            code="DATABASE_ERROR" if crossed else "SNAPSHOT_FAILED",
+            phase="snapshot",
+            retryable=crossed,
             instance_id=remote_iid,
-            error=f"full sync snapshot txn failed: {exc}; {progressed}",
-            error_code="DATABASE_ERROR",
-            error_phase="snapshot",
-            retryable=True,
-            audit_pages=int(audit["pages"]),
-            more_pending=bool(audit["more_pending"]),
         )
     # 3) portable history after successful DB commit (F7-1); not pseudo-atomic
     if pending_history_events:
@@ -6398,17 +6834,12 @@ def sync_full_one_node(
             return _sync_result(
                 node,
                 status=SYNC_STATUS_ERROR,
-                after=after,
-                last_event_id=int(audit["last_event_id"]),
-                last_export_seq=int(audit["cursor"]),
-                inserted=int(audit["inserted"]),
-                updated=int(audit["updated"]),
-                ignored=int(audit["ignored"]),
-                skipped_unlabeled=int(audit["skipped_unlabeled"]),
                 instance_id=remote_iid,
                 error=f"history flush failed: {detail}",
-                audit_pages=int(audit["pages"]),
-                more_pending=bool(audit["more_pending"]),
+                error_code="HISTORY_FLUSH_FAILED",
+                error_phase="history",
+                retryable=False,
+                **_audit_fields(),
             )
     return _sync_result(
         node,
@@ -6417,20 +6848,12 @@ def sync_full_one_node(
             if audit["more_pending"]
             else SYNC_STATUS_OK
         ),
-        after=after,
-        last_event_id=int(audit["last_event_id"]),
-        last_export_seq=int(audit["cursor"]),
-        inserted=int(audit["inserted"]),
-        updated=int(audit["updated"]),
-        ignored=int(audit["ignored"]),
-        skipped_unlabeled=int(audit["skipped_unlabeled"]),
         instance_id=remote_iid,
         error=audit["error"],
         error_code=audit["error_code"],
         error_phase=audit["error_phase"],
         retryable=audit["retryable"],
-        audit_pages=int(audit["pages"]),
-        more_pending=bool(audit["more_pending"]),
+        **_audit_fields(),
     )
 
 

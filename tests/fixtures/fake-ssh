@@ -223,9 +223,9 @@ def _env_int(name: str) -> int:
         return 0
 
 
-def _bump_export_call(alias: str) -> int:
-    """1-based counter of audit-export invocations for this alias (FR-02 tests)."""
-    path = _alias_dir(alias) / "export-calls"
+def _bump_counter(alias: str, name: str) -> int:
+    """1-based per-alias invocation counter persisted under the state dir."""
+    path = _alias_dir(alias) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         current = int(path.read_text(encoding="utf-8").strip() or "0")
@@ -237,6 +237,36 @@ def _bump_export_call(alias: str) -> int:
     except OSError:
         pass
     return current
+
+
+def _bump_export_call(alias: str) -> int:
+    """1-based counter of audit-export invocations for this alias (FR-02 tests)."""
+    return _bump_counter(alias, "export-calls")
+
+
+def _apply_identity_drift(alias: str, ident: dict) -> dict:
+    """Simulate a node changing while a catch-up is running (FR-02 tests)."""
+    data = dict(ident)
+    after = _env_int("VCL_FAKE_IDENTITY_ALT_AFTER")
+    if after and _bump_counter(alias, "identity-calls") >= after:
+        version = os.environ.get("VCL_FAKE_IDENTITY_ALT_VERSION", "").strip()
+        if version:
+            data["vincula_version"] = version
+        instance = os.environ.get("VCL_FAKE_IDENTITY_ALT_INSTANCE", "").strip()
+        if instance:
+            data["instance_id"] = instance
+    return data
+
+
+def _apply_status_drift(alias: str, status: dict) -> dict:
+    """Simulate the remote service state changing mid-catch-up (FR-02 tests)."""
+    data = dict(status)
+    after = _env_int("VCL_FAKE_STATUS_ALT_AFTER")
+    if after and _bump_counter(alias, "status-calls") >= after:
+        proxy = dict(data.get("proxy") or {})
+        proxy["ok"] = False
+        data["proxy"] = proxy
+    return data
 
 
 def _ssh_identity_path(argv: list[str]) -> str | None:
@@ -916,6 +946,8 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
         except ValueError:
             sys.stderr.write("fake-ssh: VCL_FAKE_EXPORT_LIE_COUNT must be an integer\n")
             return 1
+    if os.environ.get("VCL_FAKE_EXPORT_DROP_MAX_SEQ", "").strip() == "1":
+        meta.pop("max_export_seq", None)
     lie_max = os.environ.get("VCL_FAKE_EXPORT_LIE_MAX_SEQ", "").strip()
     if lie_max:
         try:
@@ -2065,6 +2097,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     data = _load_fixture(alias, kind)
+    if kind == "identity":
+        data = _apply_identity_drift(alias, data)
+    elif kind == "status":
+        data = _apply_status_drift(alias, data)
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
     if kind in ("status", "verify") and not data.get("ok", True):
