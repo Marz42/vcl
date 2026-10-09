@@ -37,7 +37,16 @@ CONCURRENCY=${CONCURRENCY:-2}
 TIMEOUT=${TIMEOUT:-60}
 MONITOR_SECONDS=${MONITOR_SECONDS:-7200}
 FORCE=${FORCE:-0}
-B_ROOT=${B_ROOT:-$HOME/vcl-phase-b-$(date -u +%Y%m%dT%H%M%SZ)}
+# For --collect, reuse the newest prepared root unless B_ROOT is given explicitly.
+B_ROOT_EXPLICIT=${B_ROOT:-}
+if [[ "$PHASE" == "collect" && -z "$B_ROOT_EXPLICIT" ]]; then
+  B_ROOT=$(ls -1d "$HOME"/vcl-phase-b-* 2>/dev/null | while read -r d; do
+             [[ -f "$d/b-meta.env" ]] && printf '%s\n' "$d"; done | sort | tail -1)
+  [[ -n "$B_ROOT" ]] || B_ROOT="$HOME/vcl-phase-b-$(date -u +%Y%m%dT%H%M%SZ)"
+  printf 'collect: using B_ROOT=%s (set B_ROOT to override)\n' "$B_ROOT"
+else
+  B_ROOT=${B_ROOT:-$HOME/vcl-phase-b-$(date -u +%Y%m%dT%H%M%SZ)}
+fi
 EVID="$B_ROOT/evidence"
 META="$B_ROOT/b-meta.env"
 MODE_FILE="$B_ROOT/mode-tier.env"
@@ -199,8 +208,9 @@ EOF
     bad "monitor exited immediately; see $B_ROOT/monitor.log"
   fi
   note "== prep done: PASS=$PASS FAIL=$FAIL =="
-  note "next: wait ${MONITOR_SECONDS}s (2h) and then run: bash tmp/phase-b.sh --collect"
-  note "      or stop early / off-hours: FORCE=1 bash tmp/phase-b.sh --collect"
+  note "next: wait ${MONITOR_SECONDS}s and then run:"
+  note "      B_ROOT=$B_ROOT bash $0 --collect"
+  note "      (or stop early: FORCE=1 B_ROOT=$B_ROOT bash $0 --collect)"
   exit $(( FAIL > 0 ? 1 : 0 ))
 fi
 
@@ -298,9 +308,9 @@ for p in sorted(evid.glob("B2-cap-*.json")):
 cap_diffs = []
 for name, old in sorted((phase_a.get("nodes") or {}).items()):
     was = (old.get("capabilities") or {}).get("state")
-    new = caps.get(name, {}).get("state")
-    if was != new:
-        cap_diffs.append(f"{name}: {was} -> {new}")
+    now = caps.get(name, {}).get("state")
+    if was != now:
+        cap_diffs.append(f"{name}: {was} -> {now}")
 
 # --- B3 series continuity from the copied observation.db ----------------------
 obs = evid.parent / "state"
@@ -340,13 +350,19 @@ for node_id, rec in sorted(samples.items(), key=lambda kv: kv[1]["name"] or ""):
         "coverage": round(len(ts) / expected, 3) if expected else None,
     })
 
+names = sorted({p.stem[len("B2-cap-"):] for p in evid.glob("B2-cap-*.json")}
+               | set((phase_a.get("nodes") or {}).keys()))
+telemetry_state = {}
+for name in names:
+    telemetry_state[name] = load(evid / f"B2-telemetry-{name}.json").get("state")
+
 health = load(evid / "B3-health.json")
 findings = load(evid / "B3-findings.json")
 timeline = load(evid / "B3-timeline.json")
 
 # --- B4 node-side facts: restart counts / service state / identity ------------
 facts = []
-for name in sorted((phase_a.get("nodes") or {})):
+for name in names:
     before = load(evid / f"B2-telemetry-{name}.json").get("snapshot") or {}
     after = load(evid / f"B4-telemetry-{name}.json").get("snapshot") or {}
 
@@ -375,10 +391,6 @@ for name in sorted((phase_a.get("nodes") or {})):
         "connections_before": get(before, "sing_box", "connection_count"),
         "connections_after": get(after, "sing_box", "connection_count"),
     })
-
-telemetry_state = {}
-for name in sorted((phase_a.get("nodes") or {})):
-    telemetry_state[name] = load(evid / f"B2-telemetry-{name}.json").get("state")
 
 warnings = []
 for s in series:

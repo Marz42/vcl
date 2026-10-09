@@ -7,7 +7,7 @@
 | `where-is-production-workspace.py` | 只读体检：解析生产工作区/状态/绑定路径、模式、`fleet_id`、节点与 ref、缓存大小 | `4179d6346ecc6ea5587b4c6cfe147f7bb4897617e4b058d4c66237e9d38b7147` |
 | `phase-a-batch1.sh` | 阶段 A 批 1/2：候选摘要校验、隔离导入、绑定模板（可预填）、只读基线、能力矩阵、生产指纹、脱敏报告 | `20c58ffa83ad6a1c700da5019c95d228f860b9bf79aa661564514bb5949e2f5c` |
 | `phase-a-batch3.sh` | 阶段 A 批 3：大积压、限一页续传、`sync --full`、超时/超量/预算/锁/中断与恢复 | `9aaabc24864257abc5651913e307ab968c5f2aea0dff5d597a9a6d7faf6141e7` |
-| `phase-b.sh` | 阶段 B：生产上下文的 `probe/verify/status` 对照、能力与遥测矩阵、2h monitor 序列、Node 侧只读复核、生产指纹 | `b5515c37bfd0aa6cec37088e8fbba16069b6cab043efea683e6bf7513bb15b64` |
+| `phase-b.sh` | 阶段 B：生产上下文的 `probe/verify/status` 对照、能力与遥测矩阵、2h monitor 序列、Node 侧只读复核、生产指纹 | `0fbf64f79842ee23cc143d16d549e490ac9242aabae3ce6cd14dcd81480f3a7d` |
 
 约定：
 
