@@ -1700,6 +1700,22 @@ def _import_staging_parent() -> Path:
         return Path(tempfile.gettempdir())
 
 
+def _import_staging_dir(prefix: str) -> Path:
+    """Create an import staging directory, degrading instead of crashing.
+
+    ``~/tmp`` is preferred (F7-2), but it can exist without being writable;
+    fall back to the system temp dir, and fail with one clear line if neither
+    works instead of a bare PermissionError traceback.
+    """
+    try:
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=str(_import_staging_parent())))
+    except OSError as exc:
+        try:
+            return Path(tempfile.mkdtemp(prefix=prefix))
+        except OSError:
+            _host.die(f"cannot create workspace import staging directory: {exc}")
+
+
 def _extract_workspace_archive_to_staging(src: Path, staging: Path) -> set[str]:
     """Extract allowlisted portable members into staging; no live writes."""
     extracted: set[str] = set()
@@ -1774,12 +1790,7 @@ def _commit_staged_workspace(staging: Path, home: Path) -> None:
         d.mkdir(parents=True, exist_ok=True)
         _chmod_private(d, 0o700)
 
-    backup_root = Path(
-        tempfile.mkdtemp(
-            prefix=".workspace-import-bak.",
-            dir=str(_import_staging_parent()),
-        )
-    )
+    backup_root = _import_staging_dir(".workspace-import-bak.")
     preexisting: set[str] = set()
     written: list[str] = []
     try:
@@ -1849,12 +1860,7 @@ def import_workspace(src: Path) -> dict[str, Any]:
 
     staging: Path | None = None
     try:
-        staging = Path(
-            tempfile.mkdtemp(
-                prefix=".workspace-import.",
-                dir=str(_import_staging_parent()),
-            )
-        )
+        staging = _import_staging_dir(".workspace-import.")
         _chmod_private(staging, 0o700)
         extracted = _extract_workspace_archive_to_staging(src, staging)
         _validate_staged_workspace(staging, extracted)

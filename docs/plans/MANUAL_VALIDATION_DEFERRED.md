@@ -18,3 +18,5 @@
 2026-10-05：0.5.3本地功能与离线RC收口见[RC](../evidence/0.5.3/RC.md)。支持OS/observer/accountd现场、listener/config/unit drift恢复与真实代理前后、AC-5.3-05连续24h soak均PENDING LIVE；H05/H06/H07 PENDING HUMAN，remote required CI NOT RUN。
 
 2026-10-07：用户限定“继续完成0.5.x的目前开发。停在0.6.x之前”。本轮收口到0.5.3；H05、全部现有实机与持续soak项继续保留PENDING。`a9655e2`的远端CI #86已七项PASS，后续本地修复须另跑CI，见[最新交付](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。不按此前持续开发目标进入0.6.x，也不将延期记录视为发布、主线合并或现场操作授权。
+
+2026-10-08：FR-01～FR-04 的本地修复与评审补修完成并回归，本页不改变任何 PENDING 状态。新候选的冻结流程，以及**需要人工执行/见证**的现场步骤（隔离 Controller 验证、七台混合复验、24h soak、H05 签署）已逐条列在[验证方案](RC_0.5.3_VERIFICATION_PLAN.md)，状态 **PREPARED / NOT EXECUTED**；方案本身不是 PASS，也不授权升级或发布。

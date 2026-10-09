@@ -11696,6 +11696,31 @@ if (( f72_rev_rc == 0 )); then
 else
   fail "F7-2 T3 valid import bumps revision / parent chain"
 fi
+# --- import staging must degrade when ~/tmp exists but is not usable ---
+F72_NOTMP_HOME=$TEST_TMP/f72-notmp-home
+F72_IMP2=$TEST_TMP/f72-imp2
+F72_IMP2_LS=$TEST_TMP/f72-imp2-ls
+F72_SAVED_LS=${VCL_FLEET_LOCAL_STATE:-}
+rm -rf "$F72_NOTMP_HOME" "$F72_IMP2" "$F72_IMP2_LS"
+mkdir -p "$F72_NOTMP_HOME" "$F72_IMP2" "$F72_IMP2_LS"
+: > "$F72_NOTMP_HOME/tmp"   # a file where the staging directory would go
+export VCL_FLEET_HOME=$F72_IMP2
+# A second root for the same fleet_id needs its own machine-local state,
+# otherwise workspace verify reports the expected WORKSPACE_DIVERGED.
+export VCL_FLEET_LOCAL_STATE=$F72_IMP2_LS
+assert_success "F7-2 T3 import falls back when ~/tmp is unusable" \
+  env HOME="$F72_NOTMP_HOME" python3 "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  workspace import "$F72_GOOD"
+assert_success "F7-2 T3 fallback import verifies" fleet workspace verify
+F72_IMP2_NODES=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["nodes"]))' \
+  "$F72_IMP2/fleet.json")
+assert_equal "F7-2 T3 fallback import kept the registry" "1" "$F72_IMP2_NODES"
+if [[ -n "$F72_SAVED_LS" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$F72_SAVED_LS
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+export VCL_FLEET_HOME=$F72_LIVE
 # Grep: import path no longer refresh/re-signs on mismatch
 assert_success "F7-2 import_workspace has no refresh-on-mismatch" \
   python3 - "$PROJECT_DIR/lib/workspace.py" <<'PY'
