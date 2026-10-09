@@ -36,7 +36,8 @@ sidecar `*.sha256` 的哈希同样记录在 manifest 的 `artifacts`。Node `rel
 | `SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh` | **All 1950 tests passed，exit 0** |
 | Linux Python suite（非 root） | 155 项：153 PASS / 8 skip / 2 FAIL；两项失败是 `test_verify_extended` 既有的 root-only 用例（`Run this command as root`），CI 的 ubuntu job 用 `sudo -n` 跑同一命令 |
 | Windows Python suite（本机 Python 3.12 复现） | 155 项：144 PASS / 11 platform skip，exit 0 |
-| 远端 required CI | [run #100](https://github.com/Marz42/vcl/actions/runs/37874931681)（`e024d12`）七个 job 全绿：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact |
+| 远端 required CI（冻结基线） | [run #100](https://github.com/Marz42/vcl/actions/runs/37874931681)（`e024d12`）七个 job 全绿：Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact |
+| 远端 required CI（本页提交） | [run #101](https://github.com/Marz42/vcl/actions/runs/37879364997)（`a13d461`）七个 job 全绿；本页只新增证据文件，不改变候选源码、制品或固定输入 |
 
 原始日志（未提交的机器本地生成物）与哈希记录在 manifest 的 `logs`：`tmp/freeze-fleet.log`、`tmp/freeze-gate.log`、`tmp/freeze-unit.log`。
 
