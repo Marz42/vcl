@@ -70,6 +70,8 @@ stat -c '%n %s %Y' $(find "$PROD_WS" -type f) > ~/vcl-verify-evidence/prod-stat-
 
 ## 3. 阶段 A — Controller 隔离验证（详细人工步骤）
 
+> **2026-10-09 执行记录：阶段 A 已完成（Controller 侧），PASS WITH FINDINGS。** 现场结果与确切错误模板见[阶段 A 记录](../evidence/0.5.3/PHASE_A_CONTROLLER.md)。要点：冻结候选摘要逐次校验一致；生产 `fleet_id 1633b697…`（rev 16，2.1 GB 缓存，7 节点）只读导出后隔离导入（rev 17）；基线 5 台 OK、`epicfury`/`hot-beam-1` 为 `AUTH_FAILED/AUTH_LIMIT`（无 ref → OpenSSH 默认身份），`upperhand` 0.3.1-rc2、`urgentfury` 0.3.2 的 `capabilities` 为 `UNSUPPORTED`；大积压完整追平 254 页/1,269,177 行/1091s（默认 `--budget 3600` 足够）；限一页续传链与 `sync --full` 快照（`synced_at` fresh）成立；超时、超量页、页前预算、导入期锁回滚（`audit_import`）、运行中 SIGINT（`rc=-2`）与中断后续传全部取得确切文本且不推进游标；每一步"起点游标==上次提交游标、无半页"成立；生产工作区/缓存/绑定指纹五轮一致。新发现 F-1（连接期锁不入预算，竞态）与 F-2（部分节点仍依赖默认身份）已记入[可靠性待办](Fleet_Recovery_Reliability_Backlog.md)。A5 的定向 `AUTH_DENIED` 未单独执行（现场以真实 AUTH_LIMIT 覆盖分类路径）；阶段 B/C/D 未开始。
+
 **A0 前置条件**（全部满足才可开始；不满足就停在 PENDING）
 
 - [ ] 候选已按阶段 F 冻结，制品 SHA 与候选页一致；

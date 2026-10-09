@@ -29,6 +29,13 @@ FR-01/02是新现场情景暴露的缺口，需要重新开启0.5.x补修和RC�
 
 同步状态/缓存来源、完整版本与升级报告、恢复快照/reseed预览、增量汇总性能仍为下方功能候选，尚未冻结实施合同。性能项先测量再决定改动；0.6.x功能不列入本轮实现。
 
+## 阶段 A 现场验证新发现（2026-10-09）
+
+七台混合版本 Fleet 的 Controller 隔离验证已完成（见[阶段 A 记录](../evidence/0.5.3/PHASE_A_CONTROLLER.md)）。生产未被改动，但暴露出两项应在后续 0.5.x 候选处理的缺口：
+
+- [ ] **P3：连接期的锁不在运行预算内。**缓存被独占锁住、且连接竞争失败时，`sync` 在 `open_cache_for_sync` 阶段以 `cannot initialize fleet.db: database is locked` 退出（exit 1，无机器可读节点行）；`--budget` 只覆盖导入与快照事务，初始 connect/schema init 仍用 SQLite 默认 `busy_timeout`。表现为**竞态**（同一命令多次结果不同），消息干净、无部分写入。验收：连接期的锁等待纳入同一 deadline，失败按 `DATABASE_ERROR`（或预算停止）产出节点行，并补一条可复现的现场/离线用例。
+- [ ] **P2：生产仍有节点依赖默认身份（FR-01 既有缺口的现场面）。**`epicfury`、`eagleclaw`、`hot-beam-1` 无任何 credential ref，`fresh050` 只有 observe ref；前两者因此 `AUTH_FAILED/AUTH_LIMIT`。候选不得自动改写既有共享绑定，需由操作者显式 `access bind`/`node set --*-credential-ref` 为每个节点分配独立 ref，并提供零 SSH 的检查入口列出"仍走默认身份"的节点。
+
 ## 已在本地 0.5.3 修复的缺陷
 
 提交`79f54bf`已修复：accounting heartbeat为NULL/非法时间造成增强Verify中断JSON；Clash其他loopback地址被误判为配置地址；Controller probe后身份失效仍保留旧snapshot，以及矛盾probe结果被当成有效失败证据。完整离线验证见原收口报告。这些是0.5.3增强接口修复，现场Controller仍为0.5.0，尚未部署该候选。
