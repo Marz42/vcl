@@ -2,7 +2,7 @@
 
 **PREPARED / NOT EXECUTED。**本文件是待执行方案与操作手册，不是 PASS、不是验收结论，不构成部署、合并、tag、发布或 Node 升级授权。所有现场项初始状态为 **PENDING LIVE**，人工签署项为 **PENDING HUMAN**。
 
-日期：2026-10-08（Asia/Shanghai）。适用分支 `codex/0.5.1`，当前本地修复结论文档见 [FR-02 记录](../evidence/0.5.3/FR02_BOUNDED_SYNC.md)、[FR-01 记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)、[FR-03/04 记录](../evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；验收框架见[人工验收清单](VCL_0.5-0.7_Human_Acceptance.md)与[延期记录](MANUAL_VALIDATION_DEFERRED.md)。
+准备过程、准备期缺陷修复与本次回归/CI 计数见[现场验证准备记录](../evidence/0.5.3/VERIFICATION_PREP.md)。日期：2026-10-08（Asia/Shanghai）。适用分支 `codex/0.5.1`，当前本地修复结论文档见 [FR-02 记录](../evidence/0.5.3/FR02_BOUNDED_SYNC.md)、[FR-01 记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)、[FR-03/04 记录](../evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；验收框架见[人工验收清单](VCL_0.5-0.7_Human_Acceptance.md)与[延期记录](MANUAL_VALIDATION_DEFERRED.md)。
 
 ## 0. 顺序、范围与红线
 
