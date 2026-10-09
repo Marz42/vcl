@@ -253,6 +253,8 @@ sha256sum /etc/sing-box/config.json 2>/dev/null; stat -c '%n %Y' /etc/sing-box/c
 
 ## 4. 阶段 B — 七台混合 Fleet 复验
 
+> **2026-10-09 准备：阶段 B 采集器已入库** `docs/evidence/0.5.3/tools/phase-b.sh`（两段式：准备段做副本与 B1/B2 并启动 2h monitor，`--collect` 段做 B3 序列、B4 复核与生产指纹）。**隔离口径**：生产工作区、状态库与凭据绑定都取**副本**（状态用 SQLite 在线备份，含 `fleet.db`/`observation.db`/`findings.db`/`inspection.db`），生产根只被读取；因此 monitor/verify 的写入全部落在 `$B_ROOT`。B1 与阶段 A 结果自动对照（`PHASE_A_SUMMARY=`）。
+
 前置：阶段 A 全部 PASS；生产指纹仍一致；窗口与脱敏映射已记录。
 
 | 步骤 | 操作 | 预期/证据 |

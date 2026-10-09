@@ -118,13 +118,14 @@ reached the per-node page cap (20 pages); audit data is still pending
 
 ## 8. 采集器与归档
 
-现场采集器未入库（`scripts/` 属冻结输入集，提交会改变候选身份），只放在 `tmp/`：
+现场采集器已随文档入库（`docs/` 不属于冻结输入集，见[tools/README.md](tools/README.md)），同时在现场保留 `tmp/` 同名副本：
 
 | 脚本 | sha256 |
 | --- | --- |
-| `tmp/where-is-production-workspace.py` | `4179d6346ecc6ea5587b4c6cfe147f7bb4897617e4b058d4c66237e9d38b7147` |
-| `tmp/phase-a-batch1.sh` | `20c58ffa83ad6a1c700da5019c95d228f860b9bf79aa661564514bb5949e2f5c` |
-| `tmp/phase-a-batch3.sh` | `9aaabc24864257abc5651913e307ab968c5f2aea0dff5d597a9a6d7faf6141e7` |
+| `docs/evidence/0.5.3/tools/where-is-production-workspace.py`（现场 `tmp/` 同名） | `4179d6346ecc6ea5587b4c6cfe147f7bb4897617e4b058d4c66237e9d38b7147` |
+| `docs/evidence/0.5.3/tools/phase-a-batch1.sh` | `20c58ffa83ad6a1c700da5019c95d228f860b9bf79aa661564514bb5949e2f5c` |
+| `docs/evidence/0.5.3/tools/phase-a-batch3.sh` | `9aaabc24864257abc5651913e307ab968c5f2aea0dff5d597a9a6d7faf6141e7` |
+| `docs/evidence/0.5.3/tools/phase-b.sh`（阶段 B 采集器） | `b5515c37bfd0aa6cec37088e8fbba16069b6cab043efea683e6bf7513bb15b64` |
 
 现场原始证据不入库：`/home/marz/vcl-verify-20261009T052540Z/`（`evidence/A1-A4-summary.{md,json}`、`A1-nodes.txt`、`A2-refs.json`、`B3-summary.md`、`B3-steps.jsonl`、`B3-A6.json`、`batch.log`/`batch3.log`、`*-phaseA*.tgz` 及其 sha256）。本页只记录脱敏后的结论与确切错误模板文本。
 
