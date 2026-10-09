@@ -59,6 +59,6 @@ Monitoring、Health、Findings、Inspect、Drift、Timeline和增强Verify已在
 
 1. 七台连续追赶、有界full缓存刷新和两个版本来源核对已完成；保留原始失败与复验结果。保留0.3.1-rc2、0.3.1、0.3.2和0.5.0版本样本，先制定补修和分批升级验收计划，无需因本次已恢复的观测故障立即整体重装。
 2. 修FR-01，再交付FR-02的正式有界同步；同时修FR-03/04和最小agent/doctor入口。
-3. 按现有回归/制品/独立ZIP合同门禁生成新的0.5.x RC；现场使用同一Fleet复验，保留旧Node作为升级兼容样本。候选冻结、隔离测试工作区、Controller 单侧验证（大积压/限一页续传/full 刷新/失败恢复）、七台复验、24h soak 与 H05 的人工步骤见[验证方案](RC_0.5.3_VERIFICATION_PLAN.md)（PREPARED / NOT EXECUTED；禁止为造积压重置生产游标）。
+3. 按现有回归/制品/独立ZIP合同门禁生成新的0.5.x RC；现场使用同一Fleet复验，保留旧Node作为升级兼容样本。候选已冻结（见[冻结候选](../evidence/0.5.3/CANDIDATE_FREEZE.md)）；候选冻结、隔离测试工作区、Controller 单侧验证（大积压/限一页续传/full 刷新/失败恢复）、七台复验、24h soak 与 H05 的人工步骤见[验证方案](RC_0.5.3_VERIFICATION_PLAN.md)（PREPARED / NOT EXECUTED；禁止为造积压重置生产游标）。
 4. 接入同步状态/版本兼容/验收报告与恢复预览；性能改动先benchmark再实施。
 5. 所有新候选的远端CI、支持OS/权限、24h soak和H05仍需独立绑定，不复用当前恢复结果宣布0.5.3正式验收或发布。

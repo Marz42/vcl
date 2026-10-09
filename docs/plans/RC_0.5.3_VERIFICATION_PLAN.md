@@ -54,6 +54,8 @@ stat -c '%n %s %Y' $(find "$PROD_WS" -type f) > ~/vcl-verify-evidence/prod-stat-
 
 ## 2. 阶段 F — 候选冻结（自动步骤，人工执行并记录）
 
+> **2026-10-08 执行记录：阶段 F 已完成**，候选身份与全部离线证据见[冻结候选](../evidence/0.5.3/CANDIDATE_FREEZE.md)：Node `8abe989c` / Controller `65dbcc7b`、188 个固定输入（manifest `da84b695…`）、`SOURCE_DATE_EPOCH=1791513039`、远端 CI #100 七项全绿。阶段 A/B/C/D 仍未执行。下表保留为冻结流程的说明与复核清单。
+
 | 步骤 | 命令 | 预期 | 证据 |
 | --- | --- | --- | --- |
 | F1 工作树干净 | `git status --short --branch`；`git log -1 --format='%H %cI'` | 无未提交改动；记下候选 SHA | 记录 SHA、分支 |
