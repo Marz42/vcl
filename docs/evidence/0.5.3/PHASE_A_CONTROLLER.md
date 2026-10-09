@@ -2,7 +2,7 @@
 
 日期：2026-10-09（Asia/Shanghai）。分支 `codex/0.5.1`，冻结候选基线 `e024d12`（冻结提交 `a13d461`，证据提交 `53c7618`）。范围：[RC 0.5.3 验证方案](../../plans/RC_0.5.3_VERIFICATION_PLAN.md) 的**阶段 A**：只验 Controller，**保留七台混合版本 Node 不动**，用隔离测试工作区跑基线、大积压、限一页续传、`sync --full` 与失败/恢复。
 
-**EXECUTED（Controller 侧）/ PASS WITH FINDINGS / 生产指纹前后一致 / PENDING B、C、D。** 候选身份：Node `8abe989c…`、Controller `65dbcc7b…`（`vcl-fleet 0.5.3`）、payload `3389e3d6…`、固定输入 manifest `da84b695…`、`SOURCE_DATE_EPOCH=1791513039`，见[冻结候选](CANDIDATE_FREEZE.md)。以下结果全部来自真机现场（生产 Controller 主机、`marz` 用户、WSL），**未修改任何 Node、未改生产游标、未对生产缓存做故障注入**。
+**EXECUTED（Controller 侧）/ PASS WITH FINDINGS / 生产指纹前后一致 / PENDING B、C、D。**本页文档提交 `0e93901` 的远端 CI（[run 37938802704](https://github.com/Marz42/vcl/actions/runs/37938802704)，脱敏快照 [REMOTE_CI_20261009_PHASE_A.json](REMOTE_CI_20261009_PHASE_A.json)）七个 job 全绿。 候选身份：Node `8abe989c…`、Controller `65dbcc7b…`（`vcl-fleet 0.5.3`）、payload `3389e3d6…`、固定输入 manifest `da84b695…`、`SOURCE_DATE_EPOCH=1791513039`，见[冻结候选](CANDIDATE_FREEZE.md)。以下结果全部来自真机现场（生产 Controller 主机、`marz` 用户、WSL），**未修改任何 Node、未改生产游标、未对生产缓存做故障注入**。
 
 ## 1. 环境与隔离
 
