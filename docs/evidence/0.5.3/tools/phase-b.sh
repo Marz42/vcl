@@ -188,7 +188,7 @@ EOF
   export VCL_FAKE_STATE_DIR="${VCL_FAKE_STATE_DIR:-}"
   VCL_FLEET_HOME="$B_ROOT/ws" VCL_FLEET_LOCAL_STATE="$B_ROOT/state" \
   XDG_CONFIG_HOME="$B_ROOT/config" TMPDIR="$B_ROOT/tmp" \
-  nohup python3 "$UNPACK/bin/vcl-fleet" monitor \
+  nohup python3 -u "$UNPACK/bin/vcl-fleet" monitor \
     --interval "$INTERVAL" --inspect-interval "$INSPECT_INTERVAL" \
     --timeout "$TIMEOUT" --concurrency "$CONCURRENCY" --json \
     >> "$B_ROOT/monitor.log" 2>&1 &
@@ -262,8 +262,20 @@ import json, sqlite3, sys
 from pathlib import Path
 
 evid, broot = Path(sys.argv[1]), Path(sys.argv[2])
-start, now, interval, phase_a_path, target = (
-    float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6], float(sys.argv[7]))
+
+
+def as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+start = as_float(sys.argv[3])
+end = as_float(sys.argv[4])
+interval = as_float(sys.argv[5], 60.0)
+phase_a_path = sys.argv[6] if len(sys.argv) > 6 else ""
+target = as_float(sys.argv[7], 7200.0)
 
 
 def load(p):
@@ -308,9 +320,9 @@ for p in sorted(evid.glob("B2-cap-*.json")):
 cap_diffs = []
 for name, old in sorted((phase_a.get("nodes") or {}).items()):
     was = (old.get("capabilities") or {}).get("state")
-    now = caps.get(name, {}).get("state")
-    if was != now:
-        cap_diffs.append(f"{name}: {was} -> {now}")
+    current = caps.get(name, {}).get("state")
+    if was != current:
+        cap_diffs.append(f"{name}: {was} -> {current}")
 
 # --- B3 series continuity from the copied observation.db ----------------------
 obs = evid.parent / "state"
@@ -412,7 +424,7 @@ if log.is_file():
             rounds += 1
 
 report = {
-    "window": {"start_epoch": start, "end_epoch": now, "elapsed_s": now - start,
+    "window": {"start_epoch": start, "end_epoch": end, "elapsed_s": end - start,
                "interval_s": interval, "target_s": target, "monitor_rounds": rounds},
     "telemetry_state": telemetry_state,
     "continuity_warnings": warnings,
@@ -430,11 +442,11 @@ report = {
 (evid / "B-report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 lines = ["# Phase B summary (sanitized)", "",
-         f"- window: {now - start:.0f}s (target {target:.0f}s, interval {interval:.0f}s)",
+         f"- window: {end - start:.0f}s (target {target:.0f}s, interval {interval:.0f}s)",
          f"- B1 diffs vs phase A: {diffs or 'none'}",
          f"- B2 capability diffs vs phase A: {cap_diffs or 'none'}",
          f"- cache_state: {report['b3_cache_state']}",
-         f"- monitor rounds logged: {rounds}",
+         f"- monitor log JSON lines: {rounds} (unbuffered after 2026-10-10; the series table below is authoritative)",
          f"- timeline events in window: {tl_events}",
          f"- continuity warnings: {warnings or 'none'}", "",
          "## B1 cached status (copied production cache; no SSH)", "",
