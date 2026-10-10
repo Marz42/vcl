@@ -275,6 +275,8 @@ sha256sum /etc/sing-box/config.json 2>/dev/null; stat -c '%n %Y' /etc/sing-box/c
 > 2. `monitor --interval 60 --inspect-interval 300 --concurrency 2 --json` 跑 24h：连续健康/发现/检查样本（`observation.db`/`findings.db`/`inspection.db` 都在副本里）。注意**连续 monitor 不打印 stdout**（只有 `--once` 打印 `run` 计数），因此写失败计数在收尾时用一次 `monitor --once` 取样。
 > 3. 5 分钟采样器：`health`/`findings`/`timeline` 的 `cache_state`、每节点 observation/proxy 状态与 proxy 成功/失败计数、发现数与类型、时间线事件数、四库字节、`audit_events`/`daily_usage` 行数、遥测年龄；收尾报告另外关联 `inspection.db.events` 与序列尾部空档（用于判定阶段 B 的 F-4）。
 >
+> **2026-10-10 执行：突发腿 PASS LIVE。** `soak-0.5.0-telemetry.sh neptunespear --iterations 1000`：ok=1000/fail_at=0/elapsed=5,666 s；`/var/lib/vincula` Δ+704,512 B、`accounting.db` Δ+704,512 B、目录文件数 Δ0、sing-box 与 accountd `NRestarts` 0→0、两者 active、RSS Δ−648 KiB/0、FD Δ+10/0 —— `soak=PASS`、`state_growth=PASS`、`outcome=PASS LIVE`（digest `3132226…`）。准备段 `PASS=8 FAIL=0`，隔离根 `vcl-phase-c-20261010T023206Z`，24h monitor 与 300 s 采样器已启动（窗口起点见 `$C_ROOT/window.start`）。记录见 [SOAK](../evidence/0.5.3/SOAK.md)。
+>
 > **2026-10-10 决定（执行人）：不启用代理探测。**不开 `probe-profiles`（不在生产 Node 上新增专用测试用户），因此 `proxy` 维度保持 `UNKNOWN`，阶段 C 的"真实代理成功/失败与断流窗口"按"缺一不填 PASS"记为**未覆盖**，其余维度照测；真实业务流量仍由 telemetry 的 rx/tx/连接数与阶段 B 的 B4 数据佐证。
 >
 > **代理维度需要授权**：`真实代理成功/失败与断流窗口`需要私有 `probe-profiles/v1` 文件（见 `docs/operations/monitoring-runbook.md`，含每节点专用 `vcl-probe-*` 测试用户、Reality 参数与 HTTPS 目标）加本机固定版本 `sing-box`；这要求在 **Node 上新建专用测试用户**（属 Node 侧变更）。未获授权时 `PROBE_PROFILES` 留空，代理状态保持 `UNKNOWN`，该维度按“缺一不填 PASS”如实记为未覆盖。
