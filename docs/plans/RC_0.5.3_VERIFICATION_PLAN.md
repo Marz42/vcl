@@ -253,6 +253,8 @@ sha256sum /etc/sing-box/config.json 2>/dev/null; stat -c '%n %Y' /etc/sing-box/c
 
 ## 4. 阶段 B — 七台混合 Fleet 复验
 
+> **2026-10-09/10 执行记录：阶段 B 已完成，PASS。** 生产上下文（工作区/状态/绑定全部取副本，生产根只读）跑了 10h45m22s（38,722 s，`--interval 60 --inspect-interval 300`）。B1/B2 与阶段 A **无差异**；B3 三个 cache-only 视图 `cache_state=OK`，窗口内 61 条事件，五台可达节点覆盖率 0.91–0.97、最大间隔 ≤72 s，0.3.x 两台也有 610+ 样本，两台 `AUTH_FAILED` 只有 130 个退避样本（监控盲区，已并入 FR-01 待办）；B4 显示 `instance_id` 未变、`restart_count` 0→0、服务 active 不变，`uptime` 与窗口一致，流量为业务自然增长；生产工作区/缓存/绑定指纹两轮 4/4 一致。新发现 F-4（停止前尾部 814 s 无样本、停止后 health 全 `UNKNOWN` 并写入一批陈旧 finding；日志缓冲丢失未能定因，阶段 C 用无缓冲日志复测）与 F-5（某次遥测快照缺 `connection_count`）。完整记录见[阶段 B](../evidence/0.5.3/PHASE_B_FLEET.md)。
+
 > **2026-10-09 准备：阶段 B 采集器已入库** `docs/evidence/0.5.3/tools/phase-b.sh`（两段式：准备段做副本与 B1/B2 并启动 2h monitor，`--collect` 段做 B3 序列、B4 复核与生产指纹）。**隔离口径**：生产工作区、状态库与凭据绑定都取**副本**（状态用 SQLite 在线备份，含 `fleet.db`/`observation.db`/`findings.db`/`inspection.db`），生产根只被读取；因此 monitor/verify 的写入全部落在 `$B_ROOT`。B1 与阶段 A 结果自动对照（`PHASE_A_SUMMARY=`）。
 
 前置：阶段 A 全部 PASS；生产指纹仍一致；窗口与脱敏映射已记录。

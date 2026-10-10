@@ -34,7 +34,14 @@ FR-01/02是新现场情景暴露的缺口，需要重新开启0.5.x补修和RC�
 七台混合版本 Fleet 的 Controller 隔离验证已完成（见[阶段 A 记录](../evidence/0.5.3/PHASE_A_CONTROLLER.md)）。生产未被改动，但暴露出两项应在后续 0.5.x 候选处理的缺口：
 
 - [ ] **P3：连接期的锁不在运行预算内。**缓存被独占锁住、且连接竞争失败时，`sync` 在 `open_cache_for_sync` 阶段以 `cannot initialize fleet.db: database is locked` 退出（exit 1，无机器可读节点行）；`--budget` 只覆盖导入与快照事务，初始 connect/schema init 仍用 SQLite 默认 `busy_timeout`。表现为**竞态**（同一命令多次结果不同），消息干净、无部分写入。验收：连接期的锁等待纳入同一 deadline，失败按 `DATABASE_ERROR`（或预算停止）产出节点行，并补一条可复现的现场/离线用例。
-- [ ] **P2：生产仍有节点依赖默认身份（FR-01 既有缺口的现场面）。**`epicfury`、`eagleclaw`、`hot-beam-1` 无任何 credential ref，`fresh050` 只有 observe ref；前两者因此 `AUTH_FAILED/AUTH_LIMIT`。候选不得自动改写既有共享绑定，需由操作者显式 `access bind`/`node set --*-credential-ref` 为每个节点分配独立 ref，并提供零 SSH 的检查入口列出"仍走默认身份"的节点。
+- [ ] **P2：生产仍有节点依赖默认身份（FR-01 既有缺口的现场面）。**阶段 B 进一步确认：这类节点在 10h45m 观测里只有 130 个退避失败样本（覆盖率 0.206），即**依赖默认身份的节点同时是监控盲区**。`epicfury`、`eagleclaw`、`hot-beam-1` 无任何 credential ref，`fresh050` 只有 observe ref；前两者因此 `AUTH_FAILED/AUTH_LIMIT`。候选不得自动改写既有共享绑定，需由操作者显式 `access bind`/`node set --*-credential-ref` 为每个节点分配独立 ref，并提供零 SSH 的检查入口列出"仍走默认身份"的节点。
+
+## 阶段 B 现场验证新发现（2026-10-09/10）
+
+七台混合 Fleet 的生产上下文复验见[阶段 B 记录](../evidence/0.5.3/PHASE_B_FLEET.md)。
+
+- [ ] **P3：停止 monitor 后的陈旧判定污染健康视图与时间线。**10h45m 窗口内采样正常（最大间隔 ~72 s），但停止瞬间前约 814 s 没有新样本（疑为 `inspect_interval=300` 的检查轮进行中），停掉后立刻读 `health --json` 得到全节点 `UNKNOWN`（新鲜度窗口 `-30..90 s`），`findings --refresh` 随即写入一批 `TELEMETRY_STALE`/`HEALTH_CHANGE` 事件。验收：停止/收尾路径不产生虚假 `UNKNOWN` 转换（或明确区分"检查轮进行中"），并可用无缓冲日志判定尾部空档的成因；阶段 C 复测。
+- [ ] **P3：检查轮期间无遥测样本。**若 F-4 确认由 `inspect` 轮阻塞采样，需要在检查轮进行时保持健康采样节奏（或记录显式的进行中状态），避免运维面板出现"全部未知"。
 
 ## 已在本地 0.5.3 修复的缺陷
 
