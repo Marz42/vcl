@@ -1,0 +1,135 @@
+{
+  "controller_version": "0.5.0",
+  "delivered_total": 1438369,
+  "evidence_source": "USER_REPORTED_OTHER_COMPUTER",
+  "local_database_backup": "OK",
+  "nodes": [
+    {
+      "cursor": 1240201,
+      "delivered_total": 718028,
+      "kind": "CATCH_UP",
+      "name": "neptunespear",
+      "pages": 144,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 948892,
+      "delivered_total": 522111,
+      "kind": "CATCH_UP",
+      "name": "hot-beam-1",
+      "pages": 105,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 442867,
+      "delivered_total": 169750,
+      "kind": "CATCH_UP",
+      "name": "upperhand",
+      "pages": 34,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 84059,
+      "delivered_total": 27330,
+      "kind": "CATCH_UP",
+      "name": "urgentfury",
+      "pages": 6,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 605345,
+      "delivered_total": 156,
+      "kind": "CATCH_UP",
+      "name": "epicfury",
+      "pages": 1,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 592514,
+      "delivered_total": 925,
+      "kind": "CATCH_UP",
+      "name": "eagleclaw",
+      "pages": 1,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    },
+    {
+      "cursor": 44042,
+      "delivered_total": 69,
+      "kind": "CATCH_UP",
+      "name": "fresh050",
+      "pages": 1,
+      "state": "CAUGHT_UP_CLOSED_WINDOW"
+    }
+  ],
+  "reported_batch_failures": 0,
+  "reported_date": "2026-10-08",
+  "request": {
+    "max_pages_per_node": 300,
+    "page_size": 5000,
+    "ssh_timeout_seconds": 60
+  },
+  "scope": "Closed-connection window caught up per node at its completion time; subsequent bounded full-cache refresh reported healthy for all seven nodes. UI visual checks, real-client traffic and 0.5.3 acceptance not claimed.",
+  "source_transcript_sha256": "f05be72e0ba72a1ef139fb6abe622d3656852706119ed4bcf5f9b86cd4400979",
+  "source_transcript_scope": "Seven-node catch-up pasted attachment only; subsequent cache refresh was reported separately in chat.",
+  "refresh_cache": {
+    "evidence_source": "USER_REPORTED_CHAT_OTHER_COMPUTER",
+    "controller_version": "0.5.0",
+    "local_database_backup": "OK",
+    "request": {"page_size": 5000, "ssh_timeout_seconds": 60},
+    "cached_last_sync_at": "2026-10-07T17:06:51Z",
+    "cached_last_sync_at_asia_shanghai": "2026-10-08T01:06:51+08:00",
+    "all_nodes_cached_health": {"ssh": "OK", "proxy": "OK", "accounting": "OK", "clock": "OK"},
+    "nodes": [
+      {"name": "epicfury", "state": "OK", "delivered": 213, "inserted": 213, "updated": 0, "cursor": 605558},
+      {"name": "upperhand", "state": "OK", "delivered": 176, "inserted": 176, "updated": 0, "cursor": 443043},
+      {"name": "eagleclaw", "state": "OK", "delivered": 152, "inserted": 152, "updated": 0, "cursor": 592666},
+      {"name": "neptunespear", "state": "OK", "delivered": 299, "inserted": 299, "updated": 0, "cursor": 1240500},
+      {"name": "hot-beam-1", "state": "OK", "delivered": 0, "inserted": 0, "updated": 0, "cursor": 948892},
+      {"name": "urgentfury", "state": "OK", "delivered": 0, "inserted": 0, "updated": 0, "cursor": 84059},
+      {"name": "fresh050", "state": "OK", "delivered": 8, "inserted": 8, "updated": 0, "cursor": 44050}
+    ],
+    "summary": {"state": "OK", "nodes": 7, "not_complete": 0, "delivered": 848, "inserted": 848, "updated": 0}
+  },
+  "all_recovery_delivered_total_including_initial_two_pages": 1441217,
+  "version_source_check": {
+    "evidence_source": "USER_REPORTED_CHAT_OTHER_COMPUTER",
+    "requested_nodes": ["epicfury", "upperhand"],
+    "command_completion": "BOTH_NODE_RESULTS_REPORTED_EXIT_CODE_NOT_REPORTED",
+    "nodes": [
+      {
+        "kind": "VERSION_SOURCES",
+        "name": "epicfury",
+        "state": "MATCH",
+        "identity_vincula_version": "0.3.1-rc2",
+        "identity_vincula_version_state": "KNOWN_FORMAT",
+        "identity_version": null,
+        "identity_version_state": "MISSING",
+        "installed_VERSION": "0.3.1-rc2",
+        "installed_VERSION_state": "KNOWN_FORMAT",
+        "comparison": "EXACT_VERSION_TEXT",
+        "initial_diagnostic_unknown_cause": "BARE_X_Y_Z_FILTER_REJECTS_PRERELEASE_SUFFIX"
+      },
+      {
+        "kind": "VERSION_SOURCES",
+        "name": "upperhand",
+        "state": "MATCH",
+        "identity_vincula_version": "0.3.1-rc2",
+        "identity_vincula_version_state": "KNOWN_FORMAT",
+        "identity_version": null,
+        "identity_version_state": "MISSING",
+        "installed_VERSION": "0.3.1-rc2",
+        "installed_VERSION_state": "KNOWN_FORMAT",
+        "comparison": "EXACT_VERSION_TEXT",
+        "initial_diagnostic_unknown_cause": "BARE_X_Y_Z_FILTER_REJECTS_PRERELEASE_SUFFIX"
+      }
+    ]
+  },
+  "observation_recovery": {
+    "state": "USER_REPORTED_KNOWN_ISSUES_RECOVERED",
+    "nodes": 7,
+    "native_product_defects_fixed": false,
+    "ui_visual_check": "NOT_PERFORMED",
+    "real_client_traffic_check": "NOT_PERFORMED",
+    "candidate_0_5_3_live_acceptance": "NOT_CLAIMED"
+  }
+}

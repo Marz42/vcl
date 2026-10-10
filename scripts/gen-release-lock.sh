@@ -14,10 +14,16 @@ files=(
   lib/legacy_seed.py
   lib/sing-box-release.sh
   lib/vincula-accountd.py
+  lib/accountd_runtime.py
+  lib/observer.py
+  lib/vincula-observer.socket
+  lib/vincula-observer@.service
   lib/vincula-stats.py
   lib/vincula-audit.py
   lib/vincula-backup.py
   lib/telemetry_snapshot.py
+  lib/inspect_snapshot.py
+  lib/verify_snapshot.py
   lib/vincula-accountd.service
 )
 

@@ -38,9 +38,9 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.0"
+VCL_FLEET_VERSION = "0.5.3"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -62,6 +62,19 @@ SYNC_FULL_FAIL_AFTER_ENV = "VCL_SYNC_FULL_FAIL_AFTER"
 SYNC_STATUS_OK = "ok"
 SYNC_STATUS_EXPIRED = "expired"
 SYNC_STATUS_ERROR = "error"
+# FR-02: the run stopped inside its budget/page cap with data still pending.
+# It is never reported as success, and retires/replaces must not proceed on it.
+SYNC_STATUS_MORE_PENDING = "more_pending"
+
+# FR-02 bounded audit catch-up. Live-validated starting points (1000 and 5000
+# rows per page, 60 s per request, 16 MiB stdout cap); the VPS tool run used
+# 5000/300 pages. These are ceilings, not measured guarantees.
+SYNC_AUDIT_PAGE_SIZE_DEFAULT = 1000
+SYNC_AUDIT_PAGE_SIZE_MAX = 5000
+SYNC_AUDIT_MAX_PAGES_DEFAULT = 300
+SYNC_AUDIT_TIMEOUT_DEFAULT = 60.0
+SYNC_AUDIT_STDOUT_CAP_DEFAULT = 16 * 1024 * 1024
+SYNC_AUDIT_BUDGET_DEFAULT = 3600.0
 CURSOR_KIND_EVENT_ID = "event_id"
 CURSOR_KIND_EXPORT_SEQ = "export_seq"
 EXPORT_PROTOCOL_VERSION = 2
@@ -229,6 +242,7 @@ NODE_KEYS = (
     "identity_file",
     "admin_credential_ref",
     "observe_credential_ref",
+    "observe_ssh_user",
     "enabled",
     "status",
 )
@@ -499,6 +513,9 @@ bind_openssh_default = _AC.bind_openssh_default
 resolve_binding = _AC.resolve_binding
 list_bindings = _AC.list_bindings
 verify_bindings = _AC.verify_bindings
+allocate_node_credential_ref = _AC.allocate_node_credential_ref
+plan_node_credential_binding = _AC.plan_node_credential_binding
+affected_binding_consumers = _AC.affected_binding_consumers
 
 
 def ssh_argv(
@@ -1211,8 +1228,15 @@ def _record_instance_db_pending(
 
 
 def _sync_full_fail_after(step: str) -> None:
-    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER)."""
-    if os.environ.get(SYNC_FULL_FAIL_AFTER_ENV) == step:
+    """Test-only inject inside sync --full txn (VCL_SYNC_FULL_FAIL_AFTER).
+
+    The legacy value ``audit-import`` still injects at the snapshot txn; since
+    FR-02 the audit pages are committed before that txn, so the injection can
+    no longer roll them back.
+    """
+    configured = os.environ.get(SYNC_FULL_FAIL_AFTER_ENV)
+    aliases = {"snapshot": ("snapshot", "audit-import")}.get(step, (step,))
+    if configured and configured in aliases:
         raise RuntimeError(f"injected sync --full failure at {step}")
 
 
@@ -1426,6 +1450,7 @@ def import_audit_batch(
     next_cursor: Optional[int] = None,
     *,
     manage_txn: bool = True,
+    deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Atomically import audit rows for one node. UPSERT on (node_id, event_id).
 
@@ -1531,6 +1556,12 @@ def import_audit_batch(
                     SYNC_STATUS_OK,
                 ),
             )
+            if deadline is not None and budget_expired(deadline):
+                # FR-02: a page that would commit past the budget is rolled
+                # back whole; the caller reports a budget stop, not a commit.
+                raise BudgetExhausted(
+                    "per-node run budget exhausted before the page commit"
+                )
             if manage_txn:
                 conn.commit()
         except BaseException:
@@ -1570,6 +1601,7 @@ def import_export_jsonl(
     now_iso: str,
     conn: Optional[sqlite3.Connection] = None,
     next_cursor: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Import a node audit-export JSONL batch and advance the sync cursor."""
     return import_audit_batch(
@@ -1579,7 +1611,33 @@ def import_export_jsonl(
         now_iso=now_iso,
         conn=conn,
         next_cursor=next_cursor,
+        deadline=deadline,
     )
+
+
+class ExportProtocolError(ValueError):
+    """Typed Protocol v2 rejection with a fixed, shareable summary (FR-04).
+
+    ``summary`` never interpolates an endpoint, a logical identity or any other
+    remote string; expected/actual values ride along as separate machine fields
+    for consumers that legitimately need them.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        summary: str,
+        *,
+        field: Optional[str] = None,
+        expected: Any = None,
+        actual: Any = None,
+    ) -> None:
+        super().__init__(summary)
+        self.code = code
+        self.summary = summary
+        self.field = field
+        self.expected = expected
+        self.actual = actual
 
 
 def parse_export_jsonl(text: str) -> list[dict[str, Any]]:
@@ -1591,10 +1649,18 @@ def parse_export_jsonl(text: str) -> list[dict[str, Any]]:
             continue
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"JSONL line {lineno} is not JSON: {exc}") from exc
+        except json.JSONDecodeError:
+            raise ExportProtocolError(
+                "JSONL_NOT_JSON",
+                "export row is not valid JSON",
+                field=f"line[{lineno}]",
+            ) from None
         if not isinstance(obj, dict):
-            raise ValueError(f"JSONL line {lineno} is not an object")
+            raise ExportProtocolError(
+                "JSONL_NOT_OBJECT",
+                "export row is not a JSON object",
+                field=f"line[{lineno}]",
+            )
         rows.append(obj)
     return rows
 
@@ -1618,7 +1684,12 @@ def parse_export_meta(stderr: str) -> Optional[dict[str, Any]]:
 
 def _require_export_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"export meta {name} is not an int")
+        raise ExportProtocolError(
+            f"META_{name.upper()}_INVALID",
+            f"export meta {name} is not an integer",
+            field=name,
+            actual=value,
+        )
     return value
 
 
@@ -1642,100 +1713,207 @@ def validate_export_batch(
         raise ValueError("export meta ok is not true")
     err = meta.get("error")
     if err:
-        raise ValueError(f"export meta error={err}")
+        raise ExportProtocolError(
+            "META_ERROR",
+            "export meta reports an error",
+            field="error",
+            actual=str(err),
+        )
 
     protocol = meta.get("protocol_version")
     if protocol != EXPORT_PROTOCOL_VERSION:
-        raise ValueError(
-            f"export protocol_version={protocol!r} != {EXPORT_PROTOCOL_VERSION}"
+        raise ExportProtocolError(
+            "PROTOCOL_VERSION_MISMATCH",
+            "export protocol version mismatch",
+            field="protocol_version",
+            expected=EXPORT_PROTOCOL_VERSION,
+            actual=protocol,
         )
     cursor_kind = _optional_text(meta.get("cursor_kind"))
     if cursor_kind != CURSOR_KIND_EXPORT_SEQ:
-        raise ValueError(
-            f"export cursor_kind={cursor_kind!r} != {CURSOR_KIND_EXPORT_SEQ}"
+        raise ExportProtocolError(
+            "CURSOR_KIND_MISMATCH",
+            "export cursor kind mismatch",
+            field="cursor_kind",
+            expected=CURSOR_KIND_EXPORT_SEQ,
+            actual=cursor_kind,
         )
 
     meta_after = _require_export_int(meta.get("after"), "after")
     if meta_after != expected_after:
-        raise ValueError(
-            f"export meta after={meta_after} != cursor {expected_after}"
+        raise ExportProtocolError(
+            "META_AFTER_MISMATCH",
+            "export meta after does not match the requested cursor",
+            field="after",
+            expected=expected_after,
+            actual=meta_after,
         )
 
     delivered = list(rows)
     count = _require_export_int(meta.get("count"), "count")
     if count != len(delivered):
-        raise ValueError(
-            f"export meta count={count} != delivered {len(delivered)}"
+        raise ExportProtocolError(
+            "META_COUNT_MISMATCH",
+            "export meta count does not match the delivered rows",
+            field="count",
+            expected=len(delivered),
+            actual=count,
         )
     if count < 0:
-        raise ValueError("export meta count is negative")
+        raise ExportProtocolError(
+            "META_COUNT_RANGE",
+            "export meta count is negative",
+            field="count",
+            actual=count,
+        )
 
     meta_nid = _optional_text(meta.get("node_id"))
     if meta_nid is None:
-        raise ValueError("export meta node_id is missing")
+        raise ExportProtocolError(
+            "META_NODE_MISSING", "export meta node_id is missing", field="node_id"
+        )
     if meta_nid != expected_node_id:
-        raise ValueError(
-            f"export meta node_id={meta_nid} != {expected_node_id}"
+        raise ExportProtocolError(
+            "META_NODE_MISMATCH",
+            "export meta node_id does not match the registry node",
+            field="node_id",
+            expected=expected_node_id,
+            actual=meta_nid,
         )
     meta_iid = _optional_text(meta.get("instance_id"))
     if expected_instance_id:
         if meta_iid is None:
-            raise ValueError("export meta instance_id is missing")
-        if meta_iid != expected_instance_id:
-            raise ValueError(
-                f"export meta instance_id={meta_iid} != {expected_instance_id}"
+            raise ExportProtocolError(
+                "META_INSTANCE_MISSING",
+                "export meta instance_id is missing",
+                field="instance_id",
             )
+        if meta_iid != expected_instance_id:
+            raise ExportProtocolError(
+                "META_INSTANCE_MISMATCH",
+                "export meta instance_id does not match the bound instance",
+                field="instance_id",
+                expected=expected_instance_id,
+                actual=meta_iid,
+            )
+
+    # FR-02: the top-of-stream watermark is part of the completion contract.
+    # Without it "caught up" cannot be proven, so a short page is never enough.
+    if meta.get("max_export_seq") is None:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_MISSING",
+            "export meta max_export_seq is missing",
+            field="max_export_seq",
+        )
+    max_export_seq = _require_export_int(meta.get("max_export_seq"), "max_export_seq")
+    if max_export_seq < 0:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_RANGE",
+            "export meta max_export_seq is negative",
+            field="max_export_seq",
+            actual=max_export_seq,
+        )
 
     export_seqs: list[int] = []
     seen_seqs: set[int] = set()
     for i, row in enumerate(delivered):
         if not isinstance(row, dict):
-            raise ValueError(f"JSONL row {i} is not an object")
+            raise ExportProtocolError(
+                "ROW_NOT_OBJECT",
+                "export row is not a JSON object",
+                field=f"rows[{i}]",
+            )
         eid = row.get("event_id")
         if isinstance(eid, bool) or not isinstance(eid, int):
-            raise ValueError(f"JSONL row {i} event_id is not an int")
+            raise ExportProtocolError(
+                "ROW_EVENT_ID_INVALID",
+                "export row event_id is not an integer",
+                field=f"rows[{i}].event_id",
+                actual=eid,
+            )
         eseq = row.get("export_seq")
         if isinstance(eseq, bool) or not isinstance(eseq, int):
-            raise ValueError(f"JSONL row {i} export_seq is not an int")
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_INVALID",
+                "export row export_seq is not an integer",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
+            )
         if eseq <= expected_after:
-            raise ValueError(
-                f"JSONL row {i} export_seq={eseq} <= after {expected_after}"
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_NOT_AFTER",
+                "export row export_seq is not beyond the requested cursor",
+                field=f"rows[{i}].export_seq",
+                expected=expected_after,
+                actual=eseq,
             )
         if eseq in seen_seqs:
-            raise ValueError(f"duplicate export_seq {eseq}")
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_DUPLICATE",
+                "export batch repeats an export_seq",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
+            )
         seen_seqs.add(eseq)
         if export_seqs and eseq <= export_seqs[-1]:
-            raise ValueError(
-                f"export_seq not strictly increasing: {export_seqs[-1]} → {eseq}"
+            raise ExportProtocolError(
+                "ROW_EXPORT_SEQ_NOT_INCREASING",
+                "export rows are not ordered by export_seq",
+                field=f"rows[{i}].export_seq",
+                actual=eseq,
             )
         export_seqs.append(eseq)
 
         row_nid = _row_node_id(row)
         if row_nid is None:
-            raise ValueError(f"JSONL row {i} node_id is missing")
+            raise ExportProtocolError(
+                "ROW_NODE_MISSING",
+                "export row node_id is missing",
+                field=f"rows[{i}].node_id",
+            )
         if row_nid != expected_node_id:
-            raise ValueError(
-                f"JSONL row {i} node_id={row_nid} != {expected_node_id}"
+            raise ExportProtocolError(
+                "ROW_NODE_MISMATCH",
+                "export row node_id does not match the registry node",
+                field=f"rows[{i}].node_id",
+                expected=expected_node_id,
+                actual=row_nid,
             )
 
-    if export_seqs:
-        max_export_seq = meta.get("max_export_seq")
-        if max_export_seq is not None:
-            max_i = _require_export_int(max_export_seq, "max_export_seq")
-            if export_seqs[-1] > max_i:
-                raise ValueError("row export_seq exceeds meta max_export_seq")
+    if export_seqs and export_seqs[-1] > max_export_seq:
+        raise ExportProtocolError(
+            "ROW_EXPORT_SEQ_ABOVE_MAX",
+            "export row export_seq exceeds meta max_export_seq",
+            field="max_export_seq",
+            expected=max_export_seq,
+            actual=export_seqs[-1],
+        )
 
     next_cursor = _require_export_int(meta.get("next_cursor"), "next_cursor")
     if export_seqs:
         if next_cursor != export_seqs[-1]:
-            raise ValueError(
-                f"export meta next_cursor={next_cursor} != "
-                f"last export_seq {export_seqs[-1]}"
+            raise ExportProtocolError(
+                "META_NEXT_CURSOR_MISMATCH",
+                "export meta next_cursor does not match the batch",
+                field="next_cursor",
+                expected=export_seqs[-1],
+                actual=next_cursor,
             )
     elif next_cursor != expected_after:
-        raise ValueError(
-            f"export meta next_cursor={next_cursor} != after "
-            f"{expected_after} (empty batch)"
+        raise ExportProtocolError(
+            "META_NEXT_CURSOR_MISMATCH",
+            "export meta next_cursor does not match the empty batch",
+            field="next_cursor",
+            expected=expected_after,
+            actual=next_cursor,
+        )
+    if next_cursor > max_export_seq:
+        raise ExportProtocolError(
+            "META_MAX_EXPORT_SEQ_BELOW_CURSOR",
+            "export meta max_export_seq is below next_cursor",
+            field="max_export_seq",
+            expected=next_cursor,
+            actual=max_export_seq,
         )
     return next_cursor
 
@@ -1911,12 +2089,15 @@ def parse_identity_json(payload: str) -> dict[str, Any]:
 
 
 def _ssh_failure_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    """Remote stderr for a failed command; stdout is never used (FR-04).
+
+    A failed command's stdout may carry protocol payload (audit rows, user
+    lists); echoing it as an error detail leaks data and can even make an
+    "ok":true fragment look like a success hint.
+    """
     err = (proc.stderr or "").strip()
     if err:
         return err
-    out = (proc.stdout or "").strip()
-    if out:
-        return out
     return f"exit {proc.returncode}"
 
 
@@ -2068,6 +2249,8 @@ def normalize_node(raw: Any, *, index: int) -> dict[str, Any]:
         if not isinstance(obr, str) or not obr.strip():
             die(f"nodes[{index}] invalid observe_credential_ref: {obr}")
         record["observe_credential_ref"] = obr.strip()
+    if raw.get("observe_ssh_user") is not None:
+        record["observe_ssh_user"] = validate_ssh_user(raw["observe_ssh_user"])
     # Spec §7.2: do NOT implicitly copy admin → observe.
     return record
 
@@ -2106,13 +2289,38 @@ def require_node(registry: dict[str, Any], name: str) -> dict[str, Any]:
     return node
 
 
-def _bind_identity_for_workspace(
-    path: str, *, ref: Optional[str] = None
+def _commit_node_credential_ref(name: str, purpose: str, path: str) -> str:
+    """Bind ``path`` under a fresh per-node/per-purpose ref and return it (FR-01).
+
+    Copy-on-write: the binding file is written before the registry references
+    the ref, and an existing ref other consumers may resolve is never
+    re-targeted. A failed later registry commit may leave an unreferenced
+    binding, which is safe; the reverse order is not.
+    """
+    ref = allocate_node_credential_ref(name, purpose)
+    bind_identity_file(ref, path)
+    return ref
+
+
+def _apply_node_credential(
+    node: dict[str, Any],
+    purpose: str,
+    path: str,
+    *,
+    name: Optional[str] = None,
 ) -> str:
-    """Machine-local binding via access bind flow; return credential ref (F7-3)."""
-    key = _optional_text(ref) or DEFAULT_ADMIN_CREDENTIAL_REF
-    bind_identity_file(key, path)
-    return key
+    """Plan (and if needed write) the binding, then point ``node`` at it."""
+    view = dict(node)
+    if name and not _optional_text(view.get("name")):
+        view["name"] = name
+    ref, needs_write = plan_node_credential_binding(view, purpose, path)
+    if needs_write:
+        bind_identity_file(ref, path)
+    key = "admin_credential_ref" if purpose == "admin" else "observe_credential_ref"
+    node[key] = ref
+    if purpose == "admin":
+        node.pop("identity_file", None)
+    return ref
 
 
 def add_node(
@@ -2211,29 +2419,29 @@ def cmd_init() -> int:
 
 def _node_identity_binding(
     args: argparse.Namespace,
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Resolve --identity-file for SSH vs registry (F7-3).
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve --identity-file for SSH vs registry (F7-3, FR-01).
 
-    Returns ``(ssh_identity, reg_identity, admin_credential_ref)``.
+    Returns ``(ssh_identity, reg_identity)``. Workspace credential refs are
+    committed by the caller only after remote verification (or, for the
+    offline register path, immediately before the registry write); nothing is
+    bound during this resolve step.
     """
     ssh_identity: Optional[str] = None
     reg_identity: Optional[str] = None
-    admin_ref: Optional[str] = None
     raw_ident = _optional_text(getattr(args, "identity_file", None))
     if raw_ident:
         ssh_identity = validate_identity_file(raw_ident, must_exist=True)
-        if workspace_trust_active():
-            admin_ref = _bind_identity_for_workspace(ssh_identity)
-        else:
+        if not workspace_trust_active():
             reg_identity = ssh_identity
-    return ssh_identity, reg_identity, admin_ref
+    return ssh_identity, reg_identity
 
 
 @with_fleet_op_lock
 def cmd_node_adopt(args: argparse.Namespace) -> int:
     """SSH identity verify + register (D49). Non-interactive requires --host-key (D34)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, reg_identity = _node_identity_binding(args)
     extra, batch = prepare_ssh_host_key(
         ssh_host, ssh_port, getattr(args, "host_key", None)
     )
@@ -2260,6 +2468,13 @@ def cmd_node_adopt(args: argparse.Namespace) -> int:
     if want_id and want_id != node_id:
         die(f"remote node_id {node_id} does not match --node-id {want_id}")
     registry = load_registry()
+    # FR-01: bind only after the remote identity verified, and only then let
+    # the registry reference the ref.
+    admin_ref = (
+        _commit_node_credential_ref(args.name, "admin", ssh_identity)
+        if ssh_identity and workspace_trust_active()
+        else None
+    )
     add_node(
         registry,
         node_id=node_id,
@@ -2279,13 +2494,19 @@ def cmd_node_adopt(args: argparse.Namespace) -> int:
 def cmd_node_register(args: argparse.Namespace) -> int:
     """Registry-only register; no SSH (D49)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    _ssh_identity, reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, reg_identity = _node_identity_binding(args)
     node_id = getattr(args, "node_id", None)
     if not node_id:
         if getattr(args, "offline", False):
             die("--offline requires --node-id UUID", 2)
         die("register requires --node-id UUID", 2)
     registry = load_registry()
+    # FR-01: no SSH here, so the binding is committed at registry-write time.
+    admin_ref = (
+        _commit_node_credential_ref(args.name, "admin", ssh_identity)
+        if ssh_identity and workspace_trust_active()
+        else None
+    )
     add_node(
         registry,
         node_id=node_id,
@@ -2312,7 +2533,15 @@ def cmd_node_add(args: argparse.Namespace) -> int:
 def cmd_node_provision(args: argparse.Namespace) -> int:
     """Fresh VPS install+verify+register via lib/provision.py (D33/D35)."""
     ssh_host, ssh_user, ssh_port = parse_ssh_target(args.host, args.user, args.port)
-    ssh_identity, _reg_identity, admin_ref = _node_identity_binding(args)
+    ssh_identity, _reg_identity = _node_identity_binding(args)
+    # FR-01: plan the ref now (no binding yet); the workspace binding is
+    # written inside run_provision at registry-commit time, after install and
+    # remote verify succeeded.
+    admin_ref: Optional[str] = None
+    bind_admin_at_commit = False
+    if ssh_identity and workspace_trust_active():
+        admin_ref = allocate_node_credential_ref(args.name, "admin")
+        bind_admin_at_commit = True
     vcl = _optional_text(getattr(args, "vcl_server", None)) or os.environ.get(
         "VCL_SERVER"
     )
@@ -2335,6 +2564,7 @@ def cmd_node_provision(args: argparse.Namespace) -> int:
         identity_file=ssh_identity,
         host_key=getattr(args, "host_key", None),
         admin_credential_ref=admin_ref,
+        bind_admin_at_commit=bind_admin_at_commit,
         vcl_server=vcl,
         skip_sync=bool(getattr(args, "no_sync", False)),
         legacy_uri_file=legacy_uri,
@@ -2404,6 +2634,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     clear_identity = bool(getattr(args, "clear_identity_file", False))
     observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
     observe_identity = _optional_text(getattr(args, "observe_identity_file", None))
+    observe_user = _optional_text(getattr(args, "observe_ssh_user", None))
     clear_observe = bool(getattr(args, "clear_observe_credential_ref", False))
     host = _optional_text(getattr(args, "host", None))
     if identity_raw and clear_identity:
@@ -2418,6 +2649,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
         and not clear_identity
         and not observe_ref
         and not observe_identity
+        and not observe_user
         and not clear_observe
     ):
         die(
@@ -2429,28 +2661,25 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     if host:
         set_host(registry, args.name, host, user=args.user, port=args.port)
     node = require_node(registry, args.name)
+    if observe_user:
+        node["observe_ssh_user"] = validate_ssh_user(observe_user)
     if clear_identity:
         node.pop("identity_file", None)
     elif identity_raw:
         resolved = validate_identity_file(identity_raw, must_exist=True)
         if workspace_trust_active():
-            # F7-3: machine-local binding only; registry keeps refs.
-            existing = _optional_text(node.get("admin_credential_ref"))
-            ref = _bind_identity_for_workspace(resolved, ref=existing)
-            node["admin_credential_ref"] = ref
+            # F7-3/FR-01: machine-local binding only; registry keeps refs.
+            # A rotation gets its own ref so other consumers keep working.
+            _apply_node_credential(node, "admin", resolved)
             # Do not implicitly set observe_credential_ref (Spec §7.2).
-            node.pop("identity_file", None)
         else:
             node["identity_file"] = resolved
     if clear_observe:
         node.pop("observe_credential_ref", None)
     elif observe_identity:
-        resolved = validate_identity_file(observe_identity, must_exist=True)
         if not workspace_trust_active():
             die("--observe-identity-file requires an active workspace")
-        existing = _optional_text(node.get("observe_credential_ref"))
-        ref = _bind_identity_for_workspace(resolved, ref=existing)
-        node["observe_credential_ref"] = ref
+        _apply_node_credential(node, "observe", observe_identity)
     elif observe_ref:
         # Ref must already be bound on this machine (or operator accepts pending).
         node["observe_credential_ref"] = observe_ref
@@ -2615,12 +2844,19 @@ def disable_remote_users_except_last(
     return disabled, keep_tag, err_s
 
 
-def _run_final_sync(node: dict[str, Any], *, write_table: bool = True) -> dict[str, Any]:
+def _run_final_sync(
+    node: dict[str, Any],
+    *,
+    write_table: bool = True,
+    options: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Same machinery as `vcl-fleet sync --node NAME` for one node."""
     now_iso = format_utc(datetime.now(timezone.utc))
     conn = open_fleet_db()
     try:
-        row = sync_one_node(conn, node, now_iso=now_iso)
+        row = sync_one_node(
+            conn, node, now_iso=now_iso, options=options or audit_page_options(None)
+        )
     finally:
         conn.close()
     if write_table:
@@ -2671,17 +2907,13 @@ def cmd_node_retire(name: str) -> int:
             )
         identity = ident
         sync_row = _run_final_sync(node)
-        status = sync_row.get("status")
-        if status == SYNC_STATUS_EXPIRED:
-            die(
-                f"cannot retire {name}: CURSOR_EXPIRED; "
-                f"run: vcl-fleet sync --reseed {name}"
-            )
-        if status != SYNC_STATUS_OK:
-            die(
-                f"cannot retire {name}: final sync failed "
-                f"({sync_row.get('error') or status}); not marking retired"
-            )
+        require_final_sync_ok(
+            sync_row,
+            action="retire",
+            name=name,
+            tail="not marking retired",
+            reseed_hint=f"vcl-fleet sync --reseed {name}",
+        )
 
     last_status = _last_status_slice(name)
     if last_status is None:
@@ -2879,15 +3111,14 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     if ident_path:
         resolved = validate_identity_file(ident_path, must_exist=True)
         if workspace_trust_active():
-            # SSH uses the path via binding after refs are set on new_node.
-            existing = _optional_text(new_node.get("admin_credential_ref"))
-            replace_admin_ref = _bind_identity_for_workspace(
-                resolved, ref=existing
+            # FR-01: give the new endpoint its own ref. The old ref stays
+            # untouched so old_node keeps using the old key for the final
+            # sync and backup below.
+            replace_admin_ref = _apply_node_credential(
+                new_node, "admin", resolved, name=args.name
             )
-            new_node["admin_credential_ref"] = replace_admin_ref
             # observe must be set explicitly after replace if needed
             new_node.pop("observe_credential_ref", None)
-            new_node.pop("identity_file", None)
         else:
             new_node["identity_file"] = resolved
     old_instance_id = _cursor_instance_id(node["node_id"])
@@ -2925,17 +3156,12 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             )
         old_instance_id = _optional_text(ident.get("instance_id")) or old_instance_id
         sync_row = _run_final_sync(old_node, write_table=not as_json)
-        status = sync_row.get("status")
-        if status == SYNC_STATUS_EXPIRED:
-            die(
-                f"cannot replace {args.name}: CURSOR_EXPIRED; "
-                f"run: {remediation_sync_reseed(args.name)}"
-            )
-        if status != SYNC_STATUS_OK:
-            die(
-                f"cannot replace {args.name}: final sync failed "
-                f"({sync_row.get('error') or status}); not creating backup"
-            )
+        require_final_sync_ok(
+            sync_row,
+            action="replace",
+            name=args.name,
+            tail="not creating backup",
+        )
         ssh_state, backup_doc, backup_detail = ssh_remote_json(
             old_node,
             ["vcl", "backup", "create", "--json"],
@@ -3277,6 +3503,10 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
             )
         else:
             sys.stderr.write(f"{args.name}: {state}: {result.get('detail') or '-'}\n")
+            if result.get("reason"):
+                sys.stderr.write(f"{args.name}: reason: {result['reason']}\n")
+            if result.get("hint"):
+                sys.stderr.write(f"{args.name}: next: {result['hint']}\n")
     state = result.get("state")
     if state in ("ERROR", "AUTH_FAILED"):
         return 1
@@ -3703,6 +3933,7 @@ def ssh_remote_json(
     extra: list[str] | None = None,
     require_exit_0: bool = False,
     credential_class: str = "admin",
+    facts: Optional[dict[str, Any]] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     """SSH a remote vcl --json command.
 
@@ -3711,10 +3942,13 @@ def ssh_remote_json(
     Mutation commands (restore, backup create, user add/rotate/disable)
     pass require_exit_0=True: any non-zero remote exit is FAIL even if
     stdout is valid JSON.
+
+    ``facts`` optionally receives the structured FR-04 classification
+    (phase/code/state/retryable/summary/hint).
     """
     proc = ssh_run(
         node["ssh_host"],
-        node["ssh_user"],
+        node.get("observe_ssh_user", node["ssh_user"]) if credential_class == "observe" else node["ssh_user"],
         node["ssh_port"],
         remote_cmd,
         batch=True,
@@ -3722,10 +3956,24 @@ def ssh_remote_json(
         identity_file=node_identity_file_for_class(node, credential_class),
         timeout=timeout,
     )
-    detail = _ssh_failure_detail(proc)
+    raw_detail = _ssh_failure_detail(proc)
+    classified = classify_ssh_failure(
+        phase=load_ssh_transport_module().phase_for_command(remote_cmd),
+        detail=raw_detail,
+        returncode=proc.returncode,
+    )
+    if facts is not None:
+        facts.clear()
+        facts.update(classified)
+    # FR-04: every ssh-level failure (exit 255) returns a fixed-template
+    # summary. Endpoints, logical identities and remote text never reach the
+    # operator-facing detail; machine callers read the codes from ``facts``.
+    detail = (
+        failure_summary_text(classified) if proc.returncode == 255 else raw_detail
+    )
     if proc.returncode == 255:
         if credential_class == "observe" and load_ssh_transport_module().is_auth_failure(
-            detail
+            raw_detail
         ):
             return "AUTH_FAILED", None, detail
         return "FAIL", None, detail
@@ -3761,10 +4009,11 @@ def ssh_remote_text(
         identity_file=_node_identity_file(node),
         timeout=timeout,
     )
-    detail = _ssh_failure_detail(proc)
     stdout = proc.stdout or ""
     if proc.returncode == 255:
-        return "FAIL", "", detail
+        facts = classify_ssh_proc(proc, phase=load_ssh_transport_module().phase_for_command(remote_cmd))
+        return "FAIL", "", failure_summary_text(facts)
+    detail = _ssh_failure_detail(proc)
     if proc.returncode != 0:
         return "OK", stdout, detail
     return "OK", stdout, ""
@@ -3802,6 +4051,16 @@ def verify_is_fail(row: dict[str, Any]) -> bool:
     return status_is_fail(row) or row.get("registry") == "FAIL" or row.get("clock") == "FAIL"
 
 
+def _record_ssh_facts(row: dict[str, Any], facts: dict[str, Any]) -> None:
+    """Attach the machine code and operator hint for an SSH failure (FR-03/04)."""
+    code = _optional_text(facts.get("code"))
+    if code:
+        row["ssh_reason"] = code
+    hint = _optional_text(facts.get("hint"))
+    if hint:
+        row["ssh_hint"] = hint
+
+
 def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": node["name"],
@@ -3817,6 +4076,8 @@ def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
         "clock_detail": "",
         "clock_skew_seconds": None,
         "ssh_detail": "",
+        "ssh_reason": None,
+        "ssh_hint": None,
         "warnings": [],
         "checks": [],
         "ok": True,
@@ -3849,13 +4110,18 @@ def probe_node(
         return row
 
     identity_started_utc = datetime.now(timezone.utc)
+    ident_facts: dict[str, Any] = {}
     ssh_state, ident, ident_detail = ssh_remote_json(
-        node, ["vcl", "identity", "--json"], credential_class="observe"
+        node,
+        ["vcl", "identity", "--json"],
+        credential_class="observe",
+        facts=ident_facts,
     )
     identity_finished_utc = datetime.now(timezone.utc)
     if ssh_state != "OK":
         row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = ident_detail
+        _record_ssh_facts(row, ident_facts)
         row["ok"] = False
         return row
     if ident is None:
@@ -3896,12 +4162,17 @@ def probe_node(
     else:
         row["registry"] = "FAIL"
 
+    status_facts: dict[str, Any] = {}
     ssh_state, status_doc, status_detail = ssh_remote_json(
-        node, ["vcl", "status", "--json"], credential_class="observe"
+        node,
+        ["vcl", "status", "--json"],
+        credential_class="observe",
+        facts=status_facts,
     )
     if ssh_state != "OK":
         row["ssh"] = "AUTH_FAILED" if ssh_state == "AUTH_FAILED" else "FAIL"
         row["ssh_detail"] = status_detail
+        _record_ssh_facts(row, status_facts)
         row["proxy"] = "UNKNOWN"
         row["accounting"] = "UNKNOWN"
         row["ok"] = False
@@ -3966,6 +4237,11 @@ def format_status_table(rows: list[dict[str, Any]]) -> str:
             f"{row['name']:<8} {short_id(row.get('node_id')):<8} {instance:<8} "
             f"{row['ssh']:<11} {row['proxy']:<7} {row['accounting']}"
         )
+        if row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            if row.get("ssh_reason"):
+                lines.append(f"  {row['name']}: ssh_reason={row['ssh_reason']}")
+            if row.get("ssh_hint"):
+                lines.append(f"  {row['name']}: next: {row['ssh_hint']}")
     return "\n".join(lines) + "\n"
 
 
@@ -3993,6 +4269,10 @@ def format_verify_report(rows: list[dict[str, Any]]) -> str:
             parts.append(f"  clock_detail: {row['clock_detail']}")
         if row.get("ssh_detail") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
             parts.append(f"  ssh_detail: {row['ssh_detail']}")
+        if row.get("ssh_reason") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            parts.append(f"  ssh_reason: {row['ssh_reason']}")
+        if row.get("ssh_hint") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            parts.append(f"  next: {row['ssh_hint']}")
         for warning in row.get("warnings") or []:
             parts.append(f"  WARN: {warning}")
         if row["ssh"] == "FAIL":
@@ -4023,6 +4303,8 @@ def _status_json_node(row: dict[str, Any]) -> dict[str, Any]:
     }
     if row.get("ssh_detail"):
         doc["ssh_detail"] = row["ssh_detail"]
+    if row.get("ssh_reason"):
+        doc["ssh_reason"] = row["ssh_reason"]
     return doc
 
 
@@ -4035,6 +4317,7 @@ def _verify_json_node(row: dict[str, Any]) -> dict[str, Any]:
         "instance_id": row.get("instance_id"),
         "enabled": row.get("enabled", True),
         "ssh": row["ssh"],
+        "ssh_reason": row.get("ssh_reason"),
         "proxy": row["proxy"],
         "accounting": row["accounting"],
         "registry": row["registry"],
@@ -4766,9 +5049,14 @@ def cmd_user_add(args: argparse.Namespace) -> int:
 
 def _list_users_on_node(
     node: dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
 ) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    kwargs: dict[str, Any] = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     ssh_state, payload, detail = ssh_remote_json(
-        node, ["vcl", "user", "list", "--json"]
+        node, ["vcl", "user", "list", "--json"], **kwargs
     )
     if ssh_state != "OK":
         return None, _ssh_error(255, detail)
@@ -5433,6 +5721,14 @@ def _sync_result(
     max_event_id: Any = None,
     max_export_seq: Any = None,
     pruned_max_export_seq: Any = None,
+    error_code: Optional[str] = None,
+    error_phase: Optional[str] = None,
+    retryable: Optional[bool] = None,
+    error_field: Optional[str] = None,
+    error_expected: Any = None,
+    error_actual: Any = None,
+    audit_pages: int = 0,
+    more_pending: bool = False,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": node["name"],
@@ -5447,13 +5743,32 @@ def _sync_result(
         "ignored": ignored,
         "skipped_unlabeled": skipped_unlabeled,
         "error": error,
+        # FR-04 machine codes: the error string is a fixed-template summary,
+        # these carry the classification. Additive to sync/v1 consumers.
+        "error_code": error_code,
+        "error_phase": error_phase,
+        "retryable": retryable,
+        # FR-04: protocol rejections keep expected/actual in machine fields;
+        # the error text itself is a fixed template without them.
+        "error_field": error_field,
+        "error_expected": error_expected,
+        "error_actual": error_actual,
+        # FR-02: bounded catch-up progress. audit_pages counts pages committed
+        # by this run; more_pending means the run stopped inside its budget.
+        "audit_pages": audit_pages,
+        "more_pending": more_pending,
         "earliest_available_event_id": earliest,
         "max_event_id": max_event_id,
         "max_export_seq": max_export_seq,
         "pruned_max_export_seq": pruned_max_export_seq,
         "remediation": None,
     }
-    if status == SYNC_STATUS_EXPIRED or error in (
+    if status == SYNC_STATUS_MORE_PENDING:
+        row["remediation"] = (
+            f"rerun: vcl-fleet sync --node {node['name']} "
+            "(raise --max-pages/--budget if it keeps stopping early)"
+        )
+    elif status == SYNC_STATUS_EXPIRED or error in (
         "CURSOR_AHEAD",
         "CURSOR_PROTOCOL_MISMATCH",
     ):
@@ -5464,6 +5779,139 @@ def _sync_result(
     ):
         row["remediation"] = remediation_sync_reseed(node["name"])
     return row
+
+
+def _emit_sync_warning(node: dict[str, Any], message: str) -> None:
+    sys.stderr.write(f"WARNING: {node['name']}: {message}\n")
+
+
+def budget_stop_result(
+    node: dict[str, Any],
+    *,
+    after: int,
+    phase: str,
+    last_event_id: int = 0,
+    instance_id: Optional[str] = None,
+    cursor: Optional[int] = None,
+) -> dict[str, Any]:
+    """A node stopped by its run budget before committing new work (FR-02)."""
+    return _sync_result(
+        node,
+        status=SYNC_STATUS_MORE_PENDING,
+        after=after,
+        last_event_id=last_event_id,
+        last_export_seq=after if cursor is None else cursor,
+        instance_id=instance_id,
+        error=(
+            f"reached the per-node run budget during {phase}; "
+            "no further work was committed"
+        ),
+        error_code="BUDGET_EXHAUSTED",
+        error_phase=phase,
+        retryable=True,
+        more_pending=True,
+    )
+
+
+def mark_cursor_status_best_effort(
+    conn: sqlite3.Connection,
+    node_id: str,
+    *,
+    instance_id: Optional[str],
+    status: str,
+    now_iso: str,
+) -> None:
+    """Record a failure status without masking the original failure (FR-02).
+
+    A locked or full database cannot be assumed to accept this write; the
+    caller's report already carries the real status.
+    """
+    try:
+        mark_cursor_status(
+            conn,
+            node_id,
+            instance_id=instance_id,
+            status=status,
+            now_iso=now_iso,
+        )
+    except sqlite3.Error:
+        pass
+
+
+def require_final_sync_ok(
+    sync_row: dict[str, Any],
+    *,
+    action: str,
+    name: str,
+    tail: str,
+    reseed_hint: Optional[str] = None,
+) -> None:
+    """Retire/replace gate: a final sync must be caught up, not just ended.
+
+    FR-02: MORE_PENDING stops the caller instead of letting a backup, replace
+    or retire proceed on a partially imported audit window.
+    """
+    status = sync_row.get("status")
+    if status == SYNC_STATUS_EXPIRED:
+        hint = reseed_hint or remediation_sync_reseed(name)
+        die(f"cannot {action} {name}: CURSOR_EXPIRED; run: {hint}")
+    if status == SYNC_STATUS_MORE_PENDING:
+        die(
+            f"cannot {action} {name}: audit is still behind "
+            f"(MORE_PENDING after {sync_row.get('audit_pages') or 0} page(s), "
+            f"cursor {sync_row.get('last_export_seq')}); rerun sync until it "
+            f"reports ok, then {action}"
+        )
+    if status != SYNC_STATUS_OK:
+        die(
+            f"cannot {action} {name}: final sync failed "
+            f"({sync_row.get('error') or status}); {tail}"
+        )
+
+
+# A locked or full database must fail one node, not the whole run.
+NODE_LOCAL_SYNC_ERRORS = (sqlite3.Error, OSError)
+
+
+def sync_nodes_isolated(
+    conn: sqlite3.Connection,
+    targets: Sequence[dict[str, Any]],
+    *,
+    sync_one: Callable[..., dict[str, Any]],
+    now_iso: str,
+    options: Optional[dict[str, Any]] = None,
+    stamp_identity_for: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Run a per-node sync over every target, isolating node-local DB errors.
+
+    A node whose transaction hits a lock, a full disk or a vanished data
+    directory yields an ERROR row with no committed progress claimed; the
+    remaining nodes still run.
+    """
+    rows: list[dict[str, Any]] = []
+    for node in targets:
+        kwargs: dict[str, Any] = {"now_iso": now_iso}
+        if options is not None:
+            kwargs["options"] = options
+        if stamp_identity_for is not None:
+            kwargs["stamp_identity"] = node.get("name") == stamp_identity_for
+        try:
+            rows.append(sync_one(conn, node, **kwargs))
+        except NODE_LOCAL_SYNC_ERRORS as exc:
+            _emit_sync_warning(
+                node, f"sync aborted before commit: {exc!r}; continuing"
+            )
+            row = _sync_result(
+                node,
+                status=SYNC_STATUS_ERROR,
+                error=f"sync aborted before commit: {exc}",
+                error_code="DATABASE_ERROR",
+                error_phase="audit_import",
+                retryable=True,
+            )
+            row["remediation"] = f"rerun: vcl-fleet sync --node {node['name']}"
+            rows.append(row)
+    return rows
 
 
 def sync_target_nodes(
@@ -5486,12 +5934,47 @@ def sync_target_nodes(
     return _selected_nodes(registry, include_all)
 
 
+def ssh_audit_page(
+    node: dict[str, Any],
+    after: int,
+    *,
+    page_size: int,
+    timeout: float,
+    max_stdout_bytes: int,
+    stamp_identity: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """One bounded Protocol v2 page: --limit + deadline + stdout cap (FR-02)."""
+    remote = [
+        "vcl",
+        "audit",
+        "export",
+        "--after",
+        str(after),
+        "--limit",
+        str(page_size),
+        "--jsonl",
+    ]
+    if stamp_identity:
+        remote.append("--stamp-identity")
+    return ssh_run(
+        node["ssh_host"],
+        node["ssh_user"],
+        node["ssh_port"],
+        remote,
+        batch=True,
+        identity_file=_node_identity_file(node),
+        timeout=timeout,
+        max_stdout_bytes=max_stdout_bytes,
+    )
+
+
 def ssh_audit_export(
     node: dict[str, Any],
     after: int,
     *,
     stamp_identity: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    """Unbounded legacy export (kept for diagnostics/tests; sync uses pages)."""
     remote = ["vcl", "audit", "export", "--after", str(after), "--jsonl"]
     if stamp_identity:
         remote.append("--stamp-identity")
@@ -5506,12 +5989,333 @@ def ssh_audit_export(
     )
 
 
+class BudgetExhausted(RuntimeError):
+    """A node's run budget ran out while database work was in flight."""
+
+
+def node_deadline_iso() -> str:
+    """Actual collection time for one page/snapshot commit (FR-02)."""
+    return format_utc(datetime.now(timezone.utc))
+
+
+def remaining_timeout(deadline: float, default: float) -> float:
+    """Clamp one SSH deadline to the remaining per-node budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BudgetExhausted("per-node run budget exhausted")
+    return max(0.1, min(float(default), remaining))
+
+
+def budget_expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+@contextmanager
+def sqlite_deadline_guard(
+    conn: sqlite3.Connection, deadline: float
+) -> Iterator[None]:
+    """Bound SQLite work by the node deadline (FR-02).
+
+    Tightens ``busy_timeout`` to the remaining budget and installs a progress
+    handler so a long statement (for example the daily-usage rebuild) is
+    interruptible instead of overrunning the budget. The previous settings are
+    restored on the way out, including when the statement aborts.
+    """
+    try:
+        previous_busy = int(
+            (conn.execute("PRAGMA busy_timeout").fetchone() or [0])[0]
+        )
+    except sqlite3.Error:
+        previous_busy = 0
+    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {remaining_ms}")
+        conn.set_progress_handler(
+            lambda: 1 if budget_expired(deadline) else 0, 1000
+        )
+        yield
+    finally:
+        try:
+            conn.set_progress_handler(None, 0)
+            conn.execute(f"PRAGMA busy_timeout = {previous_busy}")
+        except sqlite3.Error:
+            pass
+
+
+def audit_page_options(args: Optional[argparse.Namespace] = None) -> dict[str, Any]:
+    """Bounded catch-up options from CLI flags, clamped to safe ceilings (FR-02)."""
+    def _num(name: str, default: Any, cast: Callable[[Any], Any]) -> Any:
+        raw = getattr(args, name, None) if args is not None else None
+        return default if raw is None else cast(raw)
+
+    page_size = int(_num("page_size", SYNC_AUDIT_PAGE_SIZE_DEFAULT, int))
+    if page_size < 1:
+        die("--page-size must be >= 1")
+    if page_size > SYNC_AUDIT_PAGE_SIZE_MAX:
+        die(f"--page-size must be <= {SYNC_AUDIT_PAGE_SIZE_MAX}")
+    max_pages = int(_num("max_pages", SYNC_AUDIT_MAX_PAGES_DEFAULT, int))
+    if max_pages < 1:
+        die("--max-pages must be >= 1")
+    timeout = float(_num("timeout", SYNC_AUDIT_TIMEOUT_DEFAULT, float))
+    if timeout <= 0:
+        die("--timeout must be > 0")
+    stdout_cap = int(_num("stdout_cap", SYNC_AUDIT_STDOUT_CAP_DEFAULT, int))
+    if stdout_cap < 1:
+        die("--stdout-cap must be >= 1")
+    budget = float(_num("budget", SYNC_AUDIT_BUDGET_DEFAULT, float))
+    if budget <= 0:
+        die("--budget must be > 0")
+    return {
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "timeout": timeout,
+        "stdout_cap": stdout_cap,
+        "budget": budget,
+    }
+
+
+def catch_up_audit_pages(
+    conn: sqlite3.Connection,
+    node: dict[str, Any],
+    *,
+    now_iso: str,
+    remote_iid: Optional[str],
+    options: dict[str, Any],
+    stamp_identity: bool = False,
+    deadline: Optional[float] = None,
+) -> dict[str, Any]:
+    """Import bounded audit pages until caught up, out of budget, or failed (FR-02).
+
+    Every accepted page is validated as a complete Protocol v2 batch and then
+    imported in its own transaction (audit rows + daily summary + durable
+    cursor). A rejected page imports nothing; earlier committed pages stay.
+    The loop never reseeds and never treats partial stdout as a batch.
+
+    ``deadline`` is a shared ``time.monotonic()`` instant covering collection,
+    paging and the caller's final snapshot; when omitted the node gets its own
+    budget from ``options["budget"]``.
+    """
+    node_id = node["node_id"]
+    start = _cursor_last_export_seq(conn, node_id)
+    after = start
+    pages = 0
+    outcome: dict[str, Any] = {
+        "status": SYNC_STATUS_OK,
+        "start_cursor": start,
+        "cursor": after,
+        "pages": 0,
+        "more_pending": False,
+        "inserted": 0,
+        "updated": 0,
+        "ignored": 0,
+        "skipped_unlabeled": 0,
+        "last_event_id": _cursor_last_event_id(conn, node_id),
+        "earliest_available_event_id": None,
+        "max_event_id": None,
+        "max_export_seq": None,
+        "pruned_max_export_seq": None,
+        "error": None,
+        "error_code": None,
+        "error_phase": None,
+        "retryable": None,
+    }
+
+    def _finish(status: str, **fields: Any) -> dict[str, Any]:
+        # No database read here: a locked/full database must not stop the
+        # failure from being reported. ``last_event_id`` is carried forward
+        # from the last successful page (or the initial cursor read).
+        outcome["status"] = status
+        outcome["pages"] = pages
+        outcome["cursor"] = after
+        outcome.update(fields)
+        return outcome
+
+    def _pending(
+        message: str, *, code: str, phase: str = "audit_export"
+    ) -> dict[str, Any]:
+        return _finish(
+            SYNC_STATUS_MORE_PENDING,
+            more_pending=True,
+            error=message,
+            error_code=code,
+            error_phase=phase,
+            retryable=True,
+        )
+
+    if deadline is None:
+        deadline = time.monotonic() + float(options["budget"])
+    while True:
+        if pages >= int(options["max_pages"]):
+            return _pending(
+                f"reached the per-node page cap ({options['max_pages']} pages); "
+                "audit data is still pending",
+                code="PAGE_CAP",
+            )
+        remaining = deadline - time.monotonic()
+        if remaining < 1.0:
+            # Too little budget left to start a meaningful page: stop pending
+            # instead of turning a budget stop into a spurious TIMEOUT.
+            return _pending(
+                f"reached the per-node run budget ({options['budget']:g}s); "
+                "audit data is still pending",
+                code="BUDGET_EXHAUSTED",
+            )
+        page_after = after
+        proc = ssh_audit_page(
+            node,
+            page_after,
+            page_size=int(options["page_size"]),
+            timeout=remaining_timeout(deadline, float(options["timeout"])),
+            max_stdout_bytes=int(options["stdout_cap"]),
+            stamp_identity=stamp_identity,
+        )
+        meta = parse_export_meta(proc.stderr or "")
+        if isinstance(meta, dict):
+            outcome["earliest_available_event_id"] = meta.get(
+                "earliest_available_event_id"
+            )
+            outcome["max_event_id"] = meta.get("max_event_id")
+            outcome["max_export_seq"] = meta.get("max_export_seq")
+            outcome["pruned_max_export_seq"] = meta.get("pruned_max_export_seq")
+        if proc.returncode == 255:
+            facts = classify_ssh_proc(proc, phase="audit_export")
+            if facts["code"] == "OUTPUT_LIMIT":
+                facts["summary"] = (
+                    "audit page exceeded the configured stdout cap; lower "
+                    "--page-size or raise --stdout-cap"
+                )
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=failure_summary_text(facts),
+                error_code=facts["code"],
+                error_phase=facts["phase"],
+                retryable=facts["retryable"],
+            )
+        if isinstance(meta, dict) and meta.get("error") in (
+            "CURSOR_AHEAD",
+            "CURSOR_EXPIRED",
+        ):
+            return _finish(
+                SYNC_STATUS_EXPIRED
+                if meta["error"] == "CURSOR_EXPIRED"
+                else SYNC_STATUS_ERROR,
+                error=str(meta["error"]),
+            )
+        if proc.returncode != 0:
+            facts = classify_ssh_proc(proc, phase="audit_export")
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=failure_summary_text(facts),
+                error_code=facts["code"],
+                error_phase=facts["phase"],
+                retryable=facts["retryable"],
+            )
+        try:
+            rows = parse_export_jsonl(proc.stdout or "")
+            next_cursor = validate_export_batch(
+                meta,
+                rows,
+                expected_after=page_after,
+                expected_node_id=node_id,
+                expected_instance_id=remote_iid,
+            )
+        except ExportProtocolError as exc:
+            # Typed reason, fixed summary, identities only in machine fields.
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error=exc.summary,
+                error_code=exc.code,
+                error_phase="audit_export",
+                retryable=False,
+                error_field=exc.field,
+                error_expected=exc.expected,
+                error_actual=exc.actual,
+            )
+        except ValueError as exc:
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error="export batch was rejected by protocol validation",
+                error_code="PROTOCOL_INVALID",
+                error_phase="audit_export",
+                retryable=False,
+                error_field=None,
+                error_expected=None,
+                error_actual=None,
+            )
+        try:
+            with sqlite_deadline_guard(conn, deadline):
+                imported = import_export_jsonl(
+                    node_id,
+                    remote_iid,
+                    rows,
+                    node_deadline_iso(),
+                    conn=conn,
+                    next_cursor=next_cursor,
+                    deadline=deadline,
+                )
+        except BudgetExhausted:
+            # The page transaction rolled back before committing, so every
+            # earlier page and the durable cursor are unchanged.
+            return _pending(
+                "reached the per-node run budget during import; the page was "
+                "rolled back",
+                code="BUDGET_EXHAUSTED",
+                phase="audit_import",
+            )
+        except SystemExit as exc:
+            # The page is rejected as a whole; nothing from it is committed.
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error="audit import rejected the page",
+                error_code="IMPORT_REJECTED",
+                error_phase="audit_import",
+                retryable=False,
+                error_field=f"exit {exc.code}",
+            )
+        except sqlite3.Error:
+            # The page transaction rolled back on its way out (import_audit_batch
+            # owns BEGIN/COMMIT/ROLLBACK), so earlier pages stay committed.
+            if budget_expired(deadline):
+                return _pending(
+                    "reached the per-node run budget during import; the "
+                    "page was rolled back",
+                    code="BUDGET_EXHAUSTED",
+                    phase="audit_import",
+                )
+            return _finish(
+                SYNC_STATUS_ERROR,
+                error="audit import failed with a database error",
+                error_code="DATABASE_ERROR",
+                error_phase="audit_import",
+                retryable=True,
+            )
+        pages += 1
+        after = int(imported["last_export_seq"])
+        outcome["last_event_id"] = int(imported["last_event_id"])
+        outcome["inserted"] += int(imported["inserted"])
+        outcome["updated"] += int(imported.get("updated", 0))
+        outcome["ignored"] += int(imported["ignored"])
+        outcome["skipped_unlabeled"] += int(imported["skipped_unlabeled"])
+        # max_export_seq was validated as an int, so caught-up is proven by
+        # the watermark rather than inferred from a short page.
+        max_seq = outcome["max_export_seq"]
+        if after >= max_seq:
+            return _finish(SYNC_STATUS_OK)
+        if after <= page_after:
+            # No forward progress but the remote still reports pending work.
+            return _pending(
+                "remote reports pending audit data but the cursor did not advance",
+                code="MORE_PENDING",
+            )
+
+
 def sync_one_node(
     conn: sqlite3.Connection,
     node: dict[str, Any],
     *,
     now_iso: str,
     stamp_identity: bool = False,
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Sync one node. Cursor advances only after a successful import commit.
 
@@ -5560,11 +6364,20 @@ def sync_one_node(
             last_export_seq=after,
         )
 
-    ssh_state, ident, ident_detail = ssh_remote_json(
-        node, ["vcl", "identity", "--json"]
-    )
+    opts = options or audit_page_options(None)
+    deadline = time.monotonic() + float(opts["budget"])
+    try:
+        ssh_state, ident, ident_detail = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return budget_stop_result(
+            node, after=after, phase="identity", last_event_id=prior_event
+        )
     if ssh_state != "OK" or not isinstance(ident, dict):
-        last_export_seq = mark_cursor_status(
+        last_export_seq = mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=None,
@@ -5582,7 +6395,7 @@ def sync_one_node(
 
     remote_nid = ident.get("node_id")
     if not isinstance(remote_nid, str) or remote_nid != node_id:
-        last_export_seq = mark_cursor_status(
+        last_export_seq = mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=_optional_text(ident.get("instance_id")),
@@ -5615,111 +6428,53 @@ def sync_one_node(
             now_iso=now_iso,
         )
 
-    proc = ssh_audit_export(node, after, stamp_identity=stamp_identity)
-    detail = _ssh_failure_detail(proc)
-    meta = parse_export_meta(proc.stderr or "")
-    earliest = None if meta is None else meta.get("earliest_available_event_id")
-    max_event_id = None if meta is None else meta.get("max_event_id")
-    max_export_seq = None if meta is None else meta.get("max_export_seq")
-    pruned_max = None if meta is None else meta.get("pruned_max_export_seq")
-    meta_error = None
-    if isinstance(meta, dict):
-        raw_err = meta.get("error")
-        if isinstance(raw_err, str) and raw_err.strip():
-            meta_error = raw_err.strip()
-
-    def _fail(
-        status: str,
-        error: Optional[str],
-        *,
-        cursor_status: str = SYNC_STATUS_ERROR,
-    ) -> dict[str, Any]:
-        last_export_seq = mark_cursor_status(
+    outcome = catch_up_audit_pages(
+        conn,
+        node,
+        now_iso=now_iso,
+        remote_iid=remote_iid,
+        options=opts,
+        stamp_identity=stamp_identity,
+        deadline=deadline,
+    )
+    if outcome["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
+        # Keep the cursor row's failure status truthful, but never roll back
+        # pages that were already committed in their own transactions.
+        mark_cursor_status_best_effort(
             conn,
             node_id,
             instance_id=remote_iid,
-            status=cursor_status,
+            status=(
+                SYNC_STATUS_EXPIRED
+                if outcome["status"] == SYNC_STATUS_EXPIRED
+                else SYNC_STATUS_ERROR
+            ),
             now_iso=now_iso,
         )
-        return _sync_result(
-            node,
-            status=status,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=last_export_seq,
-            instance_id=remote_iid,
-            error=error,
-            earliest=earliest,
-            max_event_id=max_event_id,
-            max_export_seq=max_export_seq,
-            pruned_max_export_seq=pruned_max,
-        )
-
-    if proc.returncode == 255:
-        return _fail(SYNC_STATUS_ERROR, detail or "ssh unreachable")
-
-    if meta_error == "CURSOR_EXPIRED":
-        return _fail(
-            SYNC_STATUS_EXPIRED,
-            "CURSOR_EXPIRED",
-            cursor_status=SYNC_STATUS_EXPIRED,
-        )
-
-    if meta_error == "CURSOR_AHEAD":
-        return _fail(SYNC_STATUS_ERROR, "CURSOR_AHEAD")
-
-    if proc.returncode != 0:
-        return _fail(
-            SYNC_STATUS_ERROR,
-            detail or f"audit export exit {proc.returncode}",
-        )
-
-    try:
-        rows = parse_export_jsonl(proc.stdout or "")
-    except ValueError as exc:
-        return _fail(SYNC_STATUS_ERROR, str(exc))
-
-    try:
-        next_cursor = validate_export_batch(
-            meta,
-            rows,
-            expected_after=after,
-            expected_node_id=node_id,
-            expected_instance_id=remote_iid,
-        )
-    except ValueError as exc:
-        return _fail(SYNC_STATUS_ERROR, str(exc))
-
-    try:
-        imported = import_export_jsonl(
-            node_id,
-            remote_iid,
-            rows,
-            now_iso,
-            conn=conn,
-            next_cursor=next_cursor,
-        )
-    except SystemExit as exc:
-        return _fail(
-            SYNC_STATUS_ERROR,
-            f"audit import failed (exit {exc.code})",
-        )
-
     return _sync_result(
         node,
-        status=SYNC_STATUS_OK,
+        status=outcome["status"],
         after=after,
-        last_event_id=int(imported["last_event_id"]),
-        last_export_seq=int(imported["last_export_seq"]),
-        inserted=int(imported["inserted"]),
-        updated=int(imported.get("updated", 0)),
-        ignored=int(imported["ignored"]),
-        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        last_event_id=int(outcome["last_event_id"]),
+        last_export_seq=int(outcome["cursor"]),
+        inserted=int(outcome["inserted"]),
+        updated=int(outcome["updated"]),
+        ignored=int(outcome["ignored"]),
+        skipped_unlabeled=int(outcome["skipped_unlabeled"]),
         instance_id=remote_iid,
-        earliest=earliest,
-        max_event_id=max_event_id,
-        max_export_seq=max_export_seq,
-        pruned_max_export_seq=pruned_max,
+        error=outcome["error"],
+        error_code=outcome["error_code"],
+        error_phase=outcome["error_phase"],
+        retryable=outcome["retryable"],
+        error_field=outcome.get("error_field"),
+        error_expected=outcome.get("error_expected"),
+        error_actual=outcome.get("error_actual"),
+        earliest=outcome["earliest_available_event_id"],
+        max_event_id=outcome["max_event_id"],
+        max_export_seq=outcome["max_export_seq"],
+        pruned_max_export_seq=outcome["pruned_max_export_seq"],
+        audit_pages=int(outcome["pages"]),
+        more_pending=bool(outcome["more_pending"]),
     )
 
 
@@ -5738,10 +6493,25 @@ def sync_full_one_node(
     node: dict[str, Any],
     *,
     now_iso: str,
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Pull identity/status/users/audit → one DB txn; fail-closed; no cursor advance on error."""
+    """Bounded audit catch-up, then a freshly collected snapshot txn (FR-02).
+
+    Order matters and is part of the contract:
+
+    1. read identity once, only to bind the audit batches to an instance;
+    2. catch up the audit pages (each in its own transaction);
+    3. re-read identity/status/users *after* the catch-up and re-check the
+       instance identity before committing;
+    4. commit the snapshot with the actual collection timestamp.
+
+    A failure in step 3 or 4 keeps every committed audit page and the previous
+    snapshot, and the row says audit advanced while the refresh did not finish.
+    """
     node_id = node["node_id"]
     after = _cursor_last_export_seq(conn, node_id)
+    opts = options or audit_page_options(None)
+    deadline = time.monotonic() + float(opts["budget"])
     life = node_lifecycle_status(node)
     if life != NODE_STATUS_ACTIVE or not node.get("enabled", True):
         return _sync_result(
@@ -5751,10 +6521,20 @@ def sync_full_one_node(
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
         )
-    # 1) pull (no writes)
-    identity_started_utc = datetime.now(timezone.utc)
-    st, ident, detail = ssh_remote_json(node, ["vcl", "identity", "--json"])
-    identity_finished_utc = datetime.now(timezone.utc)
+
+    # 1) binding identity only: it decides which instance the audit pages
+    # belong to, and is re-checked after the catch-up.
+    try:
+        st, ident, detail = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return budget_stop_result(
+            node, after=after, phase="identity",
+            last_event_id=_cursor_last_event_id(conn, node_id),
+        )
     if st != "OK" or not isinstance(ident, dict):
         return _sync_result(
             node,
@@ -5771,86 +6551,189 @@ def sync_full_one_node(
             after=after,
             last_event_id=_cursor_last_event_id(conn, node_id),
             last_export_seq=after,
-            error="registry node_id mismatch",
+            error="remote node_id does not match the registry node",
+            error_code="IDENTITY_MISMATCH",
+            error_phase="identity",
+            error_field="node_id",
+            error_expected=node_id,
+            error_actual=ident.get("node_id"),
         )
-    remote_iid = _optional_text(ident.get("instance_id"))
-    st2, status_doc, sdetail = ssh_remote_json(node, ["vcl", "status", "--json"])
-    if st2 != "OK" or not isinstance(status_doc, dict):
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=sdetail or "status unreachable",
+    bound_iid = _optional_text(ident.get("instance_id"))
+
+    # 2) bounded audit catch-up against the bound instance.
+    audit = catch_up_audit_pages(
+        conn,
+        node,
+        now_iso=now_iso,
+        remote_iid=bound_iid,
+        options=opts,
+        deadline=deadline,
+    )
+
+    def _audit_fields() -> dict[str, Any]:
+        return {
+            "after": after,
+            "last_event_id": int(audit["last_event_id"]),
+            "last_export_seq": int(audit["cursor"]),
+            "inserted": int(audit["inserted"]),
+            "updated": int(audit["updated"]),
+            "ignored": int(audit["ignored"]),
+            "skipped_unlabeled": int(audit["skipped_unlabeled"]),
+            "audit_pages": int(audit["pages"]),
+            "more_pending": bool(audit["more_pending"]),
+        }
+
+    def _snapshot_failure(
+        error: str,
+        *,
+        code: str,
+        phase: str,
+        retryable: bool,
+        instance_id: Optional[str],
+        status: Optional[str] = None,
+        field: Optional[str] = None,
+        expected: Any = None,
+        actual: Any = None,
+    ) -> dict[str, Any]:
+        progressed = (
+            f"audit advanced {audit['pages']} page(s) to cursor "
+            f"{audit['cursor']}; full snapshot refresh did not complete"
         )
-    users, uerr = _list_users_on_node(node)
-    if uerr is not None:
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=uerr,
-        )
-    proc = ssh_audit_export(node, after)
-    meta = parse_export_meta(proc.stderr or "")
-    if proc.returncode == 255:
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=_ssh_failure_detail(proc) or "ssh unreachable",
-        )
-    if isinstance(meta, dict) and meta.get("error") in (
-        "CURSOR_AHEAD",
-        "CURSOR_EXPIRED",
-    ):
+        _emit_sync_warning(node, progressed)
         return _sync_result(
             node,
             status=(
+                status
+                or (
+                    SYNC_STATUS_MORE_PENDING
+                    if audit["more_pending"]
+                    else SYNC_STATUS_ERROR
+                )
+            ),
+            instance_id=instance_id,
+            error=f"{error}; {progressed}",
+            error_code=code,
+            error_phase=phase,
+            retryable=retryable,
+            error_field=field,
+            error_expected=expected,
+            error_actual=actual,
+            **_audit_fields(),
+        )
+
+    if audit["status"] in (SYNC_STATUS_ERROR, SYNC_STATUS_EXPIRED):
+        mark_cursor_status_best_effort(
+            conn,
+            node_id,
+            instance_id=bound_iid,
+            status=(
                 SYNC_STATUS_EXPIRED
-                if meta["error"] == "CURSOR_EXPIRED"
+                if audit["status"] == SYNC_STATUS_EXPIRED
                 else SYNC_STATUS_ERROR
             ),
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=str(meta["error"]),
+            now_iso=node_deadline_iso(),
         )
-    if proc.returncode != 0:
         return _sync_result(
             node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=(
-                _ssh_failure_detail(proc)
-                or f"audit export exit {proc.returncode}"
-            ),
+            status=audit["status"],
+            instance_id=bound_iid,
+            error=audit["error"],
+            error_code=audit["error_code"],
+            error_phase=audit["error_phase"],
+            retryable=audit["retryable"],
+            error_field=audit.get("error_field"),
+            error_expected=audit.get("error_expected"),
+            error_actual=audit.get("error_actual"),
+            **_audit_fields(),
+        )
+
+    # 3) collect the snapshot AFTER the catch-up. The audit pages are already
+    # committed, so a failure here must not lose them.
+    identity_started_utc = datetime.now(timezone.utc)
+    try:
+        st2, ident2, detail2 = ssh_remote_json(
+            node,
+            ["vcl", "identity", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
+        )
+    except BudgetExhausted:
+        return _snapshot_failure(
+            "reached the per-node run budget before the post-catch-up identity read",
+            code="BUDGET_EXHAUSTED",
+            phase="identity",
+            retryable=True,
+            instance_id=bound_iid,
+            status=SYNC_STATUS_MORE_PENDING,
+        )
+    identity_finished_utc = datetime.now(timezone.utc)
+    if st2 != "OK" or not isinstance(ident2, dict):
+        return _snapshot_failure(
+            "post-catch-up identity read failed",
+            code="IDENTITY_UNREACHABLE",
+            phase="identity",
+            retryable=True,
+            instance_id=bound_iid,
+        )
+    if ident2.get("node_id") != node_id:
+        return _snapshot_failure(
+            "remote node_id does not match the registry node",
+            code="IDENTITY_MISMATCH",
+            phase="identity",
+            retryable=False,
+            instance_id=bound_iid,
+            field="node_id",
+            expected=node_id,
+            actual=ident2.get("node_id"),
+        )
+    final_iid = _optional_text(ident2.get("instance_id"))
+    if bound_iid != final_iid:
+        return _snapshot_failure(
+            "remote instance_id changed during the audit catch-up",
+            code="IDENTITY_CHANGED",
+            phase="identity",
+            retryable=False,
+            instance_id=final_iid,
+            field="instance_id",
+            expected=bound_iid,
+            actual=final_iid,
         )
     try:
-        rows = parse_export_jsonl(proc.stdout or "")
-        next_cursor = validate_export_batch(
-            meta,
-            rows,
-            expected_after=after,
-            expected_node_id=node_id,
-            expected_instance_id=remote_iid,
-        )
-    except ValueError as exc:
-        return _sync_result(
+        st3, status_doc, sdetail = ssh_remote_json(
             node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=str(exc),
+            ["vcl", "status", "--json"],
+            timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS),
         )
+        users, uerr = _list_users_on_node(
+            node, timeout=remaining_timeout(deadline, SSH_TIMEOUT_SECONDS)
+        )
+    except BudgetExhausted:
+        return _snapshot_failure(
+            "reached the per-node run budget before the post-catch-up status/users read",
+            code="BUDGET_EXHAUSTED",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+            status=SYNC_STATUS_MORE_PENDING,
+        )
+    if st3 != "OK" or not isinstance(status_doc, dict):
+        return _snapshot_failure(
+            "post-catch-up status read failed",
+            code="STATUS_UNREACHABLE",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+        )
+    if uerr is not None:
+        return _snapshot_failure(
+            "post-catch-up user list failed",
+            code="USERS_UNREACHABLE",
+            phase="collection",
+            retryable=True,
+            instance_id=final_iid,
+        )
+    remote_iid = final_iid
+    ident = ident2
+    collection_iso = node_deadline_iso()
     clock_state, _, skew = clock_skew_from_identity_window(
         identity_started_utc, identity_finished_utc, ident
     )
@@ -5859,80 +6742,84 @@ def sync_full_one_node(
         ensure_ascii=False,
         sort_keys=True,
     )
-    # 2) single per-node txn (DB only; portable history flushed after commit)
+    # 4) snapshot txn under the same node deadline.
     pending_history_events: list[dict[str, Any]] = []
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            UPSERT_NODE_SNAPSHOT_SQL,
-            (
-                node_id,
-                remote_iid,
-                node["name"],
-                _optional_text(ident.get("vincula_version")),
-                "OK",
-                classify_proxy(status_doc),
-                classify_accounting(status_doc),
-                "OK",
-                clock_state,
-                skew,
-                payload,
-                now_iso,
-            ),
-        )
-        conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
-        for u in users or []:
-            uid = str(u.get("user_id") or "")
-            if not uid:
-                continue
+        with sqlite_deadline_guard(conn, deadline):
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                """INSERT INTO user_snapshot(
-                     node_id,user_id,tag,enabled,status,active_credential_id,
-                     payload_json,synced_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                UPSERT_NODE_SNAPSHOT_SQL,
                 (
                     node_id,
-                    uid,
-                    str(u.get("tag") or ""),
-                    1 if u.get("enabled") else 0,
-                    "active" if u.get("enabled") else "disabled",
-                    _optional_text(u.get("active_credential_id")),
-                    json.dumps(u, ensure_ascii=False, sort_keys=True),
-                    now_iso,
+                    remote_iid,
+                    node["name"],
+                    _optional_text(ident.get("vincula_version")),
+                    "OK",
+                    classify_proxy(status_doc),
+                    classify_accounting(status_doc),
+                    "OK",
+                    clock_state,
+                    skew,
+                    payload,
+                    collection_iso,
                 ),
             )
-        if remote_iid:
-            pending_history_events = _record_instance_db_pending(
-                conn,
-                node_id,
-                remote_iid,
-                endpoint=None,
-                ssh_host=_optional_text(node.get("ssh_host")),
-                now_iso=now_iso,
-            )
-        _sync_full_fail_after("audit-import")
-        imported = import_audit_batch(
-            node_id,
-            remote_iid,
-            rows,
-            now_iso,
-            conn=conn,
-            next_cursor=next_cursor,
-            manage_txn=False,
-        )
-        conn.commit()
+            conn.execute("DELETE FROM user_snapshot WHERE node_id=?", (node_id,))
+            for u in users or []:
+                uid = str(u.get("user_id") or "")
+                if not uid:
+                    continue
+                conn.execute(
+                    """INSERT INTO user_snapshot(
+                         node_id,user_id,tag,enabled,status,active_credential_id,
+                         payload_json,synced_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (
+                        node_id,
+                        uid,
+                        str(u.get("tag") or ""),
+                        1 if u.get("enabled") else 0,
+                        "active" if u.get("enabled") else "disabled",
+                        _optional_text(u.get("active_credential_id")),
+                        json.dumps(u, ensure_ascii=False, sort_keys=True),
+                        collection_iso,
+                    ),
+                )
+            if remote_iid:
+                pending_history_events = _record_instance_db_pending(
+                    conn,
+                    node_id,
+                    remote_iid,
+                    endpoint=None,
+                    ssh_host=_optional_text(node.get("ssh_host")),
+                    now_iso=collection_iso,
+                )
+            _sync_full_fail_after("snapshot")
+            conn.commit()
     except BaseException as exc:
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
-        return _sync_result(
-            node,
-            status=SYNC_STATUS_ERROR,
-            after=after,
-            last_event_id=_cursor_last_event_id(conn, node_id),
-            last_export_seq=after,
-            error=f"full sync txn failed: {exc}",
+        # FR-02: audit pages are already committed and the snapshot stays at
+        # its previous value; the row says audit advanced and distinguishes a
+        # budget stop from an ordinary database failure.
+        if budget_expired(deadline):
+            return _snapshot_failure(
+                "reached the per-node run budget inside the snapshot transaction",
+                code="BUDGET_EXHAUSTED",
+                phase="snapshot",
+                retryable=True,
+                instance_id=remote_iid,
+                status=SYNC_STATUS_MORE_PENDING,
+            )
+        crossed = isinstance(exc, sqlite3.Error)
+        return _snapshot_failure(
+            f"full sync snapshot txn failed: {exc}",
+            code="DATABASE_ERROR" if crossed else "SNAPSHOT_FAILED",
+            phase="snapshot",
+            retryable=crossed,
+            instance_id=remote_iid,
         )
     # 3) portable history after successful DB commit (F7-1); not pseudo-atomic
     if pending_history_events:
@@ -5947,27 +6834,26 @@ def sync_full_one_node(
             return _sync_result(
                 node,
                 status=SYNC_STATUS_ERROR,
-                after=after,
-                last_event_id=int(imported["last_event_id"]),
-                last_export_seq=int(imported["last_export_seq"]),
-                inserted=int(imported["inserted"]),
-                updated=int(imported.get("updated", 0)),
-                ignored=int(imported["ignored"]),
-                skipped_unlabeled=int(imported["skipped_unlabeled"]),
                 instance_id=remote_iid,
                 error=f"history flush failed: {detail}",
+                error_code="HISTORY_FLUSH_FAILED",
+                error_phase="history",
+                retryable=False,
+                **_audit_fields(),
             )
     return _sync_result(
         node,
-        status=SYNC_STATUS_OK,
-        after=after,
-        last_event_id=int(imported["last_event_id"]),
-        last_export_seq=int(imported["last_export_seq"]),
-        inserted=int(imported["inserted"]),
-        updated=int(imported.get("updated", 0)),
-        ignored=int(imported["ignored"]),
-        skipped_unlabeled=int(imported["skipped_unlabeled"]),
+        status=(
+            SYNC_STATUS_MORE_PENDING
+            if audit["more_pending"]
+            else SYNC_STATUS_OK
+        ),
         instance_id=remote_iid,
+        error=audit["error"],
+        error_code=audit["error_code"],
+        error_phase=audit["error_phase"],
+        retryable=audit["retryable"],
+        **_audit_fields(),
     )
 
 
@@ -6005,8 +6891,25 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
             )
             if row.get("remediation"):
                 remediations.append(str(row["remediation"]))
+        elif row["status"] == SYNC_STATUS_MORE_PENDING:
+            lines.append(
+                f"  MORE_PENDING after={row.get('after')} "
+                f"cursor={row.get('last_export_seq')} "
+                f"pages={row.get('audit_pages', 0)}"
+            )
+            if row.get("error"):
+                lines.append(f"  {row['error']}")
+            lines.append(
+                "  audit is not caught up; rerun sync before retire/replace"
+            )
         elif row["status"] == SYNC_STATUS_ERROR and row.get("error"):
             lines.append(f"  ERROR: {row['error']}")
+            if row.get("error_code"):
+                lines.append(
+                    f"  CODE: {row['error_code']} "
+                    f"phase={row.get('error_phase') or '-'} "
+                    f"retryable={'true' if row.get('retryable') else 'false'}"
+                )
     if remediations:
         lines.append("Remediation:")
         for cmd in remediations:
@@ -6015,16 +6918,21 @@ def format_sync_table(rows: list[dict[str, Any]]) -> str:
 
 
 def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate sync rows. MORE_PENDING is never success (FR-02)."""
     failed = [
         row
         for row in rows
-        if row.get("status") in (SYNC_STATUS_EXPIRED, SYNC_STATUS_ERROR)
+        if row.get("status")
+        in (SYNC_STATUS_EXPIRED, SYNC_STATUS_ERROR, SYNC_STATUS_MORE_PENDING)
     ]
     state = OP_SUCCESS if not failed else OP_PARTIAL
     remediation = [
         row["remediation"]
         for row in rows
         if row.get("remediation")
+    ]
+    pending = [
+        row["name"] for row in rows if row.get("more_pending")
     ]
     return {
         "schema_version": SYNC_JSON_SCHEMA_VERSION,
@@ -6033,6 +6941,8 @@ def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "state": state,
         "nodes": rows,
         "remediation": remediation,
+        # Names only; never a computed "remaining rows" number.
+        "more_pending": pending,
     }
 
 
@@ -6048,6 +6958,7 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     include_all = bool(getattr(args, "all", False))
     as_json = bool(getattr(args, "as_json", False))
     now_iso = format_utc(datetime.now(timezone.utc))
+    options = audit_page_options(args)
 
     if reseed_name:
         validate_name(reseed_name)
@@ -6073,15 +6984,14 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     f"reseed {reseed_name}: local audit_events and "
                     "daily_usage deleted; cursor=0\n"
                 )
-        rows = [
-            sync_one_node(
-                conn,
-                node,
-                now_iso=now_iso,
-                stamp_identity=bool(reseed_name and node.get("name") == reseed_name),
-            )
-            for node in targets
-        ]
+        rows = sync_nodes_isolated(
+            conn,
+            targets,
+            sync_one=sync_one_node,
+            now_iso=now_iso,
+            options=options,
+            stamp_identity_for=reseed_name,
+        )
     finally:
         conn.close()
 
@@ -6100,12 +7010,16 @@ def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]
         include_all=bool(getattr(args, "all", False)),
         reseed_name=None,
     )
+    options = audit_page_options(args)
     conn = open_cache_for_sync()
     try:
-        rows = [
-            sync_full_one_node(conn, n, now_iso=now_iso)
-            for n in targets
-        ]  # sequential; no --jobs
+        rows = sync_nodes_isolated(
+            conn,
+            targets,
+            sync_one=sync_full_one_node,
+            now_iso=now_iso,
+            options=options,
+        )  # sequential; no --jobs
     finally:
         conn.close()
     doc = sync_report(rows)
@@ -6187,6 +7101,59 @@ def load_ssh_transport_module() -> Any:
     return _SSH_TRANSPORT_MOD
 
 
+# Transport message helpers: ssh_transport owns the marker strings so no
+# downstream module has to re-derive local transport facts from free text.
+def ssh_timeout_message(timeout: float) -> str:
+    return load_ssh_transport_module().timeout_message(timeout)
+
+
+def scp_timeout_message(timeout: float) -> str:
+    return load_ssh_transport_module().scp_timeout_message(timeout)
+
+
+def ssh_output_limit_message(max_stdout_bytes: int) -> str:
+    return load_ssh_transport_module().output_limit_message(max_stdout_bytes)
+
+
+def classify_ssh_failure(
+    *,
+    phase: str,
+    detail: str,
+    returncode: Optional[int],
+    unsupported: bool = False,
+    protocol_invalid: bool = False,
+) -> dict[str, Any]:
+    """Structured FR-04 failure facts (phase/code/state/retryable/summary)."""
+    return load_ssh_transport_module().classify_failure(
+        phase=phase,
+        detail=detail,
+        returncode=returncode,
+        unsupported=unsupported,
+        protocol_invalid=protocol_invalid,
+    )
+
+
+def classify_ssh_proc(
+    proc: subprocess.CompletedProcess[str],
+    *,
+    phase: str,
+    unsupported: bool = False,
+    protocol_invalid: bool = False,
+) -> dict[str, Any]:
+    return classify_ssh_failure(
+        phase=phase,
+        detail=_ssh_failure_detail(proc),
+        returncode=proc.returncode,
+        unsupported=unsupported,
+        protocol_invalid=protocol_invalid,
+    )
+
+
+def failure_summary_text(facts: dict[str, Any]) -> str:
+    """Shareable fixed-template summary (no endpoint, no logical identity)."""
+    return str(facts.get("summary") or "SSH failure")
+
+
 def load_observation_capabilities_module() -> Any:
     global _OBS_CAP_MOD
     if _OBS_CAP_MOD is not None:
@@ -6226,6 +7193,7 @@ def observation_ssh_json(
     require_exit_0: bool = False,
     unsupported_on_missing_command: bool = False,
     max_stdout_bytes: Optional[int] = None,
+    facts: Optional[dict[str, Any]] = None,
 ) -> tuple[str, Optional[dict[str, Any]], str]:
     transport = load_ssh_transport_module()
     return transport.ssh_remote_json_for_class(
@@ -6240,6 +7208,7 @@ def observation_ssh_json(
         require_exit_0=require_exit_0,
         unsupported_on_missing_command=unsupported_on_missing_command,
         max_stdout_bytes=max_stdout_bytes,
+        facts=facts,
     )
 
 
@@ -6247,6 +7216,7 @@ def fetch_node_capabilities(
     node: dict[str, Any],
     *,
     credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     caps_mod = load_observation_capabilities_module()
 
@@ -6259,8 +7229,9 @@ def fetch_node_capabilities(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
-            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            timeout=kwargs.get("timeout", timeout),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+            facts=kwargs.get("facts"),
         )
 
     return caps_mod.fetch_capabilities(node, ssh_json=_ssh_json)
@@ -6271,15 +7242,22 @@ def fetch_node_telemetry(
     *,
     capabilities: Optional[dict[str, Any]] = None,
     credential_class: str = "observe",
+    timeout: float = SSH_TIMEOUT_SECONDS,
+    with_inspection: bool = False,
 ) -> dict[str, Any]:
+    import time
+    deadline = time.monotonic() + timeout
     caps = (
         capabilities
         if capabilities is not None
-        else fetch_node_capabilities(node, credential_class=credential_class)
+        else fetch_node_capabilities(node, credential_class=credential_class, timeout=timeout)
     )
     tel_mod = load_observation_telemetry_module()
 
     def _ssh_json(**kwargs: Any) -> tuple[str, Optional[dict[str, Any]], str]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("observation", timeout)
         return observation_ssh_json(
             kwargs["node"],
             kwargs["remote_cmd"],
@@ -6288,11 +7266,70 @@ def fetch_node_telemetry(
                 "unsupported_on_missing_command", False
             ),
             require_exit_0=kwargs.get("require_exit_0", False),
-            timeout=kwargs.get("timeout", SSH_TIMEOUT_SECONDS),
+            timeout=min(kwargs.get("timeout", timeout), remaining),
             max_stdout_bytes=kwargs.get("max_stdout_bytes"),
+            facts=kwargs.get("facts"),
         )
 
-    return tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
+    result = tel_mod.fetch_telemetry(node, capabilities=caps, ssh_json=_ssh_json)
+    if result.get("state") == "OK" and "audit-health/v1" in (caps.get("capabilities") or []):
+        audit_module = _load_controller_sibling("vcl_observation_audit_health", "observation/audit_health.py")
+        try:
+            result["audit_health"] = audit_module.fetch(node, capabilities=caps,
+                instance_id=result["snapshot"]["instance_id"], ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["audit_health"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["audit_health"] = {"state": "ERROR"}
+    if result.get("state") == "OK" and "user-traffic/v1" in (caps.get("capabilities") or []):
+        user_module = _load_controller_sibling("vcl_observation_user_traffic", "observation/user_traffic.py")
+        try:
+            result["user_traffic"] = user_module.fetch(node, capabilities=caps,
+                instance_id=result["snapshot"]["instance_id"], ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["user_traffic"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["user_traffic"] = {"state": "ERROR"}
+    if with_inspection:
+        inspect_module = _load_controller_sibling("vcl_observation_inspection", "observation/inspection.py")
+        try:
+            result["inspection"] = inspect_module.fetch(node, capabilities=caps, ssh_json=_ssh_json)
+        except subprocess.TimeoutExpired:
+            result["inspection"] = {"state": "TIMEOUT"}
+        except (Exception, SystemExit):
+            result["inspection"] = {"state": "ERROR"}
+    return result
+
+
+def load_inspection_module() -> Any:
+    return _load_controller_sibling("vcl_inspection_cache", "observation/inspection_cache.py")
+
+
+def cached_inspection(name: Optional[str] = None) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_inspection_module().cached(_FLEET_HOST, nodes, detail=name is not None)
+
+
+def load_monitor_module() -> Any:
+    return _load_controller_sibling("vcl_observation_monitor", "observation/monitor.py")
+
+
+def monitor_cached_health(name: Optional[str] = None) -> dict[str, Any]:
+    return load_monitor_module().cached_health(_FLEET_HOST, name)
+
+
+def load_findings_module() -> Any:
+    return _load_controller_sibling("vcl_observation_findings", "observation/findings.py")
+
+
+def cached_findings(name: Optional[str] = None, *, state: Optional[str] = None, limit: int = 100) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_findings_module().cached(_FLEET_HOST, nodes, state=state, limit=limit)
+
+
+def cached_timeline(name: Optional[str] = None, *, limit: int = 100) -> dict[str, Any]:
+    nodes = load_monitor_module().active_nodes(_FLEET_HOST, name)
+    return load_findings_module().timeline(_FLEET_HOST, nodes, limit=limit, include_fleet=name is None)
 
 
 def fleet_utc_today() -> date:
@@ -7163,11 +8200,23 @@ def cmd_access_list(_args: argparse.Namespace) -> int:
 
 
 def cmd_access_bind(args: argparse.Namespace) -> int:
+    """Explicit shared-ref entry point (FR-01).
+
+    This is the only place that intentionally re-targets an existing ref;
+    node-level rotation never lands here. Consumers are reported so an
+    operator can see the blast radius.
+    """
     ref = str(args.ref)
+    consumers = affected_binding_consumers(ref)
     if getattr(args, "openssh_default", False):
         bind_openssh_default(ref)
     else:
         bind_identity_file(ref, str(args.identity_file))
+    if consumers:
+        sys.stderr.write(
+            f"note: {ref} is shared by {', '.join(consumers)}; "
+            f"all of them now use this credential\n"
+        )
     return 0
 
 
@@ -7391,6 +8440,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Spec §7.2 forbids implicit share)"
         ),
     )
+    p_set.add_argument("--observe-ssh-user", help="explicit restricted SSH username for observation only")
     p_set.add_argument(
         "--observe-identity-file",
         dest="observe_identity_file",
@@ -7512,6 +8562,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_telemetry.add_argument("name", help="registered node name")
     _add_json_flag(p_telemetry)
 
+    p_monitor = sub.add_parser("monitor", help="foreground telemetry monitoring (observe SSH; Ctrl-C to stop)")
+    p_monitor.add_argument("name", nargs="?", help="one enabled node; default all enabled nodes")
+    p_monitor.add_argument("--once", action="store_true", help="collect one bounded round and exit")
+    p_monitor.add_argument("--interval", type=float, default=30)
+    p_monitor.add_argument("--inspect-interval", type=float, default=300, help="inspect cadence 60..600 seconds within the same Node deadline")
+    p_monitor.add_argument("--timeout", type=float, default=15)
+    p_monitor.add_argument("--concurrency", type=int, default=8)
+    p_monitor.add_argument("--probe-profiles", help="private workstation-local dedicated proxy probe profiles")
+    p_monitor.add_argument("--probe-sing-box", default="sing-box", help="pinned local sing-box executable for probes")
+    _add_json_flag(p_monitor)
+    p_health = sub.add_parser("health", help="read monitoring cache only; no SSH")
+    p_health.add_argument("name", nargs="?")
+    _add_json_flag(p_health)
+    p_inspect = sub.add_parser("inspect", help="read local inspection and drift cache; no SSH")
+    p_inspect.add_argument("name", nargs="?")
+    _add_json_flag(p_inspect)
+    p_baseline = sub.add_parser("baseline", help="explicit workstation-local comparison baseline; no SSH")
+    p_baseline.add_argument("action", choices=("accept", "clear"))
+    p_baseline.add_argument("name")
+    p_baseline.add_argument("--sha256", required=True, help="snapshot SHA for accept; current baseline SHA for clear")
+    _add_json_flag(p_baseline)
+    p_findings = sub.add_parser("findings", help="local observation findings; display never uses SSH")
+    p_findings.add_argument("name", nargs="?")
+    p_findings.add_argument("--refresh", action="store_true", help="explicitly analyze existing local caches; no SSH")
+    p_findings.add_argument("--state", choices=("ACTIVE", "RESOLVED"))
+    p_findings.add_argument("--limit", type=int, default=100)
+    _add_json_flag(p_findings)
+    p_timeline = sub.add_parser("timeline", help="read local finding, health, service and operation events; no SSH")
+    p_timeline.add_argument("name", nargs="?")
+    p_timeline.add_argument("--limit", type=int, default=100)
+    _add_json_flag(p_timeline)
+
     p_status = sub.add_parser(
         "status",
         help="cache-only (D58); use probe or --live for SSH",
@@ -7585,6 +8667,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include disabled and retired nodes (retired SSH=-; no SSH)",
     )
+    p_verify.add_argument("--extended", action="store_true", help="explicit verify/v2 via observe; optional dedicated data-plane probe")
+    p_verify.add_argument("--name", help="one enabled node for extended Verify")
+    p_verify.add_argument("--timeout", type=float, default=15, help="extended Verify shared Node deadline, 1..300 seconds")
+    p_verify.add_argument("--probe-profiles", help="explicit private dedicated proxy profiles for extended Verify")
+    p_verify.add_argument("--probe-sing-box", default="sing-box")
     user = sub.add_parser(
         "user",
         help="provision and inspect users across fleet nodes",
@@ -7792,10 +8879,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="incremental audit import from enabled nodes",
         description=(
             "For each enabled node (or --node NAME / --all), read the "
-            "durable sync_cursor (0 if none), SSH "
-            "`vcl audit export --after CURSOR --jsonl`, and import via "
-            "INSERT OR IGNORE in one transaction. The cursor advances "
-            "only after a successful import COMMIT. Remote CURSOR_EXPIRED "
+            "durable sync_cursor (0 if none), then page through "
+            "`vcl audit export --after CURSOR --limit N --jsonl` with a "
+            "per-page deadline, a per-page stdout ceiling and a total run "
+            "budget. Each accepted page is validated as a complete Protocol "
+            "v2 batch and imported in its own transaction (audit rows, daily "
+            "summary and durable cursor together), so a rejected page keeps "
+            "every earlier page. A run that stops inside its page cap or "
+            "budget with data still pending reports MORE_PENDING, which is "
+            "not success (exit 2) and blocks retire/replace. The cursor "
+            "advances only after a successful import COMMIT. Remote "
+            "CURSOR_EXPIRED "
             "(exit 3, meta.error=CURSOR_EXPIRED) does not import; "
             "status=expired and overall exit 2. Remote CURSOR_AHEAD "
             "(exit 3, meta.error=CURSOR_AHEAD: after > MAX(event_id)) "
@@ -7837,6 +8931,65 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "identity+health+users+audit delta → cache "
             "(0.4.2; default sync stays legacy)"
+        ),
+    )
+    p_sync.add_argument(
+        "--page-size",
+        dest="page_size",
+        type=int,
+        default=SYNC_AUDIT_PAGE_SIZE_DEFAULT,
+        metavar="N",
+        help=(
+            "audit rows per bounded page, 1.."
+            f"{SYNC_AUDIT_PAGE_SIZE_MAX} "
+            f"(default {SYNC_AUDIT_PAGE_SIZE_DEFAULT}; 5000 is the largest "
+            "live-validated page)"
+        ),
+    )
+    p_sync.add_argument(
+        "--max-pages",
+        dest="max_pages",
+        type=int,
+        default=SYNC_AUDIT_MAX_PAGES_DEFAULT,
+        metavar="N",
+        help=(
+            "stop a node after N committed pages "
+            f"(default {SYNC_AUDIT_MAX_PAGES_DEFAULT}); status becomes "
+            "MORE_PENDING, never success"
+        ),
+    )
+    p_sync.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=SYNC_AUDIT_TIMEOUT_DEFAULT,
+        metavar="SECONDS",
+        help=(
+            "per-page SSH deadline "
+            f"(default {SYNC_AUDIT_TIMEOUT_DEFAULT:.0f}s)"
+        ),
+    )
+    p_sync.add_argument(
+        "--stdout-cap",
+        dest="stdout_cap",
+        type=int,
+        default=SYNC_AUDIT_STDOUT_CAP_DEFAULT,
+        metavar="BYTES",
+        help=(
+            "per-page stdout ceiling in bytes "
+            f"(default {SYNC_AUDIT_STDOUT_CAP_DEFAULT}); an oversized page is "
+            "rejected whole"
+        ),
+    )
+    p_sync.add_argument(
+        "--budget",
+        dest="budget",
+        type=float,
+        default=SYNC_AUDIT_BUDGET_DEFAULT,
+        metavar="SECONDS",
+        help=(
+            "total wall-clock budget per node covering SSH, lock wait and "
+            f"import (default {SYNC_AUDIT_BUDGET_DEFAULT:.0f}s)"
         ),
     )
 
@@ -8079,6 +9232,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
         )
     if command == "verify":
+        if args.extended:
+            if args.all or not 1 <= args.timeout <= 300:
+                die("extended verify requires enabled nodes and timeout 1..300", 2)
+            module = _load_controller_sibling("vcl_verification", "observation/verification.py")
+            return run_journaled("verify", lambda: module.run_cli(_FLEET_HOST, args))
+        if args.name or args.probe_profiles:
+            die("--name/--probe-profiles require --extended", 2)
         return run_journaled(
             "verify",
             lambda: cmd_verify(
@@ -8204,6 +9364,63 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_capabilities(args)
     if command == "telemetry":
         return cmd_telemetry(args)
+    if command == "monitor":
+        try:
+            return load_monitor_module().run_cli(_FLEET_HOST, args)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            die(str(exc))
+    if command == "inspect":
+        doc = cached_inspection(args.name)
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
+        else:
+            print(f"Inspection cache: {doc['cache_state']}")
+            for n in doc["nodes"]:
+                print(f"{n['name']}: {n['state']} {n['reason']} drift={n['drift']['state']} snapshot={n['snapshot_sha256'] or '-'}")
+        return 2 if doc["cache_state"] in ("PARTIAL", "CACHE_CORRUPT") else 0
+    if command == "baseline":
+        node = require_node(load_registry(), args.name)
+        try:
+            event = load_inspection_module().baseline(_FLEET_HOST, node, args.sha256, clear=args.action == "clear")
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            die(f"Local baseline refused: {exc}")
+        if args.as_json:
+            print(json.dumps(event, allow_nan=False))
+        else:
+            print(f"{node['name']}: {event['kind']}; LOCAL_ACCEPTED does not sign Human Gate or live acceptance")
+        return 0
+    if command in ("findings", "timeline"):
+        if not 1 <= args.limit <= 1000:
+            die("limit must be 1..1000", 2)
+        refresh_state = None
+        if command == "findings" and args.refresh:
+            try:
+                nodes = load_monitor_module().active_nodes(_FLEET_HOST, args.name)
+                refresh_state = load_findings_module().refresh(_FLEET_HOST, nodes)
+            except (ValueError, OSError, sqlite3.Error):
+                die("FINDINGS_WRITE_FAILED: local findings cache could not be updated")
+        doc = cached_findings(args.name, state=args.state, limit=args.limit) if command == "findings" else cached_timeline(args.name, limit=args.limit)
+        if refresh_state is not None:
+            doc["observation_cache_state"] = refresh_state
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc, allow_nan=False) + "\n")
+        else:
+            print(f"{doc['schema']}: cache={doc['cache_state']}")
+            for row in doc.get("findings", doc.get("events", [])):
+                name = (row.get("subject") or {}).get("name", "fleet")
+                if (row.get("subject") or {}).get("kind") == "user":
+                    name += "/" + row["subject"]["user_tag"]
+                print(f"{name}: {row.get('type', row.get('kind'))} {row.get('state', '')} {row.get('explanation', '')}")
+        return 2 if doc["cache_state"] in ("CACHE_CORRUPT", "PARTIAL") or refresh_state in ("CACHE_CORRUPT", "PARTIAL") else 0
+    if command == "health":
+        doc = monitor_cached_health(args.name)
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc) + "\n")
+        else:
+            for node in doc["nodes"]:
+                dimensions = " ".join(f"{key}={value['state']}" for key, value in node["health"].items())
+                print(f"{node['name']}: {node['overall']} {dimensions}")
+        return 2 if doc["cache_state"] in ("CACHE_CORRUPT", "PARTIAL") else 0
     if command == "user":
         sub = args.user_command
         if sub is None:

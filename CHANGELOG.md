@@ -2,6 +2,44 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.3 — local development candidate (2026-10-05, unreleased)
+
+- 2026-10-08修复FR-02有界审计同步：`vcl audit export`改为`--limit`分页，新增每页deadline与stdout上限（`--page-size`/`--timeout`/`--stdout-cap`）以及每节点页数与总运行预算（`--max-pages`/`--budget`）；每页校验为完整Protocol v2批次后在独立事务提交审计、日汇总与持久游标，超时/超量/坏JSON/身份变化/retention gap整页拒收且保留已提交页，不自动reseed。新增`MORE_PENDING`状态：不计入成功（`PARTIAL`、退出码2）、写入UI操作记录、人读表格与`remediation`，并阻止`retire`/`replace`在审计未追平时继续。`sync --full`合同调整为先逐页追赶审计、**追赶结束后重新采集**identity/status/users并在提交前复核`node_id`/`instance_id`，快照使用实际采集时间；复核或快照事务失败时保留已提交审计页与旧快照并明确报告`audit advanced N page(s)…; full snapshot refresh did not complete`。`--budget`成为每节点共享deadline：同时收紧采集/分页timeout、SQLite `busy_timeout`并用progress handler中断长语句，提交前预算耗尽则整页回滚；预算停止（`BUDGET_EXHAUSTED`）与数据库失败（`DATABASE_ERROR`）、页数上限（`PAGE_CAP`）区分。完成判定要求`max_export_seq`存在、为整数、非负且不低于本页`next_cursor`（缺失即协议错误，不再把短页当追平；最低兼容Node v0.3.1已带该字段）。FR-04收口：所有SSH层(exit 255)失败统一归入transport类并返回固定模板摘要，协议拒收改为类型化`ExportProtocolError`（摘要不含端点/身份/远端文本，预期与实际值只在`error_expected`/`error_actual`机器字段），sync行新增`error_field/error_expected/error_actual`。锁/满盘等数据库异常在节点边界处理，不再终止整轮同步。评审补修后的 `f37c50a` 远端 required CI 七个 job 全绿（[CI #97](https://github.com/Marz42/vcl/actions/runs/37766606635)；首版 `fd6ab89` 见[CI #94](https://github.com/Marz42/vcl/actions/runs/37755078557)），见[FR-02记录](docs/evidence/0.5.3/FR02_BOUNDED_SYNC.md)；默认参数实测、现场复验、soak 与 H05 仍PENDING。
+- 2026-10-08修复FR-03/FR-04认证分类与错误摘要：`AUTH_FAILED`顶层状态不变并新增`reason=AUTH_LIMIT|AUTH_DENIED`，补充`Too many authentication failures`、移除过宽的独立`publickey`匹配，capabilities/probe/verify给出"明确公钥+`IdentitiesOnly=yes`"的最小密钥选择提示；新增phase/code/state/retryable/summary(/hint)统一错误对象，本地transport事实（超时/超量）优先，audit meta按协议解析，失败不再回显stdout，摘要用固定模板且不含端点或逻辑身份（`node_id/instance_id`留在机器合同），sync行新增`error_code/error_phase/retryable`。`4e5d27f` 的远端 required CI 七个 job 全绿（[CI #90](https://github.com/Marz42/vcl/actions/runs/37738068581)），见[FR-03/04记录](docs/evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；现场复验、soak 与 H05 仍PENDING。
+- 2026-10-08修复FR-01凭据引用互相覆盖：新Node/新用途默认分配独立ref（`<node>-admin`/`<node>-observe`），节点级换钥改为copy-on-write，只切换目标用途并保留旧ref给其他消费者；adopt只在远端identity校验通过后绑定，provision在安装与verify成功后的提交回调内绑定；replace用新ref访问新endpoint、旧ref继续服务旧主机的final sync与backup；`access bind`保留为显式共享入口并列出受影响节点/用途。绑定先落盘、registry后落盘，失败最多留下未引用绑定。新增19项回归并改写F7-3旧预期，见[FR-01记录](docs/evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)；`7836b14` 的远端 required CI 七个 job 全绿（[CI #88](https://github.com/Marz42/vcl/actions/runs/37731099502)），现场复验、soak 与 H05 仍 PENDING。
+- 2026-10-07收口：审计heartbeat为NULL/非法时间不再使增强Verify崩溃；Clash检查配置的准确loopback地址/端口；复用Health的probe一致性校验；每次probe尝试后复核身份，失效即清除旧snapshot并返回真实transport状态。独立ZIP的16份合同、四个cache-only入口和embedded Node只读CLI纳入制品CI。最新验证见[阶段收口](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)；停在0.6.x之前。
+- 完成有界只读 Node Inspect / inspect/v1、安装/升级/回滚/卸载与 observer 固定 argv；修复真实安装态嵌套 `state.node.instance_id` 的读取。
+- Controller 前台 monitor 低频采集 Inspect，共享每 Node deadline；独立 inspection.db、只读 inspect CLI/API/UI、显式 snapshot SHA CAS 接受/清除基线，baseline 事件与写入同事务。
+- 七类 listeners/services/versions/config/units/runtime/binary Drift 与稳定 Finding 生命周期；陈旧/重放/换机/缺权限为 UNKNOWN，保留 ACTIVE。Findings 容量拒绝新目标，避免驱逐既有 ACTIVE。
+- 八项 verify/v2，通过 `vcl verify --extended --json` 和 Controller `verify --extended` 使用；旧 verify JSON 保持兼容。无显式代理探测的 Data Plane 为 UNKNOWN；probe 后重新核对 instance。
+- Node/Controller/payload pin 更新0.5.3，typed upgrade 加入0.5.2→0.5.3；新增版本化合同与正反 fixture，16份 schema 纳入 Controller ZIP。
+- [SPEC](docs/specs/V0.5.3_Spec.md) · [完整离线验证](docs/evidence/0.5.3/RC.md)。Human Gate 为 PENDING HUMAN，实机与24h soak 为 PENDING LIVE，远端 required CI 未执行。
+
+## 0.5.2 — local development candidate (2026-10-04, unreleased)
+
+- 在 `codex/0.5.1` 续开发 Findings / Audit / Anomalies / Timeline；Controller/Node stamp 0.5.2，最低Node仍0.3.1；typed upgrade支持0.3.1/0.3.2/0.5.0/0.5.1→0.5.2。
+- 新增本地 `findings.db`、稳定去重与 ACTIVE/RESOLVED；UNKNOWN 不误关告警。检测 audit stall、expired export gap、sync lag、disk/memory pressure 与 telemetry stale。
+- Monitor 自动接入并隔离 Findings 写入失败；CLI `findings` / `timeline` 和 UI 两页只读本地缓存，显式 `findings --refresh` 仅重分析本地数据。
+- 有界 retention/cap、截断标记、坏行隔离、稳定事件排序与脱敏白名单；Controller 包纳入新库。补生命周期、并发、事务失败和 cache-only 测试。
+- M2 增加 capability 协商的 `audit-health/v1` 只读 SQLite 诊断、独立 loop heartbeat、schema/corruption Finding、retention watermark 和 export progression；静止不误报，回退/回放不误关告警。缓存内部字段不扩展公共 monitor/v1；前台运行汇总使用新 monitor/v2。
+- M3 增加持久化 rolling median/MAD、网络速率异常、自动重启循环、SERVICE_RESTART Timeline，以及独立user-traffic/v1/三类用户异常；缺测/冷启动/复位明确 UNKNOWN，统计 spike 不训练自身；schema2事务迁移与用户容量覆盖标记。
+- M4 增加正式findings/v1、timeline/v1与14个fixture；八份公开schema随Controller ZIP锁定分发。修复独立ZIP provision模块依赖未打包installer的版本加载问题，扩展真实ZIP黑盒。
+- [当前验证](docs/evidence/0.5.2/M4.md) · [SPEC](docs/specs/V0.5.2_Spec.md)。Human Gate H05/H06/H07保持PENDING HUMAN，实机与soak保持PENDING LIVE；按用户指令跳过等待并记录。
+
+## 0.5.1 — local development candidate (2026-09-27, unreleased)
+
+- 2026-09-28 续开发：隔离非法采集结果并正确退避；received_at 排除 probe 等待；拒绝乱序/重复 telemetry 改写速率基线；深层坏 JSON 隔离；latest 缓存随节点更替淘汰并标记截断。补锁/满盘事务及 DNS/TLS probe 失败回归，新增 Windows CI。见[续开发验证](docs/evidence/0.5.1/CONTINUATION.md)。
+
+- Controller/Node stamp `0.5.1`，minimum Node仍为`0.3.1`；typed upgrade allowlist覆盖0.3.1/0.3.2/0.5.0→0.5.1。
+- 前台`monitor [NODE]`：每节点总SSH deadline、并发上限、jitter/backoff、进程锁、单节点故障隔离；`health`与UI `/api/monitor`只读本地缓存。
+- 分离Node/Observation/Proxy/Accounting健康，明确UNKNOWN、陈旧与恢复状态；进程active不冒充代理可用。新增专用VLESS/Reality→HTTPS probe，凭据只存本机私有文件，禁止direct fallback。
+- 独立`observation.db`：raw/5m/hourly retention、行数/256MiB上限、坏行隔离、事务恢复；跨instance或计数复位不产生错误网络速率。
+- accountd独立系统用户，root固定pre-start生成最小`accountd-runtime/v1`输入；用户变更/恢复刷新投影，规范secret文件保持root私有。新增真实Linux降权文件权限测试并纳入CI。
+- 显式`vcl observer install-key --file`配置受限Ed25519观察身份，固定命令经本机Unix socket和有资源限制的只读broker执行；新增`--observe-ssh-user`，observe认证失败不回退admin。
+- 所有新增Node库与unit纳入制品、manifest和upgrade checkpoint/rollback；Node/Controller包均使用现有digest/lock校验。
+- 本轮仅完成本地交付：真实VPS、升级断流、systemd/sshd现场配置、≥10节点2h、24h soak与发布门禁均保留`PENDING LIVE`。H05人工验收仍在0.5.x大阶段收尾。
+- [SPEC](docs/specs/V0.5.1_Spec.md) · [本地证据](docs/evidence/0.5.1/SUMMARY.md) · [操作说明](docs/operations/monitoring-runbook.md)。
+
 ## 0.5.0 (2026-08-31)
 **Observation Foundation** + **Node In-Place Upgrade**. Stamp: CTRL `0.5.0`; NODE payload pin **`0.5.0`** (Minimum Node remains `0.3.1`).
 ### Added

@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user-traffic/v1 retained per-user sample",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "node_id",
+    "instance_id",
+    "observed_at",
+    "sampled_at",
+    "heartbeat_age_seconds",
+    "pruned_max_export_seq",
+    "state",
+    "truncated",
+    "users"
+  ],
+  "properties": {
+    "schema": {
+      "const": "user-traffic/v1"
+    },
+    "node_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+    },
+    "instance_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sampled_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "heartbeat_age_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "pruned_max_export_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "state": {
+      "enum": [
+        "OK",
+        "PARTIAL",
+        "UNKNOWN",
+        "MISSING",
+        "CORRUPT",
+        "UNREADABLE",
+        "SCHEMA_MISMATCH"
+      ]
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "users": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_key",
+          "tag",
+          "retained_bytes",
+          "connections"
+        ],
+        "properties": {
+          "user_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+          },
+          "retained_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "connections": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "OK",
+              "PARTIAL"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sampled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "heartbeat_age_seconds": {
+            "type": "integer"
+          },
+          "pruned_max_export_seq": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "OK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "truncated": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "PARTIAL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "truncated": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "UNKNOWN",
+              "MISSING",
+              "CORRUPT",
+              "UNREADABLE",
+              "SCHEMA_MISMATCH"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "users": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

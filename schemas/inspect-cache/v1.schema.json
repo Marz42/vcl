@@ -1,0 +1,2155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cache_state": {
+      "enum": [
+        "EMPTY",
+        "OK",
+        "PARTIAL",
+        "CACHE_CORRUPT"
+      ]
+    },
+    "nodes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "accepted_at": {
+                    "maximum": 253402300799,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "baseline_sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "instance_id": {
+                    "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "snapshot_sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "source": {
+                    "const": "LOCAL_ACCEPTED"
+                  }
+                },
+                "required": [
+                  "source",
+                  "accepted_at",
+                  "baseline_sha256",
+                  "snapshot_sha256",
+                  "instance_id",
+                  "observed_at"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drift": {
+            "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "additionalProperties": false,
+                "properties": {
+                  "binary": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "config": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "listeners": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "runtime": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "services": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "units": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  },
+                  "versions": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "changed_count": {
+                        "maximum": 128,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "MATCH",
+                          "DRIFT",
+                          "UNKNOWN"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "changed_count"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "listeners",
+                  "services",
+                  "versions",
+                  "config",
+                  "units",
+                  "runtime",
+                  "binary"
+                ],
+                "type": "object"
+              },
+              "state": {
+                "enum": [
+                  "MATCH",
+                  "DRIFT",
+                  "UNKNOWN"
+                ]
+              }
+            },
+            "required": [
+              "state",
+              "checks"
+            ],
+            "type": "object"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+            "type": "string"
+          },
+          "node_id": {
+            "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "enum": [
+              "NONE",
+              "EMPTY",
+              "ERROR",
+              "AUTH_FAILED",
+              "UNSUPPORTED",
+              "TIMEOUT",
+              "STALE",
+              "CLOCK_SKEW",
+              "REPLAYED",
+              "IDENTITY",
+              "ENDPOINT",
+              "COVERAGE",
+              "NO_BASELINE",
+              "CACHE_CORRUPT",
+              "CAPACITY"
+            ]
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "state": {
+                          "const": "OK"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "clock": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "cpu": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "filesystems": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "fingerprints": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "firewall": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "instance_id": {
+                          "type": "string"
+                        },
+                        "interfaces": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "limits": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "listeners": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "memory": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "node_id": {
+                          "type": "string"
+                        },
+                        "os": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "qdisc": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "services": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "sysctl": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "updates": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "versions": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "properties": {
+                  "clock": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "ntp_active": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "synchronized": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "timezone": {
+                        "pattern": "^[A-Za-z0-9_+-]{1,32}(?:/[A-Za-z0-9_+-]{1,32}){0,2}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "synchronized",
+                      "ntp_active",
+                      "timezone"
+                    ],
+                    "type": "object"
+                  },
+                  "cpu": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "count": {
+                        "maximum": 65536,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "filesystems": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "available_bytes": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "filesystem": {
+                              "pattern": "^[a-zA-Z0-9_.+-]{1,32}$",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "mount": {
+                              "enum": [
+                                "/",
+                                "/var",
+                                "/run",
+                                "/tmp"
+                              ]
+                            },
+                            "total_bytes": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "mount",
+                            "total_bytes",
+                            "available_bytes",
+                            "filesystem"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "fingerprints": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "state": {
+                                    "const": "OK"
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "gid": {
+                                    "type": "integer"
+                                  },
+                                  "mode": {
+                                    "type": "integer"
+                                  },
+                                  "reason": {
+                                    "const": "NONE"
+                                  },
+                                  "sha256": {
+                                    "type": "string"
+                                  },
+                                  "uid": {
+                                    "type": "integer"
+                                  }
+                                }
+                              }
+                            }
+                          ],
+                          "properties": {
+                            "gid": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "mode": {
+                              "maximum": 4095,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "name": {
+                              "enum": [
+                                "config_nonsecret",
+                                "binary",
+                                "sing_box_unit",
+                                "accountd_unit",
+                                "observer_socket",
+                                "observer_unit",
+                                "helper",
+                                "common",
+                                "accountd",
+                                "accountd_runtime",
+                                "observer",
+                                "telemetry",
+                                "inspect",
+                                "stats",
+                                "audit",
+                                "backup"
+                              ]
+                            },
+                            "reason": {
+                              "enum": [
+                                "NONE",
+                                "MISSING",
+                                "MISSING_TOOL",
+                                "PERMISSION",
+                                "INVALID",
+                                "LIMIT",
+                                "TIMEOUT",
+                                "COMMAND_FAILED",
+                                "SYMLINK",
+                                "UNSUPPORTED_OS"
+                              ]
+                            },
+                            "sha256": {
+                              "pattern": "^[0-9a-f]{64}$",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "state": {
+                              "enum": [
+                                "OK",
+                                "PARTIAL",
+                                "UNKNOWN",
+                                "UNSUPPORTED",
+                                "UNREADABLE"
+                              ]
+                            },
+                            "uid": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "reason",
+                            "name",
+                            "sha256",
+                            "mode",
+                            "uid",
+                            "gid"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "projection": {
+                        "const": "managed-config/v1"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "projection",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "firewall": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "backend": {
+                        "enum": [
+                          "NFTABLES",
+                          "IPTABLES",
+                          null
+                        ]
+                      },
+                      "ipv4_available": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "ipv6_available": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "chain_key": {
+                              "pattern": "^[0-9a-f]{64}$",
+                              "type": "string"
+                            },
+                            "family": {
+                              "enum": [
+                                "ip",
+                                "ip6",
+                                "inet",
+                                "arp",
+                                "bridge",
+                                "netdev"
+                              ]
+                            },
+                            "hook": {
+                              "enum": [
+                                "input",
+                                "output",
+                                "forward",
+                                "prerouting",
+                                "postrouting",
+                                "ingress",
+                                "egress"
+                              ]
+                            },
+                            "policy": {
+                              "enum": [
+                                "ACCEPT",
+                                "DROP",
+                                null
+                              ]
+                            }
+                          },
+                          "required": [
+                            "chain_key",
+                            "family",
+                            "hook",
+                            "policy"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "rule_count": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "backend",
+                      "rule_count",
+                      "ipv4_available",
+                      "ipv6_available",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "instance_id": {
+                    "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "interfaces": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "loopback": {
+                              "type": "boolean"
+                            },
+                            "mtu": {
+                              "maximum": 2147483647,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "name": {
+                              "pattern": "^[A-Za-z0-9_.:-]{1,32}$",
+                              "type": "string"
+                            },
+                            "up": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "mtu",
+                            "up",
+                            "loopback"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "limits": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "observer_nofile_hard": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "observer_nofile_soft": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "system_file_max": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "system_file_max",
+                      "observer_nofile_soft",
+                      "observer_nofile_hard"
+                    ],
+                    "type": "object"
+                  },
+                  "listeners": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "address": {
+                              "pattern": "^[0-9a-fA-F:.*]{1,45}$",
+                              "type": "string"
+                            },
+                            "family": {
+                              "enum": [
+                                "IPV4",
+                                "IPV6",
+                                "ANY"
+                              ]
+                            },
+                            "interface": {
+                              "pattern": "^[A-Za-z0-9_.:-]{1,32}$",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "port": {
+                              "maximum": 65535,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "protocol": {
+                              "enum": [
+                                "TCP",
+                                "UDP"
+                              ]
+                            },
+                            "scope": {
+                              "enum": [
+                                "LOOPBACK",
+                                "LINK_LOCAL",
+                                "NON_LOOPBACK"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "protocol",
+                            "family",
+                            "scope",
+                            "address",
+                            "interface",
+                            "port"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "memory": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "available_bytes": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "swap_free_bytes": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "swap_total_bytes": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "total_bytes": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "total_bytes",
+                      "available_bytes",
+                      "swap_total_bytes",
+                      "swap_free_bytes"
+                    ],
+                    "type": "object"
+                  },
+                  "node_id": {
+                    "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "observed_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "os": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "id": {
+                        "pattern": "^[a-z0-9_-]{1,32}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "kernel": {
+                        "pattern": "^[A-Za-z0-9_.:+-]{1,96}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "supported": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "version_id": {
+                        "pattern": "^[0-9A-Za-z._-]{1,32}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "id",
+                      "version_id",
+                      "kernel",
+                      "supported"
+                    ],
+                    "type": "object"
+                  },
+                  "qdisc": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "interface": {
+                              "pattern": "^[A-Za-z0-9_.:-]{1,32}$",
+                              "type": "string"
+                            },
+                            "kind": {
+                              "pattern": "^[a-zA-Z0-9_-]{1,32}$",
+                              "type": "string"
+                            },
+                            "root": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "interface",
+                            "kind",
+                            "root"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "schema": {
+                    "const": "inspect/v1"
+                  },
+                  "services": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "truncated": {
+                              "const": true
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "state": {
+                              "const": "PARTIAL"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "items": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "active": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "enabled": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "group": {
+                              "pattern": "^[a-zA-Z0-9_-]{1,32}$",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "limit_nofile_hard": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "limit_nofile_soft": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "name": {
+                              "enum": [
+                                "sing-box.service",
+                                "vincula-accountd.service"
+                              ]
+                            },
+                            "reason": {
+                              "enum": [
+                                "NONE",
+                                "MISSING",
+                                "MISSING_TOOL",
+                                "PERMISSION",
+                                "INVALID",
+                                "LIMIT",
+                                "TIMEOUT",
+                                "COMMAND_FAILED",
+                                "SYMLINK",
+                                "UNSUPPORTED_OS"
+                              ]
+                            },
+                            "restart_count": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "state": {
+                              "enum": [
+                                "OK",
+                                "PARTIAL",
+                                "UNKNOWN",
+                                "UNSUPPORTED",
+                                "UNREADABLE"
+                              ]
+                            },
+                            "user": {
+                              "pattern": "^[a-zA-Z0-9_-]{1,32}$",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "reason",
+                            "name",
+                            "active",
+                            "enabled",
+                            "restart_count",
+                            "user",
+                            "group",
+                            "limit_nofile_soft",
+                            "limit_nofile_hard"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "truncated",
+                      "items"
+                    ],
+                    "type": "object"
+                  },
+                  "state": {
+                    "enum": [
+                      "OK",
+                      "PARTIAL",
+                      "UNKNOWN"
+                    ]
+                  },
+                  "sysctl": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "net.core.default_qdisc": {
+                        "pattern": "^[A-Za-z0-9_.:+-]{1,96}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "net.core.somaxconn": {
+                        "maximum": 2147483647,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "net.ipv4.ip_forward": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "net.ipv4.tcp_congestion_control": {
+                        "pattern": "^[A-Za-z0-9_.:+-]{1,96}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "net.ipv4.tcp_mtu_probing": {
+                        "maximum": 2,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "net.ipv6.conf.all.forwarding": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "net.ipv4.tcp_congestion_control",
+                      "net.core.default_qdisc",
+                      "net.ipv4.ip_forward",
+                      "net.ipv6.conf.all.forwarding",
+                      "net.ipv4.tcp_mtu_probing",
+                      "net.core.somaxconn"
+                    ],
+                    "type": "object"
+                  },
+                  "updates": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "available_count": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "reboot_marker_present": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "security_count": {
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "available_count",
+                      "security_count",
+                      "reboot_marker_present"
+                    ],
+                    "type": "object"
+                  },
+                  "versions": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "OK"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "NONE"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "installed_vcl": {
+                        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "enum": [
+                          "NONE",
+                          "MISSING",
+                          "MISSING_TOOL",
+                          "PERMISSION",
+                          "INVALID",
+                          "LIMIT",
+                          "TIMEOUT",
+                          "COMMAND_FAILED",
+                          "SYMLINK",
+                          "UNSUPPORTED_OS"
+                        ]
+                      },
+                      "sing_box": {
+                        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "sing_box_source": {
+                        "enum": [
+                          "INSTALLED_MANIFEST",
+                          "UNKNOWN"
+                        ]
+                      },
+                      "state": {
+                        "enum": [
+                          "OK",
+                          "PARTIAL",
+                          "UNKNOWN",
+                          "UNSUPPORTED",
+                          "UNREADABLE"
+                        ]
+                      },
+                      "vcl": {
+                        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reason",
+                      "vcl",
+                      "installed_vcl",
+                      "sing_box",
+                      "sing_box_source"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "node_id",
+                  "instance_id",
+                  "observed_at",
+                  "state",
+                  "os",
+                  "cpu",
+                  "memory",
+                  "filesystems",
+                  "clock",
+                  "interfaces",
+                  "qdisc",
+                  "sysctl",
+                  "limits",
+                  "services",
+                  "versions",
+                  "listeners",
+                  "firewall",
+                  "updates",
+                  "fingerprints"
+                ],
+                "title": "inspect/v1 bounded read-only Node inventory",
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "OK",
+              "PARTIAL",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "node_id",
+          "instance_id",
+          "state",
+          "reason",
+          "observed_at",
+          "snapshot_sha256",
+          "baseline",
+          "snapshot",
+          "drift"
+        ],
+        "type": "object"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
+    "schema": {
+      "const": "inspect-cache/v1"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "cache_state",
+    "nodes",
+    "truncated"
+  ],
+  "title": "inspect-cache/v1",
+  "type": "object"
+}

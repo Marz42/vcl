@@ -9,8 +9,11 @@ from typing import Any, Literal, Optional
 _host: Any = None
 
 UPGRADE_ALLOWLIST: dict[str, str] = {
-    "0.3.1": "0.5.0",
-    "0.3.2": "0.5.0",
+    "0.3.1": "0.5.3",
+    "0.3.2": "0.5.3",
+    "0.5.0": "0.5.3",
+    "0.5.1": "0.5.3",
+    "0.5.2": "0.5.3",
 }
 OUTAGE_BUDGET_SECONDS = 3
 

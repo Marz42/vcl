@@ -49,18 +49,10 @@ LEGACY_KEY_REMOTE = "reality-private.key"
 
 PrivilegeMode = Literal["root", "sudo"]
 
-# D51: single arch-neutral node payload pinned to tree vincula.sh VINCULA_VERSION.
-def _node_payload_version_from_tree() -> str:
-    vincula_sh = Path(__file__).resolve().parent.parent / "vincula.sh"
-    match = re.search(
-        r'^readonly VINCULA_VERSION="([^"]+)"', vincula_sh.read_text(encoding="utf-8"), re.M
-    )
-    if not match:
-        raise RuntimeError("VINCULA_VERSION not found in vincula.sh")
-    return match.group(1)
-
-
-NODE_PAYLOAD_VERSION = _node_payload_version_from_tree()
+# D51: pin the carried Node payload independently of its mutable manifest.
+# The standalone Controller has no vincula.sh; build-controller verifies this
+# locked source constant against the canonical Node version before packaging.
+NODE_PAYLOAD_VERSION = "0.5.3"
 NODE_TARBALL_NAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 NODE_SHA256_NAME = NODE_TARBALL_NAME + ".sha256"
 MANIFEST_NAME = "payload-manifest.json"
@@ -1029,6 +1021,7 @@ def run_provision(
     identity_file: Optional[str] = None,
     host_key: Optional[str] = None,
     admin_credential_ref: Optional[str] = None,
+    bind_admin_at_commit: bool = False,
     vcl_server: Optional[str] = None,
     skip_preflight: bool = False,
     skip_sync: bool = False,
@@ -1255,6 +1248,12 @@ def run_provision(
         _progress("register")
 
         def _commit() -> None:
+            # FR-01: write the workspace binding first (after remote install
+            # and verify), then let the registry reference it. A failure here
+            # leaves the old registry intact and at worst an unreferenced
+            # binding; the registry never points at a missing binding.
+            if bind_admin_at_commit and admin_ref and identity_file:
+                host.bind_identity_file(admin_ref, identity_file)
             reg = host.load_registry()
             host.add_node(
                 reg,

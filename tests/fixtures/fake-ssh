@@ -32,7 +32,7 @@ NODES = HERE / "nodes"
 
 FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null")
 KNOWN_KINDS = ("identity", "status", "verify", "capabilities", "telemetry_snapshot", "user", "audit", "backup", "restore", "upgrade")
-NODE_PAYLOAD_VERSION = os.environ.get("VCL_FAKE_NODE_VERSION", "0.5.0").strip() or "0.5.0"
+NODE_PAYLOAD_VERSION = os.environ.get("VCL_FAKE_NODE_VERSION", "0.5.3").strip() or "0.5.3"
 NODE_TARBALL_BASENAME = f"vincula-node-{NODE_PAYLOAD_VERSION}.tar.gz"
 USER_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -213,6 +213,62 @@ def _installer_mode() -> str | None:
     return None
 
 
+def _env_int(name: str) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _bump_counter(alias: str, name: str) -> int:
+    """1-based per-alias invocation counter persisted under the state dir."""
+    path = _alias_dir(alias) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = int(path.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        current = 0
+    current += 1
+    try:
+        path.write_text(f"{current}\n", encoding="utf-8")
+    except OSError:
+        pass
+    return current
+
+
+def _bump_export_call(alias: str) -> int:
+    """1-based counter of audit-export invocations for this alias (FR-02 tests)."""
+    return _bump_counter(alias, "export-calls")
+
+
+def _apply_identity_drift(alias: str, ident: dict) -> dict:
+    """Simulate a node changing while a catch-up is running (FR-02 tests)."""
+    data = dict(ident)
+    after = _env_int("VCL_FAKE_IDENTITY_ALT_AFTER")
+    if after and _bump_counter(alias, "identity-calls") >= after:
+        version = os.environ.get("VCL_FAKE_IDENTITY_ALT_VERSION", "").strip()
+        if version:
+            data["vincula_version"] = version
+        instance = os.environ.get("VCL_FAKE_IDENTITY_ALT_INSTANCE", "").strip()
+        if instance:
+            data["instance_id"] = instance
+    return data
+
+
+def _apply_status_drift(alias: str, status: dict) -> dict:
+    """Simulate the remote service state changing mid-catch-up (FR-02 tests)."""
+    data = dict(status)
+    after = _env_int("VCL_FAKE_STATUS_ALT_AFTER")
+    if after and _bump_counter(alias, "status-calls") >= after:
+        proxy = dict(data.get("proxy") or {})
+        proxy["ok"] = False
+        data["proxy"] = proxy
+    return data
+
+
 def _ssh_identity_path(argv: list[str]) -> str | None:
     i = 1
     while i < len(argv):
@@ -222,14 +278,20 @@ def _ssh_identity_path(argv: list[str]) -> str | None:
     return None
 
 
-def _observe_auth_failed(full_argv: list[str]) -> bool:
-    if os.environ.get("VCL_FAKE_OBSERVE_AUTH_FAIL", "").strip() != "1":
-        return False
+def _observe_auth_failure_kind(full_argv: list[str]) -> str | None:
+    """None | "denied" | "limit" for the configured observe identity (G1)."""
+    kind = None
+    if os.environ.get("VCL_FAKE_OBSERVE_AUTH_FAIL", "").strip() == "1":
+        kind = "denied"
+    elif os.environ.get("VCL_FAKE_OBSERVE_AUTH_LIMIT", "").strip() == "1":
+        kind = "limit"
+    if kind is None:
+        return None
     observe_path = os.environ.get("VCL_FAKE_OBSERVE_KEY_PATH", "").strip()
     ident_path = _ssh_identity_path(full_argv)
     if observe_path and ident_path:
-        return Path(ident_path).resolve() == Path(observe_path).resolve()
-    return True
+        return kind if Path(ident_path).resolve() == Path(observe_path).resolve() else None
+    return kind
 
 
 def _apply_upgrade_identity(alias: str) -> None:
@@ -830,6 +892,36 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
 
     meta["node_id"] = node_id
     meta["instance_id"] = instance_id
+
+    # FR-02 fault injection: deterministic per-page behaviour for bounded
+    # catch-up tests. The counter is per alias and survives across processes.
+    page_no = _bump_export_call(alias)
+    fail_page = _env_int("VCL_FAKE_EXPORT_FAIL_PAGE")
+    hang_page = _env_int("VCL_FAKE_EXPORT_HANG_PAGE")
+    prune_page = _env_int("VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE")
+    alt_page = _env_int("VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE")
+    pad_bytes = _env_int("VCL_FAKE_EXPORT_PAD_BYTES")
+    if hang_page and page_no >= hang_page:
+        time.sleep(3600)
+        return 255
+    if fail_page and page_no >= fail_page:
+        sys.stderr.write("fake-ssh: audit export failed\n")
+        return 1
+    if prune_page and page_no >= prune_page:
+        meta["ok"] = False
+        meta["error"] = "CURSOR_EXPIRED"
+        meta["count"] = 0
+        meta["next_cursor"] = after
+        status = "CURSOR_EXPIRED"
+    if alt_page and page_no >= alt_page:
+        alt = os.environ.get("VCL_FAKE_EXPORT_ALT_INSTANCE", "").strip()
+        if alt:
+            meta["instance_id"] = alt
+    if pad_bytes:
+        for row in rows:
+            row["destination_host"] = "p" * pad_bytes
+            break
+
     if stamp_identity:
         audit_mod = _load_audit()
         if audit_mod is not None and hasattr(audit_mod, "stamp_export_rows"):
@@ -853,6 +945,17 @@ def _handle_audit(alias: str, argv: list[str]) -> int:
             meta["count"] = int(lie_count)
         except ValueError:
             sys.stderr.write("fake-ssh: VCL_FAKE_EXPORT_LIE_COUNT must be an integer\n")
+            return 1
+    if os.environ.get("VCL_FAKE_EXPORT_DROP_MAX_SEQ", "").strip() == "1":
+        meta.pop("max_export_seq", None)
+    lie_max = os.environ.get("VCL_FAKE_EXPORT_LIE_MAX_SEQ", "").strip()
+    if lie_max:
+        try:
+            meta["max_export_seq"] = int(lie_max)
+        except ValueError:
+            sys.stderr.write(
+                "fake-ssh: VCL_FAKE_EXPORT_LIE_MAX_SEQ must be an integer\n"
+            )
             return 1
     lie_next = os.environ.get("VCL_FAKE_EXPORT_LIE_NEXT_CURSOR", "").strip()
     if lie_next:
@@ -1877,8 +1980,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("this is not identity JSON\n")
         return 0
 
-    if _observe_auth_failed(argv):
+    auth_kind = _observe_auth_failure_kind(argv)
+    if auth_kind == "denied":
         sys.stderr.write("Permission denied (publickey).\n")
+        return 255
+    if auth_kind == "limit":
+        sys.stderr.write(
+            "Received disconnect from 203.0.113.10 port 22:2: "
+            "Too many authentication failures\n"
+            "Disconnected from 203.0.113.10 port 22\n"
+        )
         return 255
 
     kind, rest = _remote_kind(remote)
@@ -1986,6 +2097,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     data = _load_fixture(alias, kind)
+    if kind == "identity":
+        data = _apply_identity_drift(alias, data)
+    elif kind == "status":
+        data = _apply_status_drift(alias, data)
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
     if kind in ("status", "verify") and not data.get("ok", True):

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.5.0
+# Vincula-Version: 0.5.3
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.5.0"
+readonly VINCULA_VERSION="0.5.3"
 readonly STATE_DIR="${VCL_STATE_DIR:-/etc/vincula}"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -23,11 +23,17 @@ readonly LOCK_FILE="${LIB_DIR}/sing-box.lock"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly OBSERVER_PY="${LIB_DIR}/observer.py"
+readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
+readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
 readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
 readonly TELEMETRY_PY="${LIB_DIR}/telemetry_snapshot.py"
+readonly INSPECT_PY="${LIB_DIR}/inspect_snapshot.py"
+readonly VERIFY_PY="${LIB_DIR}/verify_snapshot.py"
 readonly VAR_LIB_VINCULA="${VCL_VAR_LIB_VINCULA:-/var/lib/vincula}"
 readonly ACCOUNTING_DB_FILE="${VCL_ACCOUNTING_DB_FILE:-${VAR_LIB_VINCULA}/accounting.db}"
 readonly EVENTS_JSONL_FILE="${VAR_LIB_VINCULA}/events.jsonl"
@@ -85,9 +91,16 @@ Usage:
                         Machine-readable capability discovery (capabilities/v1)
   vcl telemetry snapshot --json
                         Read-only resource/service snapshot (telemetry/v1)
+  vcl telemetry audit --json
+                        Bounded read-only accounting diagnostics (audit-health/v1)
+  vcl telemetry users --json
+                        Bounded per-user retained traffic samples (user-traffic/v1)
+  vcl inspect --json    Bounded read-only environment and fingerprints (inspect/v1)
   vcl status [--json]  Check service, port, and listener ownership
   vcl check            Fast static checks (binary SHA-256 and config syntax)
   vcl verify [--json]  Check canonical state against generated artifacts
+  vcl verify --extended --json
+                        Read-only explicit checks (verify/v2); data plane UNKNOWN without Controller probe
   vcl diagnose         Runtime, network, and REALITY self-test diagnostics
   vcl restart          Validate and restart sing-box
   vcl logs             Show recent journal entries (default: 100)
@@ -545,7 +558,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$INSPECT_PY"|"$VERIFY_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -605,6 +618,10 @@ stop_runtime_for_uninstall() {
     systemctl disable vincula-accountd.service >/dev/null 2>&1 || true
     systemctl stop vincula-accountd.service >/dev/null 2>&1 || true
     printf '✓ vincula-accountd.service stopped and disabled\n'
+  fi
+  if [[ -f "$OBSERVER_SOCKET" ]] && unit_has_vincula_marker "$OBSERVER_SOCKET"; then
+    systemctl disable --now vincula-observer.socket >/dev/null 2>&1 || true
+    systemctl stop 'vincula-observer@*.service' >/dev/null 2>&1 || true
   fi
   if systemctl cat sing-box.service >/dev/null 2>&1; then
     systemctl disable sing-box.service >/dev/null 2>&1 || true
@@ -790,9 +807,16 @@ cmd_uninstall() {
     "$CHECKSUM_FILE" \
     "$LOCK_FILE" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
+    "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTING_DB_FILE" \
     "${ACCOUNTING_DB_FILE}-wal" \
@@ -802,6 +826,10 @@ cmd_uninstall() {
     remove_managed_file "$path"
   done
   printf '✓ Vincula-managed sing-box configuration removed\n'
+  if grep -qxF 'file=/etc/vincula-accountd/runtime.json' "$INSTALL_MANIFEST_FILE"; then
+    remove_managed_file /etc/vincula-accountd/runtime.json
+    remove_directory_if_empty /etc/vincula-accountd || preserved=1
+  fi
 
   if ! remove_managed_symlink "$HELPER_ALIAS_PATH" "$HELPER_PATH"; then
     preserved=1
@@ -942,7 +970,7 @@ print(
         {
             "schema": "capabilities/v1",
             "node_version": sys.argv[1],
-            "capabilities": ["telemetry/v1"],
+            "capabilities": ["telemetry/v1", "audit-health/v1", "user-traffic/v1", "inspect/v1", "verify/v2"],
         },
         ensure_ascii=False,
         indent=2,
@@ -974,8 +1002,36 @@ cmd_telemetry_snapshot_json() {
   python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE"
 }
 
+cmd_inspect() {
+  cli_require_json_flag inspect "$@"
+  [[ "${1:-}" == --json ]] || die "inspect requires --json."
+  local inspect_py="$INSPECT_PY" src=${BASH_SOURCE[0]-} root
+  if [[ ! -f "$inspect_py" && -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    inspect_py="${root}/lib/inspect_snapshot.py"
+  fi
+  [[ -f "$inspect_py" ]] || die "inspect helper is missing."
+  python3 -B "$inspect_py" "$STATE_DIR" "$CONFIG_FILE" "$BINARY_PATH" "$LIB_DIR" "$VINCULA_VERSION"
+}
+
 cmd_telemetry() {
   case "${1:-}" in
+    users)
+      shift
+      cli_require_json_flag "telemetry users" "$@"
+      [[ "${1:-}" == --json ]] || die "telemetry users requires --json."
+      local telemetry_py
+      telemetry_py=$(resolve_telemetry_py) || die "telemetry snapshot helper is missing."
+      python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE" --users
+      ;;
+    audit)
+      shift
+      cli_require_json_flag "telemetry audit" "$@"
+      [[ "${1:-}" == --json ]] || die "telemetry audit requires --json."
+      local telemetry_py
+      telemetry_py=$(resolve_telemetry_py) || die "telemetry snapshot helper is missing."
+      python3 "$telemetry_py" "$STATE_DIR" "$ACCOUNTING_DB_FILE" --audit
+      ;;
     snapshot)
       shift
       cli_require_json_flag "telemetry snapshot" "$@"
@@ -983,7 +1039,7 @@ cmd_telemetry() {
       cmd_telemetry_snapshot_json
       ;;
     *)
-      die "usage: vcl telemetry snapshot --json"
+      die "usage: vcl telemetry snapshot|audit|users --json"
       ;;
   esac
 }
@@ -1111,6 +1167,16 @@ cmd_check() {
 }
 
 cmd_verify() {
+  if [[ "${1:-}" == --extended && "${2:-}" == --json && $# == 2 ]]; then
+    local verify_py="$VERIFY_PY" src=${BASH_SOURCE[0]-} root
+    if [[ ! -f "$verify_py" && -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+      root=$(cd -- "$(dirname -- "$src")/.." && pwd)
+      verify_py="${root}/lib/verify_snapshot.py"
+    fi
+    [[ -f "$verify_py" ]] || die "verify helper is missing."
+    python3 -B "$verify_py" "$STATE_DIR" "$CONFIG_FILE" "$BINARY_PATH" "$LIB_DIR" "$VINCULA_VERSION" "$ACCOUNTING_DB_FILE"
+    return
+  fi
   cli_require_json_flag verify "$@"
   if [[ "${1:-}" == --json ]]; then
     cmd_verify_json
@@ -1542,7 +1608,16 @@ restore_user_mutation() {
       install -m "$mode" -o "$owner" -g "$group" "${USER_MUTATION_BACKUP}/${name}" "$path"
     fi
   done
+  refresh_accountd_runtime || return 1
   systemctl restart sing-box.service >/dev/null 2>&1 || true
+}
+
+refresh_accountd_runtime() {
+  # Legacy root accountd has no projection. Never execute a repository fallback as root.
+  if [[ -f "$ACCOUNTD_UNIT" ]] && grep -q -- '--runtime /etc/vincula-accountd/runtime.json' "$ACCOUNTD_UNIT"; then
+    [[ -f "$ACCOUNTD_RUNTIME_PY" ]] || return 1
+    python3 "$ACCOUNTD_RUNTIME_PY" --state-dir "$STATE_DIR" --data-dir "$VAR_LIB_VINCULA"
+  fi
 }
 
 atomic_install_file() {
@@ -1603,6 +1678,10 @@ commit_user_mutation() {
   if [[ -n "$staged_state" && -f "$staged_state" ]]; then
     atomic_install_file "$staged_state" "$STATE_FILE" 0600 root root
   fi
+  if ! refresh_accountd_runtime; then
+    restore_user_mutation || true
+    die "accountd projection failed; user mutation rollback attempted."
+  fi
   systemctl restart sing-box.service
   if ! wait_healthy "$port"; then
     restore_user_mutation || true
@@ -1628,6 +1707,10 @@ user_mutation_apply() {
   # (add/disable/enable/rotate change users or UUIDs and take the full path).
   if cmp -s -- "$staged_config" "$CONFIG_FILE" && cmp -s -- "$staged_uri" "$URI_FILE"; then
     atomic_install_file "$staged_users" "$USERS_FILE" 0600 root root
+    if ! refresh_accountd_runtime; then
+      restore_user_mutation || true
+      die "accountd projection failed; user mutation rollback attempted."
+    fi
   else
     cp -a -- "$STATE_FILE" "$staged_state"
     # Credential UUID lives only in users.json; do not mirror owner.uuid into state.
@@ -3365,10 +3448,16 @@ cmd_upgrade_checkpoint() {
     "$INSTALL_MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -3499,10 +3588,16 @@ cmd_upgrade_rollback() {
       install.manifest) path=$INSTALL_MANIFEST_FILE; mode=0644; owner=root; group=root ;;
       vincula-common.sh) path=$COMMON_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.py) path=$ACCOUNTD_PY; mode=0644; owner=root; group=root ;;
+      accountd_runtime.py) path=$ACCOUNTD_RUNTIME_PY; mode=0644; owner=root; group=root ;;
+      observer.py) path=$OBSERVER_PY; mode=0644; owner=root; group=root ;;
+      vincula-observer.socket) path=$OBSERVER_SOCKET; mode=0644; owner=root; group=root ;;
+      vincula-observer@.service) path=$OBSERVER_UNIT; mode=0644; owner=root; group=root ;;
       vincula-stats.py) path=$STATS_PY; mode=0644; owner=root; group=root ;;
       vincula-audit.py) path=$AUDIT_PY; mode=0644; owner=root; group=root ;;
       vincula-backup.py) path=$BACKUP_PY; mode=0644; owner=root; group=root ;;
       telemetry_snapshot.py) path=$TELEMETRY_PY; mode=0644; owner=root; group=root ;;
+      inspect_snapshot.py) path=$INSPECT_PY; mode=0644; owner=root; group=root ;;
+      verify_snapshot.py) path=$VERIFY_PY; mode=0644; owner=root; group=root ;;
       vincula-event.schema.json) path=$EVENT_SCHEMA_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.service) path=$ACCOUNTD_UNIT; mode=0644; owner=root; group=root ;;
       events.jsonl) path=$EVENTS_JSONL_FILE; mode=0640; owner=root; group=$SERVICE_GROUP ;;
@@ -3551,10 +3646,16 @@ cmd_upgrade_rollback() {
     install.manifest \
     vincula-common.sh \
     vincula-accountd.py \
+    accountd_runtime.py \
+    observer.py \
+    vincula-observer.socket \
+    vincula-observer@.service \
     vincula-stats.py \
     vincula-audit.py \
     vincula-backup.py \
     telemetry_snapshot.py \
+    inspect_snapshot.py \
+    verify_snapshot.py \
     vincula-event.schema.json \
     vincula-accountd.service \
     events.jsonl; do
@@ -3690,7 +3791,9 @@ main() {
       ;;
     *)
       require_root "$command"
-      require_install
+      if [[ "$command" != verify || "${1:-}" != --extended ]]; then
+        require_install
+      fi
       case "$command" in
         info) [[ $# == 0 ]] || die "info takes no arguments."; cmd_info ;;
         identity)
@@ -3704,13 +3807,22 @@ main() {
         telemetry)
           cmd_telemetry "$@"
           ;;
+        inspect)
+          cmd_inspect "$@"
+          ;;
+        observer)
+          [[ $# == 3 && "$1" == install-key && "$2" == --file ]] || die "usage: vcl observer install-key --file PUBLIC_KEY_FILE"
+          [[ -f "${LIB_DIR}/observer.py" ]] || die "observer helper is not installed"
+          acquire_vincula_op_lock || die "observer setup cannot acquire Node mutation lock"
+          python3 "${LIB_DIR}/observer.py" install-key --file "$3"
+          ;;
         status)
           [[ $# -le 1 ]] || die "status accepts only --json."
           cmd_status "$@"
           ;;
         check) [[ $# == 0 ]] || die "check takes no arguments."; cmd_check ;;
         verify)
-          [[ $# -le 1 ]] || die "verify accepts only --json."
+          [[ $# -le 2 ]] || die "verify accepts --json or --extended --json."
           cmd_verify "$@"
           ;;
         diagnose) [[ $# == 0 ]] || die "diagnose takes no arguments."; cmd_diagnose ;;

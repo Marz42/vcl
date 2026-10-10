@@ -27,6 +27,8 @@ FILES=(
   lib/vincula-backup.py
   lib/vincula-audit-archive.py
   lib/provision.py
+  lib/inspect_snapshot.py
+  lib/verify_snapshot.py
   lib/legacy_seed.py
   lib/sing_box_release.py
   lib/workspace.py
@@ -38,10 +40,37 @@ FILES=(
   lib/observation/capabilities.py
   lib/observation/telemetry.py
   lib/observation/schema_validate.py
+  lib/observation/health.py
+  lib/observation/store.py
+  lib/observation/monitor.py
+  lib/observation/probe.py
+  lib/observation/findings.py
+  lib/observation/audit_health.py
+  lib/observation/anomalies.py
+  lib/observation/user_traffic.py
+  lib/observation/inspection.py
+  lib/observation/inspection_cache.py
+  lib/observation/verification.py
   lib/vincula-ui/server.py
   lib/vincula-ui/static/index.html
   lib/vincula-ui/static/app.css
   lib/vincula-ui/static/app.js
+  schemas/capabilities/v1.schema.json
+  schemas/telemetry/v1.schema.json
+  schemas/monitor/v1.schema.json
+  schemas/monitor/v2.schema.json
+  schemas/audit-health/v1.schema.json
+  schemas/user-traffic/v1.schema.json
+  schemas/findings/v1.schema.json
+  schemas/timeline/v1.schema.json
+  schemas/inspect/v1.schema.json
+  schemas/inspect-cache/v1.schema.json
+  schemas/baseline/v1.schema.json
+  schemas/findings/v2.schema.json
+  schemas/timeline/v2.schema.json
+  schemas/monitor/v3.schema.json
+  schemas/verify/v2.schema.json
+  schemas/fleet-verify/v2.schema.json
 )
 
 command -v python3 >/dev/null 2>&1 || {
@@ -66,6 +95,11 @@ chmod 0755 "${OUT}/bin/vcl-fleet"
 # D51: embed pinned node payload (not in FILES / controller.lock — own digest+manifest).
 NODE_VER=$(grep -E '^readonly VINCULA_VERSION=' "${ROOT}/vincula.sh" | sed -E 's/.*"([^"]+)".*/\1/')
 [[ -n "$NODE_VER" ]] || { printf 'ERROR: could not parse VINCULA_VERSION for node payload\n' >&2; exit 1; }
+PINNED_NODE_VER=$(grep -E '^NODE_PAYLOAD_VERSION[[:space:]]*=' "${ROOT}/lib/provision.py" | sed -E 's/.*"([^"]+)".*/\1/')
+[[ "$PINNED_NODE_VER" == "$NODE_VER" ]] || {
+  printf 'ERROR: Controller payload pin differs from Node version (%s != %s)\n' "$PINNED_NODE_VER" "$NODE_VER" >&2
+  exit 1
+}
 NODE_TAR="${DIST_ROOT}/vincula-node-${NODE_VER}.tar.gz"
 [[ -f "$NODE_TAR" && -f "${NODE_TAR}.sha256" ]] || {
   printf 'ERROR: run build-release.sh first: missing %s\n' "$NODE_TAR" >&2
@@ -181,6 +215,7 @@ need = (
     f"{prefix}/lib/vincula-backup.py",
     f"{prefix}/lib/vincula-audit-archive.py",
     f"{prefix}/lib/provision.py",
+    f"{prefix}/lib/inspect_snapshot.py",
     f"{prefix}/lib/legacy_seed.py",
     f"{prefix}/lib/sing_box_release.py",
     f"{prefix}/lib/workspace.py",
@@ -192,10 +227,24 @@ need = (
     f"{prefix}/lib/observation/capabilities.py",
     f"{prefix}/lib/observation/telemetry.py",
     f"{prefix}/lib/observation/schema_validate.py",
+    f"{prefix}/lib/observation/findings.py",
+    f"{prefix}/lib/observation/audit_health.py",
+    f"{prefix}/lib/observation/anomalies.py",
+    f"{prefix}/lib/observation/user_traffic.py",
+    f"{prefix}/lib/observation/inspection.py",
     f"{prefix}/lib/vincula-ui/server.py",
     f"{prefix}/lib/vincula-ui/static/index.html",
     f"{prefix}/lib/vincula-ui/static/app.css",
     f"{prefix}/lib/vincula-ui/static/app.js",
+    f"{prefix}/schemas/capabilities/v1.schema.json",
+    f"{prefix}/schemas/telemetry/v1.schema.json",
+    f"{prefix}/schemas/monitor/v1.schema.json",
+    f"{prefix}/schemas/monitor/v2.schema.json",
+    f"{prefix}/schemas/audit-health/v1.schema.json",
+    f"{prefix}/schemas/user-traffic/v1.schema.json",
+    f"{prefix}/schemas/findings/v1.schema.json",
+    f"{prefix}/schemas/timeline/v1.schema.json",
+    f"{prefix}/schemas/inspect/v1.schema.json",
     f"{prefix}/controller.lock",
     f"{prefix}/payload/vincula-node-{node_ver}.tar.gz",
     f"{prefix}/payload/vincula-node-{node_ver}.tar.gz.sha256",
