@@ -269,6 +269,14 @@ sha256sum /etc/sing-box/config.json 2>/dev/null; stat -c '%n %Y' /etc/sing-box/c
 
 ## 5. 阶段 C — 24h soak
 
+> **2026-10-10 准备：阶段 C 采集器已入库** `docs/evidence/0.5.3/tools/phase-c.sh`（两段式）。**隔离口径同阶段 B**：生产工作区/状态/绑定取副本（状态用 SQLite 在线备份四库），生产根只读；`monitor`/`soak` 的写入全部落在 `$C_ROOT`。三件仪器并用：
+>
+> 1. `scripts/soak-0.5.0-telemetry.sh <node> --iterations 1000 --live`：遥测突发 + BEFORE/AFTER 节点快照（`/var/lib/vincula` 字节与文件数、`accounting.db`、sing-box/accountd `is-active`/`NRestarts`/RSS/FD），产出 `SUMMARY.txt` + `DIGEST.json`（`PASS LIVE`/`FAIL LIVE`，不含 IP/密钥）。前置：目标节点必须支持 `telemetry/v1` 且有可用 observe 凭据 → 只能是 `neptunespear`/`fresh050`/`eagleclaw`；`epicfury`/`hot-beam-1` 因 `AUTH_FAILED` 无法预检，0.3.x 两台不支持遥测。解包副本已 `chmod +x`（ZIP 不保留可执行位）。
+> 2. `monitor --interval 60 --inspect-interval 300 --concurrency 2 --json` 跑 24h：连续健康/发现/检查样本（`observation.db`/`findings.db`/`inspection.db` 都在副本里）。注意**连续 monitor 不打印 stdout**（只有 `--once` 打印 `run` 计数），因此写失败计数在收尾时用一次 `monitor --once` 取样。
+> 3. 5 分钟采样器：`health`/`findings`/`timeline` 的 `cache_state`、每节点 observation/proxy 状态与 proxy 成功/失败计数、发现数与类型、时间线事件数、四库字节、`audit_events`/`daily_usage` 行数、遥测年龄；收尾报告另外关联 `inspection.db.events` 与序列尾部空档（用于判定阶段 B 的 F-4）。
+>
+> **代理维度需要授权**：`真实代理成功/失败与断流窗口`需要私有 `probe-profiles/v1` 文件（见 `docs/operations/monitoring-runbook.md`，含每节点专用 `vcl-probe-*` 测试用户、Reality 参数与 HTTPS 目标）加本机固定版本 `sing-box`；这要求在 **Node 上新建专用测试用户**（属 Node 侧变更）。未获授权时 `PROBE_PROFILES` 留空，代理状态保持 `UNKNOWN`，该维度按“缺一不填 PASS”如实记为未覆盖。
+
 - 固定候选（Controller/Node 版本 + 制品 SHA + 源码 manifest）、拓扑、账户身份、间隔、UTC 窗口先记录。
 - 采样项（缺一不填 PASS）：telemetry/poll/heartbeat/inspect freshness 与失败计数；sing-box/accountd/observer service active/restart/RSS/FD；数据库大小、retention/capacity/truncation、锁/写失败；Finding 生命周期与 Timeline；真实代理成功/失败与断流窗口。
 - 可复用既有驱动（先读用法再执行）：
