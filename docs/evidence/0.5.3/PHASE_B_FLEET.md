@@ -57,7 +57,7 @@ B1 缓存的 Node 状态（副本里的生产数据，`status --json`，全程�
 
 ### 停止时刻的 `UNKNOWN`（重要读法）
 
-`B3-health.json` 里七台的 `health` 子状态都是 `UNKNOWN`、`overall=UNKNOWN`，并且时间线上在停止瞬间出现一批 `TELEMETRY_STALE` finding 与 `HEALTH_CHANGE→UNKNOWN`。原因是**新鲜度判定**：`lib/observation/health.py` 要求遥测年龄在 `-30..90 s` 才算 fresh，而停止时最后一次样本已约 814 s（13.5 min）之前——**这不是节点健康变化**：B4 显示服务 active、`restart_count` 0→0、`instance_id` 未变。
+`B3-health.json` 里七台的 `health` 子状态都是 `UNKNOWN`、`overall=UNKNOWN`，并且时间线上在停止瞬间出现一批 `TELEMETRY_STALE` finding 与 `HEALTH_CHANGE→UNKNOWN`。原因是**新鲜度判定**：`lib/observation/health.py` 要求遥测年龄在 `-30..90 s` 才算 fresh，而这次 `health` 读取发生在 monitor 停止约 13.5 min 之后（见下方 F-4 更正：第一次 collect 停止、第二次 collect 才成文），此时最后一次样本已远超窗口——**这不是节点健康变化**：B4 显示服务 active、`restart_count` 0→0、`instance_id` 未变。
 
 ## 4. B4：Node 侧只读复核
 
@@ -77,7 +77,9 @@ B1 缓存的 Node 状态（副本里的生产数据，`status --json`，全程�
 
 ## 6. 发现与待办
 
-- **F-4（候选观测层，待定因）停止前尾部 814 s 无样本，且停止后立刻读 health 得到全节点 `UNKNOWN`。** 窗口内最大间隔只有 ~72 s，说明采样一直正常；只有**尾部**在停止瞬间前约 13.5 min 没有新样本（很可能是 `inspect_interval=300` 的检查轮正在进行，检查轮不写遥测样本），随后 `health --json` 按 90 s 新鲜度判定为 `UNKNOWN`，`findings --refresh` 因此在停止瞬间写入一批 `TELEMETRY_STALE`/`HEALTH_CHANGE` 事件。**影响**：操作者停掉 monitor 后立刻看健康面板会看到"全部未知"，时间线被这批陈旧判定污染。**未能定因**：这次 monitor 日志是块缓冲的，`SIGTERM` 时缓冲区丢失（`kept: 0 log lines`）——采集器已改为 `python3 -u`，阶段 C 会用无缓冲日志复测，届时可判定是"检查轮阻塞"还是"停止路径"。
+- ~~**F-4（候选观测层，待定因）停止前尾部 814 s 无样本，且停止后立刻读 health 得到全节点 `UNKNOWN`。**~~ **2026-10-11 更正：F-4 是采集器时序假象，不是候选缺陷，本条关闭。** 第一次 collect 已于 2026-10-10T00:55:59Z 停掉 monitor，但其报告崩溃；被记录进报告的 `end` 其实是 13 分钟后的第二次 collect（01:08:59Z）。最后一次样本 epoch 1791593725 距**真实停止**只有 34 s（正常），"814 s"是「最后一次样本 → 第二次 collect」的间隔；样本超过 `-30..90 s` 新鲜度窗口后 `health` 报 `UNKNOWN` 并写入 `TELEMETRY_STALE` 是**正确行为**。[阶段 C](SOAK.md) 的 26.5h 窗口每台节点 `tail gap = 0.0 s`、停止后立刻读 health，且全程 `inspection.db` 无事件，进一步排除"检查轮阻塞采样"的猜测。以下为原始描述（历史）：
+
+  - 原始记录：**F-4（候选观测层，待定因）停止前尾部 814 s 无样本，且停止后立刻读 health 得到全节点 `UNKNOWN`。** 窗口内最大间隔只有 ~72 s，说明采样一直正常；只有**尾部**在停止瞬间前约 13.5 min 没有新样本（很可能是 `inspect_interval=300` 的检查轮正在进行，检查轮不写遥测样本），随后 `health --json` 按 90 s 新鲜度判定为 `UNKNOWN`，`findings --refresh` 因此在停止瞬间写入一批 `TELEMETRY_STALE`/`HEALTH_CHANGE` 事件。**影响**：操作者停掉 monitor 后立刻看健康面板会看到"全部未知"，时间线被这批陈旧判定污染。**未能定因**：这次 monitor 日志是块缓冲的，`SIGTERM` 时缓冲区丢失（`kept: 0 log lines`）——采集器已改为 `python3 -u`，阶段 C 会用无缓冲日志复测，届时可判定是"检查轮阻塞"还是"停止路径"。
 - **F-5（数据缺口，低）**`eagleclaw` 的 B2 遥测快照缺 `connection_count`（B4 有 147），同机 `instance_id`/`restart_count` 正常。仅记录，不影响判定。
 - **F-2 强化（既有 FR-01 缺口）**：两台无显式 ref 的节点在观测里只有失败样本（覆盖率 0.206、约 5 分钟一次退避），即**只要仍依赖 OpenSSH 默认身份，它们同时也是监控盲区**。已并入[可靠性待办](../../plans/Fleet_Recovery_Reliability_Backlog.md)的对应条目。
 
