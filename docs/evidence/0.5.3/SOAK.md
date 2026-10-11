@@ -80,6 +80,7 @@ H05另见 [HUMAN_ACCEPTANCE](HUMAN_ACCEPTANCE.md)；本页不替代人工签署�
 | inspect/drift | `inspection.db` 窗口内 **0 事件、Δ0 字节** → 该维度**无数据**（新增待办：确认无 `probe-profiles` 时检查轮是否被整体跳过） |
 | 生产未改动 | 工作区/四库/绑定指纹起止 **4/4 unchanged** |
 | bundle | `…-phaseC.tgz` sha256 `3790a83125a29a76f8ba5cac52d39c5c466df6b1ee0b8e94b518f9441589338a` |
+| CI | [REMOTE_CI_20261011_PHASE_C.json](REMOTE_CI_20261011_PHASE_C.json)：run `38119205923`（`41207dc`）七 job 全绿；`446ecf2` 因并发组被取消（非失败） |
 
 **F-4 结论（阶段 B 的遗留问题）**：本窗口每台节点 `tail gap = 0.0 s`（收尾时停止 monitor 后立刻读取 health），且 26.5h 内 `inspection.db` 无任何事件 → 阶段 B 的"尾部 814 s + 全节点 UNKNOWN"确认为**采集器时序假象**（第一次 collect 停止 monitor 与其报告崩溃、第二次 collect 才成文，间隔 13 分钟；真实停止只差 34 s），不是候选缺陷。详见[阶段 B 记录的更正](PHASE_B_FLEET.md)。
 
