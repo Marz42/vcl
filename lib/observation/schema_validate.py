@@ -64,6 +64,84 @@ def _opt_rfc3339(value: Any, path: str, errors: list[str]) -> None:
         errors.append(f"invalid {path}")
 
 
+AUDIT_HEALTH_NUMBERS = {"db_schema", "heartbeat_age_seconds", "last_poll_age_seconds", "last_event_age_seconds",
+                        "export_seq", "min_retained_export_seq", "pruned_max_export_seq"}
+AUDIT_HEALTH_FIELDS = {"schema", "node_id", "instance_id", "observed_at", "accountd_active", "db_state"} | AUDIT_HEALTH_NUMBERS
+
+
+def validate_audit_health_v1(doc: Any) -> list[str]:
+    if not isinstance(doc, dict):
+        return ["expected object"]
+    errors = []
+    if set(doc) != AUDIT_HEALTH_FIELDS:
+        errors.append("invalid audit health fields")
+    if doc.get("schema") != "audit-health/v1":
+        errors.append("invalid audit health schema")
+    for key in ("node_id", "instance_id"):
+        if not isinstance(doc.get(key), str) or not UUID_RE.fullmatch(doc[key]):
+            errors.append("invalid audit identity")
+    if not _is_rfc3339(doc.get("observed_at")):
+        errors.append("invalid audit timestamp")
+    if type(doc.get("accountd_active")) is not bool:
+        errors.append("invalid accountd active")
+    if doc.get("db_state") not in ("OK", "MISSING", "CORRUPT", "UNREADABLE", "SCHEMA_MISMATCH", "UNKNOWN"):
+        errors.append("invalid audit DB state")
+    for key in AUDIT_HEALTH_NUMBERS:
+        value = doc.get(key)
+        if value is not None and (type(value) is not int or not 0 <= value <= 2**63 - 1):
+            errors.append("invalid audit numeric field")
+    if doc.get("db_state") == "OK" and doc.get("db_schema") != 4:
+        errors.append("inconsistent audit schema")
+    return errors
+
+
+def validate_user_traffic_v1(doc: Any) -> list[str]:
+    if not isinstance(doc, dict):
+        return ["expected object"]
+    errors = []
+    if set(doc) != {"schema", "node_id", "instance_id", "observed_at", "sampled_at", "heartbeat_age_seconds",
+                    "pruned_max_export_seq", "state", "truncated", "users"} or doc.get("schema") != "user-traffic/v1":
+        errors.append("invalid user traffic fields")
+    for key in ("node_id", "instance_id"):
+        if not isinstance(doc.get(key), str) or not UUID_RE.fullmatch(doc[key]):
+            errors.append("invalid user traffic identity")
+    if not _is_rfc3339(doc.get("observed_at")) or doc.get("sampled_at") is not None and not _is_rfc3339(doc["sampled_at"]):
+        errors.append("invalid user traffic timestamp")
+    for key in ("heartbeat_age_seconds", "pruned_max_export_seq"):
+        val = doc.get(key)
+        if val is not None and (type(val) is not int or not 0 <= val <= 2**63 - 1):
+            errors.append("invalid user traffic numeric field")
+    states = ("OK", "PARTIAL", "UNKNOWN", "MISSING", "CORRUPT", "UNREADABLE", "SCHEMA_MISMATCH")
+    if doc.get("state") not in states or type(doc.get("truncated")) is not bool:
+        errors.append("invalid user traffic state")
+    rows = doc.get("users")
+    seen = set()
+    if not isinstance(rows, list) or len(rows) > 64:
+        errors.append("invalid user traffic rows")
+    else:
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"user_key", "tag", "retained_bytes", "connections"}:
+                errors.append("invalid user traffic row")
+                continue
+            key, tag = row.get("user_key"), row.get("tag")
+            if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key) or key in seen:
+                errors.append("invalid user traffic key")
+            else:
+                seen.add(key)
+            if tag is not None and (not isinstance(tag, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", tag)):
+                errors.append("invalid user traffic tag")
+            if any(type(row.get(k)) is not int or not 0 <= row[k] <= 2**63 - 1 for k in ("retained_bytes", "connections")):
+                errors.append("invalid user traffic counter")
+    if doc.get("state") in ("OK", "PARTIAL"):
+        if any(doc.get(key) is None for key in ("sampled_at", "heartbeat_age_seconds", "pruned_max_export_seq")):
+            errors.append("missing user traffic provenance")
+        if doc.get("truncated") != (doc["state"] == "PARTIAL"):
+            errors.append("inconsistent user traffic completeness")
+    elif rows:
+        errors.append("unavailable user traffic must not contain rows")
+    return errors
+
+
 def validate_capabilities_v1(doc: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(doc, dict):

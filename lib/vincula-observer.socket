@@ -1,0 +1,16 @@
+# Managed-By: vincula
+# Vincula-Version: 0.5.1
+[Unit]
+Description=Vincula restricted local observation socket
+
+[Socket]
+ListenStream=/run/vincula-observer.sock
+SocketUser=root
+SocketGroup=vincula-observer
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

@@ -19,12 +19,26 @@ permissions:
   contents: read
 
 jobs:
+  unit-windows:
+    name: unit (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Controller monitoring and portable contracts
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      # Linux UID/GID and SO_PEERCRED checks run in the Linux jobs below.
+
   unit:
     name: unit (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Accountd filesystem privilege boundary (temporary files only)
+        run: sudo -n python3 -B tests/test_accountd_privileges.py
+      - name: Complete observation contracts and Linux permission boundaries
+        run: sudo -n python3 -B -m unittest discover -s tests -p 'test_*.py'
       - name: Node tests (sources fleet)
         run: bash tests/test.sh
 
@@ -52,6 +66,8 @@ jobs:
             coreutils util-linux tar curl openssh-client
         shell: sh
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Complete observation contracts
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py'
       - name: Node tests
         run: bash tests/test.sh
 
@@ -150,6 +166,11 @@ jobs:
             python3 -s -c "import importlib.util,sys; p=sys.argv[1]; s=importlib.util.spec_from_file_location('vf',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.load_provision_module()" \
             "${UNPACK}/lib/vincula-fleet.py" 2>&1) || true
           [[ "$provision_err" != *"provision.py not found"* ]]
+      - name: Complete 0.5.x distributed contracts and cache-only surfaces
+        run: |
+          set -euo pipefail
+          CTRL_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' lib/vincula-fleet.py | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+          sudo -n python3 -B scripts/check-controller-artifact.py "dist/vincula-controller-${CTRL_VERSION}.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vincula-dist

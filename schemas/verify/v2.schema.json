@@ -1,0 +1,1211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "checks": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "identity": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "configuration": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "integrity": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "permissions": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "services": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "listeners": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "accounting": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "data_plane": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "FAIL"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "state": {
+              "const": "FAIL"
+            }
+          }
+        },
+        {
+          "properties": {
+            "checks": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "identity": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "configuration": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "integrity": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "permissions": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "services": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "listeners": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "accounting": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "data_plane": {
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "UNKNOWN",
+                            "UNSUPPORTED"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "state": {
+              "const": "UNKNOWN"
+            }
+          }
+        },
+        {
+          "properties": {
+            "checks": {
+              "properties": {
+                "accounting": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "configuration": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "data_plane": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "identity": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "integrity": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "listeners": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "permissions": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                },
+                "services": {
+                  "properties": {
+                    "state": {
+                      "const": "PASS"
+                    }
+                  }
+                }
+              }
+            },
+            "state": {
+              "const": "PASS"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "data_plane_source": {
+            "const": "NONE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "data_plane": {
+                "properties": {
+                  "state": {
+                    "const": "UNKNOWN"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "configuration": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "integrity": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "permissions": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "services": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "listeners": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "accounting": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "data_plane": {
+                "properties": {
+                  "state": {
+                    "const": "FAIL"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "FAIL"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "checks": {
+      "additionalProperties": false,
+      "properties": {
+        "accounting": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "configuration": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "data_plane": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "identity": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "integrity": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "listeners": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "permissions": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        },
+        "services": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "MISSING",
+                      "INVALID",
+                      "MISMATCH",
+                      "PERMISSION",
+                      "INACTIVE",
+                      "EXPOSED",
+                      "STALE",
+                      "TIMEOUT",
+                      "UNSUPPORTED",
+                      "NO_PROBE",
+                      "PROBE_FAILED"
+                    ]
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "OK"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "checked_count": {
+              "maximum": 65536,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "MISSING",
+                "INVALID",
+                "MISMATCH",
+                "PERMISSION",
+                "INACTIVE",
+                "EXPOSED",
+                "STALE",
+                "TIMEOUT",
+                "UNSUPPORTED",
+                "NO_PROBE",
+                "PROBE_FAILED"
+              ]
+            },
+            "state": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "UNKNOWN",
+                "UNSUPPORTED"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "checked_count"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "identity",
+        "configuration",
+        "integrity",
+        "permissions",
+        "services",
+        "listeners",
+        "accounting",
+        "data_plane"
+      ],
+      "type": "object"
+    },
+    "data_plane_source": {
+      "enum": [
+        "NONE",
+        "EXPLICIT_CONTROLLER_PROBE"
+      ]
+    },
+    "instance_id": {
+      "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "node_id": {
+      "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "schema": {
+      "const": "verify/v2"
+    },
+    "state": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN",
+        "UNSUPPORTED"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "node_id",
+    "instance_id",
+    "observed_at",
+    "state",
+    "checks",
+    "data_plane_source"
+  ],
+  "title": "verify/v2",
+  "type": "object"
+}

@@ -10,17 +10,37 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Stamp (0.5.0):** controller `VCL_FLEET_VERSION=0.5.0`; new provision payload
-pins Node `VINCULA_VERSION=0.5.0` (minimum Node remains `0.3.1`). Observation
-(`capabilities`/`telemetry`), observe/admin credential routing, and `node upgrade`
-plan|apply (0.3.1+ → 0.5.0). Local Audit UI v2 (0.4.4+) retained.
+**Development candidate (0.5.3):** Controller and embedded Node payload are `0.5.3`
+(minimum Node remains `0.3.1`). Includes read-only Inspect, machine-local inspection
+cache, explicit SHA-based baseline acceptance, seven Drift findings and baseline
+Timeline events. `inspect [NODE] --json` and `GET /api/inspect` read local caches.
+The UI displays observation, baseline and comparison summaries.
+
+`monitor --json` uses `monitor/v3`; `health` and `GET /api/monitor` remain `monitor/v1`.
+`findings` and `timeline` use v2; frozen v1 schemas remain packaged.
+`verify --extended [--name NODE] --json` uses observe credentials and eight explicit
+checks. Data Plane stays UNKNOWN unless `--probe-profiles` explicitly runs a
+private dedicated proxy probe and the post-probe identity still matches.
+Invalid or contradictory probe results remain UNKNOWN. A failed post-probe
+identity check discards the earlier snapshot and reports AUTH_FAILED, TIMEOUT
+or ERROR; checks from a replaced instance are not shown as current evidence.
+Legacy `verify --json` is unchanged for upgrade/restore consumers.
+
+Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2 → 0.5.3. Sixteen public schemas
+ship under `schemas/` with `controller.lock`. Real VPS and 24h soak remain PENDING
+LIVE and Human Gate remains PENDING HUMAN. Remote CI #86 passed all seven jobs
+for a9655e2; subsequent local fixes still require a new remote CI run.
+Development stops at 0.5.3 before 0.6.x. The candidate is unreleased.
+See `docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md` and `SUMMARY.md`.
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
 
 Full operator guide (repo): `docs/user-guide.md`. Architecture and contracts:
-`docs/technical-guide.md`. Spec: `docs/specs/V0.5.0_Spec.md`. Evidence:
-`docs/evidence/0.5.0/SUMMARY.md`.
+`docs/technical-guide.md`. Spec: `docs/specs/V0.5.3_Spec.md`. Evidence:
+`docs/evidence/0.5.3/SUMMARY.md`. Findings: `docs/operations/findings-runbook.md`.
+Inspect / baseline / Drift / Verify: `docs/operations/inspect-runbook.md`.
+Monitoring and dedicated probe setup: `docs/operations/monitoring-runbook.md`.
 
 ## Windows 11
 

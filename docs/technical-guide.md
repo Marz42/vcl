@@ -1,4 +1,4 @@
-# Vincula 技术手册（Controller 0.4.5 · Node 0.3.2）
+# Vincula 技术手册（Controller/Node 0.5.2 开发候选）
 
 面向维护者与希望理解实现合同的读者。操作步骤见 [`user-guide.md`](user-guide.md)。
 设计规格见 [`specs/`](specs/README.md)；验收证据见 [`evidence/`](evidence/README.md)。
@@ -7,10 +7,12 @@
 
 | 常量 | 位置 | 值 |
 | --- | --- | --- |
-| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.4.5** |
-| `VINCULA_VERSION` | `vincula.sh` | **0.3.2** |
-| 新 provision payload pin | Controller | Node **0.3.2** |
+| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.2** |
+| `VINCULA_VERSION` | `vincula.sh` | **0.5.2** |
+| 新 provision payload pin | `lib/provision.py`（构建核对Node stamp） | Node **0.5.2** |
 | 最低兼容 Node | Spec / fleet | **0.3.1**（已有 0.3.1 不强制升级） |
+
+0.5.2为本地开发候选，Human Gate与真实VPS/24h soak保留PENDING，本轮跳过等待。新增14类Node/User Finding、findings/v1、timeline/v1、独立audit-health/v1与user-traffic/v1。前台monitor运行汇总使用monitor/v2，health/API/cache保持monitor/v1；machine-local findings schema2与observation缓存不改变fleet-cache/v4。合同见 [`0.5.2 SPEC`](specs/V0.5.2_Spec.md)，验证与现场缺口见 [`evidence`](evidence/0.5.2/SUMMARY.md)。accountd/observer权限基线见 [`0.5.1 SPEC`](specs/V0.5.1_Spec.md)。
 
 ---
 
@@ -170,7 +172,7 @@ stateDiagram-v2
 
 | 操作 | 远端 | 用途 |
 | --- | --- | --- |
-| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；当前开发分支 payload pin **0.5.0**；可选 legacy seed |
+| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；当前开发分支 payload pin **0.5.2**；可选 legacy seed |
 | `node adopt` | `vcl identity --json` + 注册 | 已装节点 |
 | `node register` / `add --offline` | **无 SSH** | 仅写 registry；后续须 adopt/set |
 | `node set` | 无（本地改 `ssh_host`） | **Endpoint rebind**；凭据不变 |
@@ -292,6 +294,8 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
+| 0.5.1（开发候选） | 0.5.1 | 0.3.1 | monitor/health；0.5.0 Node可观测但无新hardening；独立observe用户名需0.5.1 Controller；[实际验证矩阵](evidence/0.5.1/COMPATIBILITY.md) |
+| 0.5.2（当前候选） | 0.5.2 | 0.3.1 | Findings/Timeline；缺audit/user capability为UNKNOWN/UNSUPPORTED；typed upgrade 0.3.1/0.3.2/0.5.0/0.5.1→0.5.2；[当前验证](evidence/0.5.2/M4.md) |
 | 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |
 | 0.4.4 | 0.3.1 | 0.3.1 | UI v2 |

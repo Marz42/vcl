@@ -728,9 +728,9 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.5.0" "0.5.0" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.5.3" "0.5.3" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
-assert_equal "NODE 0.5.0" "0.5.0" "$VINCULA_NODE_VERSION"
+assert_equal "NODE 0.5.3" "0.5.3" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
   "$(python3 "${PROJECT_DIR}/bin/vcl-fleet" version)"
 assert_equal "vcl-fleet.py version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -3504,10 +3504,11 @@ assert "controller_utc" in doc
 nodes = {n["name"]: n for n in doc["nodes"]}
 need = [
     "name", "ok", "vincula_version", "node_id", "instance_id", "enabled",
-    "ssh", "proxy", "accounting", "registry", "clock", "clock_skew_seconds",
-    "warnings", "checks",
+    "ssh", "ssh_reason", "proxy", "accounting", "registry", "clock",
+    "clock_skew_seconds", "warnings", "checks",
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
+assert nodes["lax"]["ssh_reason"] is None  # FR-04 machine code, null on success
 assert nodes["lax"]["ok"] is True
 assert nodes["lax"]["vincula_version"] == "0.3.1"
 assert nodes["lax"]["node_id"] == lax_id
@@ -6059,7 +6060,9 @@ try:
     )
     raise AssertionError("lying count must fail")
 except ValueError as exc:
-    assert "count=5" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_COUNT_MISMATCH", exc
+    assert exc.expected == 3 and exc.actual == 5, exc
 
 try:
     mod.validate_export_batch(
@@ -6068,7 +6071,9 @@ try:
     )
     raise AssertionError("lying next_cursor must fail")
 except ValueError as exc:
-    assert "next_cursor=99" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NEXT_CURSOR_MISMATCH", exc
+    assert exc.actual == 99, exc
 
 # Descending export_seq fail-closed.
 descending = [row(6, 8), row(7, 7), row(8, 9)]
@@ -6079,7 +6084,8 @@ try:
     )
     raise AssertionError("descending export_seq must fail")
 except ValueError as exc:
-    assert "strictly increasing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_EXPORT_SEQ_NOT_INCREASING", exc
 
 # Duplicate export_seq fail-closed.
 dup = [row(6, 6), row(7, 6), row(8, 8)]
@@ -6090,7 +6096,8 @@ try:
     )
     raise AssertionError("duplicate export_seq must fail")
 except ValueError as exc:
-    assert "duplicate export_seq" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_EXPORT_SEQ_DUPLICATE", exc
 
 # Bad protocol_version fail-closed.
 try:
@@ -6100,7 +6107,9 @@ try:
     )
     raise AssertionError("protocol_version 1 must fail")
 except ValueError as exc:
-    assert "protocol_version" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "PROTOCOL_VERSION_MISMATCH", exc
+    assert exc.expected == 2 and exc.actual == 1, exc
 
 try:
     mod.validate_export_batch(
@@ -6109,7 +6118,9 @@ try:
     )
     raise AssertionError("meta.after mismatch must fail")
 except ValueError as exc:
-    assert "after=4" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_AFTER_MISMATCH", exc
+    assert exc.expected == 5 and exc.actual == 4, exc
 
 other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 try:
@@ -6119,7 +6130,11 @@ try:
     )
     raise AssertionError("meta node_id mismatch must fail")
 except ValueError as exc:
-    assert "node_id" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NODE_MISMATCH", exc
+    # Identity values stay in machine fields, never in the summary text.
+    assert exc.expected == nid and exc.actual == other, exc
+    assert other not in str(exc) and nid not in str(exc), exc
 
 try:
     mod.validate_export_batch(
@@ -6128,7 +6143,10 @@ try:
     )
     raise AssertionError("row node_id mismatch must fail")
 except ValueError as exc:
-    assert "node_id" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_NODE_MISMATCH", exc
+    assert exc.actual == other, exc
+    assert other not in str(exc), exc
 
 try:
     mod.validate_export_batch(
@@ -6137,7 +6155,8 @@ try:
     )
     raise AssertionError("missing meta node_id must fail")
 except ValueError as exc:
-    assert "node_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_NODE_MISSING", exc
 
 try:
     mod.validate_export_batch(
@@ -6146,7 +6165,8 @@ try:
     )
     raise AssertionError("missing meta instance_id must fail")
 except ValueError as exc:
-    assert "instance_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "META_INSTANCE_MISSING", exc
 
 missing_row = [row(6), {**row(7), "node_id": ""}, row(8)]
 try:
@@ -6156,7 +6176,8 @@ try:
     )
     raise AssertionError("missing row node_id must fail")
 except ValueError as exc:
-    assert "node_id is missing" in str(exc), exc
+    assert isinstance(exc, mod.ExportProtocolError), exc
+    assert exc.code == "ROW_NODE_MISSING", exc
 
 # after=0 may start at any remaining min; export_seq must still increase.
 from0 = meta(
@@ -6619,7 +6640,8 @@ doc = json.loads(sys.argv[1])
 assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
-assert "count=5" in (row.get("error") or ""), row.get("error")
+assert row["error_code"] == "META_COUNT_MISMATCH", row
+assert row["error_expected"] == 3 and row["error_actual"] == 5, row
 assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
@@ -6669,7 +6691,9 @@ doc = json.loads(sys.argv[1])
 assert int(sys.argv[2]) == 2, sys.argv[2]
 row = doc["nodes"][0]
 assert row["status"] == "error"
-assert "next_cursor=99" in (row.get("error") or ""), row.get("error")
+assert row["error_code"] == "META_NEXT_CURSOR_MISMATCH", row
+assert row["error_field"] == "next_cursor" and row["error_actual"] == 99, row
+assert "99" not in (row.get("error") or ""), row.get("error")
 assert row["last_export_seq"] == 5
 assert row["inserted"] == 0
 home, node_id = Path(sys.argv[3]), sys.argv[4]
@@ -9373,6 +9397,9 @@ assert meta["pages"] == [
     "traffic",
     "audit",
     "operations",
+    "findings",
+    "timeline",
+    "inspect",
 ]
 assert meta.get("ui_contract") == "D53-rev1"
 assert "Content-Security-Policy" in hdrs
@@ -10186,8 +10213,9 @@ assert rendered_time == str(probe_ops[0]["time"])
 cell_html = f"<td>{rendered_time}</td>"
 assert rendered_time in cell_html and cell_html != "<td>—</td>"
 assert "operationTimeCell" in static_app
-assert "r.at" not in static_app
-assert "r.time || r.at" not in static_app
+operation_time_js = re.search(r"function operationTimeCell\(r\) \{([\s\S]*?)\n  \}", static_app).group(1)
+assert "r.at" not in operation_time_js
+assert "r.time || r.at" not in operation_time_js
 
 # Probe / Verify / Sync / Refresh-users: shared SSH confirm; cancel → no POST
 SSH_HINT = "This action contacts remote nodes over SSH."
@@ -10254,7 +10282,13 @@ assert (
     and "Traffic" in html
     and "Audit" in html
     and "Operations" in html
+    and "Findings" in html
+    and "Timeline" in html
+    and "Inspect" in html
 )
+for path, schema in (("/api/findings", "findings/v2"), ("/api/timeline", "timeline/v2"), ("/api/inspect", "inspect-cache/v1")):
+    st, data, _ = get(path)
+    assert st == 200 and data["schema"] == schema
 assert 'data-page="health"' not in html
 assert "vless://" not in html.lower()
 assert 'name="vcl-ui-token"' in html
@@ -10727,7 +10761,7 @@ print("ok")
 PY
 
 # --- AC-4.0-M04: post-migrate verify / sync / status / audit / stats / ui ---
-# 0.5.0 requires an explicit observe ref after migrating a pre-workspace
+# 0.5.3 requires an explicit observe ref after migrating a pre-workspace
 # identity_file; the old admin key may be shared only by this explicit choice.
 AC041_ADMIN_REF=$(fleet node show lax | sed -n 's/^admin_credential_ref=//p')
 assert_success "AC-4.0-M04 explicitly bind migrated observe credential" \
@@ -11444,7 +11478,7 @@ c.commit(); c.close()
 print(ident["instance_id"])
 PY
 f71_rc=0
-f71_out=$(VCL_SYNC_FULL_FAIL_AFTER=audit-import fleet sync --full --json 2>/dev/null) || f71_rc=$?
+f71_out=$(VCL_SYNC_FULL_FAIL_AFTER=snapshot fleet sync --full --json 2>/dev/null) || f71_rc=$?
 assert_equal "F7-1 T2 sync --full injected failure exit 2" "2" "$f71_rc"
 python3 - "$f71_out" "$F71_PRE" "$PROJECT_DIR/lib/vincula-fleet.py" "$F71_IID" <<'PY' || f71_assert_rc=$?
 import hashlib, importlib.util, json, sys
@@ -11457,7 +11491,13 @@ assert doc["state"] == "PARTIAL", doc
 assert doc["operation"] == "sync_full"
 by = {n["name"]: n for n in doc["nodes"]}
 assert by["lax"]["status"] == "error", by["lax"]
-assert "full sync txn failed" in (by["lax"].get("error") or ""), by["lax"]
+f71_err = by["lax"].get("error") or ""
+assert "full sync snapshot txn failed" in f71_err, by["lax"]
+# FR-02 contract: the snapshot txn failed but the audit pages stay committed,
+# and the row says exactly that.
+assert by["lax"]["error_phase"] == "snapshot", by["lax"]
+assert "audit advanced" in f71_err, by["lax"]
+assert "full snapshot refresh did not complete" in f71_err, by["lax"]
 # DB rolled back: no instance_history, cursor untouched
 c = m.open_cache_readonly()
 n = c.execute(
@@ -11656,6 +11696,31 @@ if (( f72_rev_rc == 0 )); then
 else
   fail "F7-2 T3 valid import bumps revision / parent chain"
 fi
+# --- import staging must degrade when ~/tmp exists but is not usable ---
+F72_NOTMP_HOME=$TEST_TMP/f72-notmp-home
+F72_IMP2=$TEST_TMP/f72-imp2
+F72_IMP2_LS=$TEST_TMP/f72-imp2-ls
+F72_SAVED_LS=${VCL_FLEET_LOCAL_STATE:-}
+rm -rf "$F72_NOTMP_HOME" "$F72_IMP2" "$F72_IMP2_LS"
+mkdir -p "$F72_NOTMP_HOME" "$F72_IMP2" "$F72_IMP2_LS"
+: > "$F72_NOTMP_HOME/tmp"   # a file where the staging directory would go
+export VCL_FLEET_HOME=$F72_IMP2
+# A second root for the same fleet_id needs its own machine-local state,
+# otherwise workspace verify reports the expected WORKSPACE_DIVERGED.
+export VCL_FLEET_LOCAL_STATE=$F72_IMP2_LS
+assert_success "F7-2 T3 import falls back when ~/tmp is unusable" \
+  env HOME="$F72_NOTMP_HOME" python3 "${PROJECT_DIR}/lib/vincula-fleet.py" \
+  workspace import "$F72_GOOD"
+assert_success "F7-2 T3 fallback import verifies" fleet workspace verify
+F72_IMP2_NODES=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["nodes"]))' \
+  "$F72_IMP2/fleet.json")
+assert_equal "F7-2 T3 fallback import kept the registry" "1" "$F72_IMP2_NODES"
+if [[ -n "$F72_SAVED_LS" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$F72_SAVED_LS
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+export VCL_FLEET_HOME=$F72_LIVE
 # Grep: import path no longer refresh/re-signs on mismatch
 assert_success "F7-2 import_workspace has no refresh-on-mismatch" \
   python3 - "$PROJECT_DIR/lib/workspace.py" <<'PY'
@@ -11720,7 +11785,7 @@ raw = (home / "fleet.json").read_text(encoding="utf-8")
 assert '"identity_file"' not in raw and "'identity_file'" not in raw, raw
 n = reg["nodes"][0]
 assert "identity_file" not in n, n
-assert n.get("admin_credential_ref") == "admin-default", n
+assert n.get("admin_credential_ref") == "n-admin", n
 assert "observe_credential_ref" not in n, n  # must set observe explicitly
 print("ok")
 PY
@@ -11730,20 +11795,21 @@ else
   fail "F7-3 T1 add: fleet.json has refs, no identity_file"
 fi
 
+# FR-01: explicit sharing is still possible, but only via an explicit ref.
 assert_success "F7-3 T1 explicit observe=admin via node set" \
-  fleet node set n --observe-credential-ref admin-default
+  fleet node set n --observe-credential-ref n-admin
 assert_success "F7-3 T1 observe ref set" python3 - "$F73H" <<'PY'
 import json, sys
 from pathlib import Path
 reg = json.loads((Path(sys.argv[1]) / "fleet.json").read_text(encoding="utf-8"))
-assert reg["nodes"][0].get("observe_credential_ref") == "admin-default"
+assert reg["nodes"][0].get("observe_credential_ref") == "n-admin"
 PY
 
 F73_LIST=$(fleet access list)
-if [[ "$F73_LIST" == *"admin-default"* ]] && [[ "$F73_LIST" == *"identity_file"* ]]; then
-  pass "F7-3 T1 access list shows admin-default binding after add"
+if [[ "$F73_LIST" == *"n-admin"* ]] && [[ "$F73_LIST" == *"identity_file"* ]]; then
+  pass "F7-3 T1 access list shows per-node binding after add"
 else
-  fail "F7-3 T1 access list shows admin-default binding after add (${F73_LIST})"
+  fail "F7-3 T1 access list shows per-node binding after add (${F73_LIST})"
 fi
 F73_FID=$(python3 -c 'import json; print(json.load(open("'"$F73H"'/workspace.json"))["fleet_id"])')
 assert_success "F7-3 T1 CONFIG binding file exists" \
@@ -11754,16 +11820,28 @@ assert_failure "F7-3 T1 no identity_file string in fleet.json" \
 assert_success "F7-3 T1 node set --identity-file" \
   fleet node set n --identity-file "$F73_KEY2"
 f73_set_rc=0
-python3 - "$F73H" "$F73_KEY2" <<'PY' || f73_set_rc=$?
+python3 - "$F73H" "$F73_KEY" "$F73_KEY2" "${F73CFG}" <<'PY' || f73_set_rc=$?
 import json, sys
 from pathlib import Path
-home, key = Path(sys.argv[1]), Path(sys.argv[2]).resolve()
+home = Path(sys.argv[1])
+key_old, key_new = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+cfg = Path(sys.argv[4])
 reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
 raw = (home / "fleet.json").read_text(encoding="utf-8")
 assert "identity_file" not in raw, raw
 n = reg["nodes"][0]
 assert "identity_file" not in n, n
-assert n.get("admin_credential_ref") == "admin-default", n
+# FR-01 copy-on-write: rotation gets its own ref; the old ref is untouched.
+assert n.get("admin_credential_ref") == "n-admin-2", n
+assert n.get("observe_credential_ref") == "n-admin", n
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"
+    )
+)["bindings"]
+assert bindings["n-admin"]["path"] == str(key_old), bindings["n-admin"]
+assert bindings["n-admin-2"]["path"] == str(key_new), bindings["n-admin-2"]
 print("ok")
 PY
 if (( f73_set_rc == 0 )); then
@@ -11772,11 +11850,13 @@ else
   fail "F7-3 T1 set: fleet.json still has no identity_file"
 fi
 F73_LIST2=$(fleet access list)
+F73_ABS1=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$F73_KEY")
 F73_ABS2=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$F73_KEY2")
-if [[ "$F73_LIST2" == *"admin-default"* ]] && [[ "$F73_LIST2" == *"$F73_ABS2"* ]]; then
-  pass "F7-3 T1 access list updated binding path after set"
+if [[ "$F73_LIST2" == *"n-admin-2"* ]] && [[ "$F73_LIST2" == *"$F73_ABS2"* ]] \
+  && [[ "$F73_LIST2" == *"$F73_ABS1"* ]]; then
+  pass "F7-3 T1 access list keeps old ref and adds rotated ref"
 else
-  fail "F7-3 T1 access list updated binding path after set (${F73_LIST2})"
+  fail "F7-3 T1 access list keeps old ref and adds rotated ref (${F73_LIST2})"
 fi
 
 assert_success "F7-3 T1 workspace verify PASS" fleet workspace verify
@@ -11811,6 +11891,263 @@ if (( f73_inv_rc == 0 )); then
   pass "F7-3 T1 registry save refuses identity_file when workspace active"
 else
   fail "F7-3 T1 registry save refuses identity_file when workspace active"
+fi
+
+# --- FR-01: per-node/per-purpose credential isolation (copy-on-write) ---
+FR1_SAVED_HOME=$VCL_FLEET_HOME
+FR1_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+FR1_SAVED_CFG=${XDG_CONFIG_HOME:-}
+FR1_SAVED_SSH=${VCL_FLEET_SSH:-}
+FR1_SAVED_KEYSCAN=${VCL_FLEET_SSH_KEYSCAN:-}
+FR1H=$TEST_TMP/fr1-home
+FR1X=$TEST_TMP/fr1-state
+FR1C=$TEST_TMP/fr1-cfg
+FR1K1=$TEST_TMP/fr1-k1
+FR1K2=$TEST_TMP/fr1-k2
+FR1K1B=$TEST_TMP/fr1-k1-rotated
+FR1O1=$TEST_TMP/fr1-o1
+FR1O2=$TEST_TMP/fr1-o2
+rm -rf "$FR1H" "$FR1X" "$FR1C"
+mkdir -p "$FR1H" "$FR1X" "$FR1C"
+for fr1_spec in "$FR1K1:one" "$FR1K2:two" "$FR1K1B:one-rotated" \
+  "$FR1O1:observe-one" "$FR1O2:observe-two"; do
+  printf 'test-only-not-a-real-fr1-key-%s\n' "${fr1_spec#*:}" > "${fr1_spec%%:*}"
+  chmod 600 "${fr1_spec%%:*}"
+done
+export VCL_FLEET_HOME=$FR1H VCL_FLEET_LOCAL_STATE=$FR1X XDG_CONFIG_HOME=$FR1C
+
+assert_success "FR-01 workspace init" fleet workspace init
+assert_success "FR-01 add node one" \
+  fleet node add fr1-one --host 203.0.113.21 --offline \
+    --node-id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0f81" --identity-file "$FR1K1"
+assert_success "FR-01 add node two" \
+  fleet node add fr1-two --host 203.0.113.22 --offline \
+    --node-id "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb81" --identity-file "$FR1K2"
+assert_success "FR-01 observe key for node one" \
+  fleet node set fr1-one --observe-identity-file "$FR1O1"
+assert_success "FR-01 observe key for node two" \
+  fleet node set fr1-two --observe-identity-file "$FR1O2"
+
+fr1_iso_rc=0
+python3 - "$FR1H" "$FR1C" "$FR1K1" "$FR1K2" "$FR1O1" "$FR1O2" <<'PY' || fr1_iso_rc=$?
+import json, sys
+from pathlib import Path
+home, cfg = Path(sys.argv[1]), Path(sys.argv[2])
+k1, k2, o1, o2 = (str(Path(p).resolve()) for p in sys.argv[3:7])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+by = {n["name"]: n for n in reg["nodes"]}
+one, two = by["fr1-one"], by["fr1-two"]
+refs = [one["admin_credential_ref"], one["observe_credential_ref"],
+        two["admin_credential_ref"], two["observe_credential_ref"]]
+assert len(set(refs)) == 4, refs
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"))["bindings"]
+paths = {r: bindings[r]["path"] for r in refs}
+assert paths[one["admin_credential_ref"]] == k1, paths
+assert paths[two["admin_credential_ref"]] == k2, paths
+assert paths[one["observe_credential_ref"]] == o1, paths
+assert paths[two["observe_credential_ref"]] == o2, paths
+print("ok")
+PY
+if (( fr1_iso_rc == 0 )); then
+  pass "FR-01 two nodes x two purposes use four distinct refs"
+else
+  fail "FR-01 two nodes x two purposes use four distinct refs"
+fi
+
+assert_success "FR-01 explicit shared ref via access bind" \
+  fleet access bind fr1-shared --identity-file "$FR1K1"
+assert_success "FR-01 node one observe via shared ref" \
+  fleet node set fr1-one --observe-credential-ref fr1-shared
+assert_success "FR-01 node two observe via shared ref" \
+  fleet node set fr1-two --observe-credential-ref fr1-shared
+assert_success "FR-01 rotate node one admin key" \
+  fleet node set fr1-one --identity-file "$FR1K1B"
+assert_success "FR-01 same-key re-set on node two" \
+  fleet node set fr1-two --identity-file "$FR1K2"
+
+fr1_cow_rc=0
+python3 - "$FR1H" "$FR1C" "$FR1K1" "$FR1K1B" "$FR1K2" <<'PY' || fr1_cow_rc=$?
+import json, sys
+from pathlib import Path
+home, cfg = Path(sys.argv[1]), Path(sys.argv[2])
+k1, k1b, k2 = (str(Path(p).resolve()) for p in sys.argv[3:6])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+by = {n["name"]: n for n in reg["nodes"]}
+one, two = by["fr1-one"], by["fr1-two"]
+fid = json.loads((home / "workspace.json").read_text(encoding="utf-8"))["fleet_id"]
+bindings = json.loads(
+    (cfg / "vincula" / "controllers" / fid / "credential-bindings.json").read_text(
+        encoding="utf-8"))["bindings"]
+# Rotation is copy-on-write: the node moved to a new ref, the old ref keeps
+# its original credential for every other consumer.
+assert one["admin_credential_ref"] == "fr1-one-admin-2", one
+assert bindings["fr1-one-admin"]["path"] == k1, bindings["fr1-one-admin"]
+assert bindings["fr1-one-admin-2"]["path"] == k1b, bindings["fr1-one-admin-2"]
+# Explicit sharing is preserved and is not rewritten by node-level rotation.
+assert one["observe_credential_ref"] == "fr1-shared", one
+assert two["observe_credential_ref"] == "fr1-shared", two
+assert bindings["fr1-shared"]["path"] == k1, bindings["fr1-shared"]
+# Unchanged key on an unshared ref reuses the ref (no ref churn).
+assert two["admin_credential_ref"] == "fr1-two-admin", two
+assert bindings["fr1-two-admin"]["path"] == k2, bindings["fr1-two-admin"]
+print("ok")
+PY
+if (( fr1_cow_rc == 0 )); then
+  pass "FR-01 rotation is copy-on-write and keeps shared consumers"
+else
+  fail "FR-01 rotation is copy-on-write and keeps shared consumers"
+fi
+
+fr1_reg_before=$(sha256sum "$FR1H/fleet.json" | awk '{print $1}')
+fr1_fid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fleet_id"])' \
+  "$FR1H/workspace.json")
+fr1_bind_file="${FR1C}/vincula/controllers/${fr1_fid}/credential-bindings.json"
+fr1_bind_before=$(sha256sum "$fr1_bind_file" | awk '{print $1}')
+# Keyscan still resolves the pinned host key; only the identity probe fails,
+# so the flow reaches (and stops at) the remote verification step.
+export VCL_FLEET_SSH=/bin/false VCL_FLEET_SSH_KEYSCAN="$FAKE_KEYSCAN"
+assert_failure "FR-01 failed adopt exits non-zero" \
+  fleet node add fr1-three --host 203.0.113.10 --host-key "$LAX_HOST_KEY" \
+    --node-id "cccccccc-cccc-4ccc-8ccc-cccccccc0f81" --identity-file "$FR1K1"
+fr1_after_rc=0
+python3 - "$FR1H" "$fr1_bind_file" "$fr1_reg_before" "$fr1_bind_before" <<'PY' \
+  || fr1_after_rc=$?
+import hashlib, json, sys
+from pathlib import Path
+home, bind_file = Path(sys.argv[1]), Path(sys.argv[2])
+reg_before, bind_before = sys.argv[3], sys.argv[4]
+digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+assert digest(home / "fleet.json") == reg_before, "registry changed by failed adopt"
+assert digest(bind_file) == bind_before, "bindings changed by failed adopt"
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+names = sorted(n["name"] for n in reg["nodes"])
+assert names == ["fr1-one", "fr1-two"], names
+print("ok")
+PY
+if (( fr1_after_rc == 0 )); then
+  pass "FR-01 failed adopt leaves registry and bindings untouched"
+else
+  fail "FR-01 failed adopt leaves registry and bindings untouched"
+fi
+
+# FR-01: a failed replace must not re-target the old ref; the old endpoint
+# keeps its old credential and the candidate ref stays unreferenced.
+FR1K1C=$TEST_TMP/fr1-k1-replace
+printf 'test-only-not-a-real-fr1-key-replace\n' > "$FR1K1C"
+chmod 600 "$FR1K1C"
+assert_failure "FR-01 failed replace exits non-zero" \
+  fleet node replace fr1-one --host 203.0.113.10 --host-key "$LAX_HOST_KEY" \
+    --identity-file "$FR1K1C"
+fr1_rep_rc=0
+python3 - "$FR1H" "$fr1_bind_file" "$FR1K1B" "$FR1K1C" <<'PY' || fr1_rep_rc=$?
+import json, sys
+from pathlib import Path
+home, bind_file = Path(sys.argv[1]), Path(sys.argv[2])
+old_key, new_key = (str(Path(p).resolve()) for p in sys.argv[3:5])
+reg = json.loads((home / "fleet.json").read_text(encoding="utf-8"))
+one = {n["name"]: n for n in reg["nodes"]}["fr1-one"]
+# The registry keeps the old endpoint and the old credential ref...
+assert one["ssh_host"] == "203.0.113.21", one
+assert one["admin_credential_ref"] == "fr1-one-admin-2", one
+bindings = json.loads(bind_file.read_text(encoding="utf-8"))["bindings"]
+# ...the old ref still resolves to the old endpoint's key...
+assert bindings["fr1-one-admin-2"]["path"] == old_key, bindings["fr1-one-admin-2"]
+# ...and the candidate ref is at worst unreferenced, never dangling.
+referenced = {n.get("admin_credential_ref") for n in reg["nodes"]} | {
+    n.get("observe_credential_ref") for n in reg["nodes"]
+}
+candidates = [r for r, b in bindings.items() if b.get("path") == new_key]
+assert candidates, "expected a candidate binding for the new endpoint key"
+assert not (set(candidates) & referenced), "candidate ref is referenced by the registry"
+print("ok")
+PY
+if (( fr1_rep_rc == 0 )); then
+  pass "FR-01 failed replace keeps old credentials and orphans the candidate"
+else
+  fail "FR-01 failed replace keeps old credentials and orphans the candidate"
+fi
+export VCL_FLEET_SSH="$FR1_SAVED_SSH"
+if [[ -n "$FR1_SAVED_KEYSCAN" ]]; then
+  export VCL_FLEET_SSH_KEYSCAN="$FR1_SAVED_KEYSCAN"
+else
+  unset VCL_FLEET_SSH_KEYSCAN
+fi
+
+# FR-01 write order: binding first, registry second. A simulated registry
+# failure may leave an unreferenced binding, never a dangling reference.
+fr1_order_rc=0
+python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$FR1H" "$FR1C" "$FR1K1C" \
+  "$fr1_bind_file" <<'PY' || fr1_order_rc=$?
+import argparse, importlib.util, json, os, sys
+from pathlib import Path
+module_path, home, cfg, new_key, bind_file = sys.argv[1:6]
+os.environ["VCL_FLEET_HOME"] = home
+os.environ["XDG_CONFIG_HOME"] = cfg
+spec = importlib.util.spec_from_file_location("vf_fr1_order", module_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+before = json.loads(Path(home, "fleet.json").read_text(encoding="utf-8"))
+ref_before = {n["name"]: n.get("admin_credential_ref") for n in before["nodes"]}["fr1-one"]
+
+
+def boom(*_args, **_kwargs):
+    raise OSError("simulated registry write failure")
+
+
+mod.save_registry = boom
+args = argparse.Namespace(
+    name="fr1-one",
+    identity_file=new_key,
+    clear_identity_file=False,
+    observe_credential_ref=None,
+    observe_identity_file=None,
+    observe_ssh_user=None,
+    clear_observe_credential_ref=False,
+    host=None,
+    user=None,
+    port=None,
+)
+try:
+    mod.cmd_node_set(args)
+except OSError:
+    pass
+else:
+    raise SystemExit("expected the simulated registry failure to propagate")
+after = json.loads(Path(home, "fleet.json").read_text(encoding="utf-8"))
+ref_after = {n["name"]: n.get("admin_credential_ref") for n in after["nodes"]}["fr1-one"]
+assert ref_after == ref_before, (ref_before, ref_after)
+bindings = json.loads(Path(bind_file).read_text(encoding="utf-8"))["bindings"]
+resolved_new = str(Path(new_key).resolve())
+new_refs = [r for r, b in bindings.items() if b.get("path") == resolved_new]
+assert new_refs, "binding must be written before the registry commit"
+referenced = {n.get("admin_credential_ref") for n in after["nodes"]} | {
+    n.get("observe_credential_ref") for n in after["nodes"]
+}
+assert not (set(new_refs) & referenced), "registry must not point at a fresh binding"
+print("ok")
+PY
+if (( fr1_order_rc == 0 )); then
+  pass "FR-01 registry write failure leaves no dangling reference"
+else
+  fail "FR-01 registry write failure leaves no dangling reference"
+fi
+assert_success "FR-01 access verify" fleet access verify
+assert_success "FR-01 workspace verify" fleet workspace verify
+
+export VCL_FLEET_HOME=$FR1_SAVED_HOME
+if [[ -n "$FR1_SAVED_STATE" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$FR1_SAVED_STATE
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+if [[ -n "$FR1_SAVED_CFG" ]]; then
+  export XDG_CONFIG_HOME=$FR1_SAVED_CFG
+else
+  export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+  mkdir -p "$XDG_CONFIG_HOME"
 fi
 
 export VCL_FLEET_HOME=$F73_SAVED_HOME
@@ -13321,7 +13658,7 @@ assert rows and rows[0]["status"] == "pass" and "20687" in rows[0]["detail"], ro
 PY
 
 # --- 0.4.3 B3 payload resolve/verify (D51; AC-4.3-P01 / AC-4.2-04) ---
-B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B3_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz"
 if [[ ! -f "$B3_PAYLOAD_SRC" ]]; then
   assert_success "B3 build node release for payload tests" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -13343,22 +13680,22 @@ fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
 
-src = Path(project) / "dist" / "vincula-node-0.5.0.tar.gz"
+src = Path(project) / "dist" / "vincula-node-0.5.3.tar.gz"
 root = Path(tmp) / "b3-mismatch"
 root.mkdir(parents=True, exist_ok=True)
-tarball = root / "vincula-node-0.5.0.tar.gz"
+tarball = root / "vincula-node-0.5.3.tar.gz"
 shutil.copy2(src, tarball)
 actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
 # Wrong sidecar hex (flip first nibble) — fail-closed local verify.
 bad = ("0" if actual[0] != "0" else "1") + actual[1:]
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{bad}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.3",
             "sha256": actual,
             "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
             "supported_arch": ["amd64", "arm64"],
@@ -13402,18 +13739,18 @@ fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
 
-src = Path(project) / "dist" / "vincula-node-0.5.0.tar.gz"
+src = Path(project) / "dist" / "vincula-node-0.5.3.tar.gz"
 root = Path(tmp) / "b3-arch"
 root.mkdir(parents=True, exist_ok=True)
-tarball = root / "vincula-node-0.5.0.tar.gz"
+tarball = root / "vincula-node-0.5.3.tar.gz"
 shutil.copy2(src, tarball)
 actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{actual}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{actual}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 mani = {
     "controller_version": "0.4.2",
-    "node_payload_version": "0.5.0",
+    "node_payload_version": "0.5.3",
     "sha256": actual,
     "supported_os": list(prov.DEFAULT_SUPPORTED_OS),
     "supported_arch": ["riscv64"],
@@ -13458,8 +13795,8 @@ import zipfile
 archive = sys.argv[1]
 names = zipfile.ZipFile(archive).namelist()
 patterns = (
-    r"payload/vincula-node-0\.5\.0\.tar\.gz$",
-    r"payload/vincula-node-0\.5\.0\.tar\.gz\.sha256$",
+    r"payload/vincula-node-0\.5\.3\.tar\.gz$",
+    r"payload/vincula-node-0\.5\.3\.tar\.gz\.sha256$",
     r"payload/payload-manifest\.json$",
 )
 for pat in patterns:
@@ -13473,8 +13810,8 @@ assert_success "B3 build-controller installs payload triple to dist for source p
   bash -c '
 set -euo pipefail
 cd "'"$PROJECT_DIR"'"
-test -f dist/vincula-node-0.5.0.tar.gz
-test -f dist/vincula-node-0.5.0.tar.gz.sha256
+test -f dist/vincula-node-0.5.3.tar.gz
+test -f dist/vincula-node-0.5.3.tar.gz.sha256
 test -f dist/payload-manifest.json
 python3 - "'"$PROJECT_DIR"'/lib/vincula-fleet.py" <<'"'"'PY'"'"'
 import importlib.util
@@ -13494,14 +13831,14 @@ for key in ("tarball", "sha256_sidecar", "manifest_path"):
     assert p.is_file(), f"missing {key}: {p}"
     assert "dist" in p.parts, f"{key} not under dist: {p}"
 loaded = prov.verify_local_payload(resolved)
-assert loaded["node_payload_version"] == "0.5.0"
+assert loaded["node_payload_version"] == "0.5.3"
 print("ok resolve from dist flat")
 PY
 '
 
 # --- 0.4.3 B4 provision install path (SCP→verify→install→commit→sync --full) ---
 B4_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
-B4_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B4_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz"
 if [[ ! -f "$B4_PAYLOAD_SRC" ]]; then
   assert_success "B4 build node release for provision tests" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -13510,21 +13847,21 @@ fi
 b4_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$B4_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$B4_PAYLOAD_SRC" "$root/vincula-node-0.5.3.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.3",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -13553,7 +13890,7 @@ assert_success "B4 remote digest mismatch refuses installer" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-digest-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-digest.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-digest-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-digest-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-digest-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -13595,7 +13932,7 @@ assert_success "B4 provision success registers node" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-ok-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-ok.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-ok-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-ok-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-ok-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -13639,7 +13976,7 @@ assert_success "B4 REMOTE_READY_LOCAL_UNCOMMITTED on registry commit fail" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-commit-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-commit-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-commit-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-commit-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -13675,7 +14012,7 @@ assert_success "B4 success path calls sync --full once" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sync-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sync-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sync-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sync-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13717,7 +14054,7 @@ assert_success "P1-2 sudo install invokes sudo -n env VCL_SERVER bash vincula.sh
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sudo-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-sudo.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sudo-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sudo-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -13766,7 +14103,7 @@ assert_success "P1-3 duplicate name blocked before remote install" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-dupname-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/b4-dupname.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-dupname-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-dupname-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-dupname-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -13813,7 +14150,7 @@ assert_success "P1-3 SystemExit on commit returns REMOTE_READY_LOCAL_UNCOMMITTED
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-sysexit-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-sysexit-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sysexit-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-sysexit-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13846,7 +14183,7 @@ assert_success "P1-4 provision PARTIAL when initial sync fails" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/b4-partial-state" \
     VCL_FLEET_HOME="${TEST_TMP}/b4-partial-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-partial-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/b4-partial-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, subprocess, sys
 
@@ -13920,7 +14257,7 @@ assert_success "P2-5 provision happy path cleans random staging dir" \
     VCL_FAKE_PROVISION=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-ok-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-ok-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-ok-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-ok-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -13971,7 +14308,7 @@ assert_success "P2-5 digest failure cleans random staging dir" \
     VCL_FAKE_REMOTE_DIGEST_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-digest-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-digest-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-digest-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-digest-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
@@ -14022,7 +14359,7 @@ assert_success "P2-5 verify failure cleans random staging dir" \
     VCL_FAKE_PROVISION_VERIFY_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/p2-5-verify-state" \
     VCL_FLEET_HOME="${TEST_TMP}/p2-5-verify-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-verify-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/p2-5-verify-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$B4_HK" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
@@ -14067,7 +14404,7 @@ PY
 
 # --- 0.4.5 legacy seed E2E (root/sudo harden + dual-user + clean-host) ---
 SEED_HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
-SEED_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+SEED_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz"
 if [[ ! -f "$SEED_PAYLOAD_SRC" ]]; then
   assert_success "0.4.5 seed E2E build node release" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -14075,21 +14412,21 @@ fi
 seed_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$SEED_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$SEED_PAYLOAD_SRC" "$root/vincula-node-0.5.3.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.5",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.3",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -14143,7 +14480,7 @@ assert_success "0.4.5 seed E2E root harden + dual-user" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-root-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-root.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-root-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-root-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-root-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, json, os, subprocess, sys
@@ -14213,7 +14550,7 @@ assert_success "0.4.5 seed E2E sudo harden chown/chmod" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-sudo-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-sudo.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-sudo-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-sudo-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-sudo-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, os, subprocess, sys
@@ -14259,7 +14596,7 @@ assert_success "0.4.5 seed E2E chown fail is zero-install" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chown-fail-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-chown-fail.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-chown-fail-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chown-fail-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chown-fail-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, json, os, subprocess, sys
@@ -14318,7 +14655,7 @@ assert_success "0.4.5 seed E2E chmod fail is zero-install" \
     VCL_FAKE_CHMOD_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-chmod-fail-state" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-chmod-fail-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chmod-fail-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-chmod-fail-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, os, subprocess, sys
@@ -14367,7 +14704,7 @@ assert_success "0.4.5 seed E2E refuse existing VERSION clean host" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/seed-existing-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/seed-existing.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/seed-existing-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-existing-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/seed-existing-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$SEED_HK" \
     "$SEED_SECRETS/good.uri" "$SEED_SECRETS/good.key" <<'PY'
 import importlib.util, io, os, subprocess, sys
@@ -14408,40 +14745,40 @@ assert not any(
 )
 PY
 
-# Installer source guard + 0.3.x→0.5.0 migrate pin (identity preserve)
-assert_success "0.5.0 vincula.sh refuses seed when VERSION exists" \
+# Installer source guard + 0.3.x→0.5.3 migrate pin (identity preserve)
+assert_success "0.5.3 vincula.sh refuses seed when VERSION exists" \
   grep -Fq 'Legacy seed requires a clean host.' "${PROJECT_DIR}/vincula.sh"
-assert_success "0.5.0 is_supported_upgrade_from 0.3.1" \
+assert_success "0.5.3 is_supported_upgrade_from 0.3.1" \
   bash -c '
     set -euo pipefail
     # shellcheck disable=SC1091
     source "'"${PROJECT_DIR}"'/vincula.sh"
-    [[ "$VINCULA_VERSION" == "0.5.0" ]]
+    [[ "$VINCULA_VERSION" == "0.5.3" ]]
     is_supported_upgrade_from 0.3.1
   '
-assert_success "0.5.0 is_supported_upgrade_from 0.3.2" \
+assert_success "0.5.3 is_supported_upgrade_from 0.3.2" \
   bash -c '
     set -euo pipefail
     # shellcheck disable=SC1091
     source "'"${PROJECT_DIR}"'/vincula.sh"
     is_supported_upgrade_from 0.3.2
   '
-assert_success "0.5.0 migrate preserves UUID/Reality guards present" \
+assert_success "0.5.3 migrate preserves UUID/Reality guards present" \
   bash -c '
     grep -Fq "Migration attempted to change the UUID" "'"${PROJECT_DIR}"'/vincula.sh" &&
     grep -Fq "Migration attempted to change the REALITY private key" "'"${PROJECT_DIR}"'/vincula.sh" &&
     grep -Fq "Migration attempted to change the REALITY public key" "'"${PROJECT_DIR}"'/vincula.sh"
   '
 
-# --- 0.5.0 Controller observation + upgrade (G1) ---
-assert_success "0.5.0 build-controller packs observation modules" \
+# --- 0.5.3 Controller observation + upgrade (G1) ---
+assert_success "0.5.3 build-controller packs observation modules" \
   grep -q 'lib/observation/capabilities.py' "${PROJECT_DIR}/scripts/build-controller.sh"
-assert_success "0.5.0 build-controller packs node_upgrade" \
+assert_success "0.5.3 build-controller packs node_upgrade" \
   grep -q 'lib/node_upgrade.py' "${PROJECT_DIR}/scripts/build-controller.sh"
-assert_success "0.5.0 build-controller packs ssh_transport" \
+assert_success "0.5.3 build-controller packs ssh_transport" \
   grep -q 'lib/ssh_transport.py' "${PROJECT_DIR}/scripts/build-controller.sh"
 
-assert_success "0.5.0 schema_validate fixtures" python3 - \
+assert_success "0.5.3 schema_validate fixtures" python3 - \
   "${PROJECT_DIR}/lib/observation/schema_validate.py" \
   "${PROJECT_DIR}/tests/fixtures/schemas/capabilities/v1-valid.json" \
   "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json" <<'PY'
@@ -14494,7 +14831,7 @@ assert any("load1" in e for e in sv.validate_telemetry_v1(
 ))
 PY
 
-assert_success "0.5.0 parse_stdout_json rejects Infinity/NaN" python3 - \
+assert_success "0.5.3 parse_stdout_json rejects Infinity/NaN" python3 - \
   "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
 import importlib.util, json, sys
 from pathlib import Path
@@ -14506,12 +14843,12 @@ assert st == "ERROR" and pl is None, (st, pl)
 st2, pl2, _ = tr.parse_stdout_json('{"schema":"x","v":NaN}')
 assert st2 == "ERROR" and pl2 is None, (st2, pl2)
 # finite still OK
-body = {"schema": "capabilities/v1", "node_version": "0.5.0", "capabilities": ["telemetry/v1"]}
+body = {"schema": "capabilities/v1", "node_version": "0.5.1", "capabilities": ["telemetry/v1"]}
 st3, pl3, _ = tr.parse_stdout_json(json.dumps(body))
 assert st3 == "OK" and isinstance(pl3, dict)
 PY
 
-assert_success "0.5.0 observe/admin credential routing" python3 - \
+assert_success "0.5.3 observe/admin credential routing" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" \
   "${TEST_TMP}/obs-route-home" \
   "${TEST_TMP}/obs-route-admin.key" \
@@ -14586,9 +14923,9 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "UNSUPPORTED", doc
 PY
 
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.3
 obs_cap_ok=$(fleet capabilities lax --json)
-assert_success "obs050 capabilities OK when fake node 0.5.0" python3 - "$obs_cap_ok" <<'PY'
+assert_success "obs050 capabilities OK when fake node 0.5.3" python3 - "$obs_cap_ok" <<'PY'
 import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
@@ -14596,7 +14933,7 @@ assert "telemetry/v1" in (doc.get("capabilities") or []), doc
 PY
 
 obs_tel_ok=$(fleet telemetry lax --json)
-assert_success "obs050 telemetry OK when fake node 0.5.0" python3 - "$obs_tel_ok" <<'PY'
+assert_success "obs050 telemetry OK when fake node 0.5.3" python3 - "$obs_tel_ok" <<'PY'
 import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
@@ -14641,6 +14978,29 @@ assert fetch()["state"] == "ERROR"  # snapshot vs current instance
 PY
 unset VCL_FAKE_NODE_VERSION
 
+export VCL_FAKE_NODE_VERSION=0.5.1
+export VCL_FAKE_STATE_DIR="${TEST_TMP}/upgrade-051-state"
+python3 - "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json" "$VCL_FAKE_STATE_DIR/lax" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["vincula_version"] = "0.5.1"
+root = Path(sys.argv[2])
+root.mkdir(parents=True, exist_ok=True)
+(root / "identity.json").write_text(json.dumps(doc))
+PY
+obs_051_plan_json=$(fleet node upgrade plan lax --json)
+assert_success "0.5.1 to 0.5.3 upgrade plan uses observe and permits supported source" python3 - "$obs_051_plan_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "PLANNED", doc
+assert doc.get("allowlist_ok") is True, doc
+assert doc.get("current_version") == "0.5.1", doc
+assert doc.get("target_version") == "0.5.3", doc
+assert doc.get("credential_class") == "observe", doc
+PY
+unset VCL_FAKE_NODE_VERSION VCL_FAKE_STATE_DIR
+
 obs_plan_json=$(fleet node upgrade plan lax --json)
 assert_success "obs050 upgrade plan allowlist 0.3.1" python3 - "$obs_plan_json" <<'PY'
 import json, sys
@@ -14648,7 +15008,7 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "PLANNED", doc
 assert doc.get("allowlist_ok") is True, doc
 assert doc.get("current_version") == "0.3.1", doc
-assert doc.get("target_version") == "0.5.0", doc
+assert doc.get("target_version") == "0.5.3", doc
 assert doc.get("credential_class") == "observe", doc
 PY
 
@@ -14682,7 +15042,7 @@ for node in data.get("nodes") or []:
         node.pop("identity_file", None)
 p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.3
 export VCL_FAKE_OBSERVE_AUTH_FAIL=1
 export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
 obs_auth_rc=0
@@ -14728,7 +15088,7 @@ node = {
 identity = {
     "node_id": node["node_id"],
     "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-    "vincula_version": "0.5.0",
+    "vincula_version": "0.5.3",
     "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 responses = {
@@ -14751,6 +15111,1013 @@ assert all(key == "observe-key" for _, key in calls), calls
 PY
 unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH
 
+# --- FR-03: AUTH_LIMIT reason on top of the existing AUTH_FAILED state ---
+assert_success "FR-03 classifier separates limit, denial and ordinary text" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("tr", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+
+assert tr.auth_failure_reason("Permission denied (publickey).") == "AUTH_DENIED"
+assert tr.auth_failure_reason("Too many authentication failures") == "AUTH_LIMIT"
+assert tr.auth_failure_reason(
+    "Received disconnect from 203.0.113.10 port 22:2: "
+    "Too many authentication failures"
+) == "AUTH_LIMIT"
+# Over-broad "publickey" no longer misclassifies ordinary diagnostics.
+assert tr.auth_failure_reason("no matching publickey type found") is None
+assert tr.auth_failure_reason("debug1: Offering public key: /home/u/id_ed25519") is None
+assert tr.is_auth_failure("Permission denied (publickey).") is True
+
+limit = tr.classify_failure(
+    phase="identity", detail="Too many authentication failures", returncode=255
+ )
+assert limit["state"] == "AUTH_FAILED", limit
+assert limit["code"] == "AUTH_LIMIT", limit
+assert limit["retryable"] is False, limit
+assert "IdentitiesOnly=yes" in limit["hint"], limit
+assert "can exhaust" in limit["hint"], limit
+
+denied = tr.classify_failure(
+    phase="identity", detail="Permission denied (publickey).", returncode=255
+)
+assert denied["state"] == "AUTH_FAILED" and denied["code"] == "AUTH_DENIED", denied
+
+# Local transport facts win over partial remote text.
+mixed = tr.classify_failure(
+    phase="audit_export",
+    detail="Connection closed by 203.0.113.10\nssh timed out after 60s",
+    returncode=255,
+)
+assert mixed["code"] == "TIMEOUT" and mixed["retryable"] is True, mixed
+assert tr.timeout_message(60) == "ssh timed out after 60s"
+assert tr.scp_timeout_message(60) == "scp timed out after 60s"
+assert tr.output_limit_message(4096) == "stdout exceeds 4096 bytes"
+assert tr.phase_for_command(["vcl", "audit", "export", "--jsonl"]) == "audit_export"
+assert tr.phase_for_command(["vcl", "status", "--json"]) == "status"
+PY
+
+export VCL_FAKE_OBSERVE_AUTH_LIMIT=1
+export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
+obs_limit_rc=0
+obs_limit_json=$(fleet capabilities lax --json) || obs_limit_rc=$?
+assert_equal "FR-03 capabilities exits non-zero on AUTH_LIMIT" 1 "$obs_limit_rc"
+assert_success "FR-03 capabilities keeps AUTH_FAILED and adds AUTH_LIMIT" python3 - \
+  "$obs_limit_json" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc.get("state") == "AUTH_FAILED", doc
+assert doc.get("reason") == "AUTH_LIMIT", doc
+assert doc.get("credential_class") == "observe", doc
+assert "IdentitiesOnly=yes" in (doc.get("hint") or ""), doc
+detail = doc.get("detail") or ""
+for leaked in ("Received disconnect", "203.0.113.10", "Too many authentication"):
+    assert leaked not in detail, (leaked, detail)
+PY
+obs_limit_probe_rc=0
+obs_limit_probe=$(fleet probe --json) || obs_limit_probe_rc=$?
+assert_equal "FR-03 probe exits non-zero on AUTH_LIMIT" 1 "$obs_limit_probe_rc"
+assert_success "FR-03 probe carries ssh_reason without raw remote text" python3 - \
+  "$obs_limit_probe" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert node["ssh"] == "AUTH_FAILED", node
+assert node.get("ssh_reason") == "AUTH_LIMIT", node
+detail = node.get("ssh_detail") or ""
+for leaked in ("Received disconnect", "203.0.113.10", "Too many authentication"):
+    assert leaked not in detail, (leaked, detail)
+# The observe key is the only identity that fails here: had the code fallen
+# back to the admin credential the probe would have reported OK.
+assert doc["ok"] is False, doc
+PY
+obs_limit_verify_rc=0
+obs_limit_verify=$(fleet verify --json) || obs_limit_verify_rc=$?
+assert_equal "FR-03 verify exits non-zero on AUTH_LIMIT" 1 "$obs_limit_verify_rc"
+assert_success "FR-03 verify reports AUTH_FAILED/AUTH_LIMIT" python3 - \
+  "$obs_limit_verify" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["ssh"] == "AUTH_FAILED", node
+assert node.get("ssh_reason") == "AUTH_LIMIT", node
+PY
+unset VCL_FAKE_OBSERVE_AUTH_LIMIT VCL_FAKE_OBSERVE_KEY_PATH
+
+# --- FR-04: structured facts, safe summary, no stdout as error text ---
+assert_success "FR-04 failure detail never echoes stdout" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+audit_row = '{"event_id":1,"user_tag":"alice","destination_host":"secret.example"}'
+proc = subprocess.CompletedProcess(["ssh"], 1, audit_row, "")
+detail = fleet._ssh_failure_detail(proc)
+assert "secret.example" not in detail, detail
+assert detail == "exit 1", detail
+
+# A failing command whose stderr claims success must not produce a success
+# document or state.
+def fake_ssh_run(*_args, **_kwargs):
+    return subprocess.CompletedProcess(
+        ["ssh"], 1, "", '{"ok": true, "note": "not a success signal"}\n'
+    )
+
+fleet.ssh_run = fake_ssh_run
+facts = {}
+state, payload, detail = fleet.ssh_remote_json(
+    {
+        "name": "lax",
+        "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "ssh_host": "203.0.113.10",
+        "ssh_user": "root",
+        "ssh_port": 22,
+    },
+    ["vcl", "audit", "export", "--jsonl"],
+    require_exit_0=True,
+    facts=facts,
+)
+assert state == "FAIL", (state, detail)
+assert payload is None, payload
+assert facts["phase"] == "audit_export", facts
+assert facts["code"] == "REMOTE_ERROR", facts
+assert facts["retryable"] is False, facts
+assert "ok" not in str(payload or ""), payload
+PY
+
+assert_success "FR-04 shareable summary keeps identity out of the text" python3 - \
+  "${PROJECT_DIR}/lib/ssh_transport.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("tr", Path(sys.argv[1]))
+tr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tr)
+
+detail = (
+    '{"protocol_version":2,"ok":false,"error":"CURSOR_EXPIRED",'
+    '"node_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+    '"instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}\n'
+    "Connection closed by 203.0.113.10 port 22\nssh timed out after 60s"
+)
+facts = tr.classify_failure(phase="audit_export", detail=detail, returncode=255)
+text = tr.operator_failure_text(facts)
+for leaked in (
+    "203.0.113.10",
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "CURSOR_EXPIRED",
+):
+    assert leaked not in text, (leaked, text)
+assert facts["code"] == "TIMEOUT", facts
+machine = tr.machine_failure_facts(
+    facts,
+    node_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    instance_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+)
+# Machine contract keeps the logical identity; the summary stays shareable.
+assert machine["node_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", machine
+assert machine["instance_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", machine
+assert machine["summary"] == facts["summary"], machine
+PY
+
+assert_success "FR-04 sync row carries codes next to a safe error string" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node = {
+    "name": "lax",
+    "node_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ssh_host": "203.0.113.10",
+    "ssh_user": "root",
+    "ssh_port": 22,
+}
+row = fleet._sync_result(
+    node,
+    status=fleet.SYNC_STATUS_ERROR,
+    after=10,
+    error="SSH transport timed out",
+    error_code="TIMEOUT",
+    error_phase="audit_export",
+    retryable=True,
+)
+assert row["error_code"] == "TIMEOUT", row
+assert row["error_phase"] == "audit_export", row
+assert row["retryable"] is True, row
+table = fleet.format_sync_table([row])
+assert "ERROR: SSH transport timed out" in table, table
+assert "CODE: TIMEOUT phase=audit_export retryable=true" in table, table
+# node_id/instance_id remain part of the machine row
+assert row["node_id"] == node["node_id"], row
+assert "instance_id" in row, row
+PY
+
+# --- FR-02: bounded audit catch-up, per-page commits and MORE_PENDING ---
+FR2_SAVED_HOME=$VCL_FLEET_HOME
+FR2_SAVED_STATE=${VCL_FLEET_LOCAL_STATE:-}
+FR2_SAVED_CFG=${XDG_CONFIG_HOME:-}
+FR2_SAVED_FAKE=${VCL_FAKE_STATE_DIR:-}
+FR2H=$TEST_TMP/fr2-home
+FR2X=$TEST_TMP/fr2-state
+FR2C=$TEST_TMP/fr2-cfg
+FR2S=$TEST_TMP/fr2-fake
+rm -rf "$FR2H" "$FR2X" "$FR2C" "$FR2S"
+mkdir -p "$FR2H" "$FR2X" "$FR2C" "$FR2S"
+export VCL_FLEET_HOME=$FR2H VCL_FLEET_LOCAL_STATE=$FR2X
+export XDG_CONFIG_HOME=$FR2C VCL_FAKE_STATE_DIR=$FR2S
+export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
+export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
+assert_success "FR-02 fleet init" fleet init
+FR2_NID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["node_id"])' \
+  "${PROJECT_DIR}/tests/fixtures/nodes/lax/identity.json")
+assert_success "FR-02 add lax" \
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$FR2_NID"
+
+fr2_seed() {
+  python3 - "${PROJECT_DIR}" "$FR2S" "$FR2_NID" "$1" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+project, state, node_id, count = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+)
+ident = json.loads(
+    (project / "tests/fixtures/nodes/lax/identity.json").read_text(encoding="utf-8")
+)
+iid = ident["instance_id"]
+spec = importlib.util.spec_from_file_location(
+    "accountd", project / "lib/vincula-accountd.py"
+)
+acct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acct)
+db = state / "lax" / "accounting.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = acct.open_db(str(db))
+for i in range(1, count + 1):
+    conn.execute(
+        """INSERT OR REPLACE INTO connections (
+             connection_id,generation,user_id,node_id,instance_id,user_tag,
+             started_at,last_seen_at,closed_at,destination_host,destination_ip,
+             destination_port,network,upload_bytes,download_bytes,export_seq)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            f"lax-{i}", 0, "u-alice", node_id, iid, "alice",
+            "2026-08-10T08:00:00Z", "2026-08-10T09:00:00Z",
+            "2026-08-10T09:00:00Z", "example.com", "203.0.113.10", 443, "tcp",
+            100 * i, 200 * i, i,
+        ),
+    )
+acct.meta_set(conn, "audit_export_seq", str(count))
+acct.meta_set(conn, "audit_pruned_max_export_seq", "0")
+conn.commit()
+conn.close()
+PY
+}
+
+fr2_reset() {
+  rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls" \
+    "$FR2S/lax/identity-calls" "$FR2S/lax/status-calls"
+}
+fr2_seed 5
+
+fr2_t1_rc=0
+fr2_t1=$(fleet sync --node lax --page-size 2 --json) || fr2_t1_rc=$?
+assert_equal "FR-02 multi-page catch-up exit 0" 0 "$fr2_t1_rc"
+assert_success "FR-02 multi-page catch-up imports every page" python3 - \
+  "$fr2_t1" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+home = Path(sys.argv[2])
+node = doc["nodes"][0]
+assert doc["ok"] is True and doc["state"] == "SUCCESS", doc
+assert node["status"] == "ok", node
+assert node["audit_pages"] == 3, node
+assert node["inserted"] == 5, node
+assert node["last_export_seq"] == 5, node
+assert node["more_pending"] is False, node
+conn = sqlite3.connect(str(home / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq, status FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 5, rows
+assert int(cursor[0]) == 5 and cursor[1] == "ok", cursor
+PY
+
+fr2_reset
+fr2_t2_rc=0
+fr2_t2=$(fleet sync --node lax --page-size 2 --max-pages 1 --json) || fr2_t2_rc=$?
+assert_equal "FR-02 page cap exits 2" 2 "$fr2_t2_rc"
+assert_success "FR-02 page cap reports MORE_PENDING, never success" python3 - \
+  "$fr2_t2" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False and doc["state"] == "PARTIAL", doc
+assert doc["more_pending"] == ["lax"], doc
+assert node["status"] == "more_pending", node
+assert node["more_pending"] is True, node
+assert node["error_code"] == "PAGE_CAP", node
+assert node["audit_pages"] == 1, node
+assert node["last_export_seq"] == 2 and node["inserted"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+fr2_t3_rc=0
+fr2_t3=$(fleet sync --node lax --page-size 2 --json) || fr2_t3_rc=$?
+assert_equal "FR-02 resume from committed cursor exits 0" 0 "$fr2_t3_rc"
+assert_success "FR-02 resume finishes the backlog" python3 - "$fr2_t3" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "ok" and node["more_pending"] is False, node
+assert node["last_export_seq"] == 5 and node["inserted"] == 3, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 5, rows
+PY
+
+# Run budget exhausted with a backlog still present: MORE_PENDING, not a
+# spurious timeout, and nothing is imported for the pages never requested.
+fr2_reset
+fr2_t3b_rc=0
+fr2_t3b=$(fleet sync --node lax --page-size 2 --budget 0.5 --json) || fr2_t3b_rc=$?
+assert_equal "FR-02 exhausted run budget exits 2" 2 "$fr2_t3b_rc"
+assert_success "FR-02 exhausted run budget reports MORE_PENDING" python3 - \
+  "$fr2_t3b" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["state"] == "PARTIAL" and doc["ok"] is False, doc
+assert node["status"] == "more_pending", node
+assert node["error_code"] == "BUDGET_EXHAUSTED", node
+assert node["audit_pages"] == 0, node
+assert "budget" in (node["error"] or ""), node
+assert node["remediation"], node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+
+# Second page fails (rc=1): the first committed page must survive untouched.
+fr2_reset
+export VCL_FAKE_EXPORT_FAIL_PAGE=2
+fr2_t4_rc=0
+fr2_t4=$(fleet sync --node lax --page-size 2 --json) || fr2_t4_rc=$?
+unset VCL_FAKE_EXPORT_FAIL_PAGE
+assert_equal "FR-02 second-page failure exits 2" 2 "$fr2_t4_rc"
+assert_success "FR-02 second-page failure keeps the committed first page" python3 - \
+  "$fr2_t4" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "REMOTE_ERROR", node
+assert node["audit_pages"] == 1, node
+assert node["last_export_seq"] == 2 and node["inserted"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 2, rows
+assert int(cursor[0]) == 2, cursor
+PY
+
+# Second page times out: the page is rejected whole, first page stays.
+fr2_reset
+export VCL_FAKE_EXPORT_HANG_PAGE=2
+fr2_t5_rc=0
+fr2_t5=$(fleet sync --node lax --page-size 2 --timeout 1 --budget 30 --json) \
+  || fr2_t5_rc=$?
+unset VCL_FAKE_EXPORT_HANG_PAGE
+assert_equal "FR-02 second-page timeout exits 2" 2 "$fr2_t5_rc"
+assert_success "FR-02 second-page timeout is TIMEOUT with first page kept" python3 - \
+  "$fr2_t5" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "TIMEOUT", node
+assert node["retryable"] is True, node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# Oversized page: rejected whole, nothing imported, no cursor movement.
+fr2_reset
+export VCL_FAKE_EXPORT_PAD_BYTES=4096
+fr2_t6_rc=0
+fr2_t6=$(fleet sync --node lax --page-size 5 --stdout-cap 1024 --json) \
+  || fr2_t6_rc=$?
+unset VCL_FAKE_EXPORT_PAD_BYTES
+assert_equal "FR-02 oversized page exits 2" 2 "$fr2_t6_rc"
+assert_success "FR-02 oversized page imports nothing" python3 - "$fr2_t6" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "OUTPUT_LIMIT", node
+assert node["audit_pages"] == 0 and node["inserted"] == 0, node
+assert node["last_export_seq"] == 0, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+
+# Identity changes between pages: the changed page is rejected.
+fr2_reset
+export VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE=2
+export VCL_FAKE_EXPORT_ALT_INSTANCE="99999999-9999-4999-8999-999999999999"
+fr2_t7_rc=0
+fr2_t7=$(fleet sync --node lax --page-size 2 --json) || fr2_t7_rc=$?
+unset VCL_FAKE_EXPORT_ALT_INSTANCE_AFTER_PAGE VCL_FAKE_EXPORT_ALT_INSTANCE
+assert_equal "FR-02 identity change exits 2" 2 "$fr2_t7_rc"
+assert_success "FR-02 identity change rejects the page and keeps prior pages" python3 - \
+  "$fr2_t7" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+node = json.loads(sys.argv[1])["nodes"][0]
+assert node["status"] == "error", node
+assert node["error_code"] == "META_INSTANCE_MISMATCH", node
+assert node["error_field"] == "instance_id", node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# Retention gap appears between pages.
+fr2_reset
+export VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE=2
+fr2_t8_rc=0
+fr2_t8=$(fleet sync --node lax --page-size 2 --json) || fr2_t8_rc=$?
+unset VCL_FAKE_EXPORT_PRUNE_AFTER_PAGE
+assert_equal "FR-02 mid-run retention gap exits 2" 2 "$fr2_t8_rc"
+assert_success "FR-02 mid-run retention gap is EXPIRED with prior pages kept" python3 - \
+  "$fr2_t8" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert node["status"] == "expired", node
+assert node["audit_pages"] == 1 and node["last_export_seq"] == 2, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 2, rows
+PY
+
+# MORE_PENDING must block retire and replace. A remote that always reports a
+# higher top-of-stream keeps every run pending without breaking validation.
+fr2_reset
+export VCL_FAKE_EXPORT_LIE_MAX_SEQ=999
+fr2_ret_rc=0
+fr2_ret_err=$(fleet node retire lax 2>&1) || fr2_ret_rc=$?
+assert_equal "FR-02 retire exits non-zero while MORE_PENDING" 1 "$fr2_ret_rc"
+assert_success "FR-02 retire reports MORE_PENDING" \
+  grep -q 'MORE_PENDING' <<< "$fr2_ret_err"
+assert_success "FR-02 retire did not mark the node retired" \
+  grep -q 'status=active' <<< "$(fleet node show lax)"
+fr2_rep_rc=0
+fr2_rep_err=$(fleet node replace lax --host 203.0.113.11 \
+  --host-key "$TOKYO_HOST_KEY" 2>&1) || fr2_rep_rc=$?
+assert_equal "FR-02 replace exits non-zero while MORE_PENDING" 1 "$fr2_rep_rc"
+assert_success "FR-02 replace reports MORE_PENDING" \
+  grep -q 'MORE_PENDING' <<< "$fr2_rep_err"
+assert_success "FR-02 replace left the endpoint unchanged" \
+  grep -q 'ssh_host=203.0.113.10' <<< "$(fleet node show lax)"
+unset VCL_FAKE_EXPORT_LIE_MAX_SEQ
+
+assert_success "FR-02 final-sync gate rejects anything not caught up" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.require_final_sync_ok(
+    {"status": "ok"}, action="retire", name="lax", tail="not marking retired"
+)
+for status in ("more_pending", "error", "expired"):
+    try:
+        fleet.require_final_sync_ok(
+            {"status": status, "error": "boom", "audit_pages": 2,
+             "last_export_seq": 7},
+            action="retire", name="lax", tail="not marking retired",
+        )
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError(f"{status} must stop retire/replace")
+PY
+
+assert_success "FR-02 database errors fail one node, not the run" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, json, sqlite3, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+conn = fleet.open_fleet_db()
+try:
+    start = fleet._cursor_last_export_seq(conn, node_id)
+finally:
+    conn.close()
+next_seq = start + 1
+row = {"event_id": next_seq, "export_seq": next_seq, "node_id": node_id,
+       "instance_id": iid}
+meta = {
+    "ok": True, "protocol_version": 2, "cursor_kind": "export_seq",
+    "after": start, "max_export_seq": next_seq, "pruned_max_export_seq": 0,
+    "count": 1, "node_id": node_id, "instance_id": iid,
+    "next_cursor": next_seq,
+}
+fleet.ssh_audit_page = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 0, json.dumps(row) + "\n", json.dumps(meta) + "\n"
+)
+
+def locked(*_a, **_k):
+    raise sqlite3.OperationalError("database is locked")
+
+fleet.import_export_jsonl = locked
+conn = fleet.open_fleet_db()
+try:
+    outcome = fleet.catch_up_audit_pages(
+        conn, node, now_iso="2026-10-08T00:00:00Z", remote_iid=iid,
+        options=fleet.audit_page_options(None),
+    )
+finally:
+    conn.close()
+assert outcome["status"] == "error", outcome
+assert outcome["error_code"] == "DATABASE_ERROR", outcome
+assert outcome["retryable"] is True, outcome
+assert outcome["pages"] == 0, outcome
+
+# A node-local DB failure must not stop the following node.
+def flaky(conn, target, **kwargs):
+    if target["name"] == "lax":
+        raise sqlite3.OperationalError("database or disk is full")
+    return fleet._sync_result(target, status="ok")
+
+other = {"name": "tokyo", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
+rows = fleet.sync_nodes_isolated(
+    None, [node, other], sync_one=flaky, now_iso="2026-10-08T00:00:00Z"
+)
+assert rows[0]["status"] == "error", rows[0]
+assert rows[0]["error_code"] == "DATABASE_ERROR", rows[0]
+assert "disk is full" in (rows[0]["error"] or ""), rows[0]
+assert rows[1]["status"] == "ok", rows[1]
+assert fleet.sync_report(rows)["state"] == "PARTIAL", rows
+PY
+
+# --- FR-02 review fixes: post-catch-up snapshot, real budget, watermark ---
+
+fr2_full_reset() {
+  rm -f "$FR2H/fleet.db" "$FR2S/lax/export-calls" \
+    "$FR2S/lax/identity-calls" "$FR2S/lax/status-calls"
+}
+fr2_counter_reset() {
+  rm -f "$FR2S/lax/export-calls" "$FR2S/lax/identity-calls" \
+    "$FR2S/lax/status-calls"
+}
+
+# (1) sync --full must collect the snapshot AFTER the catch-up. Identity call 2
+# is the post-catch-up read, so only a post-catch-up collection can see 0.5.9.
+fr2_full_reset
+fr2_t1a_rc=0
+fr2_t1a=$(VCL_FAKE_IDENTITY_ALT_AFTER=2 \
+  VCL_FAKE_IDENTITY_ALT_VERSION=0.5.9 \
+  fleet sync --full --node lax --page-size 1 --json) || fr2_t1a_rc=$?
+assert_equal "FR-02R post-catch-up full sync exits 0" 0 "$fr2_t1a_rc"
+assert_success "FR-02R snapshot reflects the post-catch-up state" python3 - \
+  "$fr2_t1a" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is True, doc
+assert node["status"] == "ok", node
+assert node["audit_pages"] == 5, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+row = conn.execute("SELECT vincula_version, synced_at FROM node_snapshot").fetchone()
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert row is not None, "snapshot missing"
+assert row[0] == "0.5.9", row
+assert rows == 5, rows
+PY
+
+# (1b) identity change during the catch-up: fail, keep the pages committed by
+# this run, keep the previous snapshot.
+fr2_full_reset
+fr2_seed 5
+fr2_old_snap_rc=0
+fr2_old_snap=$(fleet sync --full --node lax --page-size 5 --json) || fr2_old_snap_rc=$?
+assert_equal "FR-02R seed an old snapshot before the drift run" 0 "$fr2_old_snap_rc"
+fr2_seed 8            # three new closed rows for the drift run to commit
+fr2_counter_reset     # identity call 1 = binding, call 2 = post-catch-up
+fr2_t1b_rc=0
+fr2_t1b=$(VCL_FAKE_IDENTITY_ALT_AFTER=2 \
+  VCL_FAKE_IDENTITY_ALT_INSTANCE="99999999-9999-4999-8999-999999999999" \
+  fleet sync --full --node lax --page-size 1 --json) || fr2_t1b_rc=$?
+assert_equal "FR-02R identity drift during catch-up exits 2" 2 "$fr2_t1b_rc"
+assert_success "FR-02R identity drift keeps pages and the old snapshot" python3 - \
+  "$fr2_t1b" "$FR2H" "$FR2_NID" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["state"] == "PARTIAL" and doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "IDENTITY_CHANGED", node
+assert node["error_phase"] == "identity", node
+assert node["error_field"] == "instance_id", node
+# The three pages this run committed stay committed.
+assert node["audit_pages"] == 3, node
+assert node["inserted"] == 3, node
+assert node["last_export_seq"] == 8, node
+text = node.get("error") or ""
+for leaked in (sys.argv[3], "99999999-9999-4999-8999-999999999999",
+               "203.0.113.10"):
+    assert leaked not in text, (leaked, text)
+assert node["error_actual"] == "99999999-9999-4999-8999-999999999999", node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+snap = conn.execute("SELECT vincula_version, synced_at FROM node_snapshot").fetchone()
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+cursor = conn.execute("SELECT last_export_seq FROM sync_cursor").fetchone()
+conn.close()
+assert rows == 8, rows
+assert int(cursor[0]) == 8, cursor
+# The snapshot seeded before the drift run is still the old 0.3.1 state.
+assert snap is not None and snap[0] == "0.3.1", snap
+PY
+
+# (1c) the snapshot uses its actual collection time, not the run start.
+assert_success "FR-02R snapshot timestamp is the collection time" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+order = []
+
+
+def fake_ssh_json(target, cmd, **kwargs):
+    if cmd[1] == "identity":
+        order.append("identity")
+        return "OK", {"node_id": node_id, "instance_id": iid,
+                      "vincula_version": "0.5.3"}, ""
+    if cmd[1] == "status":
+        order.append("status")
+        return "OK", {"proxy": {"ok": True}, "accounting": {"ok": True}}, ""
+    raise AssertionError(cmd)
+
+
+def fake_catch_up(*_a, **_k):
+    order.append("catch_up")
+    return {
+        "status": "ok", "pages": 3, "cursor": 7, "more_pending": False,
+        "inserted": 0, "updated": 0, "ignored": 0, "skipped_unlabeled": 0,
+        "last_event_id": 7, "error": None, "error_code": None,
+        "error_phase": None, "retryable": None,
+        "earliest_available_event_id": None, "max_event_id": None,
+        "max_export_seq": 7, "pruned_max_export_seq": 0,
+    }
+
+
+stamps = iter([f"2026-10-08T00:00:0{i}Z" for i in range(10)])
+fleet.ssh_remote_json = fake_ssh_json
+fleet._list_users_on_node = lambda *a, **k: ([], None)
+fleet.catch_up_audit_pages = fake_catch_up
+fleet.node_deadline_iso = lambda: next(stamps)
+conn = fleet.open_fleet_db()
+row = fleet.sync_full_one_node(conn, node, now_iso="2026-01-01T00:00:00Z")
+conn.close()
+assert row["status"] == "ok", row
+assert order[0] == "identity", order
+assert order[1] == "catch_up", order
+assert order.count("identity") == 2, order
+assert order.index("catch_up") < order.index("status"), order
+conn = fleet.open_fleet_db()
+synced = conn.execute(
+    "SELECT synced_at FROM node_snapshot WHERE node_id=?", (node_id,)
+).fetchone()
+conn.close()
+assert synced is not None, "snapshot missing"
+assert synced[0] != "2026-01-01T00:00:00Z", synced
+assert synced[0].startswith("2026-10-08T00:00:0"), synced
+PY
+
+# (2) the run budget is a real per-node deadline, not a pre-page check.
+assert_success "FR-02R budget covers import, locks and the snapshot txn" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" "$FR2_NID" <<'PY'
+import importlib.util, sqlite3, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = sys.argv[2]
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+home = Path(fleet.os.environ["VCL_FLEET_HOME"])
+
+
+def reset() -> None:
+    (home / "fleet.db").unlink(missing_ok=True)
+    Path(fleet.os.environ["VCL_FAKE_STATE_DIR"], "lax", "export-calls").unlink(
+        missing_ok=True
+    )
+
+
+# The guard bounds SQLite work: busy_timeout is clamped to the remaining
+# budget, a long statement is interruptible, and the settings are restored.
+conn = fleet.open_fleet_db()
+before = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+with fleet.sqlite_deadline_guard(conn, time.monotonic() + 1.0):
+    inner = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+after = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+assert inner <= 1100 and inner < before, (before, inner)
+assert after == before, (before, after)
+started = time.monotonic()
+try:
+    with fleet.sqlite_deadline_guard(conn, time.monotonic() + 0.2):
+        conn.execute(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
+            "WHERE x < 5000000) SELECT count(*) FROM c"
+        ).fetchone()
+except sqlite3.OperationalError:
+    pass
+else:
+    raise AssertionError("long statement was not interrupted")
+assert time.monotonic() - started < 5.0
+assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == before
+conn.close()
+
+# An import that overruns the budget rolls that page back and keeps the
+# earlier pages; it is a budget stop, not a generic database error.
+reset()
+real_rebuild = fleet.rebuild_daily_usage_for_node
+calls = {"n": 0}
+
+
+def slow_rebuild(c, n):
+    calls["n"] += 1
+    if calls["n"] >= 2:
+        time.sleep(2.0)
+    return real_rebuild(c, n)
+
+
+fleet.rebuild_daily_usage_for_node = slow_rebuild
+conn = fleet.open_fleet_db()
+opts = fleet.audit_page_options(None)
+opts["budget"] = 1.5
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "more_pending", out
+assert out["error_code"] == "BUDGET_EXHAUSTED", out
+assert out["error_phase"] == "audit_import", out
+assert out["retryable"] is True and out["more_pending"] is True, out
+assert out["pages"] == 1 and out["cursor"] == 1, out
+assert conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
+conn.close()
+fleet.rebuild_daily_usage_for_node = real_rebuild
+
+# A lock wait that outlives the budget is the same budget stop.
+reset()
+conn = fleet.open_fleet_db()
+blocker = fleet.open_fleet_db()
+real_page = fleet.ssh_audit_page
+held = {"done": False}
+
+
+def page_then_lock(*a, **k):
+    proc = real_page(*a, **k)
+    if not held["done"]:
+        held["done"] = True
+        blocker.execute("BEGIN EXCLUSIVE")
+    return proc
+
+
+fleet.ssh_audit_page = page_then_lock
+opts = fleet.audit_page_options(None)
+opts["budget"] = 1.5
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "more_pending", out
+assert out["error_code"] == "BUDGET_EXHAUSTED", out
+assert out["error_phase"] == "audit_import" and out["pages"] == 0, out
+fleet.ssh_audit_page = real_page
+blocker.rollback()
+blocker.close()
+conn.close()
+
+# A database error with budget left is still a database error.
+reset()
+conn = fleet.open_fleet_db()
+
+
+def broken(*_a, **_k):
+    raise sqlite3.OperationalError("database or disk is full")
+
+
+fleet.import_export_jsonl = broken
+opts = fleet.audit_page_options(None)
+opts["budget"] = 60
+opts["page_size"] = 1
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid, options=opts
+)
+assert out["status"] == "error", out
+assert out["error_code"] == "DATABASE_ERROR", out
+assert out["retryable"] is True, out
+conn.close()
+PY
+
+# (3) a missing watermark can never mean "caught up".
+fr2_full_reset
+fr2_t3_rc=0
+fr2_t3=$(VCL_FAKE_EXPORT_DROP_MAX_SEQ=1 fleet sync --node lax --page-size 5 --json) \
+  || fr2_t3_rc=$?
+assert_equal "FR-02R missing max_export_seq exits 2" 2 "$fr2_t3_rc"
+assert_success "FR-02R missing watermark is a protocol error, not success" python3 - \
+  "$fr2_t3" "$FR2H" <<'PY'
+import json, sqlite3, sys
+from pathlib import Path
+doc = json.loads(sys.argv[1])
+node = doc["nodes"][0]
+assert doc["ok"] is False, doc
+assert node["status"] == "error", node
+assert node["error_code"] == "META_MAX_EXPORT_SEQ_MISSING", node
+assert node["error_field"] == "max_export_seq", node
+assert node["audit_pages"] == 0 and node["inserted"] == 0, node
+assert node["last_export_seq"] == 0, node
+conn = sqlite3.connect(str(Path(sys.argv[2]) / "fleet.db"))
+rows = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+conn.close()
+assert rows == 0, rows
+PY
+fr2_t3b_rc=0
+fr2_t3b_err=$(VCL_FAKE_EXPORT_DROP_MAX_SEQ=1 fleet node retire lax 2>&1) \
+  || fr2_t3b_rc=$?
+assert_equal "FR-02R retire is blocked without a watermark" 1 "$fr2_t3b_rc"
+assert_success "FR-02R retire reports the protocol failure" \
+  grep -q 'final sync failed' <<< "$fr2_t3b_err"
+
+# (4) FR-04 leftovers: no endpoint, port or identity in any summary.
+assert_success "FR-02R transport failures carry no endpoint or port" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 255, "",
+    "ssh: connect to host 198.51.100.7 port 2222: Connection refused\n",
+)
+facts = {}
+node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "ssh_host": "198.51.100.7", "ssh_user": "root", "ssh_port": 2222}
+state, payload, detail = fleet.ssh_remote_json(
+    node, ["vcl", "identity", "--json"], facts=facts
+)
+assert state == "FAIL" and payload is None, (state, payload)
+assert facts["code"] == "TRANSPORT", facts
+assert facts["retryable"] is True, facts
+for leaked in ("198.51.100.7", "2222", "Connection refused"):
+    assert leaked not in detail, (leaked, detail)
+assert detail == "SSH transport failed", detail
+PY
+
+assert_success "FR-02R protocol rejections keep identities out of the text" python3 - \
+  "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
+        "ssh_user": "root", "ssh_port": 22}
+row = {"event_id": 1, "export_seq": 1, "node_id": other, "instance_id": iid}
+meta = {"ok": True, "protocol_version": 2, "cursor_kind": "export_seq",
+        "after": 0, "max_export_seq": 1, "pruned_max_export_seq": 0, "count": 1,
+        "node_id": other, "instance_id": iid, "next_cursor": 1}
+fleet.ssh_audit_page = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 0, json.dumps(row) + "\n", json.dumps(meta) + "\n"
+)
+conn = fleet.open_fleet_db()
+out = fleet.catch_up_audit_pages(
+    conn, node, now_iso="x", remote_iid=iid,
+    options=fleet.audit_page_options(None),
+)
+conn.close()
+assert out["status"] == "error", out
+assert out["error_code"] == "META_NODE_MISMATCH", out
+assert out["error"] == "export meta node_id does not match the registry node", out
+assert out["error_field"] == "node_id", out
+assert out["error_expected"] == node_id, out
+assert out["error_actual"] == other, out
+for leaked in (node_id, other, iid, "203.0.113.10"):
+    assert leaked not in out["error"], (leaked, out["error"])
+PY
+
+assert_success "FR-02R probe reports an unreachable node without leaking it" \
+  python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
+import importlib.util, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fleet", Path(sys.argv[1]))
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+
+fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
+    ["ssh"], 255, "",
+    "ssh: connect to host 203.0.113.12 port 22: Connection refused\n",
+)
+node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "ssh_host": "203.0.113.12", "ssh_user": "root", "ssh_port": 22,
+        "enabled": True}
+row = fleet.probe_node(node, want_verify=False)
+assert row["ssh"] == "FAIL", row
+assert row.get("ssh_reason") == "TRANSPORT", row
+detail = row.get("ssh_detail") or ""
+for leaked in ("203.0.113.12", "Connection refused", "port 22"):
+    assert leaked not in detail, (leaked, detail)
+PY
+
+export VCL_FLEET_HOME=$FR2_SAVED_HOME
+if [[ -n "$FR2_SAVED_STATE" ]]; then
+  export VCL_FLEET_LOCAL_STATE=$FR2_SAVED_STATE
+else
+  unset VCL_FLEET_LOCAL_STATE
+fi
+if [[ -n "$FR2_SAVED_CFG" ]]; then
+  export XDG_CONFIG_HOME=$FR2_SAVED_CFG
+else
+  export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
+  mkdir -p "$XDG_CONFIG_HOME"
+fi
+if [[ -n "$FR2_SAVED_FAKE" ]]; then
+  export VCL_FAKE_STATE_DIR=$FR2_SAVED_FAKE
+else
+  unset VCL_FAKE_STATE_DIR
+fi
+
 # G1: oversize fail-closed (unit-level)
 assert_success "obs050 oversize capabilities rejected" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
@@ -14764,7 +16131,7 @@ spec.loader.exec_module(mod)
 caps_mod = mod.load_observation_capabilities_module()
 big = {
     "schema": "capabilities/v1",
-    "node_version": "0.5.0",
+    "node_version": "0.5.3",
     "capabilities": [f"widget{i:03d}/v1" for i in range(80)],
 }
 
@@ -14790,7 +16157,7 @@ spec.loader.exec_module(tr)
 
 valid_cap = {
     "schema": "capabilities/v1",
-    "node_version": "0.5.0",
+    "node_version": "0.5.3",
     "capabilities": ["telemetry/v1"],
 }
 padded = (" " * 1_000_000) + json.dumps(valid_cap)
@@ -14929,7 +16296,7 @@ PY
 unset VCL_FAKE_STATE_DIR
 
 # Telemetry AUTH_FAILED → exit 1 (same as capabilities)
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.3
 export VCL_FAKE_OBSERVE_AUTH_FAIL=1
 export VCL_FAKE_OBSERVE_KEY_PATH="$OBS_AUTH_OBSERVE"
 obs_tel_auth_rc=0
@@ -14944,7 +16311,7 @@ unset VCL_FAKE_OBSERVE_AUTH_FAIL VCL_FAKE_OBSERVE_KEY_PATH VCL_FAKE_NODE_VERSION
 export VCL_FLEET_HOME="$OBS050_HOME"
 
 # Upgrade: already-at-target → SKIPPED (admin plan path)
-assert_success "obs050 upgrade apply SKIPPED when already 0.5.0" python3 - \
+assert_success "obs050 upgrade apply SKIPPED when already 0.5.3" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
 import importlib.util, os
 from pathlib import Path
@@ -14963,7 +16330,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         return (
             "OK",
             {
-                "vincula_version": "0.5.0",
+                "vincula_version": "0.5.3",
                 "node_id": node["node_id"],
                 "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             },
@@ -15001,7 +16368,7 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.3"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
@@ -15070,13 +16437,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.3"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.3"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15165,13 +16532,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.3"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.3"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15270,13 +16637,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.3"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.3"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15290,7 +16657,7 @@ class FakeProv:
     def _remote_stage_paths(self, stage):
         return {
             "tar": f"{stage}/payload.tar.gz",
-            "unpack": f"{stage}/vincula-node-0.5.0",
+            "unpack": f"{stage}/vincula-node-0.5.3",
         }
 
     def installer_remote_argv(self, path, **kwargs):
@@ -15312,7 +16679,7 @@ def fake_obs(node, remote_cmd, **kwargs):
     calls.append(cmd)
     if cmd[:2] == ["vcl", "identity"]:
         ident_n["n"] += 1
-        ver = "0.3.1" if ident_n["n"] == 1 else "0.5.0"
+        ver = "0.3.1" if ident_n["n"] == 1 else "0.5.3"
         return (
             "OK",
             {
@@ -15330,7 +16697,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         and cmd[1].endswith("/bin/vincula")
         and cmd[2:4] == ["upgrade", "checkpoint"]
     ):
-        assert cmd[1] == "/tmp/vcl-stage/vincula-node-0.5.0/bin/vincula", cmd
+        assert cmd[1] == "/tmp/vcl-stage/vincula-node-0.5.3/bin/vincula", cmd
         return "OK", {"ok": True, "path": "/var/backups/vincula/upgrade-checkpoint-x"}, ""
     if cmd[:3] == ["vcl", "upgrade", "checkpoint"]:
         raise AssertionError(f"must not call installed vcl upgrade checkpoint: {cmd}")
@@ -15341,7 +16708,7 @@ def fake_obs(node, remote_cmd, **kwargs):
             "OK",
             {
                 "schema": "capabilities/v1",
-                "node_version": "0.5.0",
+                "node_version": "0.5.3",
                 "capabilities": ["telemetry/v1"],
             },
             "",
@@ -15386,13 +16753,13 @@ spec.loader.exec_module(fleet)
 upg = fleet.load_node_upgrade_module()
 
 class FakeProv:
-    NODE_PAYLOAD_VERSION = "0.5.0"
+    NODE_PAYLOAD_VERSION = "0.5.3"
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
 
     def resolve_node_payload(self):
-        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.0"}
+        return {"tar": "/dev/null", "sha256": "x", "version": "0.5.3"}
 
     def verify_local_payload(self, resolved):
         return None
@@ -15436,7 +16803,7 @@ def fake_obs(node, remote_cmd, **kwargs):
         return (
             "OK",
             {
-                "vincula_version": "0.5.0",
+                "vincula_version": "0.5.3",
                 "node_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
                 "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             },
@@ -15461,7 +16828,7 @@ def fake_obs(node, remote_cmd, **kwargs):
             "OK",
             {
                 "schema": "capabilities/v1",
-                "node_version": "0.5.0",
+                "node_version": "0.5.3",
                 "capabilities": ["telemetry/v1"],
             },
             "",
@@ -15513,7 +16880,7 @@ node_id = sys.argv[2]
 (root / "config.toml").write_text("# minimal\n", encoding="utf-8")
 PY
 export VCL_FAKE_STATE_DIR="$UPG_STATE"
-export VCL_FAKE_NODE_VERSION=0.5.0
+export VCL_FAKE_NODE_VERSION=0.5.3
 export VCL_FAKE_TELEMETRY_AUDIT=1
 export VCL_FAKE_RESTART_COUNT=3
 fleet telemetry lax --json >/dev/null
@@ -15561,28 +16928,28 @@ assert_success "upg050-fail add lax" \
 export VCL_FAKE_STATE_DIR="$UPG_FAIL_STATE"
 export VCL_FAKE_UPGRADE=1
 export VCL_FAKE_MIGRATE_FAIL=1
-if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz" ]]; then
   bash "${PROJECT_DIR}/scripts/build-release.sh" >/dev/null
 fi
 UPG_FAIL_PAYLOAD="${TEST_TMP}/upg050-fail-payload"
 mkdir -p "$UPG_FAIL_PAYLOAD"
-cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_FAIL_PAYLOAD/"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz" "$UPG_FAIL_PAYLOAD/"
 python3 - "$UPG_FAIL_PAYLOAD" <<'PY'
 import hashlib, json
 from pathlib import Path
 root = Path(__import__("sys").argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
-    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+    json.dumps({"controller_version": "0.5.3", "node_payload_version": "0.5.3", "sha256": digest,
                 "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY
-export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.3.tar.gz"
 upg_fail_rc=0
 upg_fail_err=$(fleet node upgrade apply lax --yes --json 2>&1) || upg_fail_rc=$?
 assert_equal "upg050 migrate fail exits non-zero" 1 "$upg_fail_rc"
@@ -15616,28 +16983,28 @@ PY
 export VCL_FAKE_STATE_DIR="$UPG_OK_STATE"
 unset VCL_FAKE_NODE_VERSION
 UPG_PAYLOAD="${TEST_TMP}/upg050-payload"
-if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" ]]; then
+if [[ ! -f "${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz" ]]; then
   assert_success "upg050 build node release" bash "${PROJECT_DIR}/scripts/build-release.sh"
 fi
 mkdir -p "$UPG_PAYLOAD"
-cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz" "$UPG_PAYLOAD/"
+cp -f "${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz" "$UPG_PAYLOAD/"
 python3 - "$UPG_PAYLOAD" <<'PY'
 import hashlib, json
 from pathlib import Path
 root = Path(__import__("sys").argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
-    json.dumps({"controller_version": "0.5.0", "node_payload_version": "0.5.0", "sha256": digest,
+    json.dumps({"controller_version": "0.5.3", "node_payload_version": "0.5.3", "sha256": digest,
                 "supported_os": ["debian12"], "supported_arch": ["amd64"]}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY
 export VCL_FLEET_HOME="$OBS050_HOME"
-export VCL_NODE_ARCHIVE="$UPG_PAYLOAD/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="$UPG_PAYLOAD/vincula-node-0.5.3.tar.gz"
 export VCL_FAKE_UPGRADE=1
 UPG_ARGV_LOG="${TEST_TMP}/upg050-argv.log"
 export VCL_FAKE_SSH_ARGV_LOG="$UPG_ARGV_LOG"
@@ -15647,7 +17014,7 @@ import json, sys
 doc = json.loads(sys.argv[1])
 assert doc.get("ok") is True, doc
 assert doc.get("state") == "SUCCESS", doc
-assert doc.get("to_version") == "0.5.0", doc
+assert doc.get("to_version") == "0.5.3", doc
 assert doc.get("credential_class") == "admin", doc
 PY
 post_cap=$(fleet capabilities lax --json)
@@ -15677,7 +17044,7 @@ PY
 unset VCL_FAKE_UPGRADE VCL_NODE_ARCHIVE VCL_FAKE_SSH_ARGV_LOG
 unset VCL_FAKE_STATE_DIR VCL_FAKE_NODE_VERSION
 
-# --- G2 mixed-version fleet (0.3.x + 0.5.0) ---
+# --- G2 mixed-version fleet (0.3.x + 0.5.3) ---
 MIX050_HOME="${TEST_TMP}/mix050-fleet"
 MIX050_SAVED=$VCL_FLEET_HOME
 export VCL_FLEET_HOME="$MIX050_HOME"
@@ -15803,7 +17170,7 @@ assert ck.returncode == 0, ck.stderr
 doc = json.loads(ck.stdout)
 assert doc.get("ok") is True and doc.get("path"), doc
 # Simulate post-migrate VERSION bump
-(node / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+(node / "VERSION").write_text("0.5.3\n", encoding="utf-8")
 rb = subprocess.run(
     [
         sys.executable,
@@ -15840,7 +17207,7 @@ ck2 = subprocess.run(
         "root@203.0.113.10",
         "--",
         "bash",
-        "/tmp/stage/vincula-node-0.5.0/bin/vincula",
+        "/tmp/stage/vincula-node-0.5.3/bin/vincula",
         "upgrade",
         "checkpoint",
         "--json",
@@ -15869,7 +17236,7 @@ B6_SAVED_ALREADY=${VCL_FAKE_ALREADY_VINCULA:-}
 
 HK="$(fingerprint_of "$LAX_HOSTKEY_PUB")"
 
-B6_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.0.tar.gz"
+B6_PAYLOAD_SRC="${PROJECT_DIR}/dist/vincula-node-0.5.3.tar.gz"
 if [[ ! -f "$B6_PAYLOAD_SRC" ]]; then
   assert_success "B6 build node release for offline suite" \
     bash "${PROJECT_DIR}/scripts/build-release.sh"
@@ -15878,21 +17245,21 @@ fi
 b6_stage_payload() {
   local root=$1
   mkdir -p "$root"
-  cp -f "$B6_PAYLOAD_SRC" "$root/vincula-node-0.5.0.tar.gz"
+  cp -f "$B6_PAYLOAD_SRC" "$root/vincula-node-0.5.3.tar.gz"
   python3 - "$root" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 digest = hashlib.sha256(tar.read_bytes()).hexdigest()
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{digest}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{digest}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 (root / "payload-manifest.json").write_text(
     json.dumps(
         {
             "controller_version": "0.4.2",
-            "node_payload_version": "0.5.0",
+            "node_payload_version": "0.5.3",
             "sha256": digest,
             "supported_os": [
                 "debian12",
@@ -15912,7 +17279,7 @@ PY
 }
 
 b6_stage_payload "${TEST_TMP}/b6-good-payload"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.3.tar.gz"
 
 # B6-T1: add≡adopt; add --offline≡register (SSH counter zero)
 B6A=$TEST_TMP/b6-alias
@@ -15957,11 +17324,11 @@ python3 - "${TEST_TMP}/b6-dig-payload" <<'PY'
 import hashlib, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-tar = root / "vincula-node-0.5.0.tar.gz"
+tar = root / "vincula-node-0.5.3.tar.gz"
 actual = hashlib.sha256(tar.read_bytes()).hexdigest()
 bad = ("0" if actual[0] != "0" else "1") + actual[1:]
-(root / "vincula-node-0.5.0.tar.gz.sha256").write_text(
-    f"{bad}  vincula-node-0.5.0.tar.gz\n", encoding="utf-8"
+(root / "vincula-node-0.5.3.tar.gz.sha256").write_text(
+    f"{bad}  vincula-node-0.5.3.tar.gz\n", encoding="utf-8"
 )
 PY
 B6D=$TEST_TMP/b6-dig-home
@@ -15972,7 +17339,7 @@ assert_success "B6 dig home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-d.argv
 export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-dig-state"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-dig-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-dig-payload/vincula-node-0.5.3.tar.gz"
 b6_dig_rc=0
 b6_dig_err=$(fleet node provision dig --host 203.0.113.10 --host-key "$HK" 2>&1) || b6_dig_rc=$?
 if (( b6_dig_rc != 0 )); then
@@ -15984,7 +17351,7 @@ assert_success "B6 dig msg" grep -qi 'digest mismatch' <<<"$b6_dig_err"
 assert_failure "B6 no install" grep -q 'vincula.sh' "$TEST_TMP/b6-d.argv"
 
 # B6-T4: preflight failure modes + AC-4.2-03
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.3.tar.gz"
 unset VCL_FAKE_PROVISION
 unset VCL_FAKE_STATE_DIR
 B6PF=$TEST_TMP/b6-preflight
@@ -16026,7 +17393,7 @@ assert_success "B6 ok home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_SSH_ARGV_LOG=$TEST_TMP/b6-ok.argv
 export VCL_FAKE_STATE_DIR="${TEST_TMP}/b6-ok-state"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/b6-good-payload/vincula-node-0.5.3.tar.gz"
 assert_success "B6 prov ok" \
   fleet node provision provn --host 203.0.113.10 --host-key "$HK" --server 203.0.113.10 --no-sync
 assert_success "B6 prov list" grep -q '^provn ' <<< "$(fleet node list)"
@@ -16067,7 +17434,7 @@ assert_success "LIVE-P1 missing python3 provision succeeds" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-py-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-py.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-py-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, os, subprocess, sys
 from pathlib import Path
@@ -16110,7 +17477,7 @@ assert_success "LIVE-P1 apt failure is zero install and zero register" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-apt-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-apt.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-apt-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 from pathlib import Path
@@ -16154,7 +17521,7 @@ assert_success "LIVE-P1 root installer is env VCL_SERVER then bash" \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-root-state" \
     VCL_FAKE_SSH_ARGV_LOG="${TEST_TMP}/live-root.argv" \
     VCL_FLEET_HOME="${TEST_TMP}/live-root-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, json, os, subprocess, sys
 from pathlib import Path
@@ -16196,7 +17563,7 @@ assert_success "LIVE-P2 human progress and heartbeat go to stderr" \
     VCL_PROVISION_HEARTBEAT_SECONDS=0.2 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-hb-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-hb-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 
@@ -16258,7 +17625,7 @@ assert_success "LIVE-P2 installer 1MiB stdout completes (not timeout)" \
     VCL_PROVISION_INSTALL_TIMEOUT=15 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-1m-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-1m-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, os, subprocess, sys, time
 
@@ -16288,7 +17655,7 @@ export HOME=$LIVE_JSON_HOME VCL_FLEET_HOME=$LIVE_JSON_HOME
 assert_success "LIVE-P2 json home init" fleet init
 export VCL_FAKE_PROVISION=1
 export VCL_FAKE_STATE_DIR="$LIVE_JSON_STATE"
-export VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz"
+export VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz"
 json_rc=0
 json_out=$(fleet node provision jsontest --host 203.0.113.10 --host-key "$LIVE_HK" \
   --server 203.0.113.10 --no-sync --json 2>"${TEST_TMP}/live-json.err") || json_rc=$?
@@ -16314,7 +17681,7 @@ assert_success "LIVE-P2 install failure redacts secrets" \
     VCL_FAKE_INSTALL_FAIL=1 \
     VCL_FAKE_STATE_DIR="${TEST_TMP}/live-sec-state" \
     VCL_FLEET_HOME="${TEST_TMP}/live-sec-home" \
-    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.0.tar.gz" \
+    VCL_NODE_ARCHIVE="${TEST_TMP}/live-p1-payload/vincula-node-0.5.3.tar.gz" \
   python3 - "$PROJECT_DIR/lib/vincula-fleet.py" "$LIVE_HK" <<'PY'
 import importlib.util, io, os, subprocess, sys
 
@@ -16443,4 +17810,3 @@ else
   pass "P1 §5: real HOME known_hosts check at fleet suite end"
 fi
 unset _real_home _real_fp _after
-
