@@ -1406,6 +1406,8 @@ Wants=network-online.target
 Type=simple
 User=sing-box
 Group=sing-box
+# Go 1.24+ enables MPTCP by default for listeners; keep it off (CVE-2026-98432).
+Environment=GODEBUG=multipathtcp=0
 ExecStartPre=/usr/local/bin/sing-box check -c /etc/sing-box/config.json
 ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
 ExecReload=/bin/kill -HUP $MAINPID

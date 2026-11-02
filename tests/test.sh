@@ -521,6 +521,7 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
+assert_success "unit disables Go MPTCP listeners" grep -q '^Environment=GODEBUG=multipathtcp=0$' "${TEST_TMP}/sing-box.service"
 assert_success "keeps management state private by design" grep -q '^project_version = "0.5.3"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
