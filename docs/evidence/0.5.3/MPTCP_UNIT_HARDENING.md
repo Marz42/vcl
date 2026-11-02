@@ -2,7 +2,7 @@
 
 日期：2026-11-02（Asia/Shanghai）。分支 `codex/0.5.1`，源码基线 `75071d8`（2026-10-16），加固提交 `5685983`（父提交 `5a4fd8c`）。版本仍为 **0.5.3**，最低兼容 Node **0.3.1**，sing-box **1.13.18**。
 
-**RECONSTRUCTED LOCALLY / UNRELEASED / PENDING CI / PENDING RE-FREEZE / PENDING LIVE / PENDING HUMAN。**本页只记录把现场已经验证的 MPTCP 加固纳入源码与安装包的过程，不授权 push/merge/tag/release，也不替代 H05。
+**RECONSTRUCTED LOCALLY / CI PASS (run 41455589528) / UNRELEASED / PENDING RE-FREEZE / PENDING LIVE / PENDING HUMAN。**本页只记录把现场已经验证的 MPTCP 加固纳入源码与安装包的过程，不授权 push/merge/tag/release，也不替代 H05。
 
 ## 变更
 
@@ -28,6 +28,7 @@
 - Python 套件：本变更不涉及 Python runtime；2026-11-02 复跑 **155 项：153 PASS / 8 skip / 2 个既有 root-only 用例 FAIL**（本机无 sudo；CI 的 ubuntu job 用 `sudo -n` 覆盖）。
 - 构建：`scripts/build-release.sh` + `scripts/build-controller.sh`，`SOURCE_DATE_EPOCH=1793612077`（`5685983` 的提交时间）。Node tar 与 Controller embedded payload 均确认包含该行；sidecar、Node `release.lock`、Controller `controller.lock` 均校验通过。
 - 独立制品检查：`scripts/check-controller-artifact.py` → `PASS OFFLINE`（schema 16、cache-only 入口 4、`node_cli=NOT RUN`，本机非 root；CI 用 sudo 覆盖）。
+- 远端 required CI：[run 41455589528](https://github.com/Marz42/vcl/actions/runs/41455589528) 七个 job 全绿（Ubuntu、Debian 12/13、Windows、concurrency、failure-injection、artifact），`head_sha=56243b6`；脱敏快照见 [`REMOTE_CI_20261102_MPTCP.json`](REMOTE_CI_20261102_MPTCP.json)。
 
 ## 制品
 

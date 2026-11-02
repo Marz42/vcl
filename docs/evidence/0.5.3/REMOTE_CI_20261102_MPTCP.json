@@ -1,0 +1,68 @@
+{
+  "checked_date": "2026-11-02",
+  "repository": "Marz42/vcl",
+  "development": {
+    "branch": "codex/0.5.1",
+    "head_sha": "56243b6fadf63ef4816fda9032f8425fc614b029",
+    "scope": "MPTCP unit hardening rebuild: add GODEBUG=multipathtcp=0, regenerate release.lock, rebuild Node/Controller/payload, archive the 2026-10 field records and code review",
+    "pull_request": "https://github.com/Marz42/vcl/pull/13",
+    "draft": true,
+    "merged": false
+  },
+  "workflow": {
+    "id": 41455589528,
+    "workflow_id": 335684256,
+    "run_attempt": 1,
+    "head_sha": "56243b6fadf63ef4816fda9032f8425fc614b029",
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-11-02T13:44:33Z",
+    "updated_at": "2026-11-02T13:52:15Z",
+    "url": "https://github.com/Marz42/vcl/actions/runs/41455589528"
+  },
+  "check_runs": [
+    {
+      "name": "artifact",
+      "conclusion": "success"
+    },
+    {
+      "name": "concurrency",
+      "conclusion": "success"
+    },
+    {
+      "name": "failure-injection",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (debian:12)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (debian:13)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (ubuntu-latest)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (windows-latest)",
+      "conclusion": "success"
+    }
+  ],
+  "local_artifacts": {
+    "node_tar_sha256": "06e133fb9d67fc711aad6cab63e235e470c9c1a0e58da6765aa762f4b03837ec",
+    "controller_zip_sha256": "427fec191396adca39218bfd0e356ac66dc37820c3b5e833d3ad2831a8a6ac16",
+    "payload_manifest_sha256": "2c5f40f9d1db8df7f3aa8b45eb1b53c01654d7aca381cf730cdefcb41e7c946c",
+    "source_date_epoch": 1793612077,
+    "note": "本地制品按 source commit 5685983 的时间戳构建；CI 的 artifact job 自行重建并校验 sidecar/lock，不比较本地 SHA"
+  },
+  "notes": [
+    "七个 job 首次运行全部 success，包括 unit (windows-latest) 与 artifact",
+    "该提交包含源码、测试、lock 与 docs；CI 的 artifact job 从同一源码重建并校验 Node/Controller lock",
+    "本地完整 Bash 套件 1951/1951 PASS；Python 155 项中 2 个既有 root-only 用例在本机非 root 环境失败，CI 的 ubuntu job 用 sudo 覆盖",
+    "版本仍为 0.5.3；旧 CANDIDATE_FREEZE 的 Node 8abe989c / Controller 65dbcc7b 只对应旧构建，正式 H05 前仍需重新生成固定输入并重新冻结",
+    "本提交为 docs-only 的 CI 记录提交会另触发一次 ci run；该 run 不改变源码或制品"
+  ]
+}
