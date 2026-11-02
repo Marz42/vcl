@@ -6,6 +6,7 @@
 
 - 2026-11-02 SSH 凭据管理 v2（Controller-only；Node 保持 0.5.3）：`credential-bindings.json` 升级到 schema 2，新增 `agent`（`fingerprint` + 机器本地 `keys/<ref>.pub` 公钥选择器）与 `identity_file` 两种确定性模式，删除 `openssh-default` 连接路径。所有 SSH/SCP 统一加 `-F <os.devnull>`、显式 `-i` 与 `IdentitiesOnly=yes`，不再隐式遍历用户 SSH config/默认身份；Host Key Trust 与 `StrictHostKeyChecking=yes` 保持不变。新增 `access agent list`、`access bind REF --agent [--fingerprint]`、`access migrate`（交互式/非交互式，禁止猜测），以及 `access verify --json`、`node set --admin-credential-ref`。旧 v1 `identity_file` 按 v2 语义读取；`openssh-default`/无身份节点标记 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回 `CREDENTIAL_UNBOUND`、`AGENT_UNAVAILABLE`、`AGENT_KEY_MISSING` 或 `IDENTITY_FILE_MISSING`。合同见[SPEC](docs/specs/V0.5.4_SSH_Credential_Management.md)。
 - 现场注意：`~/.ssh/config` 中的 `ProxyJump`/`ProxyCommand`/自定义 Host 别名不会应用于 VCL 连接；多密钥环境使用 Agent 指纹选择或 Identity File。
+- 远端 [CI run 41484183321](https://github.com/Marz42/vcl/actions/runs/41484183321) 七个 job 全绿（含 Windows 与 artifact）；首次 Windows 失败为公钥选择器短/长路径归一化，已在 `2c5036d` 修复并保留在证据快照的 `earlier_runs`。见[0.5.4 证据](docs/evidence/0.5.4/CREDENTIALS.md)。
 
 ## 0.5.3 — local development candidate (2026-10-05, unreleased)
 

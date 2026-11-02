@@ -1,6 +1,6 @@
 # Controller 0.5.4 — SSH credential management
 
-**LOCAL IMPLEMENTATION / PASS OFFLINE / UNRELEASED / PENDING LIVE / PENDING HUMAN。**本页记录 Controller 0.5.4 的 SSH 凭据管理实现与离线验证，不授权 push/merge/tag/release，也不替代现场与 H05。
+**LOCAL IMPLEMENTATION / PASS OFFLINE / CI PASS (run 41484183321) / UNRELEASED / PENDING LIVE / PENDING HUMAN。**本页记录 Controller 0.5.4 的 SSH 凭据管理实现与离线验证，不授权 push/merge/tag/release，也不替代现场与 H05。
 
 日期：2026-11-02（Asia/Shanghai）。分支 `codex/0.5.1`，实现提交 `3f48cba`。**Controller `0.5.4`；Node 保持 `0.5.3`**；最低兼容 Node `0.3.1`。
 
@@ -35,6 +35,7 @@
 | Controller 构建 | `build-controller.sh` PASS；`controller.lock` + ZIP sidecar 校验通过 |
 | 独立 ZIP 黑盒 | `scripts/check-controller-artifact.py` → `PASS OFFLINE`（version 0.5.4、schema 16、cache-only 入口 4、`node_cli=NOT RUN`，本机非 root） |
 | 跨版本检查 | `check-controller-artifact.py` 已支持 Controller 0.5.4 与 Node payload 0.5.3 不同版本 |
+| 远端 required CI | [run 41484183321](https://github.com/Marz42/vcl/actions/runs/41484183321) 七个 job 全绿（含 Windows 与 artifact），`head_sha=2c5036d`；快照见 [`REMOTE_CI_20261103_CREDENTIALS.json`](REMOTE_CI_20261103_CREDENTIALS.json) |
 
 新增测试覆盖：Agent 指纹 >10 把、Agent 绑定、Identity File 绑定、v1 schema 迁移、legacy identity_file 状态、CREDENTIAL_UNBOUND/migration、`-F`/`-i`/`IdentitiesOnly` 的 SSH/SCP argv、node refs、`access migrate`、`access verify --json`。
 
@@ -54,4 +55,4 @@ payload manifest：`controller_version=0.5.4`、`node_payload_version=0.5.3`、`
 
 - 真实 VPS 上的 Agent/Identity File、observer 权限、SSH config 行为：**PENDING LIVE**。
 - H05：**PENDING HUMAN**；本次不代签、不发布。
-- 远端 required CI：本轮完成后另行运行。
+- 远端 required CI：[run 41484183321](https://github.com/Marz42/vcl/actions/runs/41484183321) 七个 job 全绿；首次 Windows 失败与修复记录在快照的 `earlier_runs`。
