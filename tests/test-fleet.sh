@@ -106,10 +106,14 @@ fi
 export HOME="${TEST_TMP}/user-home"
 export XDG_CONFIG_HOME="${TEST_TMP}/xdg-config"
 mkdir -p "${HOME}" "${XDG_CONFIG_HOME}"
+export SSH_THREE_KEY="${TEST_TMP}/ssh-three-key"
+printf 'test-only-not-a-real-key\n' > "$SSH_THREE_KEY"
+chmod 600 "$SSH_THREE_KEY"
 
 export VCL_FLEET_HOME="${TEST_TMP}/fleet-home"
 export VCL_FLEET_SSH="${PROJECT_DIR}/tests/fixtures/fake-ssh"
 export VCL_FLEET_SSH_KEYSCAN="${PROJECT_DIR}/tests/fixtures/fake-ssh-keyscan"
+export VCL_FLEET_SSH_ADD="${PROJECT_DIR}/tests/fixtures/fake-ssh-add.py"
 export VCL_FLEET_SCP="${PROJECT_DIR}/tests/fixtures/fake-scp"
 if [[ -n "${FLEET_SAVED_HOME}" && "${HOME}" != "${FLEET_SAVED_HOME}" ]]; then
   pass "P1 gate: fleet suite HOME isolated from real user dir"
@@ -165,6 +169,19 @@ if command -v ssh-keygen >/dev/null 2>&1; then
 fi
 
 fleet() {
+  # Most non-credential tests only need a deterministic fake identity; the
+  # dedicated credential tests disable this and use bare/unbound nodes.
+  if [[ "${1:-}" == "node" && ( "${2:-}" == "add" || "${2:-}" == "adopt" || "${2:-}" == "provision" ) && "${VCL_TEST_NO_DEFAULT_IDENTITY:-0}" != "1" ]]; then
+    local has_identity=0 has_help=0 arg
+    for arg in "$@"; do
+      [[ "$arg" == "--identity-file" ]] && has_identity=1
+      [[ "$arg" == "-h" || "$arg" == "--help" ]] && has_help=1
+    done
+    if (( ! has_identity && ! has_help )); then
+      python3 "${PROJECT_DIR}/lib/vincula-fleet.py" "$@" --identity-file "$SSH_THREE_KEY"
+      return
+    fi
+  fi
   python3 "${PROJECT_DIR}/lib/vincula-fleet.py" "$@"
 }
 
@@ -580,6 +597,7 @@ export VCL_FLEET_HOME="${SAVED_P11_HOME}"
 # --- 0.4.1 B2: D28 credential bindings + access CLI + SSH resolve (T11) ---
 SAVED_WS_B2_HOME="${VCL_FLEET_HOME}"
 export VCL_FLEET_HOME="${TEST_TMP}/ws-b2"
+export VCL_TEST_NO_DEFAULT_IDENTITY=1
 assert_success "B2 access workspace init" fleet workspace init
 B2_FID=$(python3 -c 'import json; print(json.load(open("'"${VCL_FLEET_HOME}/workspace.json"'"))["fleet_id"])')
 B2_KEY="${TEST_TMP}/ws-b2-id_ed25519"
@@ -598,27 +616,76 @@ if [[ "$B2_LIST" == *"$B2_ABS"* ]]; then
 else
   fail "B2 access list shows absolute identity path (${B2_LIST})"
 fi
-assert_success "B2 access verify after bind" fleet access verify
-assert_success "B2 access bind openssh-default" \
-  fleet access bind agent --openssh-default
+assert_success "B2 access verify after identity bind" fleet access verify
+
+export VCL_FAKE_AGENT_COUNT=12
+B2_AGENT_JSON=$(fleet access agent list --json)
+B2_FP=$(printf '%s' "$B2_AGENT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"][0]["fingerprint"])')
+assert_success "B2 agent list has >10 keys" python3 - "$B2_AGENT_JSON" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+assert doc["available"] is True, doc
+assert len(doc["keys"]) == 12, len(doc["keys"])
+assert all(k["fingerprint"].startswith("SHA256:") for k in doc["keys"])
+PY
+assert_success "B2 access bind agent by fingerprint" \
+  fleet access bind agent-key --agent --fingerprint "$B2_FP"
 B2_LIST2=$(fleet access list)
-if [[ "$B2_LIST2" == *"agent"* ]] && [[ "$B2_LIST2" == *"openssh-default"* ]]; then
-  pass "B2 access list shows openssh-default"
+if [[ "$B2_LIST2" == *"agent-key"*"agent"*"$B2_FP"* ]]; then
+  pass "B2 access list shows agent fingerprint"
 else
-  fail "B2 access list shows openssh-default (${B2_LIST2})"
+  fail "B2 access list shows agent fingerprint (${B2_LIST2})"
 fi
+B2_BIND_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B2_FID}/credential-bindings.json"
 assert_success "B2 bindings stay machine-local (not in fleet.json)" \
   bash -c '! grep -q credential-bindings "${VCL_FLEET_HOME}/fleet.json"'
-B2_BIND_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B2_FID}/credential-bindings.json"
 assert_success "B2 bindings file under CONFIG controllers" \
   test -f "$B2_BIND_PATH"
-assert_failure "B2 no bindings under workspace machine-local" \
-  test -f "${VCL_FLEET_HOME}/machine-local/credential-bindings.json"
+assert_success "B2 bindings file schema v2" python3 - "$B2_BIND_PATH" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+assert doc["schema_version"] == 2, doc
+entry = doc["bindings"]["agent-key"]
+assert entry["type"] == "agent", entry
+assert entry["fingerprint"].startswith("SHA256:"), entry
+assert entry["public_key_file"] == "keys/agent-key.pub", entry
+assert doc["bindings"]["admin-default"]["type"] == "identity_file", doc
+PY
+assert_success "B2 agent public key selector stored machine-locally" \
+  test -f "$(dirname "$B2_BIND_PATH")/keys/agent-key.pub"
+assert_success "B2 agent public key selector is not a private key" \
+  bash -c '! grep -q "PRIVATE KEY" "$(dirname "$1")/keys/agent-key.pub"' _ "$B2_BIND_PATH"
+if [[ -f "${VCL_FLEET_HOME}/machine-local/credential-bindings.json" ]]; then
+  fail "B2 unexpected legacy machine-local bindings"
+else
+  pass "B2 no bindings under workspace machine-local"
+fi
 assert_success "B2 controller.json under CONFIG" \
   test -f "${XDG_CONFIG_HOME:-$HOME/.config}/vincula/controllers/${B2_FID}/controller.json"
 
+# Node refs: both classes explicit; missing refs fail closed.
+assert_success "B2 node add for credential wiring" \
+  fleet node add b2-node --host 203.0.113.10 --offline --node-id "$TEST_NODE_ID"
+assert_failure "B2 node set rejects unbound admin ref" \
+  fleet node set b2-node --admin-credential-ref missing-ref
+assert_success "B2 node set admin+observe refs" \
+  fleet node set b2-node --admin-credential-ref admin-default --observe-credential-ref agent-key
+assert_success "B2 access verify after node refs" fleet access verify
+B2_NODE_SHOW=$(fleet node show b2-node)
+if [[ "$B2_NODE_SHOW" == *"admin_credential_ref=admin-default"* ]]; then
+  pass "B2 node show exposes credential refs"
+else
+  fail "B2 node show exposes credential refs (${B2_NODE_SHOW})"
+fi
+assert_success "B2 node add bare node" \
+  fleet node add b2-migrate --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+assert_failure "B2 access verify flags migration-required node" fleet access verify
+assert_success "B2 access migrate binds both classes" \
+  fleet access migrate --node b2-migrate --purpose both --identity-file "$B2_KEY"
+assert_success "B2 access verify after migration" fleet access verify
+
 ws_b2_rc=0
-python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$B2_KEY" "$FAKE_SSH" <<'PY' || ws_b2_rc=$?
+python3 - "${PROJECT_DIR}/lib/vincula-fleet.py" "$B2_KEY" "$FAKE_SSH" <<'PYEOF' || ws_b2_rc=$?
 import importlib.util
 import os
 import sys
@@ -631,7 +698,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 key = str(Path(key_path).resolve())
-node_ref = {"admin_credential_ref": "admin-default", "ssh_host": "203.0.113.10"}
+node_ref = {"name": "b2-node", "admin_credential_ref": "admin-default", "ssh_host": "203.0.113.10"}
 assert mod._node_identity_file(node_ref) == key
 argv_ref = mod.ssh_argv(
     "203.0.113.10",
@@ -641,25 +708,55 @@ argv_ref = mod.ssh_argv(
     batch=True,
     identity_file=mod._node_identity_file(node_ref),
 )
+assert "-F" in argv_ref and os.devnull in argv_ref
 assert "-i" in argv_ref
 assert key in argv_ref
 assert "IdentitiesOnly=yes" in argv_ref
+assert "PreferredAuthentications=publickey" in argv_ref
 
-legacy_key = Path(os.environ["VCL_FLEET_HOME"]) / "legacy-id"
-legacy_key.write_text("legacy-only\n", encoding="utf-8")
-node_legacy = {"identity_file": str(legacy_key), "ssh_host": "203.0.113.10"}
-leg_path = mod._node_identity_file(node_legacy)
-assert leg_path == str(legacy_key) or Path(leg_path).resolve() == legacy_key.resolve()
-argv_leg = mod.ssh_argv(
+node_agent = {
+    "name": "b2-node",
+    "admin_credential_ref": "agent-key",
+    "observe_credential_ref": "agent-key",
+    "ssh_host": "203.0.113.10",
+}
+agent_path = mod._node_identity_file(node_agent)
+assert agent_path.endswith("keys/agent-key.pub"), agent_path
+argv_agent = mod.ssh_argv(
     "203.0.113.10",
     "root",
     22,
     ["vcl", "identity", "--json"],
     batch=True,
-    identity_file=leg_path,
+    identity_file=agent_path,
 )
-assert "-i" in argv_leg
-assert "IdentitiesOnly=yes" in argv_leg
+assert agent_path in argv_agent
+assert "IdentitiesOnly=yes" in argv_agent
+assert mod.node_credential_state(node_agent) == "OK"
+
+legacy_key = Path(os.environ["VCL_FLEET_HOME"]) / "legacy-id"
+legacy_key.write_text("legacy-only\n", encoding="utf-8")
+node_legacy = {"name": "b2-legacy", "identity_file": str(legacy_key), "ssh_host": "203.0.113.10"}
+legacy_result = mod.resolve_identity(node_legacy, "admin")
+assert legacy_result["state"] == "OK"
+assert legacy_result["migration_required"] is True
+assert mod.node_credential_state(node_legacy) == "CREDENTIAL_MIGRATION_REQUIRED"
+
+bare = {"name": "b2-bare", "ssh_host": "203.0.113.10"}
+bare_result = mod.resolve_identity(bare, "admin")
+assert bare_result["state"] == "ERROR"
+assert bare_result["code"] == "CREDENTIAL_UNBOUND"
+assert bare_result["credential_state"] == "CREDENTIAL_MIGRATION_REQUIRED"
+argv_bare = mod.ssh_argv(
+    "203.0.113.10",
+    "root",
+    22,
+    ["vcl", "identity", "--json"],
+    batch=True,
+    identity_file=None,
+)
+assert "-i" not in argv_bare
+assert "IdentitiesOnly=yes" in argv_bare
 
 msgs = []
 orig_die = mod.die
@@ -671,39 +768,30 @@ def _capture_die(message, code=1):
 mod.die = _capture_die
 raised = False
 try:
-    mod._node_identity_file({"admin_credential_ref": "missing"})
+    mod.node_identity_file_for_class({"name": "b2-bare", "ssh_host": "203.0.113.10"}, "admin")
 except SystemExit:
     raised = True
 mod.die = orig_die
-assert raised, "expected unbound credential ref"
-assert any("unbound credential ref" in m for m in msgs), msgs
+assert raised, "expected migration-required failure"
+assert any("CREDENTIAL_UNBOUND" in m for m in msgs), msgs
 
-# Neither ref nor identity_file → no -i (ssh inject expectation unchanged)
-argv_bare = mod.ssh_argv(
-    "203.0.113.10",
-    "root",
-    22,
-    ["vcl", "identity", "--json"],
-    batch=True,
-    identity_file=mod._node_identity_file({"ssh_host": "203.0.113.10"}),
-)
-assert "-i" not in argv_bare
-assert "IdentitiesOnly=yes" not in argv_bare
-
-# openssh-default binding → None → no -i
-assert mod._node_identity_file({"admin_credential_ref": "agent"}) is None
+scp = mod.scp_argv(port=22, src="a", dest="root@203.0.113.10:/tmp/b")
+assert "-F" in scp and os.devnull in scp
+assert "IdentitiesOnly=yes" in scp
 
 # Bindings must not leak absolute key paths into portable fleet.json
 home = Path(os.environ["VCL_FLEET_HOME"])
 fleet_blob = (home / "fleet.json").read_text(encoding="utf-8")
 assert "credential-bindings" not in fleet_blob
 assert key not in fleet_blob
-PY
+PYEOF
 if (( ws_b2_rc == 0 )); then
-  pass "B2 credential ref resolve / legacy / unbound / no -i"
+  pass "B2 credential resolve / agent / migration state / strict argv"
 else
-  fail "B2 credential ref resolve / legacy / unbound / no -i"
+  fail "B2 credential resolve / agent / migration state / strict argv"
 fi
+unset VCL_FAKE_AGENT_COUNT
+unset VCL_TEST_NO_DEFAULT_IDENTITY
 export VCL_FLEET_HOME="${SAVED_WS_B2_HOME}"
 
 assert_success "fleet.db DDL includes instance_history" \
@@ -728,7 +816,7 @@ assert_success "load_audit_module resolves controller lib siblings" \
   grep -q 'def _controller_lib_dir(' "${PROJECT_DIR}/lib/vincula-fleet.py"
 
 VCL_FLEET_VERSION=$(grep -E '^VCL_FLEET_VERSION[[:space:]]*=' "${PROJECT_DIR}/lib/vincula-fleet.py"|head -1|sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
-assert_equal "CTRL 0.5.3" "0.5.3" "$VCL_FLEET_VERSION"
+assert_equal "CTRL 0.5.4" "0.5.4" "$VCL_FLEET_VERSION"
 VINCULA_NODE_VERSION=$(grep -E '^readonly VINCULA_VERSION=' "${PROJECT_DIR}/vincula.sh"|head -1|sed -E 's/.*=\"([^\"]+)\".*/\1/')
 assert_equal "NODE 0.5.3" "0.5.3" "$VINCULA_NODE_VERSION"
 assert_equal "vcl-fleet version" "vcl-fleet ${VCL_FLEET_VERSION}" \
@@ -943,6 +1031,16 @@ fleet = importlib.util.module_from_spec(fleet_spec)
 sys.modules["vincula_fleet"] = fleet
 fleet_spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 
 # incomplete flags → CLI die (no install)
 home = tmp / "fleet-home"
@@ -1516,7 +1614,7 @@ assert_success "duplicate name error names name" \
   grep -q 'duplicate name' <<< "$dup_name_err"
 
 assert_success "offline add sg" \
-  fleet node add sg --host 203.0.113.12 --offline --node-id "$TEST_SG_NODE_ID"
+  fleet node add sg --host 203.0.113.12 --offline --node-id "$TEST_SG_NODE_ID" --identity-file "$SSH_THREE_KEY"
 three=$(fleet node list)
 assert_success "AC-2.8-01 fixture lax listed" grep -q '^lax ' <<< "$three"
 assert_success "AC-2.8-01 fixture tokyo listed" grep -q '^tokyo ' <<< "$three"
@@ -1656,7 +1754,8 @@ assert "-p" in argv and "22" in argv
 assert "BatchMode=yes" in argv
 assert "IdentitiesOnly=no" not in argv
 assert "-i" not in argv
-assert "IdentitiesOnly=yes" not in argv
+assert "IdentitiesOnly=yes" in argv
+assert "-F" in argv and os.devnull in argv
 assert "root@203.0.113.10" in argv
 assert "--" in argv
 after = argv[argv.index("--") + 1 :]
@@ -2108,6 +2207,10 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
+from pathlib import Path
+hostkey_key = Path(home) / "hostkey-id"
+hostkey_key.write_text("test-only-hostkey\n", encoding="utf-8")
+
 line = open(lax_pub, encoding="utf-8").read().strip()
 fp = mod.fingerprint_sha256(line)
 assert fp.startswith("SHA256:"), fp
@@ -2186,6 +2289,7 @@ ns = argparse.Namespace(
     offline=False,
     host_key=None,
 )
+ns.identity_file = str(hostkey_key)
 ask_fail = False
 buf = io.StringIO()
 sys.stderr = buf
@@ -2210,6 +2314,7 @@ ns = argparse.Namespace(
     offline=False,
     host_key=None,
 )
+ns.identity_file = str(hostkey_key)
 bad_fail = False
 buf = io.StringIO()
 sys.stderr = buf
@@ -2232,6 +2337,7 @@ ns = argparse.Namespace(
     offline=False,
     host_key=None,
 )
+ns.identity_file = str(hostkey_key)
 sg_fail = False
 buf = io.StringIO()
 sys.stderr = buf
@@ -2254,6 +2360,7 @@ ns = argparse.Namespace(
     offline=False,
     host_key=None,
 )
+ns.identity_file = str(hostkey_key)
 badjson_fail = False
 buf = io.StringIO()
 sys.stderr = buf
@@ -2276,6 +2383,7 @@ ns = argparse.Namespace(
     offline=False,
     host_key=None,
 )
+ns.identity_file = str(hostkey_key)
 copied_fail = False
 buf = io.StringIO()
 sys.stderr = buf
@@ -2374,7 +2482,7 @@ ukh = f"UserKnownHostsFile={trust_kh}"
 assert ukh in argv_w, argv_w
 assert "StrictHostKeyChecking=yes" in argv_w
 assert "UserKnownHostsFile=/dev/null" not in " ".join(argv_w)
-assert "/dev/null" not in " ".join(argv_w)
+assert "-F" in argv_w and os.devnull in argv_w
 
 # (4) Reject evil UserKnownHostsFile under workspace
 raised = False
@@ -3244,7 +3352,7 @@ assert_success "invalid --host-key names SHA256" \
   grep -q 'SHA256:' <<< "$badfmt_err"
 
 badkey_pin_rc=0
-badkey_pin_err=$(fleet node add badkey --host 203.0.113.13 --host-key "$BADKEY_HOST_KEY" 2>&1) || badkey_pin_rc=$?
+badkey_pin_err=$(fleet node add badkey --host 203.0.113.13 --host-key "$BADKEY_HOST_KEY" --identity-file "$SSH_THREE_KEY" 2>&1) || badkey_pin_rc=$?
 if (( badkey_pin_rc != 0 )); then
   pass "node add 203.0.113.13 fails after pin"
 else
@@ -3256,7 +3364,7 @@ assert_failure "host-key failure does not register badkey" \
   grep -q 'badkey' "${VCL_FLEET_HOME}/fleet.json"
 
 assert_success "live SSH add lax with --host-key" \
-  fleet node add lax --host 203.0.113.10 --host-key "$LAX_HOST_KEY"
+  fleet node add lax --host 203.0.113.10 --host-key "$LAX_HOST_KEY" --identity-file "$SSH_THREE_KEY"
 lax_show=$(fleet node show lax)
 assert_success "live add registers remote node_id" \
   grep -q "node_id=${LAX_REMOTE_NODE_ID}" <<< "$lax_show"
@@ -3272,7 +3380,7 @@ assert_failure "known_hosts is not /dev/null" \
   grep -q '/dev/null' "${HOME}/.ssh/known_hosts"
 
 assert_success "live SSH add tokyo via user@host and --host-key" \
-  fleet node add tokyo --host root@203.0.113.11 --host-key "$TOKYO_HOST_KEY"
+  fleet node add tokyo --host root@203.0.113.11 --host-key "$TOKYO_HOST_KEY" --identity-file "$SSH_THREE_KEY"
 tokyo_show=$(fleet node show tokyo)
 assert_success "live tokyo uses remote node_id" \
   grep -q "node_id=${TEST_TOKYO_NODE_ID}" <<< "$tokyo_show"
@@ -3292,7 +3400,7 @@ assert_failure "SSH failure does not register sg before offline add" \
   grep -q '"name": "sg"' "${VCL_FLEET_HOME}/fleet.json"
 
 dup_live_rc=0
-dup_live_err=$(fleet node add lax2 --host 203.0.113.10 --host-key "$LAX_HOST_KEY" 2>&1) || dup_live_rc=$?
+dup_live_err=$(fleet node add lax2 --host 203.0.113.10 --host-key "$LAX_HOST_KEY" --identity-file "$SSH_THREE_KEY" 2>&1) || dup_live_rc=$?
 if (( dup_live_rc != 0 )); then
   pass "live SSH add rejects duplicate remote node_id"
 else
@@ -3302,7 +3410,8 @@ assert_success "live duplicate names node_id" \
   grep -q 'duplicate node_id' <<< "$dup_live_err"
 
 assert_success "offline add sg into SSH fleet home" \
-  fleet node add sg --host 203.0.113.12 --offline --node-id "$TEST_SG_NODE_ID"
+  fleet node add sg --host 203.0.113.12 --offline --node-id "$TEST_SG_NODE_ID" \
+    --identity-file "$SSH_THREE_KEY"
 ssh_three=$(fleet node list)
 assert_success "AC-2.8-01 SSH fleet list has lax" grep -q '^lax ' <<< "$ssh_three"
 assert_success "AC-2.8-01 SSH fleet list has tokyo" grep -q '^tokyo ' <<< "$ssh_three"
@@ -3504,8 +3613,8 @@ assert "controller_utc" in doc
 nodes = {n["name"]: n for n in doc["nodes"]}
 need = [
     "name", "ok", "vincula_version", "node_id", "instance_id", "enabled",
-    "ssh", "ssh_reason", "proxy", "accounting", "registry", "clock",
-    "clock_skew_seconds", "warnings", "checks",
+    "ssh", "ssh_reason", "credential_state", "proxy", "accounting",
+    "registry", "clock", "clock_skew_seconds", "warnings", "checks",
 ]
 assert list(nodes["lax"]) == need, list(nodes["lax"])
 assert nodes["lax"]["ssh_reason"] is None  # FR-04 machine code, null on success
@@ -4123,9 +4232,11 @@ export VCL_FAKE_STATE_DIR="$USER_FAKE_STATE"
 mkdir -p "$VCL_FLEET_HOME" "$VCL_FAKE_STATE_DIR"
 assert_success "user-test fleet init" fleet init
 assert_success "user-test offline add lax" \
-  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID"
+  fleet node add lax --host 203.0.113.10 --offline --node-id "$LAX_REMOTE_NODE_ID" \
+    --identity-file "$SSH_THREE_KEY"
 assert_success "user-test offline add tokyo" \
-  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID"
+  fleet node add tokyo --host 203.0.113.11 --offline --node-id "$TEST_TOKYO_NODE_ID" \
+    --identity-file "$SSH_THREE_KEY"
 
 add_alice_rc=0
 add_alice_out=$(fleet user add alice --nodes lax,tokyo --display-name Alice --department Engineering) || add_alice_rc=$?
@@ -13370,6 +13481,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13389,6 +13510,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13407,6 +13538,16 @@ fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 fleet.stdin_is_tty = lambda: False
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 raised = False
 buf = io.StringIO()
 old_err = sys.stderr
@@ -13451,6 +13592,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13470,6 +13621,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13488,6 +13649,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13504,6 +13675,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13525,6 +13706,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13547,6 +13738,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13564,6 +13765,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13584,6 +13795,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13602,6 +13823,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13622,6 +13853,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13647,6 +13888,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 result = prov.run_provision_preflight(
     ssh_host="203.0.113.10",
     host_key=host_key,
@@ -13679,6 +13930,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 
 src = Path(project) / "dist" / "vincula-node-0.5.3.tar.gz"
 root = Path(tmp) / "b3-mismatch"
@@ -13738,6 +13999,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 
 src = Path(project) / "dist" / "vincula-node-0.5.3.tar.gz"
 root = Path(tmp) / "b3-arch"
@@ -13823,6 +14094,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 os.environ.pop("VCL_NODE_ARCHIVE", None)
 os.environ.pop("VCL_PAYLOAD_MANIFEST", None)
 resolved = prov.resolve_node_payload()
@@ -13901,6 +14182,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -13950,6 +14241,16 @@ def fake_sync(args):
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -13992,6 +14293,16 @@ def boom(path, registry):
 
 fleet.save_registry = boom
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14031,6 +14342,16 @@ def fake_sync(args):
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14070,6 +14391,16 @@ def fake_sync(args):
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14122,6 +14453,16 @@ fleet.add_node(
 )
 fleet.save_registry(None, reg)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -14165,6 +14506,16 @@ def boom(registry, **kwargs):
 
 fleet.add_node = boom
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14198,6 +14549,16 @@ def fake_sync(args):
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14221,6 +14582,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 
 def fake_run_provision(**kwargs):
     return {
@@ -14280,6 +14651,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14331,6 +14712,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -14382,6 +14773,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -14495,6 +14896,16 @@ fleet.run_sync_full_payload = lambda args: (
     0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []}
 )
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14565,6 +14976,16 @@ fleet.run_sync_full_payload = lambda args: (
     0, {"operation": "sync_full", "state": "SUCCESS", "nodes": []}
 )
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -14608,6 +15029,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -14667,6 +15098,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -14716,6 +15157,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf_err, buf_out = io.StringIO(), io.StringIO()
 old_e, old_o = sys.stderr, sys.stdout
 sys.stderr, sys.stdout = buf_err, buf_out
@@ -14882,7 +15333,14 @@ assert fleet.node_identity_file_for_class(same_ref, "admin") == admin_key
 assert fleet.node_identity_file_for_class(same_ref, "observe") == admin_key
 assert fleet.node_identity_file_for_class(split_ref, "admin") == admin_key
 assert fleet.node_identity_file_for_class(split_ref, "observe") == observe_key
-assert fleet.node_identity_file_for_class({}, "observe") is None
+bare = fleet.resolve_identity({}, "admin")
+assert bare["state"] == "ERROR" and bare["code"] == "CREDENTIAL_UNBOUND", bare
+try:
+    fleet.node_identity_file_for_class({}, "observe")
+except SystemExit:
+    pass
+else:
+    raise AssertionError("bare observe must fail closed")
 PY
 
 OBS050_HOME="${TEST_TMP}/obs050-fleet"
@@ -15103,7 +15561,15 @@ def fake_ssh_run(host, user, port, command, **kwargs):
     return subprocess.CompletedProcess(command, 0, json.dumps(responses[command[1]]), "")
 
 fleet.ssh_run = fake_ssh_run
-fleet.node_identity_file_for_class = lambda _node, cls: f"{cls}-key"
+fleet.resolve_node_identity = lambda _node, cls: {
+    "state": "OK",
+    "type": "identity_file",
+    "path": f"{cls}-key",
+    "ref": None,
+    "purpose": cls,
+    "fingerprint": None,
+    "migration_required": False,
+}
 row = fleet.probe_node(node, want_verify=True)
 assert row["ok"] is True, row
 assert [cmd[0][1] for cmd in calls] == ["identity", "status", "verify"], calls
@@ -15232,6 +15698,15 @@ def fake_ssh_run(*_args, **_kwargs):
     )
 
 fleet.ssh_run = fake_ssh_run
+fleet.resolve_node_identity = lambda _node, _cls: {
+    "state": "OK",
+    "type": "identity_file",
+    "path": "test-key",
+    "ref": None,
+    "purpose": _cls,
+    "fingerprint": None,
+    "migration_required": False,
+}
 facts = {}
 state, payload, detail = fleet.ssh_remote_json(
     {
@@ -15651,7 +16126,8 @@ spec.loader.exec_module(fleet)
 node_id = sys.argv[2]
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
-        "ssh_user": "root", "ssh_port": 22}
+        "ssh_user": "root", "ssh_port": 22,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 conn = fleet.open_fleet_db()
 try:
     start = fleet._cursor_last_export_seq(conn, node_id)
@@ -15799,7 +16275,8 @@ spec.loader.exec_module(fleet)
 node_id = sys.argv[2]
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
-        "ssh_user": "root", "ssh_port": 22}
+        "ssh_user": "root", "ssh_port": 22,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 order = []
 
 
@@ -15862,7 +16339,8 @@ spec.loader.exec_module(fleet)
 node_id = sys.argv[2]
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
-        "ssh_user": "root", "ssh_port": 22}
+        "ssh_user": "root", "ssh_port": 22,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 home = Path(fleet.os.environ["VCL_FLEET_HOME"])
 
 
@@ -16027,7 +16505,8 @@ fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
 )
 facts = {}
 node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-        "ssh_host": "198.51.100.7", "ssh_user": "root", "ssh_port": 2222}
+        "ssh_host": "198.51.100.7", "ssh_user": "root", "ssh_port": 2222,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 state, payload, detail = fleet.ssh_remote_json(
     node, ["vcl", "identity", "--json"], facts=facts
 )
@@ -16052,7 +16531,8 @@ node_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 iid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 node = {"name": "lax", "node_id": node_id, "ssh_host": "203.0.113.10",
-        "ssh_user": "root", "ssh_port": 22}
+        "ssh_user": "root", "ssh_port": 22,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 row = {"event_id": 1, "export_seq": 1, "node_id": other, "instance_id": iid}
 meta = {"ok": True, "protocol_version": 2, "cursor_kind": "export_seq",
         "after": 0, "max_export_seq": 1, "pruned_max_export_seq": 0, "count": 1,
@@ -16091,7 +16571,8 @@ fleet.ssh_run = lambda *a, **k: subprocess.CompletedProcess(
 )
 node = {"name": "sg", "node_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         "ssh_host": "203.0.113.12", "ssh_user": "root", "ssh_port": 22,
-        "enabled": True}
+        "enabled": True,
+        "identity_file": __import__("os").environ["SSH_THREE_KEY"]}
 row = fleet.probe_node(node, want_verify=False)
 assert row["ssh"] == "FAIL", row
 assert row.get("ssh_reason") == "TRANSPORT", row
@@ -17450,6 +17931,16 @@ def fake_sync(args):
 
 fleet.run_sync_full_payload = fake_sync
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -17488,6 +17979,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf
@@ -17532,6 +18033,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 doc = prov.run_provision(
     name="lax",
     ssh_host="203.0.113.10",
@@ -17573,6 +18084,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 err = io.StringIO()
 old = sys.stderr
 sys.stderr = err
@@ -17602,6 +18123,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 cmd = [
     sys.executable,
     "-c",
@@ -17635,6 +18166,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 t0 = time.monotonic()
 doc = prov.run_provision(
     name="lax",
@@ -17691,6 +18232,16 @@ spec = importlib.util.spec_from_file_location("vincula_fleet", fleet_path)
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
 prov = fleet.load_provision_module()
+prov.run_provision = (
+    lambda _f: lambda *a, **kw: _f(
+        *a,
+        **{
+            **kw,
+            "identity_file": kw.get("identity_file")
+            or __import__("os").environ["SSH_THREE_KEY"],
+        },
+    )
+)(prov.run_provision)
 buf = io.StringIO()
 old = sys.stderr
 sys.stderr = buf

@@ -85,7 +85,7 @@ class ObserverTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[1], user)
             self.assertEqual(run.call_args.kwargs["identity_file"], credential)
         fleet.ssh_run = run
-        fleet.node_identity_file_for_class = lambda n, c: c
+        fleet.resolve_node_identity = lambda n, c: {"state": "OK", "type": "identity_file", "path": c, "ref": None, "purpose": c, "fingerprint": None, "migration_required": False}
         fleet.ssh_remote_json(node, ["vcl", "status", "--json"], credential_class="observe")
         self.assertEqual(run.call_args.args[1], "vincula-observer")
 

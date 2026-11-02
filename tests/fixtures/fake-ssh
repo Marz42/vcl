@@ -91,7 +91,7 @@ def _parse_argv(argv: list[str]) -> tuple[str, int, list[str]]:
             port = int(arg[2:])
             i += 1
             continue
-        if arg == "-o" and i + 1 < len(argv):
+        if arg in ("-o", "-F") and i + 1 < len(argv):
             i += 2
             continue
         if arg.startswith("-o") and len(arg) > 2:

@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.3"
+VCL_FLEET_VERSION = "0.5.4"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 4
@@ -504,15 +504,42 @@ def node_identity_file_for_class(
 
 
 BINDINGS_SCHEMA_VERSION = _AC.BINDINGS_SCHEMA_VERSION
+BINDINGS_LEGACY_SCHEMA_VERSION = _AC.BINDINGS_LEGACY_SCHEMA_VERSION
+AGENT_BINDING_TYPE = _AC.AGENT_BINDING_TYPE
+IDENTITY_BINDING_TYPE = _AC.IDENTITY_BINDING_TYPE
+MIGRATION_BINDING_TYPE = _AC.MIGRATION_BINDING_TYPE
+CREDENTIAL_STATE_OK = _AC.CREDENTIAL_STATE_OK
+CREDENTIAL_STATE_MIGRATION_REQUIRED = _AC.CREDENTIAL_STATE_MIGRATION_REQUIRED
+CREDENTIAL_PURPOSES = _AC.CREDENTIAL_PURPOSES
+ADMIN_REF_KEY = _AC.ADMIN_REF_KEY
+OBSERVE_REF_KEY = _AC.OBSERVE_REF_KEY
+CODE_CREDENTIAL_UNBOUND = _AC.CODE_CREDENTIAL_UNBOUND
+CODE_AGENT_UNAVAILABLE = _AC.CODE_AGENT_UNAVAILABLE
+CODE_AGENT_KEY_MISSING = _AC.CODE_AGENT_KEY_MISSING
+CODE_IDENTITY_FILE_MISSING = _AC.CODE_IDENTITY_FILE_MISSING
 credential_bindings_path = _AC.credential_bindings_path
+bindings_file_schema_version = _AC.bindings_file_schema_version
+binding_public_key_path = _AC.binding_public_key_path
 empty_bindings = _AC.empty_bindings
 load_bindings = _AC.load_bindings
 save_bindings = _AC.save_bindings
 bind_identity_file = _AC.bind_identity_file
-bind_openssh_default = _AC.bind_openssh_default
+bind_agent = _AC.bind_agent
+read_agent_keys = _AC.read_agent_keys
+agent_key_by_fingerprint = _AC.agent_key_by_fingerprint
+fingerprint_public_key_line = _AC.fingerprint_public_key_line
+normalize_fingerprint = _AC.normalize_fingerprint
 resolve_binding = _AC.resolve_binding
+resolve_identity = _AC.resolve_identity
+
+
+def resolve_node_identity(node: dict[str, Any], credential_class: str) -> dict[str, Any]:
+    return _AC.resolve_identity(node, credential_class)  # type: ignore[arg-type]
+node_credential_state = _AC.node_credential_state
 list_bindings = _AC.list_bindings
 verify_bindings = _AC.verify_bindings
+verify_bindings_report = _AC.verify_bindings_report
+migration_targets = _AC.migration_targets
 allocate_node_credential_ref = _AC.allocate_node_credential_ref
 plan_node_credential_binding = _AC.plan_node_credential_binding
 affected_binding_consumers = _AC.affected_binding_consumers
@@ -2624,14 +2651,33 @@ def cmd_node_show(name: str) -> int:
         if isinstance(value, bool):
             value = "true" if value else "false"
         sys.stdout.write(f"{key}={value}\n")
+    sys.stdout.write(f"credential_state={node_credential_state(node)}\n")
     return 0
+
+
+def _require_bound_ref(ref: str, purpose: str) -> None:
+    binding = list_bindings().get(ref)
+    if binding is None:
+        die(
+            f"{CODE_CREDENTIAL_UNBOUND}: credential ref {ref} is not bound; "
+            f"run access bind {ref} --agent|--identity-file first"
+        )
+    if binding.get("type") == MIGRATION_BINDING_TYPE:
+        die(
+            f"{CODE_CREDENTIAL_UNBOUND}: credential ref {ref} requires migration; "
+            "run access migrate or rebind it"
+        )
+    if purpose not in CREDENTIAL_PURPOSES:
+        die(f"invalid credential purpose: {purpose}")
 
 
 @with_fleet_op_lock
 def cmd_node_set(args: argparse.Namespace) -> int:
-    """Endpoint rebind and/or local SSH identity / observe credential binding."""
+    """Endpoint rebind and/or local SSH identity / credential-ref binding."""
     identity_raw = _optional_text(getattr(args, "identity_file", None))
     clear_identity = bool(getattr(args, "clear_identity_file", False))
+    admin_ref = _optional_text(getattr(args, "admin_credential_ref", None))
+    clear_admin = bool(getattr(args, "clear_admin_credential_ref", False))
     observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
     observe_identity = _optional_text(getattr(args, "observe_identity_file", None))
     observe_user = _optional_text(getattr(args, "observe_ssh_user", None))
@@ -2639,6 +2685,10 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     host = _optional_text(getattr(args, "host", None))
     if identity_raw and clear_identity:
         die("use either --identity-file or --clear-identity-file")
+    if identity_raw and admin_ref:
+        die("use either --identity-file or --admin-credential-ref")
+    if admin_ref and clear_admin:
+        die("cannot clear admin credential while setting it")
     if observe_ref and observe_identity:
         die("use either --observe-credential-ref or --observe-identity-file")
     if (observe_ref or observe_identity) and clear_observe:
@@ -2647,6 +2697,8 @@ def cmd_node_set(args: argparse.Namespace) -> int:
         not host
         and not identity_raw
         and not clear_identity
+        and not admin_ref
+        and not clear_admin
         and not observe_ref
         and not observe_identity
         and not observe_user
@@ -2654,6 +2706,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     ):
         die(
             "node set requires --host and/or --identity-file/--clear-identity-file "
+            "and/or --admin-credential-ref/--clear-admin-credential-ref "
             "and/or --observe-credential-ref/--observe-identity-file/"
             "--clear-observe-credential-ref"
         )
@@ -2663,6 +2716,12 @@ def cmd_node_set(args: argparse.Namespace) -> int:
     node = require_node(registry, args.name)
     if observe_user:
         node["observe_ssh_user"] = validate_ssh_user(observe_user)
+    if clear_admin:
+        node.pop("admin_credential_ref", None)
+    elif admin_ref:
+        _require_bound_ref(admin_ref, "admin")
+        node["admin_credential_ref"] = admin_ref
+        node.pop("identity_file", None)
     if clear_identity:
         node.pop("identity_file", None)
     elif identity_raw:
@@ -2681,7 +2740,7 @@ def cmd_node_set(args: argparse.Namespace) -> int:
             die("--observe-identity-file requires an active workspace")
         _apply_node_credential(node, "observe", observe_identity)
     elif observe_ref:
-        # Ref must already be bound on this machine (or operator accepts pending).
+        _require_bound_ref(observe_ref, "observe")
         node["observe_credential_ref"] = observe_ref
     save_registry(None, registry)
     sys.stdout.write(f"Updated {args.name}\n")
@@ -3946,6 +4005,20 @@ def ssh_remote_json(
     ``facts`` optionally receives the structured FR-04 classification
     (phase/code/state/retryable/summary/hint).
     """
+    credential = resolve_node_identity(node, credential_class)
+    if credential["state"] != "OK":
+        classified = load_ssh_transport_module().credential_failure_facts(
+            str(credential.get("code") or CODE_CREDENTIAL_UNBOUND),
+            credential_state=credential.get("credential_state"),
+        )
+        if facts is not None:
+            facts.clear()
+            facts.update(classified)
+        return (
+            "FAIL",
+            None,
+            load_ssh_transport_module().operator_failure_text(classified),
+        )
     proc = ssh_run(
         node["ssh_host"],
         node.get("observe_ssh_user", node["ssh_user"]) if credential_class == "observe" else node["ssh_user"],
@@ -3953,7 +4026,7 @@ def ssh_remote_json(
         remote_cmd,
         batch=True,
         extra=extra,
-        identity_file=node_identity_file_for_class(node, credential_class),
+        identity_file=credential["path"],
         timeout=timeout,
     )
     raw_detail = _ssh_failure_detail(proc)
@@ -4000,13 +4073,20 @@ def ssh_remote_text(
     FAIL = unreachable (exit 255 / timeout). OK = host reached; stdout may
     still be empty if the remote command failed (detail then has stderr).
     """
+    credential = resolve_node_identity(node, "admin")
+    if credential["state"] != "OK":
+        classified = load_ssh_transport_module().credential_failure_facts(
+            str(credential.get("code") or CODE_CREDENTIAL_UNBOUND),
+            credential_state=credential.get("credential_state"),
+        )
+        return "FAIL", "", load_ssh_transport_module().operator_failure_text(classified)
     proc = ssh_run(
         node["ssh_host"],
         node["ssh_user"],
         node["ssh_port"],
         remote_cmd,
         batch=True,
-        identity_file=_node_identity_file(node),
+        identity_file=credential["path"],
         timeout=timeout,
     )
     stdout = proc.stdout or ""
@@ -4059,6 +4139,9 @@ def _record_ssh_facts(row: dict[str, Any], facts: dict[str, Any]) -> None:
     hint = _optional_text(facts.get("hint"))
     if hint:
         row["ssh_hint"] = hint
+    credential_state = _optional_text(facts.get("credential_state"))
+    if credential_state:
+        row["credential_state"] = credential_state
 
 
 def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
@@ -4078,6 +4161,7 @@ def _empty_probe_row(node: dict[str, Any]) -> dict[str, Any]:
         "ssh_detail": "",
         "ssh_reason": None,
         "ssh_hint": None,
+        "credential_state": None,
         "warnings": [],
         "checks": [],
         "ok": True,
@@ -4091,6 +4175,7 @@ def probe_node(
     previous_instances: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     row = _empty_probe_row(node)
+    row["credential_state"] = node_credential_state(node)
     life = node_lifecycle_status(node)
     if life == NODE_STATUS_RETIRED:
         row["ssh"] = "-"
@@ -4098,6 +4183,7 @@ def probe_node(
         row["accounting"] = "-"
         row["registry"] = "-"
         row["clock"] = "-"
+        row["credential_state"] = "-"
         row["ok"] = True
         return row
     if life == NODE_STATUS_DISABLED or not node.get("enabled", True):
@@ -4106,6 +4192,7 @@ def probe_node(
         row["accounting"] = "DISABLED"
         row["registry"] = "DISABLED"
         row["clock"] = "DISABLED"
+        row["credential_state"] = "DISABLED"
         row["ok"] = True
         return row
 
@@ -4238,6 +4325,10 @@ def format_status_table(rows: list[dict[str, Any]]) -> str:
             f"{row['ssh']:<11} {row['proxy']:<7} {row['accounting']}"
         )
         if row["ssh"] in ("FAIL", "AUTH_FAILED"):
+            if row.get("credential_state") and row["credential_state"] != CREDENTIAL_STATE_OK:
+                lines.append(
+                    f"  {row['name']}: credential_state={row['credential_state']}"
+                )
             if row.get("ssh_reason"):
                 lines.append(f"  {row['name']}: ssh_reason={row['ssh_reason']}")
             if row.get("ssh_hint"):
@@ -4271,6 +4362,8 @@ def format_verify_report(rows: list[dict[str, Any]]) -> str:
             parts.append(f"  ssh_detail: {row['ssh_detail']}")
         if row.get("ssh_reason") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
             parts.append(f"  ssh_reason: {row['ssh_reason']}")
+        if row.get("credential_state") and row["credential_state"] != CREDENTIAL_STATE_OK:
+            parts.append(f"  credential_state: {row['credential_state']}")
         if row.get("ssh_hint") and row["ssh"] in ("FAIL", "AUTH_FAILED"):
             parts.append(f"  next: {row['ssh_hint']}")
         for warning in row.get("warnings") or []:
@@ -4305,6 +4398,8 @@ def _status_json_node(row: dict[str, Any]) -> dict[str, Any]:
         doc["ssh_detail"] = row["ssh_detail"]
     if row.get("ssh_reason"):
         doc["ssh_reason"] = row["ssh_reason"]
+    if row.get("credential_state"):
+        doc["credential_state"] = row["credential_state"]
     return doc
 
 
@@ -4318,6 +4413,7 @@ def _verify_json_node(row: dict[str, Any]) -> dict[str, Any]:
         "enabled": row.get("enabled", True),
         "ssh": row["ssh"],
         "ssh_reason": row.get("ssh_reason"),
+        "credential_state": row.get("credential_state"),
         "proxy": row["proxy"],
         "accounting": row["accounting"],
         "registry": row["registry"],
@@ -8186,16 +8282,115 @@ def cmd_workspace_import(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_access_list(_args: argparse.Namespace) -> int:
+def _binding_detail(binding: dict[str, Any]) -> str:
+    btype = binding.get("type")
+    if btype == AGENT_BINDING_TYPE:
+        return f"{binding.get('fingerprint')} {binding.get('public_key_file')}"
+    if btype == IDENTITY_BINDING_TYPE:
+        return str(binding.get("path") or "-")
+    if btype == MIGRATION_BINDING_TYPE:
+        return f"legacy={binding.get('legacy_type') or 'unknown'}"
+    return "-"
+
+
+def cmd_access_list(args: argparse.Namespace) -> int:
     bindings = list_bindings()
+    on_disk = bindings_file_schema_version()
+    if getattr(args, "as_json", False):
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "on_disk_bindings_schema_version": on_disk,
+                    "bindings": bindings,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        return 0
     for ref in sorted(bindings):
         binding = bindings[ref]
         btype = binding.get("type") if isinstance(binding, dict) else ""
-        if isinstance(binding, dict) and btype == "identity_file":
-            path = binding.get("path") or "-"
-        else:
-            path = "-"
-        sys.stdout.write(f"{ref}\t{btype}\t{path}\n")
+        sys.stdout.write(f"{ref}\t{btype}\t{_binding_detail(binding)}\n")
+    return 0
+
+
+def _agent_selection_from_tty() -> str:
+    snapshot = read_agent_keys()
+    if snapshot["state"] != "OK":
+        die(
+            f"{snapshot['state']}: {snapshot.get('detail') or 'agent unavailable'}\n"
+            "next: start the SSH agent and load a key, then retry",
+            1,
+        )
+    keys = snapshot["keys"]
+    if not keys:
+        die(
+            f"{CODE_AGENT_KEY_MISSING}: the SSH agent has no identities\n"
+            "next: load the intended key (for example: pass show ... | ssh-add -)",
+            1,
+        )
+    for index, key in enumerate(keys, start=1):
+        sys.stderr.write(
+            f"  {index}) {key['fingerprint']}  {key['key_type']}  {key.get('comment') or ''}\n"
+        )
+    sys.stderr.write("select an agent key by number: ")
+    sys.stderr.flush()
+    raw = sys.stdin.readline().strip()
+    if not raw:
+        die("agent selection cancelled", 2)
+    try:
+        index = int(raw)
+    except ValueError:
+        die("agent selection must be a number", 2)
+    if index < 1 or index > len(keys):
+        die("agent selection out of range", 2)
+    return keys[index - 1]["fingerprint"]
+
+
+def _agent_fingerprint_from_args(args: argparse.Namespace) -> str:
+    raw = _optional_text(getattr(args, "fingerprint", None))
+    if raw:
+        return raw
+    if not sys.stdin.isatty():
+        die("--fingerprint is required when stdin is not a TTY", 2)
+    return _agent_selection_from_tty()
+
+
+def cmd_access_agent_list(args: argparse.Namespace) -> int:
+    snapshot = read_agent_keys()
+    available = snapshot["state"] == "OK"
+    if getattr(args, "as_json", False):
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "available": available,
+                    "state": snapshot["state"],
+                    "keys": snapshot["keys"],
+                    "detail": snapshot.get("detail") or "",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        return 0 if available else 1
+    if not available:
+        die(
+            f"{snapshot['state']}: {snapshot.get('detail') or 'agent unavailable'}\n"
+            "next: start the SSH agent and load the intended key",
+            1,
+        )
+    if not snapshot["keys"]:
+        sys.stdout.write("no identities loaded in the SSH agent\n")
+        return 0
+    for key in snapshot["keys"]:
+        sys.stdout.write(
+            f"{key['fingerprint']}\t{key['key_type']}\t{key.get('comment') or ''}\n"
+        )
     return 0
 
 
@@ -8208,22 +8403,157 @@ def cmd_access_bind(args: argparse.Namespace) -> int:
     """
     ref = str(args.ref)
     consumers = affected_binding_consumers(ref)
-    if getattr(args, "openssh_default", False):
-        bind_openssh_default(ref)
+    if getattr(args, "fingerprint", None) and not getattr(args, "agent", False):
+        die("--fingerprint requires --agent", 2)
+    if getattr(args, "agent", False):
+        fingerprint = _agent_fingerprint_from_args(args)
+        binding = bind_agent(ref, fingerprint)
     else:
-        bind_identity_file(ref, str(args.identity_file))
+        binding = bind_identity_file(ref, str(args.identity_file))
     if consumers:
         sys.stderr.write(
             f"note: {ref} is shared by {', '.join(consumers)}; "
             f"all of them now use this credential\n"
         )
+    sys.stdout.write(f"bound {ref}\t{binding.get('type')}\t{_binding_detail(binding)}\n")
     return 0
 
 
-def cmd_access_verify(_args: argparse.Namespace) -> int:
-    problems = verify_bindings()
-    if problems:
-        die("\n".join(problems), 1)
+def cmd_access_verify(args: argparse.Namespace) -> int:
+    report = verify_bindings_report()
+    if getattr(args, "as_json", False):
+        sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    elif report["ok"]:
+        sys.stdout.write(
+            "credential bindings OK: "
+            f"{len(report['bindings'])} binding(s), {len(report['nodes'])} node/class row(s)\n"
+        )
+    else:
+        for problem in report["problems"]:
+            where = problem.get("node") or problem.get("ref") or "bindings"
+            purpose = f":{problem['purpose']}" if problem.get("purpose") else ""
+            sys.stderr.write(
+                f"{problem.get('code') or 'ERROR'}: {where}{purpose}: "
+                f"{problem.get('message') or 'credential problem'}\n"
+            )
+        sys.stderr.write("next: run vcl-fleet access migrate, or rebind with access bind\n")
+    return 0 if report["ok"] else 1
+
+
+def _migration_targets_for_args(args: argparse.Namespace) -> list[dict[str, Any]]:
+    node_name = _optional_text(getattr(args, "node", None))
+    purpose = str(getattr(args, "purpose", "both") or "both")
+    targets = migration_targets()
+    if node_name:
+        targets = [row for row in targets if row["node"] == node_name]
+    if purpose in CREDENTIAL_PURPOSES:
+        targets = [row for row in targets if row["purpose"] == purpose]
+    return targets
+
+
+def _migration_selection(args: argparse.Namespace) -> tuple[str, str]:
+    """Return (kind, value) where kind is agent|identity_file. Never guesses."""
+    identity_file = _optional_text(getattr(args, "identity_file", None))
+    use_agent = bool(getattr(args, "agent", False))
+    if identity_file and use_agent:
+        die("use either --agent or --identity-file for access migrate", 2)
+    if identity_file:
+        return IDENTITY_BINDING_TYPE, validate_identity_file(identity_file, must_exist=True)
+    if use_agent:
+        return AGENT_BINDING_TYPE, _agent_fingerprint_from_args(args)
+    if not sys.stdin.isatty():
+        die(
+            "access migrate needs --agent --fingerprint or --identity-file "
+            "when stdin is not a TTY",
+            2,
+        )
+    snapshot = read_agent_keys()
+    if snapshot["state"] == "OK" and snapshot["keys"]:
+        for index, key in enumerate(snapshot["keys"], start=1):
+            sys.stderr.write(
+                f"  {index}) {key['fingerprint']}  {key['key_type']}  "
+                f"{key.get('comment') or ''}\n"
+            )
+        sys.stderr.write(
+            "select an agent key by number, or enter an identity-file path: "
+        )
+    else:
+        if snapshot["state"] != "OK":
+            sys.stderr.write(
+                f"SSH agent unavailable: {snapshot.get('detail') or 'unknown'}\n"
+            )
+        sys.stderr.write("enter an identity-file path: ")
+    sys.stderr.flush()
+    raw = sys.stdin.readline().strip()
+    if not raw:
+        die("migration cancelled", 2)
+    if raw.isdigit() and snapshot["state"] == "OK":
+        index = int(raw)
+        if index < 1 or index > len(snapshot["keys"]):
+            die("agent selection out of range", 2)
+        return AGENT_BINDING_TYPE, snapshot["keys"][index - 1]["fingerprint"]
+    return IDENTITY_BINDING_TYPE, validate_identity_file(raw, must_exist=True)
+
+
+@with_fleet_op_lock
+def cmd_access_migrate(args: argparse.Namespace) -> int:
+    targets = _migration_targets_for_args(args)
+    if not targets:
+        if bindings_file_schema_version() == BINDINGS_LEGACY_SCHEMA_VERSION:
+            save_bindings(load_bindings())
+            sys.stdout.write(
+                "converted credential-bindings schema v1 to v2; "
+                "no node credential targets remain\n"
+            )
+            return 0
+        sys.stdout.write("no credential migration required\n")
+        return 0
+    kind, value = _migration_selection(args)
+    registry = load_registry()
+    changed: list[dict[str, Any]] = []
+    touched_refs: set[str] = set()
+    for target in targets:
+        name = target["node"]
+        purpose = target["purpose"]
+        node = require_node(registry, name)
+        ref = _optional_text(target.get("ref"))
+        if not ref:
+            ref = allocate_node_credential_ref(name, purpose)
+            touched_refs.add(ref)
+        shared = affected_binding_consumers(ref)
+        if shared and ref not in touched_refs:
+            sys.stderr.write(
+                f"note: {ref} is shared by {', '.join(shared)}; "
+                f"all of them now use this credential\n"
+            )
+        if kind == AGENT_BINDING_TYPE:
+            bind_agent(ref, str(value))
+        else:
+            bind_identity_file(ref, str(value))
+        key = ADMIN_REF_KEY if purpose == "admin" else OBSERVE_REF_KEY
+        node[key] = ref
+        node.pop("identity_file", None)
+        changed.append({"node": name, "purpose": purpose, "ref": ref})
+    save_registry(None, registry)
+    if getattr(args, "as_json", False):
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": kind,
+                    "changed": changed,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    else:
+        for row in changed:
+            sys.stdout.write(
+                f"migrated {row['node']} {row['purpose']} -> {row['ref']} "
+                f"({kind})\n"
+            )
     return 0
 
 
@@ -8424,20 +8754,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_set.add_argument(
         "--identity-file",
         dest="identity_file",
-        help="local SSH private key; passed as -i with IdentitiesOnly=yes",
+        help="local SSH private key; creates a copy-on-write credential ref",
+    )
+    p_set.add_argument(
+        "--admin-credential-ref",
+        dest="admin_credential_ref",
+        help="assign an already-bound credential ref to the admin class",
+    )
+    p_set.add_argument(
+        "--clear-admin-credential-ref",
+        dest="clear_admin_credential_ref",
+        action="store_true",
+        help="remove admin_credential_ref (node becomes migration-required)",
     )
     p_set.add_argument(
         "--clear-identity-file",
         dest="clear_identity_file",
         action="store_true",
-        help="stop passing -i (use agent / default keys again)",
+        help="remove the legacy identity_file field (does not clear a credential ref)",
     )
     p_set.add_argument(
         "--observe-credential-ref",
         dest="observe_credential_ref",
         help=(
-            "set observe_credential_ref explicitly (may equal admin ref; "
-            "Spec §7.2 forbids implicit share)"
+            "assign an already-bound credential ref to the observe class "
+            "(may equal the admin ref)"
         ),
     )
     p_set.add_argument("--observe-ssh-user", help="explicit restricted SSH username for observation only")
@@ -9149,8 +9490,44 @@ def build_parser() -> argparse.ArgumentParser:
         "access", help="machine-local credential bindings (D28)"
     )
     asub = access.add_subparsers(dest="access_command")
-    asub.add_parser("list", help="list credential bindings")
-    asub.add_parser("verify", help="verify bound identity files exist")
+    p_list = asub.add_parser("list", help="list credential bindings")
+    _add_json_flag(p_list)
+    p_agent = asub.add_parser(
+        "agent", help="inspect the local SSH agent (fingerprints only)"
+    )
+    agent_sub = p_agent.add_subparsers(dest="agent_command")
+    p_agent_list = agent_sub.add_parser("list", help="list loaded agent public keys")
+    _add_json_flag(p_agent_list)
+    p_verify = asub.add_parser("verify", help="verify credential bindings")
+    _add_json_flag(p_verify)
+    p_migrate = asub.add_parser(
+        "migrate",
+        help="interactively migrate legacy/unbound node credentials to v2 refs",
+    )
+    p_migrate.add_argument("--node", help="only this node (default: all targets)")
+    p_migrate.add_argument(
+        "--purpose",
+        choices=("admin", "observe", "both"),
+        default="both",
+        help="which credential class to migrate (default: both)",
+    )
+    mg = p_migrate.add_mutually_exclusive_group()
+    mg.add_argument(
+        "--agent",
+        action="store_true",
+        help="bind an agent key (use --fingerprint for non-interactive use)",
+    )
+    mg.add_argument(
+        "--identity-file",
+        dest="identity_file",
+        metavar="PATH",
+        help="bind a local SSH private key for all selected targets",
+    )
+    p_migrate.add_argument(
+        "--fingerprint",
+        help="SHA256:... agent key fingerprint (requires --agent)",
+    )
+    _add_json_flag(p_migrate)
     pb = asub.add_parser("bind", help="bind a credential ref on this machine")
     pb.add_argument("ref", help="credential ref name")
     g = pb.add_mutually_exclusive_group(required=True)
@@ -9161,10 +9538,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="local SSH private key path",
     )
     g.add_argument(
-        "--openssh-default",
-        dest="openssh_default",
+        "--agent",
+        dest="agent",
         action="store_true",
-        help="use OpenSSH default identities (no -i)",
+        help="bind a key loaded in the local SSH agent",
+    )
+    pb.add_argument(
+        "--fingerprint",
+        help="SHA256:... agent key fingerprint (requires --agent; prompts on a TTY if omitted)",
     )
 
     ws = sub.add_parser(
@@ -9462,10 +9843,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         if sub == "list":
             return cmd_access_list(args)
+        if sub == "agent":
+            if getattr(args, "agent_command", None) != "list":
+                parser.parse_args(["access", "agent", "--help"])
+                return 2
+            return cmd_access_agent_list(args)
         if sub == "bind":
             return cmd_access_bind(args)
         if sub == "verify":
             return cmd_access_verify(args)
+        if sub == "migrate":
+            return cmd_access_migrate(args)
         die(f"unknown access command: {sub}", 2)
     if command == "workspace":
         sub = getattr(args, "workspace_command", None)

@@ -32,6 +32,10 @@ TIMEOUT_MARKERS = (SSH_TIMEOUT_MARKER, SCP_TIMEOUT_MARKER)
 
 CODE_AUTH_LIMIT = "AUTH_LIMIT"
 CODE_AUTH_DENIED = "AUTH_DENIED"
+CODE_CREDENTIAL_UNBOUND = "CREDENTIAL_UNBOUND"
+CODE_AGENT_UNAVAILABLE = "AGENT_UNAVAILABLE"
+CODE_AGENT_KEY_MISSING = "AGENT_KEY_MISSING"
+CODE_IDENTITY_FILE_MISSING = "IDENTITY_FILE_MISSING"
 CODE_TIMEOUT = "TIMEOUT"
 CODE_OUTPUT_LIMIT = "OUTPUT_LIMIT"
 CODE_HOST_KEY = "HOST_KEY"
@@ -42,6 +46,12 @@ CODE_TRANSPORT = "TRANSPORT"
 CODE_UNKNOWN = "UNKNOWN"
 
 AUTH_CODES = (CODE_AUTH_LIMIT, CODE_AUTH_DENIED)
+CREDENTIAL_CODES = (
+    CODE_CREDENTIAL_UNBOUND,
+    CODE_AGENT_UNAVAILABLE,
+    CODE_AGENT_KEY_MISSING,
+    CODE_IDENTITY_FILE_MISSING,
+)
 RETRYABLE_CODES = (CODE_TIMEOUT, CODE_TRANSPORT)
 
 _HOST_KEY_MARKERS = (
@@ -59,6 +69,10 @@ FAILURE_SUMMARIES = {
     CODE_AUTH_DENIED: (
         "SSH authentication failed: the server rejected the offered identity"
     ),
+    CODE_CREDENTIAL_UNBOUND: "the node has no usable SSH credential binding",
+    CODE_AGENT_UNAVAILABLE: "the SSH agent is not available",
+    CODE_AGENT_KEY_MISSING: "the selected SSH agent key is not loaded",
+    CODE_IDENTITY_FILE_MISSING: "the selected SSH identity file is missing",
     CODE_TIMEOUT: "SSH transport timed out",
     CODE_OUTPUT_LIMIT: "SSH response exceeded the configured size limit",
     CODE_HOST_KEY: "SSH host key was not accepted",
@@ -80,6 +94,19 @@ KEY_SELECTION_HINTS = {
     CODE_AUTH_DENIED: (
         "select the explicit agent public key authorized for this node and "
         "retry with IdentitiesOnly=yes"
+    ),
+    CODE_CREDENTIAL_UNBOUND: (
+        "run vcl-fleet access bind REF --agent|--identity-file, "
+        "or vcl-fleet access migrate, then assign the ref to the node"
+    ),
+    CODE_AGENT_UNAVAILABLE: (
+        "start the SSH agent and load the selected key, then retry"
+    ),
+    CODE_AGENT_KEY_MISSING: (
+        "load the selected public key into the agent or rebind another key"
+    ),
+    CODE_IDENTITY_FILE_MISSING: (
+        "restore the identity file or rebind another local private key"
     ),
 }
 
@@ -166,6 +193,28 @@ def classify_failure(
     hint = KEY_SELECTION_HINTS.get(code)
     if hint:
         facts["hint"] = hint
+    return facts
+
+
+def credential_failure_facts(
+    code: str,
+    *,
+    credential_state: Optional[str] = None,
+    phase: str = "credential",
+) -> dict[str, Any]:
+    """Fixed structured facts for a pre-SSH credential resolution failure."""
+    facts: dict[str, Any] = {
+        "phase": phase,
+        "code": code,
+        "state": "ERROR",
+        "retryable": False,
+        "summary": FAILURE_SUMMARIES.get(code, FAILURE_SUMMARIES[CODE_UNKNOWN]),
+    }
+    hint = KEY_SELECTION_HINTS.get(code)
+    if hint:
+        facts["hint"] = hint
+    if credential_state:
+        facts["credential_state"] = credential_state
     return facts
 
 

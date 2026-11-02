@@ -64,7 +64,11 @@ def smoke(root):
     provision = fleet.load_provision_module()
     manifest = provision.verify_local_payload(provision.resolve_node_payload())
     version = fleet.VCL_FLEET_VERSION
-    require(version == provision.NODE_PAYLOAD_VERSION == manifest["controller_version"], "artifact version mismatch")
+    require(version == manifest["controller_version"], "controller version mismatch")
+    require(
+        provision.NODE_PAYLOAD_VERSION == manifest["node_payload_version"],
+        "node payload version mismatch",
+    )
     locked = check_lock(root, "controller.lock")
     for schema in SCHEMAS:
         relative = "schemas/" + schema + ".schema.json"
