@@ -46,6 +46,15 @@ FR-01/02是新现场情景暴露的缺口，需要重新开启0.5.x补修和RC�
 - [ ] **P3（2026-10-11 新）：`SYNC_LAG`/`NETWORK_RATE_ANOMALY` 在生产流量下反复开合。**阶段 C 的 26.5h 里 `FINDING_OPEN` 47 次、`FINDING_RESOLVED` 47 次（主体是这两类）。`SYNC_LAG` 在"Controller 未运行、缓存按预期陈旧"时必然持续存在；`NETWORK_RATE_ANOMALY` 随真实业务流量（neptunespear 10.5h +5.04 TB 量级）开合。需要决定：长期未同步是否聚合成一条持续 OPEN 而非反复开合、速率异常阈值与静默窗口是否合适，避免运维面板噪声。
 - [ ] **P3（2026-10-11 新）：inspect/drift 维度在无 probe profiles 时无数据。**阶段 C 的 26.5h 里 `inspection.db` 无事件、0 字节增长，`inspect`/drift 这条链路没有产生任何可判读数据（本次代理维度也未启用）。需要确认：无 `probe-profiles` 时检查轮是否完全跳过、还是仅「无变化则不写事件」；若属前者，应在文档/产品里明确「未配置探测身份时 inspect 维度不可用」。
 
+## 2026-10-26 独立代码审查（未修）
+
+完整清单与复现见 [`CODE_REVIEW_2026-10-26.md`](CODE_REVIEW_2026-10-26.md)，审查对象为 `75071d8`。该清单**尚未排期**，也不改变 FR-01～04 的完成状态：
+
+- **R-01 / R-02（P1，记账时间语义）**：`started_at` 保留本地时区偏移，导致日聚合/审计窗口错位；`daily_usage` 依赖 raw 数据重建，raw 保留期过后日汇总会被删。两条都会影响非 UTC 节点上的日用量与审计区间，建议在任何 0.6.x 实施或正式发布前单独评估。
+- **R-04 / R-13（凭据/身份）**：`node replace` 静默清空 observe ref；REALITY 私钥/Clash secret 通过进程参数传递。归入下一轮独立身份 SPEC 一起处理。
+- **R-09 / R-10（H05 工具）**：`export-node-logs.sh` 的仓库路径推算和 reimport 提示不可执行；H05 依赖该工具，建议 H05 前修。
+- 其余 P2/P3（改端口入口、backup 预检、缓存无界增长、`diagnose` 误报等）见原审查记录。
+
 ## 已在本地 0.5.3 修复的缺陷
 
 提交`79f54bf`已修复：accounting heartbeat为NULL/非法时间造成增强Verify中断JSON；Clash其他loopback地址被误判为配置地址；Controller probe后身份失效仍保留旧snapshot，以及矛盾probe结果被当成有效失败证据。完整离线验证见原收口报告。这些是0.5.3增强接口修复，现场Controller仍为0.5.0，尚未部署该候选。

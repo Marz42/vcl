@@ -4,6 +4,8 @@
 
 日期：2026-10-08（Asia/Shanghai）。分支 `codex/0.5.1`，冻结基线提交 `e024d12c8702ba1c659c2ec377715b1a91115998`。Node / Controller / embedded payload 均为 **0.5.3**，最低兼容 Node **0.3.1**，sing-box **1.13.18**。
 
+> **2026-11-02 重建说明（不改写本页历史）：**为把 2026-11-01 的 MPTCP 单元加固（`GODEBUG=multipathtcp=0`）纳入安装包，源码与 `release.lock` 已更新并重建 Node/Controller。**本页下方 2026-10-08 的固定输入与三个制品 SHA 只对应旧构建，不再对应当前 `dist/`**；新的制品 SHA、测试与限制见[MPTCP 单元加固记录](MPTCP_UNIT_HARDENING.md)。正式 H05 前仍需按新源码重新生成固定输入并重新冻结。
+
 ## 固定输入
 
 [188 个固定源码/测试/构建/CI 输入](SOURCE_INPUTS_FREEZE.json)，manifest SHA256：

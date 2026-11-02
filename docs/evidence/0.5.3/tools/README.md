@@ -2,7 +2,7 @@
 
 这些脚本是阶段 A/B 现场执行用的采集器，**不属于冻结候选的固定输入集**（manifest 只覆盖 `tests/ lib/ scripts/ schemas/ bin/ .github/` 与若干根文件），因此放在 `docs/` 下随文档一起交付，便于在拥有 Fleet 与密钥的机器上复现同一套取证流程。脚本只做只读探测与证据收集；所有写操作都落在隔离目录或副本里。
 
-| 脚本 | 用途 | sha256（2026-10-09） |
+| 脚本 | 用途 | sha256 |
 | --- | --- | --- |
 | `where-is-production-workspace.py` | 只读体检：解析生产工作区/状态/绑定路径、模式、`fleet_id`、节点与 ref、缓存大小 | `4179d6346ecc6ea5587b4c6cfe147f7bb4897617e4b058d4c66237e9d38b7147` |
 | `phase-a-batch1.sh` | 阶段 A 批 1/2：候选摘要校验、隔离导入、绑定模板（可预填）、只读基线、能力矩阵、生产指纹、脱敏报告 | `20c58ffa83ad6a1c700da5019c95d228f860b9bf79aa661564514bb5949e2f5c` |
@@ -10,6 +10,7 @@
 | `phase-b.sh` | 阶段 B：生产上下文的 `probe/verify/status` 对照、能力与遥测矩阵、2h monitor 序列、Node 侧只读复核、生产指纹 | `bd45a40945b69fc1d383be96b38581cbfa61ce0e2e7271ccd51a896654e3eb14` |
 | `export-node-logs.sh` | 导出单个 Node 的 journal（`sing-box.service`/`vincula-accountd.service`）到本机：自动从工作区注册表 + 机器本地绑定解析 node/用户/端口/私钥，经 ssh 流式取回（**不在 Node 上写任何文件**），产出 `METADATA.txt`（身份/版本/`log` 段/unit 属性/journald 限制/boots/选中范围行数）、`journal-short-iso.txt.gz`（可读）、`journal-export.gz`（`-o export` 无损）与 `MANIFEST.txt`（sha256 + 计数）；`--dry-run` 只打印 ssh 命令与远端脚本 | `9db9553fe3be361c6a5f6c1e0a2d3f7db7cd593d05ab1e72ad48406b992b65a5` |
 | `phase-c.sh` | 阶段 C：生产副本 + 遥测 soak 突发（`scripts/soak-0.5.0-telemetry.sh`）+ 24h monitor + 5 分钟采样器（代理/发现/时间线/DB 与行增长/检查轮关联）+ 收尾报告 | `d64ac8bf444aa394161a0c4aa0c304817086a1a40a00e57d38e5aa6f17c867f6` |
+| `gen-source-inputs.py` | 重新生成候选固定输入 manifest（`SOURCE_INPUTS_*.json`）：按 LF 规范化哈希 tracked inputs，并记录 artifacts/logs 的 SHA；历史 manifest 里记录的 generator 路径为 `tmp/gen-source-inputs.py`，内容与本文件相同（`c45e31ad…`） | `c45e31ad87389ffee458acfc69bc28a97fd68a26c89edf4fb32a2a8a5ac87ff1` |
 
 约定：
 

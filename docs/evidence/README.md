@@ -19,4 +19,6 @@
 | [`0.3.1-rc2/`](0.3.1-rc2/README.md) | RC2 证据 |
 | [`0.2.4-0.2.6-live/`](0.2.4-0.2.6-live/README.md) · [`0.2.4-freeze/`](0.2.4-freeze/README.md) | 更早 LIVE / freeze |
 
+2026-11-02 MPTCP 单元加固重建：[`0.5.3/MPTCP_UNIT_HARDENING.md`](0.5.3/MPTCP_UNIT_HARDENING.md)。为把 `GODEBUG=multipathtcp=0` 纳入安装包，源码、lock 与 `dist/` 已重建；[CANDIDATE_FREEZE](0.5.3/CANDIDATE_FREEZE.md) 中 2026-10-08 的制品 SHA 仅对应旧构建，正式 H05 前需重新冻结。
+
 当前操作手册：[`../user-guide.md`](../user-guide.md)。历史 evidence 内可能仍链到已迁移的旧路径（如 `fleet.md`）；以本索引与新手册为准，不批量改写 evidence 正文。

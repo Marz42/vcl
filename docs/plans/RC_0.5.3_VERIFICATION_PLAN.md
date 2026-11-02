@@ -4,6 +4,8 @@
 
 准备过程、准备期缺陷修复与本次回归/CI 计数见[现场验证准备记录](../evidence/0.5.3/VERIFICATION_PREP.md)。日期：2026-10-08（Asia/Shanghai）。适用分支 `codex/0.5.1`，当前本地修复结论文档见 [FR-02 记录](../evidence/0.5.3/FR02_BOUNDED_SYNC.md)、[FR-01 记录](../evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)、[FR-03/04 记录](../evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；验收框架见[人工验收清单](VCL_0.5-0.7_Human_Acceptance.md)与[延期记录](MANUAL_VALIDATION_DEFERRED.md)。
 
+> **2026-11-02 制品更新：**为把 MPTCP 单元加固纳入安装包，当前 `dist/` 已重建，旧 ZIP sha `65dbcc7b…` 不再匹配。本方案仍为 **PREPARED / NOT EXECUTED**；若后续执行，必须把脚本中的候选 SHA 换成[MPTCP 单元加固记录](../evidence/0.5.3/MPTCP_UNIT_HARDENING.md)中的新值，并先重新冻结。
+
 ## 0. 顺序、范围与红线
 
 执行顺序（不可跳步）：

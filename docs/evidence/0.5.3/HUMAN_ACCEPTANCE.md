@@ -1,6 +1,7 @@
 # H05 — Observation Plane human acceptance
 
 2026-10-07更新：当前本地候选与新SHA见[阶段收口](PHASE_05_CLOSEOUT.md)。`a9655e2`远端CI #86七项PASS，后续本地修复的CI尚待执行；H05未签署。最新用户指令限定停在0.6.x之前，下文更早的持续开发目标由此收窄。
+2026-11-02更新：安装包已按 MPTCP 单元加固重建，**旧 RC/冻结 SHA 不再对应当前 `dist/`**；新制品与测试见[MPTCP 单元加固记录](MPTCP_UNIT_HARDENING.md)。H05 仍为 **PENDING HUMAN**，且需在新制品重新冻结后执行。
 日期2026-10-05。**PENDING HUMAN / NOT SIGNED**。0.5.3本地功能与离线RC见[RC](RC.md)；远端required CI、[Live](LIVE.md)与[24h soak](SOAK.md)尚未完成。按 [用户指令](../../plans/MANUAL_VALIDATION_DEFERRED.md)跳过开发等待；该指令不等于H05 PASS、生产apply、合并、tag或发布授权。
 
 权威人工清单：[VCL_0.5-0.7_Human_Acceptance](../../plans/VCL_0.5-0.7_Human_Acceptance.md)。本页只关联具体候选，不替代该清单。

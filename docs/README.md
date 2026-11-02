@@ -4,6 +4,8 @@
 
 2026-10-08：现场混合版本Fleet已恢复七台管理面与审计观测，见[恢复记录](operations/fleet-recovery-status.md)和[脱敏汇总](operations/fleet-recovery-20261008.json)。恢复暴露的凭据引用P1（FR-01）已在本地修复并回归，见[FR-01记录](evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)；认证分类与错误摘要P2（FR-03/04）也已在本地修复并回归，见[FR-03/04记录](evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；有界审计同步P1（FR-02）同样已本地修复并回归，见[FR-02记录](evidence/0.5.3/FR02_BOUNDED_SYNC.md)。本轮四项现场缺陷的本地修复已全部落地，统一跟踪于[0.5.x可靠性待办](plans/Fleet_Recovery_Reliability_Backlog.md)。临时工具恢复成功不关闭产品缺陷；FR-01 的远端 required CI 已在 `7836b14` 全绿（[#88](https://github.com/Marz42/vcl/actions/runs/37731099502)），但现场混合 Fleet 复验、soak 与 H05 仍 PENDING。四项修复的评审补修已回归并推送（[FR-02 记录](evidence/0.5.3/FR02_BOUNDED_SYNC.md)）；新候选已冻结：Node `8abe989c` / Controller `65dbcc7b`，188 个固定输入，[远端 CI #100](https://github.com/Marz42/vcl/actions/runs/37874931681) 七项全绿，见[冻结候选](evidence/0.5.3/CANDIDATE_FREEZE.md)；「先只验 Controller、保留混合版本 Node」的现场方案与人工步骤见[验证方案](plans/RC_0.5.3_VERIFICATION_PLAN.md)（方案 PREPARED，现场 **NOT EXECUTED**）。
 
+2026-11-02：MPTCP 单元加固（`GODEBUG=multipathtcp=0`）已进入源码并重建安装包，原冻结产物 SHA 仅对应旧构建，见[MPTCP 记录](evidence/0.5.3/MPTCP_UNIT_HARDENING.md)。2026-10-26 的七台巡检、hot-beam-1/urgentfury 取证和独立代码审查已归档：见[巡检](operations/2026-10-26-fleet-inspection.md)、[断连取证](operations/2026-10-26-urgentfury-disconnect.md)与[代码审查](plans/CODE_REVIEW_2026-10-26.md)（R-01/R-02 为未修 P1，尚未排期）。
+
 2026-10-04 实现 **0.5.2 Findings / Audit / Anomalies**，M1～M3离线验证通过，M4正式合同/版本/打包收口见[当前记录](evidence/0.5.2/M4.md)。**Human Gate H05/H06/H07 = PENDING HUMAN；实机与 soak = PENDING LIVE。**按[最新用户指令](plans/MANUAL_VALIDATION_DEFERRED.md)跳过等待并记录，正式验收状态保留。
 
 0.5.3本地功能已完成：Node Inspect、Controller缓存/显式baseline/Drift与增强Verify；Node/Controller stamp0.5.3。完整离线验证见[RC记录](evidence/0.5.3/RC.md)，Human Gate/实机与24h soak仍PENDING。
@@ -20,6 +22,7 @@
 | 使用首批 Findings 与本地时间轴 | [`operations/findings-runbook.md`](operations/findings-runbook.md) |
 | 使用 Inspect、显式基线、Drift 与增强 Verify | [`operations/inspect-runbook.md`](operations/inspect-runbook.md) |
 | 核对七台Fleet恢复及下一批0.5.x补修 | [`恢复记录`](operations/fleet-recovery-status.md) · [`可靠性待办`](plans/Fleet_Recovery_Reliability_Backlog.md) |
+| 查 2026-10-26 巡检/断连取证与独立代码审查 | [`巡检`](operations/2026-10-26-fleet-inspection.md) · [`断连`](operations/2026-10-26-urgentfury-disconnect.md) · [`代码审查`](plans/CODE_REVIEW_2026-10-26.md) |
 | 核对规格或验收 | [`specs/`](specs/README.md) · [`evidence/`](evidence/README.md) |
 | 推进 0.5.x～0.7.x 开发与阶段验收 | [`实施方案`](plans/VCL_0.5-0.7_Implementation_Plan.md) · [`人工验收清单`](plans/VCL_0.5-0.7_Human_Acceptance.md) |
 | 冻结新候选并做 Controller 优先现场验证 | [`冻结候选`](evidence/0.5.3/CANDIDATE_FREEZE.md) · [`验证方案与手工步骤`](plans/RC_0.5.3_VERIFICATION_PLAN.md) |
