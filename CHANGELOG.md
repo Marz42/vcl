@@ -2,6 +2,11 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.4 — Controller SSH credential management (2026-11-02, unreleased)
+
+- 2026-11-02 SSH 凭据管理 v2（Controller-only；Node 保持 0.5.3）：`credential-bindings.json` 升级到 schema 2，新增 `agent`（`fingerprint` + 机器本地 `keys/<ref>.pub` 公钥选择器）与 `identity_file` 两种确定性模式，删除 `openssh-default` 连接路径。所有 SSH/SCP 统一加 `-F <os.devnull>`、显式 `-i` 与 `IdentitiesOnly=yes`，不再隐式遍历用户 SSH config/默认身份；Host Key Trust 与 `StrictHostKeyChecking=yes` 保持不变。新增 `access agent list`、`access bind REF --agent [--fingerprint]`、`access migrate`（交互式/非交互式，禁止猜测），以及 `access verify --json`、`node set --admin-credential-ref`。旧 v1 `identity_file` 按 v2 语义读取；`openssh-default`/无身份节点标记 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回 `CREDENTIAL_UNBOUND`、`AGENT_UNAVAILABLE`、`AGENT_KEY_MISSING` 或 `IDENTITY_FILE_MISSING`。合同见[SPEC](docs/specs/V0.5.4_SSH_Credential_Management.md)。
+- 现场注意：`~/.ssh/config` 中的 `ProxyJump`/`ProxyCommand`/自定义 Host 别名不会应用于 VCL 连接；多密钥环境使用 Agent 指纹选择或 Identity File。
+
 ## 0.5.3 — local development candidate (2026-10-05, unreleased)
 
 - 2026-11-02 MPTCP 单元加固：`render_systemd_unit` 增加 `Environment=GODEBUG=multipathtcp=0`，关闭 Go 1.24+ 默认的 listener MPTCP（CVE-2026-98432 攻击面）；七台现场节点已于 2026-11-01 先行落地并 `vcl verify` 通过。安装包与 Controller embedded payload 已按新源码重建，新增单元渲染断言；版本仍为 0.5.3，旧[冻结候选](docs/evidence/0.5.3/CANDIDATE_FREEZE.md)的制品 SHA 只对应旧构建，正式 H05 前需重新生成固定输入并重新冻结。远端 [CI run 41455589528](https://github.com/Marz42/vcl/actions/runs/41455589528) 七个 job 全绿；见[MPTCP 加固记录](docs/evidence/0.5.3/MPTCP_UNIT_HARDENING.md)与[现场记录](docs/operations/2026-11-01-sync-mptcp.md)。

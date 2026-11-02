@@ -1,4 +1,4 @@
-# Vincula 技术手册（Controller/Node 0.5.2 开发候选）
+# Vincula 技术手册（Controller 0.5.4 / Node 0.5.3 开发候选）
 
 面向维护者与希望理解实现合同的读者。操作步骤见 [`user-guide.md`](user-guide.md)。
 设计规格见 [`specs/`](specs/README.md)；验收证据见 [`evidence/`](evidence/README.md)。
@@ -7,12 +7,12 @@
 
 | 常量 | 位置 | 值 |
 | --- | --- | --- |
-| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.2** |
-| `VINCULA_VERSION` | `vincula.sh` | **0.5.2** |
-| 新 provision payload pin | `lib/provision.py`（构建核对Node stamp） | Node **0.5.2** |
+| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.4** |
+| `VINCULA_VERSION` | `vincula.sh` | **0.5.3** |
+| 新 provision payload pin | `lib/provision.py`（构建核对Node stamp） | Node **0.5.3** |
 | 最低兼容 Node | Spec / fleet | **0.3.1**（已有 0.3.1 不强制升级） |
 
-0.5.2为本地开发候选，Human Gate与真实VPS/24h soak保留PENDING，本轮跳过等待。新增14类Node/User Finding、findings/v1、timeline/v1、独立audit-health/v1与user-traffic/v1。前台monitor运行汇总使用monitor/v2，health/API/cache保持monitor/v1；machine-local findings schema2与observation缓存不改变fleet-cache/v4。合同见 [`0.5.2 SPEC`](specs/V0.5.2_Spec.md)，验证与现场缺口见 [`evidence`](evidence/0.5.2/SUMMARY.md)。accountd/observer权限基线见 [`0.5.1 SPEC`](specs/V0.5.1_Spec.md)。
+0.5.4 为当前 Controller 本地候选（Node 保持 0.5.3），新增 **SSH 凭据管理 v2**：Agent 指纹选择、Identity File 两种确定性模式、机器本地公钥选择器、`CREDENTIAL_MIGRATION_REQUIRED` 迁移状态与 `access migrate`。连接统一 `-F os.devnull`、显式 `-i` 与 `IdentitiesOnly=yes`，不再隐式遍历 OpenSSH 默认身份；合同见 [`0.5.4 SPEC`](specs/V0.5.4_SSH_Credential_Management.md)。Human Gate 与真实 VPS/24h soak 保留 PENDING。0.5.2 的 Finding/统计与 0.5.3 Inspect/Drift/Verify 继续保留，见对应 SPEC 与 evidence。
 
 ---
 
@@ -126,10 +126,17 @@ Schema 命名空间（D45）：
 | 层级 | 路径（缺省） | 内容 |
 | --- | --- | --- |
 | Portable root | `VCL_FLEET_HOME` / `--workspace`；Win `%APPDATA%\vincula\`；Unix `~/.config/vincula/` | **仅** `workspace.json` · `fleet.json` · `trust/` · `history/` |
-| CONFIG | `…/controllers/<fleet_id>/` | `controller.json` + `credential-bindings.json`（`access bind`） |
+| CONFIG | `…/controllers/<fleet_id>/` | `controller.json` + `credential-bindings.json`（schema 2）+ `keys/<ref>.pub`；`access bind` / `access migrate` |
 | STATE | Unix `~/.local/state/vincula/<fleet_id>/`；Win `%LOCALAPPDATA%\vincula\<fleet_id>\`；可 `VCL_FLEET_LOCAL_STATE` | fleet-cache/v4 `fleet.db`、`archives/`、`ui-runtime/` |
 
-SSH：workspace 激活时用 `trust/known_hosts`（`StrictHostKeyChecking=yes`）。身份文件经 `access bind` 绑定到机器本地，不把私钥写入可拷贝 workspace。
+SSH：workspace 激活时用 `trust/known_hosts`（`StrictHostKeyChecking=yes`）。凭据绑定在机器本地，不把私钥或 Agent Socket 写入可拷贝 workspace。
+
+Controller 0.5.4 的 `credential-bindings.json` schema 2 有两种模式：
+
+- `agent`：保存 `fingerprint` 与相对路径 `public_key_file`（`keys/<ref>.pub`）；连接时用 Agent 中匹配的私钥。
+- `identity_file`：保存本机私钥绝对路径；连接时用 `-i`。
+
+所有 SSH/SCP 统一 `-F <os.devnull>`、显式 `-i`、`IdentitiesOnly=yes`、`PreferredAuthentications=publickey`；不读取用户 `~/.ssh/config`，也不遍历默认/额外身份。v1 的 `identity_file` 按 v2 语义读取；v1 `openssh-default`/无身份节点为 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回明确错误。
 
 ---
 

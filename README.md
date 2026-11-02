@@ -2,11 +2,13 @@
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
-**节点** `VINCULA_VERSION=0.5.3`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.3`（CLI：`vcl-fleet`）。
+**节点** `VINCULA_VERSION=0.5.3`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.4`（CLI：`vcl-fleet`）。
 
-**0.5.3 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。
+**0.5.x 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。
 
 **2026-10-07 收口：**0.5.x 开发停在 0.5.3，未进入 0.6.x。已修复增强 Verify 的坏 heartbeat 容错、Clash 监听地址误判和 probe 后身份失效，并将独立 ZIP 的完整合同/缓存查询检查纳入制品 CI。远端 `a9655e2` 的 [CI #86](https://github.com/Marz42/vcl/actions/runs/37327307690) 七项通过；后续本地修复尚待新的远端 CI。当前交付和固定输入见[阶段收口记录](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)。
+
+**2026-11-02 SSH 凭据管理（Controller 0.5.4）：**新增 Agent 指纹与 Identity File 两种确定性凭据模式；不再隐式遍历 OpenSSH 默认身份，连接统一 `-F <null config>` + 显式 `-i` + `IdentitiesOnly=yes`。旧节点用 `vcl-fleet access migrate` 显式迁移；`~/.ssh/config` 的 ProxyJump/ProxyCommand/别名不再适用于 VCL 连接。见 [SPEC](docs/specs/V0.5.4_SSH_Credential_Management.md)。
 
 **2026-11-02 MPTCP 加固重建：**`render_systemd_unit` 已加入 `Environment=GODEBUG=multipathtcp=0`，安装包与 Controller embedded payload 按新源码重建；旧[冻结候选](docs/evidence/0.5.3/CANDIDATE_FREEZE.md)的制品 SHA 只对应旧构建，正式 H05 前需重新冻结。见[MPTCP 记录](docs/evidence/0.5.3/MPTCP_UNIT_HARDENING.md)。
 

@@ -10,11 +10,18 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Development candidate (0.5.3):** Controller and embedded Node payload are `0.5.3`
-(minimum Node remains `0.3.1`). Includes read-only Inspect, machine-local inspection
-cache, explicit SHA-based baseline acceptance, seven Drift findings and baseline
-Timeline events. `inspect [NODE] --json` and `GET /api/inspect` read local caches.
-The UI displays observation, baseline and comparison summaries.
+**Development candidate (0.5.4):** Controller is `0.5.4`; the embedded Node payload
+remains `0.5.3` (minimum Node remains `0.3.1`). Includes the SSH credential manager
+v2: deterministic Agent-fingerprint and Identity-File modes, machine-local public-key
+selectors, `CREDENTIAL_MIGRATION_REQUIRED`, and `access migrate`. Connections use
+`-F <null config>`, an explicit `-i`, and `IdentitiesOnly=yes`; OpenSSH no longer
+walks default/config identities. `~/.ssh/config` is intentionally ignored for VCL
+connections (ProxyJump/ProxyCommand/custom Host aliases do not apply).
+
+Includes read-only Inspect, machine-local inspection cache, explicit SHA-based
+baseline acceptance, seven Drift findings and baseline Timeline events.
+`inspect [NODE] --json` and `GET /api/inspect` read local caches. The UI displays
+observation, baseline and comparison summaries.
 
 `monitor --json` uses `monitor/v3`; `health` and `GET /api/monitor` remain `monitor/v1`.
 `findings` and `timeline` use v2; frozen v1 schemas remain packaged.
@@ -28,17 +35,20 @@ Legacy `verify --json` is unchanged for upgrade/restore consumers.
 
 Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2 → 0.5.3. Sixteen public schemas
 ship under `schemas/` with `controller.lock`. Real VPS and 24h soak remain PENDING
-LIVE and Human Gate remains PENDING HUMAN. Remote CI #86 passed all seven jobs
-for a9655e2; subsequent local fixes still require a new remote CI run.
-Development stops at 0.5.3 before 0.6.x. The candidate is unreleased.
-See `docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md` and `SUMMARY.md`.
+LIVE and Human Gate remains PENDING HUMAN. The Controller 0.5.4 credential
+candidate has passed the local Bash/Python suites and artifact checks; its remote
+required CI is recorded separately after push.
+Development stops at Controller 0.5.4 / Node 0.5.3 before 0.6.x. The candidate is
+unreleased. See `docs/evidence/0.5.4/CREDENTIALS.md` and
+`docs/evidence/0.5.3/SUMMARY.md`.
+
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not
 bundle CPython or `ssh`.
 
 Full operator guide (repo): `docs/user-guide.md`. Architecture and contracts:
-`docs/technical-guide.md`. Spec: `docs/specs/V0.5.3_Spec.md`. Evidence:
-`docs/evidence/0.5.3/SUMMARY.md`. Findings: `docs/operations/findings-runbook.md`.
+`docs/technical-guide.md`. Spec: `docs/specs/V0.5.4_SSH_Credential_Management.md`. Evidence:
+`docs/evidence/0.5.4/CREDENTIALS.md`. Findings: `docs/operations/findings-runbook.md`.
 Inspect / baseline / Drift / Verify: `docs/operations/inspect-runbook.md`.
 Monitoring and dedicated probe setup: `docs/operations/monitoring-runbook.md`.
 

@@ -66,6 +66,34 @@ bin\vcl-fleet.cmd access bind admin --identity-file %USERPROFILE%\.ssh\id_ed2551
 Workspace 根只放可拷贝的 `workspace.json` / `fleet.json` / `trust/` / `history/`。
 私钥绑定在机器本地 CONFIG，不要把私钥拷进可移动的 workspace。
 
+### 2.1 SSH 凭据模式（Controller 0.5.4+）
+
+两种模式，二选一，不做静默回退：
+
+```bash
+# Agent：按公钥 SHA256 指纹选择（推荐；密钥仍由 ssh-agent 持有）
+vcl-fleet access agent list
+vcl-fleet access bind hk-admin --agent --fingerprint SHA256:...
+
+# Identity File：本地私钥路径（不复制私钥）
+vcl-fleet access bind us-admin --identity-file ~/.ssh/us_admin
+
+# 节点分别指定 Admin / Observe 引用
+vcl-fleet node set hk01 \
+  --admin-credential-ref hk-admin \
+  --observe-credential-ref hk-admin
+
+# 检查绑定/迁移状态（默认零 SSH）
+vcl-fleet access verify
+
+# 旧配置迁移：交互式选择 Agent 指纹或 Identity File，不自动猜测
+vcl-fleet access migrate --node hk01
+```
+
+- Agent 绑定只保存公钥、指纹和本机 `keys/<ref>.pub` 选择器；私钥内容、Agent Socket 不进入 workspace/备份。
+- 旧的 `access bind REF --openssh-default` 已删除；v1 绑定中 `openssh-default`/无身份节点会标记 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回明确错误，需用 `access migrate` 或 `access bind` 显式迁移。
+- VCL 连接统一加 `-F` 忽略 `~/.ssh/config`；`ProxyJump`/`ProxyCommand`/自定义 `Host` 别名不会生效（VCL 只做显式 host/user/port 直连）。Host Key 仍按 `trust/known_hosts` + `StrictHostKeyChecking=yes` 校验。
+
 ---
 
 ## 3. SSH 密钥与 host-key 指纹
@@ -353,10 +381,12 @@ vcl telemetry snapshot --json
 
 ```bash
 # 显式绑定 observer（Spec：不得隐式共用 admin；可与 admin 相同但必须显式）
-vcl-fleet access bind observe-default --identity-file ~/.ssh/id_ed25519_observe
+# 优先 Agent 指纹；也可用 --identity-file
+vcl-fleet access bind observe-default --agent --fingerprint SHA256:...
 vcl-fleet node set NODE --observe-credential-ref observe-default
 # 或：vcl-fleet node set NODE --observe-identity-file ~/.ssh/id_ed25519_observe
 # 清除：vcl-fleet node set NODE --clear-observe-credential-ref
+# 检查：vcl-fleet access verify
 
 vcl-fleet capabilities NODE --json
 vcl-fleet telemetry NODE --json
