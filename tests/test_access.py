@@ -123,7 +123,7 @@ class AccessTests(unittest.TestCase):
         self.mod.bind_identity_file("file-test", str(self.key))
         self.assertEqual(
             self.mod.binding_public_key_path(binding),
-            selector,
+            selector.resolve(),
         )
         doc = json.loads(self.host.bindings_path.read_text(encoding="utf-8"))
         self.assertEqual(doc["schema_version"], 2)
@@ -169,7 +169,8 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(self.mod.node_credential_state(agent_node), "OK")
         result = self.mod.resolve_identity(agent_node, "admin")
         self.assertEqual(result["state"], "OK")
-        self.assertTrue(result["path"].endswith("keys/agent-test.pub"))
+        self.assertEqual(Path(result["path"]).name, "agent-test.pub")
+        self.assertEqual(Path(result["path"]).parent.name, "keys")
 
         file_node = {
             "name": "file-node",
@@ -223,7 +224,10 @@ class AccessTests(unittest.TestCase):
         self.assertIn("-F", argv)
         self.assertIn(os.devnull, argv)
         self.assertIn("-i", argv)
-        self.assertIn(identity, argv)
+        self.assertEqual(
+            Path(argv[argv.index("-i") + 1]).resolve(),
+            Path(identity).resolve(),
+        )
         self.assertIn("IdentitiesOnly=yes", argv)
         self.assertIn("PreferredAuthentications=publickey", argv)
         self.assertNotIn("IdentitiesOnly=no", argv)

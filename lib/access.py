@@ -359,7 +359,10 @@ def binding_public_key_path(
     if not rel or path.is_absolute() or ".." in path.parts:
         return None
     root = (credential_bindings_path().parent if base is None else Path(base))
-    return root / path
+    try:
+        return (root / path).resolve()
+    except OSError:
+        return root / path
 
 
 def bind_identity_file(ref: str, path: str) -> dict[str, Any]:

@@ -45,7 +45,7 @@
 | 制品 | SHA256 |
 | --- | --- |
 | `dist/vincula-node-0.5.3.tar.gz` | `06e133fb9d67fc711aad6cab63e235e470c9c1a0e58da6765aa762f4b03837ec` |
-| `dist/vincula-controller-0.5.4.zip` | `0ebcadb41b2633c99fec49721e89480b68b1e934d721830dea2a2f3c622081e9` |
+| `dist/vincula-controller-0.5.4.zip` | `a643b5a21e07edf5c2b625ca4be41fcfb3dc726e7c785c30fea73b4a0b8cd2ba` |
 | `dist/vincula-controller-0.5.4/payload/payload-manifest.json` | `da60d9a41f3538a387ce5f2065b3951fab189a61ad0d9dd6d65fac40d2edb451` |
 
 payload manifest：`controller_version=0.5.4`、`node_payload_version=0.5.3`、`sha256=06e133fb…`。Controller ZIP 内含更新后的 `access.py` / `ssh_transport.py` / `vincula-fleet.py`，以及带 MPTCP 加固的 Node payload。
