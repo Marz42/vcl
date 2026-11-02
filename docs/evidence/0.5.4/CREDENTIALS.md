@@ -2,7 +2,7 @@
 
 **LOCAL IMPLEMENTATION / PASS OFFLINE / CI PASS (run 41484183321) / UNRELEASED / PENDING LIVE / PENDING HUMAN。**本页记录 Controller 0.5.4 的 SSH 凭据管理实现与离线验证，不授权 push/merge/tag/release，也不替代现场与 H05。
 
-日期：2026-11-02（Asia/Shanghai）。分支 `codex/0.5.1`，实现提交 `3f48cba`。**Controller `0.5.4`；Node 保持 `0.5.3`**；最低兼容 Node `0.3.1`。
+日期：2026-11-02（Asia/Shanghai）。分支 `codex/0.5.1`，功能提交 `3f48cba`，Windows 路径修复 `2c5036d`（最终制品包含该修复）。**Controller `0.5.4`；Node 保持 `0.5.3`**；最低兼容 Node `0.3.1`。
 
 ## 范围
 
