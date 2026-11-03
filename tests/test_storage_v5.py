@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 import unittest
@@ -202,6 +203,14 @@ class DurableStorage(unittest.TestCase):
             else:
                 evaluator.validate(value,schema)
 
+    def test_legacy_coverage_does_not_require_optional_closed_column(self):
+        conn=sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.execute('CREATE TABLE audit_events(started_at TEXT,last_seen_at TEXT)')
+        conn.execute("INSERT INTO audit_events VALUES('2026-01-01T00:00:00.000000Z','2026-01-01T01:00:00.000000Z')")
+        coverage=store.coverage_snapshot(conn,'audit_events')
+        self.assertEqual(coverage['raw_at_snapshot'],{'rows':1,'from':'2026-01-01T00:00:00.000000Z','through':'2026-01-01T01:00:00.000000Z'})
+
     def test_concurrent_migrations_activate_once_and_preserve_history(self):
         from concurrent.futures import ThreadPoolExecutor
         with tempfile.TemporaryDirectory() as directory:
@@ -227,3 +236,18 @@ class DurableStorage(unittest.TestCase):
             with closing(sqlite3.connect(path)) as conn:
                 self.assertEqual(conn.execute('SELECT upload_bytes FROM connections').fetchone()[0],101)
                 self.assertEqual(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],'4')
+
+    def test_migration_preflight_failure_never_leaves_an_unverified_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'accounting.db'
+            conn=database(path,'4');conn.close()
+            original=path.read_bytes()
+            with self.assertRaisesRegex(sqlite3.OperationalError,'BUDGET_EXHAUSTED'):
+                store.staged_migrate(path,accountd.migrate_schema,deadline=time.monotonic()-1)
+            self.assertEqual(path.read_bytes(),original)
+            self.assertEqual(list(path.parent.glob('*.pre-v5-*.db')),[])
+            path.write_bytes(b'not a database')
+            with self.assertRaises(sqlite3.DatabaseError):
+                store.staged_migrate(path,accountd.migrate_schema)
+            self.assertEqual(path.read_bytes(),b'not a database')
+            self.assertEqual(list(path.parent.glob('*.pre-v5-*.db')),[])

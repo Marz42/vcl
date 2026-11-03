@@ -122,8 +122,12 @@ def _staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
     def check_deadline(*_args):
         if deadline is not None and time.monotonic() >= deadline:
             raise sqlite3.OperationalError('BUDGET_EXHAUSTED: migration deadline reached')
+    backup_verified = False
     source = sqlite3.connect(str(path), timeout=0 if deadline is not None else 1)
     try:
+        check_deadline()
+        if deadline is not None:
+            source.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         if source.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise sqlite3.DatabaseError('migration source integrity check failed')
         # A WAL must not survive activation beside a different database file.
@@ -138,6 +142,7 @@ def _staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
             if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise sqlite3.DatabaseError('migration backup integrity check failed')
         os.chmod(backup_name, 0o600)
+        backup_verified = True
         with closing(sqlite3.connect(stage_name)) as stage:
             stage.row_factory = sqlite3.Row
             source.backup(stage, pages=1024, progress=check_deadline)
@@ -161,10 +166,15 @@ def _staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
             try:os.fsync(directory)
             finally:os.close(directory)
         return backup_name
+    except sqlite3.Error:
+        check_deadline()  # turn a SQLite progress interruption into its true cause
+        raise
     finally:
         source.close()
         if os.path.exists(stage_name):
             os.unlink(stage_name)
+        if not backup_verified and os.path.exists(backup_name):
+            os.unlink(backup_name)
 
 
 def _adjust(conn, contribution, sign):
@@ -225,7 +235,9 @@ def coverage_snapshot(conn, raw_table, *, status='RAW_RECONSTRUCTED'):
     """Migration-time envelopes, never a claim of complete traffic coverage."""
     if raw_table not in ('connections', 'audit_events'):
         raise ValueError('unsupported coverage source')
-    raw = conn.execute(f'SELECT COUNT(*),MIN(started_at),MAX(COALESCE(closed_at,last_seen_at)) FROM {raw_table}').fetchone()
+    columns = {row[1] for row in conn.execute(f'PRAGMA table_info({raw_table})')}
+    end = 'COALESCE(closed_at,last_seen_at)' if 'closed_at' in columns else 'last_seen_at'
+    raw = conn.execute(f'SELECT COUNT(*),MIN(started_at),MAX({end}) FROM {raw_table}').fetchone()
     legacy = (0, None, None)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_daily_usage'").fetchone():
         legacy = conn.execute('SELECT COUNT(*),MIN(date),MAX(date) FROM legacy_daily_usage').fetchone()
