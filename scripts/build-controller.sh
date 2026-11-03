@@ -73,6 +73,11 @@ FILES=(
   schemas/verify/v2.schema.json
   schemas/fleet-verify/v2.schema.json
   schemas/cache-status/v1.schema.json
+  schemas/history-coverage/v1.schema.json
+  tests/fixtures/schemas/cache-status/v1-absent-valid.json
+  tests/fixtures/schemas/cache-status/v1-unknown-invalid.json
+  tests/fixtures/schemas/history-coverage/v1-valid.json
+  tests/fixtures/schemas/history-coverage/v1-invalid-recovered.json
 )
 
 command -v python3 >/dev/null 2>&1 || {

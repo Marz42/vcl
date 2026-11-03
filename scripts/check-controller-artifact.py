@@ -17,7 +17,7 @@ SCHEMAS = (
     "capabilities/v1", "telemetry/v1", "monitor/v1", "monitor/v2", "monitor/v3",
     "audit-health/v1", "user-traffic/v1", "findings/v1", "findings/v2",
     "timeline/v1", "timeline/v2", "inspect/v1", "inspect-cache/v1",
-    "baseline/v1", "verify/v2", "fleet-verify/v2", "cache-status/v1",
+    "baseline/v1", "verify/v2", "fleet-verify/v2", "cache-status/v1", "history-coverage/v1",
 )
 
 
@@ -131,6 +131,13 @@ def smoke(root):
                 target.chmod(member.mode)
     node_root = node_parent / ("vincula-node-" + provision.NODE_PAYLOAD_VERSION)
     node_locked = check_lock(node_root, "release.lock")
+    require((node_root / 'schemas/history-coverage/v1.schema.json').is_file(), 'Node history coverage contract missing')
+    for relative in ('tests/fixtures/schemas/history-coverage/v1-valid.json',
+                     'tests/fixtures/schemas/history-coverage/v1-invalid-recovered.json'):
+        require((node_root / relative).is_file() and relative in locked, 'distributed coverage fixture missing')
+    for relative in ('tests/fixtures/schemas/cache-status/v1-absent-valid.json',
+                     'tests/fixtures/schemas/cache-status/v1-unknown-invalid.json'):
+        require(relative in locked, 'distributed capacity fixture missing')
     require({"lib/inspect_snapshot.py", "lib/verify_snapshot.py", "lib/accountd_runtime.py", "lib/observer.py"} <= node_locked, "Node observation payload incomplete")
     node_cli = sys.platform == "linux" and os.geteuid() == 0
     if node_cli:

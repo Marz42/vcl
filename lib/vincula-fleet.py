@@ -896,9 +896,7 @@ def cache_history_coverage() -> dict[str, Any]:
     if conn is None:
         return {"status":"UNAVAILABLE"}
     try:
-        row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
-        value = json.loads(row[0]) if row else {"status":"LEGACY_UNVERIFIED"}
-        return value if isinstance(value, dict) else {"status":"UNKNOWN"}
+        return _STORAGE.history_coverage(conn)
     except (ValueError, sqlite3.Error):
         return {"status":"UNKNOWN"}
     finally:
@@ -915,7 +913,7 @@ def open_fleet_db(*, deadline=None, structured=False) -> sqlite3.Connection:
 
 
 def _open_fleet_db(*, deadline=None) -> sqlite3.Connection:
-    """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 4."""
+    """Open fleet.db for a guarded writer; stage older schemas before activation."""
     _ensure_fleet_home()
     path = fleet_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -955,6 +953,7 @@ def _open_fleet_db(*, deadline=None) -> sqlite3.Connection:
             fleet_db_meta_set(
                 conn, "fleet_id", _workspace_fleet_id_or_empty()
             )
+            fleet_db_meta_set(conn, "history_coverage", json.dumps(_STORAGE.coverage_snapshot(conn, 'audit_events', status='NEW_DATABASE')))
             conn.commit()
         else:
             ver = fleet_db_meta_get(conn, "schema_version")
@@ -994,10 +993,13 @@ def _migrate_fleet_db_to_5(conn: sqlite3.Connection) -> None:
         _migrate_fleet_db_3_to_4(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS legacy_daily_usage AS SELECT * FROM daily_usage")
     _STORAGE.normalize_table(conn, "audit_events", ("started_at", "last_seen_at", "closed_at"))
+    # A node with no remaining raw must not leak unverified legacy totals into
+    # the current table merely because it is absent from the raw node list.
+    conn.execute('DELETE FROM daily_usage')
     nodes = [r[0] for r in conn.execute("SELECT DISTINCT node_id FROM audit_events")]
     for node_id in nodes:
         rebuild_daily_usage_for_node(conn, node_id)
-    fleet_db_meta_set(conn, "history_coverage", json.dumps({"status":"RAW_RECONSTRUCTED", "legacy_unverified":True, "missing_history_recovered":False, "day_basis":"UTC_CONNECTION_START"}))
+    fleet_db_meta_set(conn, "history_coverage", json.dumps(_STORAGE.coverage_snapshot(conn, 'audit_events')))
     fleet_db_meta_set(conn, "schema_version", "5")
     conn.commit()
 

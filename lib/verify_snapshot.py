@@ -14,6 +14,9 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("vcl_verify_inspect", Path(__file__).with_name("inspect_snapshot.py"))
 inspect = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inspect)
+_store_spec = importlib.util.spec_from_file_location('vcl_verify_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 CHECKS = ("identity", "configuration", "integrity", "permissions", "services", "listeners", "accounting", "data_plane")
 STATES = ("PASS", "FAIL", "UNKNOWN", "UNSUPPORTED")
 REASONS = ("OK", "MISSING", "INVALID", "MISMATCH", "PERMISSION", "INACTIVE", "EXPOSED", "STALE", "TIMEOUT", "UNSUPPORTED", "NO_PROBE", "PROBE_FAILED")
@@ -163,8 +166,7 @@ def accounting(reader, path, instance_id, node_id):
                 return check("FAIL", "STALE", 1)
         return check("PASS", "OK", 4)
     except sqlite3.Error as exc:
-        code = getattr(exc, "sqlite_errorcode", 0) & 0xff
-        return check("FAIL", "INVALID", 1) if code in (1, 11, 26) else check("UNKNOWN", "TIMEOUT")
+        return check("FAIL", "INVALID", 1) if _STORE.sqlite_failure_state(exc) in ('CORRUPT', 'SCHEMA_MISMATCH') else check("UNKNOWN", "TIMEOUT")
     except (OSError, ValueError, TypeError, KeyError):
         return check("UNKNOWN", "INVALID")
     finally:

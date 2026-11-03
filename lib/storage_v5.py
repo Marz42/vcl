@@ -221,6 +221,53 @@ def rollup(conn):
         raise
 
 
+def coverage_snapshot(conn, raw_table, *, status='RAW_RECONSTRUCTED'):
+    """Migration-time envelopes, never a claim of complete traffic coverage."""
+    if raw_table not in ('connections', 'audit_events'):
+        raise ValueError('unsupported coverage source')
+    raw = conn.execute(f'SELECT COUNT(*),MIN(started_at),MAX(COALESCE(closed_at,last_seen_at)) FROM {raw_table}').fetchone()
+    legacy = (0, None, None)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_daily_usage'").fetchone():
+        legacy = conn.execute('SELECT COUNT(*),MIN(date),MAX(date) FROM legacy_daily_usage').fetchone()
+    gaps = []
+    if legacy[0]:
+        gaps.append({'kind':'LEGACY_DAILY_UNVERIFIED','from_date':legacy[1],'through_date':legacy[2]})
+    return {'schema':'history-coverage/v1','schema_version':1,'status':status,
+            'day_basis':'UTC_CONNECTION_START','completeness':'NOT_PROVEN',
+            'snapshot_at':utc(datetime.now(timezone.utc)), 'intervals_are_envelopes':True,
+            'raw_at_snapshot':{'rows':raw[0],'from':raw[1],'through':raw[2]},
+            'legacy_at_snapshot':{'rows':legacy[0],'from_date':legacy[1],'through_date':legacy[2]},
+            'legacy_unverified':bool(legacy[0]),'missing_history_recovered':False,'gaps':gaps}
+
+
+def history_coverage(conn):
+    """Read metadata only; retain explicit uncertainty for old/missing metadata."""
+    value = {'schema':'history-coverage/v1','schema_version':1,'status':'LEGACY_UNVERIFIED',
+             'day_basis':'UTC_CONNECTION_START','completeness':'NOT_PROVEN',
+             'snapshot_at':None,'intervals_are_envelopes':True,
+             'raw_at_snapshot':None,'legacy_at_snapshot':None,
+             'legacy_unverified':True,'missing_history_recovered':False,
+             'gaps':[{'kind':'HISTORY_NOT_ASSESSED'}]}
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
+        saved = json.loads(row[0]) if row else None
+        if isinstance(saved, dict) and saved.get('schema') == 'history-coverage/v1':
+            value.update(saved)
+        value['schema'], value['schema_version'] = 'history-coverage/v1', 1
+        gaps = list(value['gaps'])
+        row = conn.execute("SELECT value FROM meta WHERE key='audit_pruned_max_export_seq'").fetchone()
+        pruned = int(row[0]) if row else 0
+        value['raw_pruned_max_export_seq'] = pruned
+        if pruned > 0:
+            gaps.append({'kind':'RAW_EVENTS_PRUNED','through_export_seq':pruned})
+        value['gaps'] = gaps
+        row = conn.execute("SELECT value FROM meta WHERE key='daily_retention_cutoff'").fetchone()
+        value['daily_retention_cutoff'] = row[0] if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        value['status'] = 'UNKNOWN'
+    return value
+
+
 def convert_node(conn):
     conn.execute('CREATE TABLE IF NOT EXISTS legacy_daily_usage AS SELECT * FROM daily_usage')
     normalize_table(conn, 'connections', ('started_at','last_seen_at','closed_at'))
@@ -229,9 +276,7 @@ def convert_node(conn):
     conn.execute(NODE_DDL.strip().rstrip(';'))
     conn.execute('DELETE FROM daily_contributions')
     rollup(conn)
-    legacy = conn.execute('SELECT COUNT(*) FROM legacy_daily_usage').fetchone()[0]
-    coverage = {'status':'RAW_RECONSTRUCTED', 'legacy_unverified':bool(legacy),
-                'missing_history_recovered':False, 'day_basis':'UTC_CONNECTION_START'}
+    coverage = coverage_snapshot(conn, 'connections')
     conn.execute("INSERT OR REPLACE INTO meta VALUES('history_coverage',?)", (json.dumps(coverage,sort_keys=True),))
     conn.execute("INSERT OR REPLACE INTO meta VALUES('schema_version','5')")
     conn.commit()
@@ -283,11 +328,7 @@ def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None, reserve_
         allocated = max(allocated, connection.execute('PRAGMA page_count').fetchone()[0]*connection.execute('PRAGMA page_size').fetchone()[0])
         if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
             return
-        row = connection.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
-        coverage = json.loads(row[0]) if row else {"status":"LEGACY_UNVERIFIED"}
-        if not isinstance(coverage, dict):
-            raise ValueError('invalid history coverage')
-        report['history_coverage'] = coverage
+        report['history_coverage'] = history_coverage(connection)
     try:
         if conn is not None:
             read(conn)
@@ -355,3 +396,15 @@ def error_code(exc):
         if known in str(exc):
             return known
     return 'DATABASE_ERROR'
+
+
+def sqlite_failure_state(exc):
+    """Classify SQLite failures on Python 3.10 too; never expose raw messages."""
+    code = getattr(exc, 'sqlite_errorcode', 0) & 0xff
+    message = str(exc).lower()
+    if code in (11, 26) or any(text in message for text in (
+            'file is not a database', 'database disk image is malformed', 'database schema is corrupt')):
+        return 'CORRUPT'
+    if code == 1 or message.startswith(('no such table:', 'no such column:')):
+        return 'SCHEMA_MISMATCH'
+    return 'UNKNOWN'

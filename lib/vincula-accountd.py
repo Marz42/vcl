@@ -335,6 +335,7 @@ def _ensure_schema_4_objects(conn: sqlite3.Connection) -> None:
         meta_set(conn, META_AUDIT_EXPORT_SEQ, "0")
     if not meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, ""):
         meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0")
+        meta_set(conn, "history_coverage", json.dumps(_STORE.coverage_snapshot(conn, 'connections', status='NEW_DATABASE')))
 
 
 def next_export_seq(conn: sqlite3.Connection) -> int:
@@ -1478,9 +1479,7 @@ def apply_retention(
     now = datetime.now(timezone.utc)
     if raw_days > 0:
         cutoff = now.timestamp() - raw_days * 86400
-        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        cutoff_iso = _STORE.utc(cutoff)
         _delete_expired_connections_batch(conn, cutoff_iso)
         conn.commit()
     if daily_days > 0:

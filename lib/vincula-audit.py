@@ -20,6 +20,7 @@ Stdlib only. Targets Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sqlite3
@@ -31,6 +32,10 @@ from urllib.parse import quote
 
 EXPORT_PROTOCOL_VERSION = 2
 CURSOR_KIND_EXPORT_SEQ = "export_seq"
+
+_store_spec = importlib.util.spec_from_file_location('vcl_audit_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 ROW_KEYS = (
     "event_id",
@@ -633,8 +638,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             node_id=args.node or None,
             users_path=args.users,
         )
-        coverage_row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
-        coverage = json.loads(coverage_row[0]) if coverage_row else {"status":"LEGACY_UNVERIFIED"}
+        coverage = _STORE.history_coverage(conn)
     finally:
         conn.close()
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import ipaddress
 import json
 import os
@@ -22,6 +23,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 ACCOUNTING_MODE = "approximate / Clash polling"
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 1000
+
+_store_spec = importlib.util.spec_from_file_location('vcl_stats_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 
 @dataclass
@@ -264,13 +269,7 @@ def build_meta(
     last_success_at: str,
 ) -> Meta:
     host_pct, ip_pct = coverage_from_daily(conn, start, end)
-    coverage = {"status": "LEGACY_UNVERIFIED"}
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
-        if row:
-            coverage = json.loads(row[0])
-    except (sqlite3.Error, ValueError):
-        pass
+    coverage = _STORE.history_coverage(conn)
     return Meta(
         accounting_mode=ACCOUNTING_MODE,
         collector_state=collector_state or "unknown",

@@ -21,6 +21,8 @@ JSON Schema 定义 Controller ↔ Node 的只读 observation 协议。
 | `monitor/v3` | [`monitor/v3.schema.json`](monitor/v3.schema.json) | 0.5.3 | 当前前台monitor计数，增加inspection写失败 |
 | `verify/v2` | [`verify/v2.schema.json`](verify/v2.schema.json) | 0.5.3 | Node `verify --extended --json`，八分项 |
 | `fleet-verify/v2` | [`fleet-verify/v2.schema.json`](fleet-verify/v2.schema.json) | 0.5.3 | Controller `verify --extended --json`，可选专用probe |
+| `cache-status/v1` | [`cache-status/v1.schema.json`](cache-status/v1.schema.json) | 0.5.5 | Controller `cache status --json`，只读本机容量和停收原因 |
+| `history-coverage/v1` | [`history-coverage/v1.schema.json`](history-coverage/v1.schema.json) | 0.5.5 | Node/Fleet stats、audit 的 `history_coverage`，迁移快照范围、legacy 未验证区间和 raw 清理缺口 |
 
 v1/v2历史monitor及findings/timeline v1合同保留；0.5.3当前命令使用表中更高版本。`scripts/gen-053-contracts.py`从冻结旧合同和runtime生成扩展合同，正反fixture校验；旧Node `verify --json`无改动。
 

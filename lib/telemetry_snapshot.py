@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import hashlib
 import re
 import sqlite3
@@ -17,6 +18,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 SCHEMA = "telemetry/v1"
+
+_store_spec = importlib.util.spec_from_file_location('vcl_telemetry_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 
 def _utc_now() -> str:
@@ -356,9 +361,7 @@ def build_audit_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds
     except (PermissionError, OSError):
         out["db_state"] = "UNREADABLE"
     except sqlite3.Error as exc:
-        code = getattr(exc, "sqlite_errorcode", 0) & 0xff
-        out["db_state"] = ("CORRUPT" if code in (getattr(sqlite3, "SQLITE_CORRUPT", 11), getattr(sqlite3, "SQLITE_NOTADB", 26)) else
-                           "SCHEMA_MISMATCH" if code == getattr(sqlite3, "SQLITE_ERROR", 1) else "UNKNOWN")
+        out["db_state"] = _STORE.sqlite_failure_state(exc)
     except (ValueError, TypeError, OverflowError):
         out["db_state"] = "UNKNOWN"
     finally:
@@ -429,8 +432,7 @@ def build_user_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds:
     except (PermissionError, OSError):
         out["state"] = "UNREADABLE"
     except sqlite3.Error as exc:
-        code = getattr(exc, "sqlite_errorcode", 0) & 0xff
-        out["state"] = "CORRUPT" if code in (getattr(sqlite3, "SQLITE_CORRUPT", 11), getattr(sqlite3, "SQLITE_NOTADB", 26)) else "UNKNOWN"
+        out["state"] = "CORRUPT" if _STORE.sqlite_failure_state(exc) == 'CORRUPT' else "UNKNOWN"
         out["users"] = []
     except (ValueError, TypeError, OverflowError):
         out.update(state="UNKNOWN", users=[])

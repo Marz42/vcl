@@ -49,6 +49,10 @@ for f in "${FILES[@]}"; do
   install -D -m 0644 "$f" "${OUT}/${f}"
 done
 chmod 0755 "${OUT}/vincula.sh" "${OUT}/vincula-bootstrap.sh" "${OUT}/bin/vincula"
+install -D -m 0644 schemas/history-coverage/v1.schema.json "${OUT}/schemas/history-coverage/v1.schema.json"
+for f in tests/fixtures/schemas/history-coverage/*.json; do
+  install -D -m 0644 "$f" "${OUT}/${f}"
+done
 
 (
   cd "$OUT"

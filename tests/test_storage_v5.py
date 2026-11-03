@@ -43,6 +43,14 @@ def insert(conn, when, *, closed=None):
 
 
 class DurableStorage(unittest.TestCase):
+    def test_sqlite_failure_classification_without_python311_attributes(self):
+        for message in ('file is not a database','database disk image is malformed','database schema is corrupt'):
+            error=sqlite3.DatabaseError(message)
+            self.assertFalse(hasattr(error,'sqlite_errorcode'))
+            self.assertEqual(store.sqlite_failure_state(error),'CORRUPT')
+        self.assertEqual(store.sqlite_failure_state(sqlite3.OperationalError('no such table: synthetic')),'SCHEMA_MISMATCH')
+        self.assertEqual(store.sqlite_failure_state(sqlite3.OperationalError('database is locked')),'UNKNOWN')
+
     def test_nanoseconds_are_normalized_before_minimum_runtime_parser(self):
         import re
         class MinimumDatetime(datetime):
@@ -152,6 +160,47 @@ class DurableStorage(unittest.TestCase):
                 disk.return_value.free = 0
                 with self.assertRaisesRegex(sqlite3.OperationalError, 'DISK_SPACE_LOW'):
                     store.staged_migrate(path, accountd.migrate_schema)
+
+    def test_fleet_legacy_only_totals_are_snapshot_not_verified_usage(self):
+        fleet = load('storage_coverage_fleet', 'lib/vincula-fleet.py')
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(fleet.FLEET_DB_DDL)
+        fleet.fleet_db_meta_set(conn, 'schema_version', '4')
+        conn.execute("INSERT INTO daily_usage(date,node_id,user_id,user_tag,destination_host,upload_bytes,download_bytes,connection_count) VALUES('2026-01-01','old-node',?,'alice','example.test',100,200,1)", (USER,))
+        conn.commit()
+        fleet._migrate_fleet_db_to_5(conn)
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM daily_usage').fetchone()[0], 0)
+        self.assertEqual(conn.execute('SELECT SUM(upload_bytes) FROM legacy_daily_usage').fetchone()[0], 100)
+        coverage = fleet._STORAGE.history_coverage(conn)
+        self.assertEqual(coverage['legacy_at_snapshot'], {'rows':1, 'from_date':'2026-01-01','through_date':'2026-01-01'})
+        self.assertEqual(coverage['raw_at_snapshot']['rows'], 0)
+        self.assertEqual(coverage['gaps'][0]['kind'], 'LEGACY_DAILY_UNVERIFIED')
+        self.assertFalse(coverage['missing_history_recovered'])
+
+    def test_coverage_contract_and_pruned_history_are_explicit(self):
+        import json
+        import test_monitor_schema as evaluator
+        schema = json.loads((ROOT/'schemas/history-coverage/v1.schema.json').read_text())
+        conn = database()
+        self.addCleanup(conn.close)
+        insert(conn,'2026-01-01T00:00:00Z',closed='2026-01-01T01:00:00Z')
+        accountd.meta_set(conn,'history_coverage',json.dumps(store.coverage_snapshot(conn,'connections',status='NEW_DATABASE')))
+        accountd.rollup_daily_usage(conn)
+        accountd.apply_retention(conn,1,365)
+        coverage=store.history_coverage(conn)
+        evaluator.validate(coverage,schema)
+        self.assertEqual(coverage['raw_pruned_max_export_seq'],1)
+        self.assertEqual(coverage['gaps'][-1],{'kind':'RAW_EVENTS_PRUNED','through_export_seq':1})
+        self.assertEqual(coverage['completeness'],'NOT_PROVEN')
+        for path in (ROOT/'tests/fixtures/schemas/history-coverage').glob('*.json'):
+            value=json.loads(path.read_text())
+            if 'invalid' in path.name:
+                with self.assertRaises(AssertionError):
+                    evaluator.validate(value,schema)
+            else:
+                evaluator.validate(value,schema)
 
     def test_concurrent_migrations_activate_once_and_preserve_history(self):
         from concurrent.futures import ThreadPoolExecutor
