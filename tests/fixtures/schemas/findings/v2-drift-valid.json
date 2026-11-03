@@ -1,0 +1,90 @@
+{
+  "cache_state": "OK",
+  "evaluations": [
+    {
+      "audit": {
+        "progression": "UNKNOWN",
+        "transport": "UNSUPPORTED"
+      },
+      "baselines": {
+        "NETWORK_RATE_ANOMALY": {
+          "reason": "STALE"
+        },
+        "SERVICE_RESTART_LOOP": {
+          "reason": "STALE"
+        }
+      },
+      "checks": {
+        "ACCOUNTING_DB_CORRUPT": "UNKNOWN",
+        "AUDIT_STALLED": "UNKNOWN",
+        "DISK_PRESSURE": "UNKNOWN",
+        "DRIFT_BINARY": "UNKNOWN",
+        "DRIFT_CONFIG": "ANOMALOUS",
+        "DRIFT_LISTENERS": "UNKNOWN",
+        "DRIFT_RUNTIME": "UNKNOWN",
+        "DRIFT_SERVICES": "UNKNOWN",
+        "DRIFT_UNITS": "UNKNOWN",
+        "DRIFT_VERSIONS": "UNKNOWN",
+        "EXPORT_GAP": "UNKNOWN",
+        "EXPORT_SEQUENCE_REGRESSION": "UNKNOWN",
+        "MEMORY_PRESSURE": "UNKNOWN",
+        "NETWORK_RATE_ANOMALY": "UNKNOWN",
+        "SCHEMA_MISMATCH": "UNKNOWN",
+        "SERVICE_RESTART_LOOP": "UNKNOWN",
+        "SYNC_LAG": "UNKNOWN",
+        "TELEMETRY_STALE": "UNKNOWN"
+      },
+      "context": {},
+      "evaluated_at": 1791216000,
+      "subject": {
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "kind": "node",
+        "name": "test"
+      },
+      "user_coverage": {
+        "capacity_skipped": 0,
+        "fresh": false,
+        "observed_users": 0,
+        "state": "UNSUPPORTED",
+        "stored_users": 0
+      }
+    }
+  ],
+  "events": [
+    {
+      "at": 1791216000,
+      "detail": {
+        "type": "DRIFT_CONFIG"
+      },
+      "id": "9b38d2e72ebddb5045f697d783ff62f7b3ded5dddc01d9db1625ec241fd3b292",
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "kind": "node",
+        "name": "test"
+      }
+    }
+  ],
+  "findings": [
+    {
+      "category": "drift",
+      "evidence": {
+        "changed_count": 1
+      },
+      "explanation": "The observed config differs from the explicitly accepted local baseline.",
+      "finding_id": "901d013e2172880f79a8036d02ef71cfcac44d0771be6a1ddddcc4e32469c22a",
+      "first_seen": 1791216000,
+      "last_seen": 1791216000,
+      "severity": "WARNING",
+      "state": "ACTIVE",
+      "subject": {
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "kind": "node",
+        "name": "test"
+      },
+      "type": "DRIFT_CONFIG"
+    }
+  ],
+  "schema": "findings/v2",
+  "truncated": []
+}

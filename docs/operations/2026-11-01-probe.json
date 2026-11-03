@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "ok": false,
+  "controller_utc": "2026-11-01T08:10:51Z",
+  "nodes": [
+    {
+      "name": "epicfury",
+      "node_id": "b73de55b-e02c-4e81-b67b-4914da981c5b",
+      "instance_id": "688cfded-366c-4894-9714-8b231c4dee0f",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    },
+    {
+      "name": "upperhand",
+      "node_id": "17a97e78-c062-4981-b922-efb945efec93",
+      "instance_id": "66518970-713f-4c20-bae7-868292ae6526",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    },
+    {
+      "name": "eagleclaw",
+      "node_id": "8d3965e6-8d6a-4e55-9754-02e3e44b75e7",
+      "instance_id": "401b7173-6b57-4193-a4fb-800dc9c691fd",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    },
+    {
+      "name": "neptunespear",
+      "node_id": "4ded198e-cc0c-42c3-9db6-2a4475e2bced",
+      "instance_id": "8f83c131-0cf1-42b7-864d-a7a07dd14995",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    },
+    {
+      "name": "hot-beam-1",
+      "node_id": "ae137e11-5f4f-4143-80b7-5e7d3f02a636",
+      "instance_id": "2cbde820-0424-4ead-be22-cf5a2ba23152",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    },
+    {
+      "name": "urgentfury",
+      "node_id": "7ae0f553-2f88-43b5-9da5-93d1ecd91ff6",
+      "instance_id": null,
+      "enabled": true,
+      "ssh": "FAIL",
+      "proxy": "UNKNOWN",
+      "accounting": "UNKNOWN",
+      "ssh_detail": "SSH transport timed out",
+      "ssh_reason": "TIMEOUT"
+    },
+    {
+      "name": "fresh050",
+      "node_id": "9ad4bcd5-b903-4a67-9658-615c71887548",
+      "instance_id": "5494d5d6-9bf6-4604-adf3-41ef005b6740",
+      "enabled": true,
+      "ssh": "OK",
+      "proxy": "OK",
+      "accounting": "OK"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "checked_date": "2026-10-08",
+  "repository": "Marz42/vcl",
+  "development": {
+    "branch": "codex/0.5.1",
+    "head_sha": "f37c50a278fe952e514a5889756175182e283572",
+    "parent_sha": "1683928",
+    "scope": "FR-02 review fixes: post-catch-up snapshot collection, shared per-node budget deadline, mandatory max_export_seq watermark, leak-free SSH/protocol summaries",
+    "pull_request": "https://github.com/Marz42/vcl/pull/13",
+    "draft": true,
+    "merged": false
+  },
+  "workflow": {
+    "run_number": 97,
+    "id": 37766606635,
+    "head_sha": "88420951da0406dcdf0e0c515da8d0123c440715",
+    "tree_equivalent_to": "f37c50a278fe952e514a5889756175182e283572",
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-10-08T10:54:54Z",
+    "updated_at": "2026-10-08T11:03:01Z",
+    "url": "https://github.com/Marz42/vcl/actions/runs/37766606635"
+  },
+  "check_runs": [
+    {"name": "artifact", "conclusion": "success"},
+    {"name": "concurrency", "conclusion": "success"},
+    {"name": "failure-injection", "conclusion": "success"},
+    {"name": "unit (debian:12)", "conclusion": "success"},
+    {"name": "unit (debian:13)", "conclusion": "success"},
+    {"name": "unit (ubuntu-latest)", "conclusion": "success"},
+    {"name": "unit (windows-latest)", "conclusion": "success"}
+  ],
+  "prior_revision": {
+    "head_sha": "fd6ab8962f5305e16a94a50a27b3ab85185de2a3",
+    "run_number": 94,
+    "id": 37755078557,
+    "conclusion": "success",
+    "note": "First bounded-sync revision, still valid for its own scope; superseded by f37c50a for the FR-02 binding."
+  },
+  "follow_up_runs": {
+    "run_96": {
+      "id": 37765485255,
+      "head_sha": "f37c50a278fe952e514a5889756175182e283572",
+      "conclusion": "failure",
+      "failed_job": "unit (windows-latest)",
+      "failed_step": "Controller monitoring and portable contracts (python -m unittest discover -s tests -p 'test_*.py')",
+      "assessment": "Only lib/*.py, the shell suite and a fixture changed; the windows job runs the unittest discovery alone and that command passes locally under Windows Python 3.12 (155 tests, 11 skipped). Run 91 failed the same job on a docs-only commit. Kept as a recorded failure."
+    },
+    "run_97": {
+      "id": 37766606635,
+      "head_sha": "88420951da0406dcdf0e0c515da8d0123c440715",
+      "scope": "empty retrigger commit, tree identical to f37c50a",
+      "conclusion": "success",
+      "assessment": "All seven jobs green; run 96's windows-latest failure is runner flakiness (same pattern as run 91), not a source regression."
+    }
+  },
+  "note": "The push event alone does not trigger ci.yml (push is limited to main); the run comes from the open draft PR #13 synchronising its head.",
+  "binding": "f37c50a (via the tree-identical retrigger 8842095). Default catch-up parameters are still not re-measured on a real large backlog; live fleet re-verification, soak and H05 remain PENDING."
+}

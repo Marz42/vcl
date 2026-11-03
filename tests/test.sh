@@ -54,7 +54,11 @@ assert_failure() {
 }
 
 finish() {
+  local suite_exit_code=$?
   trap - EXIT
+  if (( suite_exit_code != 0 )); then
+    fail "suite stopped unexpectedly (exit=${suite_exit_code})"
+  fi
   # §5: real HOME must be untouched (known_hosts fingerprint + no suite writes).
   if [[ -n "${SAVED_SUITE_HOME:-}" ]]; then
     local real_kh="${SAVED_SUITE_HOME}/.ssh/known_hosts"
@@ -128,7 +132,7 @@ assert_equal "pins arm64 archive digest" \
 assert_equal "builds immutable amd64 release URL" \
   "https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64.tar.gz" \
   "$(release_asset_url amd64)"
-assert_equal "runs when read from standard input" "vincula 0.5.0" \
+assert_equal "runs when read from standard input" "vincula 0.5.5" \
   "$(VINCULA_ROOT="${PROJECT_DIR}" bash -s -- --version < "${PROJECT_DIR}/vincula.sh")"
 assert_equal "uses vincula state directory" "/etc/vincula" "$STATE_DIR"
 assert_equal "uses vincula lib directory" "/usr/local/lib/vincula" "$LIB_DIR"
@@ -158,7 +162,9 @@ assert_success "migrates from 0.3.1-rc1" is_supported_upgrade_from 0.3.1-rc1
 assert_success "migrates from 0.3.1-rc2" is_supported_upgrade_from 0.3.1-rc2
 assert_success "migrates from 0.3.1" is_supported_upgrade_from 0.3.1
 assert_success "migrates from 0.3.2" is_supported_upgrade_from 0.3.2
-assert_failure "does not migrate the current version" is_supported_upgrade_from 0.5.0
+assert_success "migrates from 0.5.0" is_supported_upgrade_from 0.5.0
+assert_success "migrates from 0.5.1" is_supported_upgrade_from 0.5.1
+assert_failure "does not migrate the current version" is_supported_upgrade_from 0.5.5
 assert_failure "does not migrate 0.3.0-dev" is_supported_upgrade_from 0.3.0-dev
 
 assert_equal "D18 730 from 0.2.6 becomes 90" "90" "$(migrate_legacy_daily_retention 0.2.6 730)"
@@ -391,8 +397,8 @@ else
   pass "verify_existing_install does not remint instance_id"
 fi
 
-# 0.3.1→0.5.0 shaped migration fixture: preserve UUID / Reality / users / accounting
-assert_success "0.3.1→0.5.0 shaped migrate fixture preserves identity" python3 - \
+# 0.3.1→0.5.5 shaped migration fixture: preserve UUID / Reality / users / accounting
+assert_success "0.3.1→0.5.5 shaped migrate fixture preserves identity" python3 - \
   "${TEST_TMP}/migrate-031-050" \
   "$TEST_UUID" "$TEST_PRIVATE_KEY" "$TEST_PUBLIC_KEY" "$TEST_SHORT_ID" \
   "$TEST_NODE_ID" "$TEST_INSTANCE_ID" <<'PY'
@@ -402,7 +408,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 uuid, priv, pub, sid, node_id, instance_id = sys.argv[2:8]
 src = root / "src-0.3.1"
-dst = root / "dst-0.5.0"
+dst = root / "dst-0.5.5"
 src.mkdir(parents=True)
 (src / "VERSION").write_text("0.3.1\n", encoding="utf-8")
 state = {
@@ -465,11 +471,11 @@ acct_bytes = db.read_bytes()
 import shutil
 
 shutil.copytree(src, dst)
-(dst / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+(dst / "VERSION").write_text("0.5.5\n", encoding="utf-8")
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
-dst_state["project_version"] = "0.5.0"
+dst_state["project_version"] = "0.5.5"
 (dst / "state.json").write_text(json.dumps(dst_state, indent=2) + "\n", encoding="utf-8")
-toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.5.0")
+toml = (dst / "config.toml").read_text(encoding="utf-8").replace("0.3.1", "0.5.5")
 (dst / "config.toml").write_text(toml, encoding="utf-8")
 
 # Preserve assertions (same invariants migrate_existing_install guards).
@@ -477,7 +483,7 @@ src_state = json.loads((src / "state.json").read_text(encoding="utf-8"))
 dst_state = json.loads((dst / "state.json").read_text(encoding="utf-8"))
 for key in ("uuid", "private_key", "public_key", "short_id", "node_id", "instance_id"):
     assert src_state[key] == dst_state[key], key
-assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.5.0"
+assert (dst / "VERSION").read_text(encoding="utf-8").strip() == "0.5.5"
 src_users = json.loads((src / "users.json").read_text(encoding="utf-8"))
 dst_users = json.loads((dst / "users.json").read_text(encoding="utf-8"))
 assert src_users == dst_users
@@ -515,7 +521,8 @@ assert_success "self-test client exposes localhost SOCKS" grep -q '"type": "sock
 assert_success "renders syntactically valid helper" bash -n "${TEST_TMP}/vincula"
 assert_success "renders expected service user" grep -q '^User=sing-box$' "${TEST_TMP}/sing-box.service"
 assert_success "renders low-port capability" grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "${TEST_TMP}/sing-box.service"
-assert_success "keeps management state private by design" grep -q '^project_version = "0.5.0"$' "${TEST_TMP}/config.toml"
+assert_success "unit disables Go MPTCP listeners" grep -q '^Environment=GODEBUG=multipathtcp=0$' "${TEST_TMP}/sing-box.service"
+assert_success "keeps management state private by design" grep -q '^project_version = "0.5.5"$' "${TEST_TMP}/config.toml"
 assert_success "render_settings snapshot has daily retention 90" \
   grep -q '^accounting_daily_retention_days = 90$' "${TEST_TMP}/config.toml"
 render_settings "${TEST_TMP}/settings-ret-default.toml" 203.0.113.10 443 www.cloudflare.com amd64 9090 test-secret
@@ -600,7 +607,7 @@ assert_success "capabilities/v1 valid fixture parses" \
 assert_success "telemetry/v1 valid fixture parses" \
   python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
   "${PROJECT_DIR}/tests/fixtures/schemas/telemetry/v1-valid.json"
-assert_success "0.5.0 capabilities contract assembly" python3 - "$VINCULA_VERSION" <<'PY'
+assert_success "0.5.5 capabilities contract assembly" python3 - "$VINCULA_VERSION" <<'PY'
 import json, sys
 version = sys.argv[1]
 doc = {
@@ -951,7 +958,7 @@ assert_success "installer defines TELEMETRY_PY" \
   grep -q 'TELEMETRY_PY=' "${PROJECT_DIR}/vincula.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 12 first-party files" "12" \
+assert_equal "release.lock has 19 first-party files" "19" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -978,9 +985,9 @@ assert_success "build-release includes vincula-audit.py" \
 assert_success "build-release includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-stats.py"
 assert_success "python3 can compile vincula-audit" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-audit.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_failure "audit module does not import accountd" \
   grep -q 'vincula-accountd' "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_success "helper notes polling is not exact billing" grep -q 'Polling ≠ exact billing' "${TEST_TMP}/vincula"
@@ -1053,8 +1060,8 @@ assert_success "accountd unit After=sing-box" \
   grep -q 'After=.*sing-box.service' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has NoNewPrivileges" \
   grep -q '^NoNewPrivileges=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
-assert_success "accountd unit version stamp is 0.5.0" \
-  grep -q 'Vincula-Version: 0.5.0' "${PROJECT_DIR}/lib/vincula-accountd.service"
+assert_success "accountd unit version stamp is 0.5.5" \
+  grep -q 'Vincula-Version: 0.5.5' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelTunables" \
   grep -q '^ProtectKernelTunables=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "accountd unit has ProtectKernelModules" \
@@ -1064,7 +1071,7 @@ assert_success "accountd unit has ProtectControlGroups" \
 assert_success "accountd unit has RestrictRealtime" \
   grep -q '^RestrictRealtime=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "python3 can compile vincula-accountd" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-accountd.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_failure "event schema file is not shipped" \
   test -f "${PROJECT_DIR}/lib/vincula-event.schema.json"
 assert_failure "gen-release-lock does not include event schema" \
@@ -1250,7 +1257,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 12 first-party files" "12" \
+assert_equal "dist node release.lock has 19 first-party files" "19" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
@@ -1891,7 +1898,7 @@ fi
 assert_success "ingested connection row has user_id" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute("select count(*) from connections where user_id=\"u-alice\"").fetchone()[0]; raise SystemExit(0 if n>=1 else 1)' "$SAMPLE_DB"
 assert_success "meta.schema_version is 4" \
-  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="4" else 1)' "$SAMPLE_DB"
+  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute("select value from meta where key=\"schema_version\"").fetchone()[0]; raise SystemExit(0 if v=="5" else 1)' "$SAMPLE_DB"
 assert_success "destination host normalized lowercase strip dot" \
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); h=c.execute("select destination_host from connections where connection_id=\"c-test-1\"").fetchone()[0]; raise SystemExit(0 if h=="example.com" else 1)' "$SAMPLE_DB"
 
@@ -1945,7 +1952,7 @@ assert mod.normalize_destination_host("foo.") == "foo"
 assert mod.normalize_destination_host(None) is None
 
 conn = mod.open_db(db)
-assert mod.meta_get(conn, "schema_version") == "4"
+assert mod.meta_get(conn, "schema_version") == "5"
 mod.upsert_connection(conn, {
     "event": "connection_close",
     "connection_id": "r1",
@@ -2123,7 +2130,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 conn = mod.open_db(db)
-assert mod.meta_get(conn, "schema_version") == "4"
+assert mod.meta_get(conn, "schema_version") == "5"
 mod.upsert_connection(conn, {
     "connection_id": "poll-same",
     "generation": 0,
@@ -2215,7 +2222,7 @@ mod_path, old_db, empty_db = sys.argv[1], sys.argv[2], sys.argv[3]
 spec = importlib.util.spec_from_file_location("accountd", mod_path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-assert mod.SCHEMA_VERSION == 4
+assert mod.SCHEMA_VERSION == 5
 src = pathlib.Path(mod_path).read_text(encoding="utf-8")
 for i, line in enumerate(src.splitlines(), 1):
     code = line.split("#", 1)[0]
@@ -2287,7 +2294,7 @@ raw.commit()
 raw.close()
 
 conn = mod.open_db(old_db)
-assert mod.meta_get(conn, "schema_version") == "4"
+assert mod.meta_get(conn, "schema_version") == "5"
 cols = [r[1] for r in conn.execute("PRAGMA table_info(connections)").fetchall()]
 for required in (
     "event_id", "generation", "instance_id", "connection_id", "user_id", "export_seq",
@@ -2325,16 +2332,17 @@ assert open_row[7] == "n1" and open_row[2] is not open_row[7]
 assert open_row[8] is None, open_row  # open rows stay NULL export_seq
 assert closed_row[1] == 0 and closed_row[2] is None, closed_row
 assert closed_row[4] == 10 and closed_row[5] == 20, closed_row
-assert closed_row[6] == "2026-08-14T09:01:00Z", closed_row
+assert closed_row[6] == "2026-08-14T09:01:00.000000Z", closed_row
 assert closed_row[8] == 1, closed_row  # sole closed row gets export_seq=1
 assert mod.meta_get(conn, "audit_export_seq") == "1"
 assert mod.meta_get(conn, "audit_pruned_max_export_seq") == "0"
 # event_id values assigned by 2→3 must survive 3→4.
 assert preserved_eids == {open_row[3], closed_row[3]}
 daily = conn.execute(
-    "SELECT upload_bytes, download_bytes, connection_count FROM daily_usage"
+    "SELECT SUM(upload_bytes), SUM(download_bytes), SUM(connection_count) FROM daily_usage"
 ).fetchone()
-assert daily[0] == 12345 and daily[1] == 67890 and daily[2] == 1, daily
+assert tuple(daily) == (12355, 67910, 2), tuple(daily)
+assert conn.execute("SELECT COUNT(*) FROM legacy_daily_usage").fetchone()[0] == 1
 n_base = conn.execute("SELECT COUNT(*) FROM poll_baseline").fetchone()[0]
 assert n_base == 0, n_base
 
@@ -2443,7 +2451,7 @@ conn.close()
 
 # Empty DB via open_db is schema 4 with poll_baseline and export_seq counters.
 fresh = mod.open_db(empty_db)
-assert mod.meta_get(fresh, "schema_version") == "4"
+assert mod.meta_get(fresh, "schema_version") == "5"
 assert mod.meta_get(fresh, "audit_export_seq") == "0"
 assert mod.meta_get(fresh, "audit_pruned_max_export_seq") == "0"
 fresh_cols = [r[1] for r in fresh.execute("PRAGMA table_info(connections)").fetchall()]
@@ -2824,7 +2832,7 @@ class TickFailConn:
         self._n = 0
     def commit(self):
         self._n += 1
-        if self._n == 1:
+        if self._n == 2:  # First commit publishes heartbeat; second is the collected accounting transaction.
             raise sqlite3.DatabaseError("injected-tick")
         return self._inner.commit()
     def rollback(self):
@@ -2922,6 +2930,8 @@ def deny_live_daily_insert(action, table, _column, _dbname, _source):
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
+conn.execute("UPDATE connections SET upload_bytes=upload_bytes+1")
+conn.commit()
 conn.set_authorizer(deny_live_daily_insert)
 try:
     mod.rollup_daily_usage(conn)
@@ -3113,8 +3123,10 @@ def expired_daily_n():
         "SELECT COUNT(*) FROM daily_usage WHERE date < ?", (cutoff_date,)
     ).fetchone()[0]
 
+mod.rollup_daily_usage(conn)
+conn.commit()
+n_daily_expired = expired_daily_n()
 assert expired_conn_n() == n_expired, expired_conn_n()
-assert expired_daily_n() == n_daily_expired, expired_daily_n()
 
 mod.apply_retention(conn, 90, 90)
 assert expired_conn_n() == n_expired - 2000, expired_conn_n()
@@ -3137,7 +3149,7 @@ assert recent_daily == 1
 
 mod.apply_retention(conn, 90, 90)
 assert expired_conn_n() == n_expired - 4000, expired_conn_n()
-assert expired_daily_n() == n_daily_expired - 2505, expired_daily_n()
+assert expired_daily_n() == max(0, n_daily_expired - 4000), expired_daily_n()
 
 mod.apply_retention(conn, 90, 90)
 assert expired_conn_n() == 0, expired_conn_n()
@@ -4500,7 +4512,7 @@ spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
 acct = importlib.util.module_from_spec(spec_a)
 spec_a.loader.exec_module(acct)
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "4"
+assert acct.meta_get(conn, "schema_version") == "5"
 
 def insert(**kw):
     conn.execute(
@@ -4552,11 +4564,11 @@ audit = importlib.util.module_from_spec(spec)
 sys.modules["vaudit"] = audit
 spec.loader.exec_module(audit)
 
-assert audit.parse_rfc3339("2026-08-10T09:00:00Z") == "2026-08-10T09:00:00Z"
-assert audit.parse_rfc3339("2026-08-10T09:00:00+00:00") == "2026-08-10T09:00:00Z"
-assert audit.parse_rfc3339("2026-08-10T17:00:00+08:00") == "2026-08-10T09:00:00Z"
+assert audit.parse_rfc3339("2026-08-10T09:00:00Z") == "2026-08-10T09:00:00.000000Z"
+assert audit.parse_rfc3339("2026-08-10T09:00:00+00:00") == "2026-08-10T09:00:00.000000Z"
+assert audit.parse_rfc3339("2026-08-10T17:00:00+08:00") == "2026-08-10T09:00:00.000000Z"
 assert audit.interval_overlap_sql() == (
-    "started_at < ? AND COALESCE(closed_at, last_seen_at) >= ?"
+    "vcl_utc(started_at) < ? AND vcl_utc(COALESCE(closed_at, last_seen_at)) >= ?"
 )
 
 try:
@@ -4674,8 +4686,8 @@ def run(*extra, check=True):
 out = run("--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z", "--json")
 data = json.loads(out.stdout)
 assert "rows" in data and "query" in data, data.keys()
-assert data["query"]["from"] == "2026-08-10T09:00:00Z"
-assert data["query"]["to"] == "2026-08-10T18:00:00Z"
+assert data["query"]["from"] == "2026-08-10T09:00:00.000000Z"
+assert data["query"]["to"] == "2026-08-10T18:00:00.000000Z"
 assert [r["connection_id"] for r in data["rows"]] == [
     "conn-c", "conn-a", "conn-inside", "conn-b",
 ]
@@ -4687,8 +4699,8 @@ out = run(
     "--format", "json",
 )
 data = json.loads(out.stdout)
-assert data["query"]["from"] == "2026-08-10T09:00:00Z"
-assert data["query"]["to"] == "2026-08-10T18:00:00Z"
+assert data["query"]["from"] == "2026-08-10T09:00:00.000000Z"
+assert data["query"]["to"] == "2026-08-10T18:00:00.000000Z"
 
 out = run(
     "--from", "2026-08-10T09:00:00Z", "--to", "2026-08-10T18:00:00Z",
@@ -4776,7 +4788,7 @@ spec_a = importlib.util.spec_from_file_location("accountd", accountd_py)
 acct = importlib.util.module_from_spec(spec_a)
 spec_a.loader.exec_module(acct)
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "4"
+assert acct.meta_get(conn, "schema_version") == "5"
 
 def insert_closed(i, export_seq):
     conn.execute(
@@ -5198,8 +5210,8 @@ if [[ "$acct_src_fn" == *'check)'* && "$acct_src_fn" == *'cmd_verify_accounting_
 else
   fail "vcl accounting check aliases the shared accounting plane checker"
 fi
-assert_success "installer health checks expect accounting schema 4" \
-  grep -q '"$schema" == "4"' "${PROJECT_DIR}/vincula.sh"
+assert_success "installer health checks expect accounting schema 5" \
+  grep -q '"$schema" == "5"' "${PROJECT_DIR}/vincula.sh"
 assert_failure "installer health checks no longer expect accounting schema 3" \
   grep -q '"$schema" == "3"' "${PROJECT_DIR}/vincula.sh"
 # B18: rc1 fresh-install blocker — health check must track accountd SCHEMA_VERSION.
@@ -5243,7 +5255,7 @@ if [[ "$verify_src_fn" == *'Bearer'* ]]; then
 else
   fail "cmd_verify documents Bearer triad"
 fi
-if [[ "$verify_src_fn" == *'wrong-${clash_secret}'* ]]; then
+if [[ "$verify_src_fn" == *'clash_api_authenticated'* ]]; then
   pass "cmd_verify rejects wrong Clash secret"
 else
   fail "cmd_verify rejects wrong Clash secret"
@@ -5659,8 +5671,8 @@ schema2_fixture(bogus, "bogus")
 assert_fail_closed(bogus, "bogus")
 
 future = os.path.join(work, "schema-future.db")
-schema2_fixture(future, "5")
-assert_fail_closed(future, "5")
+schema2_fixture(future, "6")
+assert_fail_closed(future, "6")
 
 # Antique schema 1 without user_id: still fail-closed, no schema rewrite.
 antique = os.path.join(work, "schema-antique.db")
@@ -5720,7 +5732,7 @@ assert_success "soak protocol documents 24h READY FOR RC" \
 
 # --- 0.3.0 vincula-backup.py strip/tar ---
 assert_success "python3 can compile vincula-backup" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-backup.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module pins schema 1" \
   grep -q 'BACKUP_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module uses sqlite3 Connection.backup" \
@@ -5862,7 +5874,7 @@ orig_toml = (state_dir / "config.toml").read_bytes()
 
 db = state_dir / "accounting.db"
 conn = acct.open_db(str(db))
-assert acct.meta_get(conn, "schema_version") == "4"
+assert acct.meta_get(conn, "schema_version") == "5"
 
 def insert_row(cid, closed):
     conn.execute(
@@ -5959,7 +5971,7 @@ acct_wal.execute(
 )
 acct_wal.commit()
 snap_conn = sqlite3.connect(str(wal_snap))
-assert snap_conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
+assert snap_conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "5"
 cids = [r[0] for r in snap_conn.execute("SELECT connection_id FROM connections ORDER BY event_id")]
 assert cids == ["wal-open"], cids
 open_closed = snap_conn.execute(
@@ -6021,7 +6033,7 @@ assert members["VERSION"] == b"0.3.0\n"
 db_copy = base / "from-tar.db"
 db_copy.write_bytes(members["accounting.db"])
 acct_tar = sqlite3.connect(str(db_copy))
-assert acct_tar.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
+assert acct_tar.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "5"
 rows = acct_tar.execute(
     "SELECT connection_id, closed_at FROM connections ORDER BY event_id"
 ).fetchall()
@@ -6562,7 +6574,7 @@ else
   fail "vcl backup unknown subcommand dies (rc=${bogus_rc}, err='${bogus_err}')"
 fi
 
-# --- 0.5.0 upgrade checkpoint / fail-closed rollback ---
+# --- 0.5.5 upgrade checkpoint / fail-closed rollback ---
 assert_success "helper implements upgrade checkpoint" \
   grep -q '^cmd_upgrade_checkpoint()' "${PROJECT_DIR}/bin/vincula"
 assert_success "helper rollback verifies service active" \
@@ -6670,7 +6682,7 @@ if [[ -n "$upg_ck2_path" && "$upg_ck2_path" != "$upg_ck_path" ]]; then
 else
   fail "vcl upgrade checkpoint directories are unique ('${upg_ck_path}' vs '${upg_ck2_path}')"
 fi
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.5" > "${upg_state}/VERSION"
 upg_rb_ok_rc=0
 rm -f "${upg_ctl_state}/phase"
 VCL_UPGRADE_SKIP_SERVICE=1 cli_upgrade rollback "$upg_ck_path" --json >/dev/null 2>&1 || upg_rb_ok_rc=$?
@@ -6680,7 +6692,7 @@ else
   fail "vcl upgrade rollback restores VERSION with skip-service (rc=${upg_rb_ok_rc})"
 fi
 # Stop failure: services remain active → refuse to overwrite VERSION.
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.5" > "${upg_state}/VERSION"
 rm -f "${upg_ctl_state}/phase"
 upg_stop_rc=0
 upg_stop_out=$(
@@ -6691,12 +6703,12 @@ upg_stop_parse=1
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("ok") is False; assert d.get("error")=="service_still_active"' \
   "$upg_stop_out" 2>/dev/null && upg_stop_parse=0 || true
 if (( upg_stop_rc != 0 && upg_stop_parse == 0 )) \
-    && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.5.0" ]]; then
+    && [[ "$(tr -d '[:space:]' <"${upg_state}/VERSION")" == "0.5.5" ]]; then
   pass "vcl upgrade rollback fail-closes on stop failure without overwriting state"
 else
   fail "vcl upgrade rollback fail-closes on stop failure without overwriting state (rc=${upg_stop_rc} out=${upg_stop_out} ver=$(tr -d '[:space:]' <"${upg_state}/VERSION"))"
 fi
-printf '%s\n' "0.5.0" > "${upg_state}/VERSION"
+printf '%s\n' "0.5.5" > "${upg_state}/VERSION"
 rm -f "${upg_ctl_state}/phase"
 upg_rb_fail_rc=0
 upg_rb_fail_out=$(
@@ -8374,6 +8386,36 @@ if [[ -n "${restore_cli_root:-}" && -x "${restore_cli_root}/bin/vincula" ]]; the
 else
   fail "restore acquires node lock (busy while held) (cli wrapper missing)"
 fi
+
+assert_success "0.5.5 monitoring state storage scheduler regression" \
+  python3 "${TEST_DIR}/test_monitor.py"
+assert_success "0.5.5 minimal accountd runtime contracts" \
+  python3 "${TEST_DIR}/test_accountd_runtime.py"
+assert_success "0.5.5 observer command and credential boundaries" \
+  python3 "${TEST_DIR}/test_observer.py"
+assert_success "0.5.5 monitor JSON schema contract" \
+  python3 "${TEST_DIR}/test_monitor_schema.py"
+assert_success "0.5.5 findings foundation local contracts" \
+  python3 "${TEST_DIR}/test_findings.py"
+assert_success "0.5.5 bounded audit health diagnostics and contracts" \
+  python3 "${TEST_DIR}/test_audit_health.py"
+assert_success "0.5.5 statistical baselines and node anomaly lifecycle" \
+  python3 "${TEST_DIR}/test_anomalies.py"
+assert_success "0.5.5 user traffic samples and anomaly lifecycle" \
+  python3 "${TEST_DIR}/test_user_traffic.py"
+assert_success "0.5.5 public findings and timeline schema contracts" \
+  python3 "${TEST_DIR}/test_findings_schema.py"
+assert_success "0.5.5 bounded inspection inventory and fingerprints" \
+  python3 "${TEST_DIR}/test_inspect.py"
+
+assert_success "0.5.5 immutable credential selectors" \
+  python3 -B -m unittest discover -s "$TEST_DIR" -p test_access.py
+assert_success "0.5.5 private secret inputs and authentication negatives" \
+  python3 -B -m unittest discover -s "$TEST_DIR" -p test_closeout_secrets.py
+assert_success "0.5.5 staged migrations and independent retention" \
+  python3 -B -m unittest discover -s "$TEST_DIR" -p test_storage_v5.py
+assert_success "0.5.5 cache limits and truthful failures" \
+  python3 -B -m unittest discover -s "$TEST_DIR" -p test_cache_capacity.py
 
 if [[ -f "${TEST_DIR}/test-fleet.sh" ]]; then
   # shellcheck disable=SC1091
