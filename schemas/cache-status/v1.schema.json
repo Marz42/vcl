@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cache-status/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "state", "error_code", "import_allowed"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "state": {"enum": ["ABSENT", "OK", "WARNING", "STOPPED", "CACHE_CORRUPT", "ERROR"]},
+    "error_code": {"enum": [null, "CACHE_LIMIT_REACHED", "DISK_SPACE_LOW", "DATABASE_ERROR", "CACHE_POLICY_INVALID"]},
+    "import_allowed": {"type": "boolean"},
+    "database_bytes": {"type": "integer", "minimum": 0},
+    "auxiliary_bytes": {"type": "integer", "minimum": 0},
+    "free_bytes": {"type": "integer", "minimum": 0},
+    "history_coverage": {"type": "object"},
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "max_bytes", "warning_fraction", "min_free_bytes"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "max_bytes": {"type": "integer", "minimum": 16384},
+        "warning_fraction": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "min_free_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

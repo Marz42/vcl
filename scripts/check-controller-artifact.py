@@ -17,7 +17,7 @@ SCHEMAS = (
     "capabilities/v1", "telemetry/v1", "monitor/v1", "monitor/v2", "monitor/v3",
     "audit-health/v1", "user-traffic/v1", "findings/v1", "findings/v2",
     "timeline/v1", "timeline/v2", "inspect/v1", "inspect-cache/v1",
-    "baseline/v1", "verify/v2", "fleet-verify/v2",
+    "baseline/v1", "verify/v2", "fleet-verify/v2", "cache-status/v1",
 )
 
 

@@ -880,25 +880,50 @@ def open_cache_check(
         die("CACHE_FLEET_MISMATCH: cache fleet_id mismatch")
 
 
-def open_fleet_db() -> sqlite3.Connection:
+def cache_policy_path() -> Path:
+    if _WS.workspace_trust_active():
+        return _WS.fleet_controller_config_dir(_WS.load_workspace_manifest()["fleet_id"]) / "cache-policy.json"
+    return _WS.legacy_machine_local_dir() / "cache-policy.json"
+
+
+def cache_status_payload() -> dict[str, Any]:
+    return _STORAGE.cache_status(fleet_db_path(), _STORAGE.read_policy(cache_policy_path()))
+
+
+def open_fleet_db(*, deadline=None, structured=False) -> sqlite3.Connection:
+    try:
+        return _open_fleet_db(deadline=deadline)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        if structured:
+            raise
+        die("cannot initialize fleet.db: " + _STORAGE.error_code(exc))
+
+
+def _open_fleet_db(*, deadline=None) -> sqlite3.Connection:
     """Open fleet.db (local-state/<fleet_id> or legacy $FLEET_HOME), creating schema 4."""
     _ensure_fleet_home()
     path = fleet_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private(path.parent, 0o700)
+    policy = _STORAGE.read_policy(cache_policy_path())
+    status = _STORAGE.cache_status(path, policy, timeout=max(.001,min(.1,deadline-time.monotonic())) if deadline else .1, deadline=deadline)
+    if not status["import_allowed"]:
+        raise _STORAGE.CapacityError(status["error_code"])
     if path.is_file() and path.stat().st_size:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as probe:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=max(.001,min(.1,deadline-time.monotonic())) if deadline else .1)) as probe:
             version = fleet_db_meta_get(probe, "schema_version") if _has_meta_table(probe) else None
         if version in ("1", "2", "3", "4"):
-            _STORAGE.staged_migrate(path, _migrate_fleet_db_to_5)
+            _STORAGE.staged_migrate(path, _migrate_fleet_db_to_5, deadline=deadline)
     try:
-        conn = sqlite3.connect(str(path), timeout=30)
+        remaining = max(.001, min(5, deadline-time.monotonic())) if deadline else 5
+        conn = sqlite3.connect(str(path), timeout=remaining, factory=_STORAGE.CacheConnection)
     except sqlite3.Error as exc:
-        die(f"cannot open fleet.db: {exc}")
+        raise
     conn.row_factory = sqlite3.Row
     conn.isolation_level = None
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout="+str(0 if os.name == "nt" and deadline else max(1,int(remaining*1000))))
+        _STORAGE.guard_cache(conn, path, policy)
         # Rollback journal (DELETE): 1 low-frequency writer + short RO readers (P1-2).
         conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -934,7 +959,7 @@ def open_fleet_db() -> sqlite3.Connection:
             conn.close()
         except Exception:
             pass
-        die(f"cannot initialize fleet.db: {exc}")
+        raise
 
 
 def _migrate_fleet_db_to_5(conn: sqlite3.Connection) -> None:
@@ -6034,13 +6059,13 @@ def sync_nodes_isolated(
             rows.append(sync_one(conn, node, **kwargs))
         except NODE_LOCAL_SYNC_ERRORS as exc:
             _emit_sync_warning(
-                node, f"sync aborted before commit: {exc!r}; continuing"
+                node, "local cache refused the transaction; continuing"
             )
             row = _sync_result(
                 node,
                 status=SYNC_STATUS_ERROR,
-                error=f"sync aborted before commit: {exc}",
-                error_code="DATABASE_ERROR",
+                error="local cache refused the transaction; inspect cache status",
+                error_code=_STORAGE.error_code(exc),
                 error_phase="audit_import",
                 retryable=True,
             )
@@ -6164,7 +6189,7 @@ def sqlite_deadline_guard(
         previous_busy = 0
     remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
     try:
-        conn.execute(f"PRAGMA busy_timeout = {remaining_ms}")
+        conn.execute(f"PRAGMA busy_timeout = {0 if os.name == 'nt' else remaining_ms}")
         conn.set_progress_handler(
             lambda: 1 if budget_expired(deadline) else 0, 1000
         )
@@ -6407,7 +6432,7 @@ def catch_up_audit_pages(
                 retryable=False,
                 error_field=f"exit {exc.code}",
             )
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
             # The page transaction rolled back on its way out (import_audit_batch
             # owns BEGIN/COMMIT/ROLLBACK), so earlier pages stay committed.
             if budget_expired(deadline):
@@ -6420,7 +6445,7 @@ def catch_up_audit_pages(
             return _finish(
                 SYNC_STATUS_ERROR,
                 error="audit import failed with a database error",
-                error_code="DATABASE_ERROR",
+                error_code=_STORAGE.error_code(exc),
                 error_phase="audit_import",
                 retryable=True,
             )
@@ -7081,6 +7106,26 @@ def sync_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _open_sync_cache(options, targets, operation):
+    started = time.monotonic()
+    deadline = started + float(options["budget"])
+    try:
+        conn = open_fleet_db(deadline=deadline, structured=True)
+        if time.monotonic() >= deadline:
+            conn.close()
+            raise sqlite3.OperationalError("BUDGET_EXHAUSTED")
+        options["budget"] = max(.001, deadline-time.monotonic())
+        return conn, None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        rows = [_sync_result(node, status=SYNC_STATUS_ERROR,
+                 error="local cache initialization failed; inspect cache status",
+                 error_code=_STORAGE.error_code(exc), error_phase="cache_open", retryable=True)
+                for node in targets]
+        doc = sync_report(rows)
+        doc.update(operation=operation, state=OP_PARTIAL, ok=False)
+        return None, (MUTATION_EXIT_PARTIAL, doc)
+
+
 def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     """Run sync (optional reseed); return (exit_code, report) without stdout.
 
@@ -7105,7 +7150,9 @@ def run_sync_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         reseed_name=reseed_name,
     )
 
-    conn = open_fleet_db()
+    conn, failure = _open_sync_cache(options, targets, "sync")
+    if failure:
+        return failure
     try:
         if reseed_name:
             seed_node = require_enabled_node(registry, reseed_name)
@@ -7146,7 +7193,9 @@ def run_sync_full_payload(args: argparse.Namespace) -> tuple[int, dict[str, Any]
         reseed_name=None,
     )
     options = audit_page_options(args)
-    conn = open_cache_for_sync()
+    conn, failure = _open_sync_cache(options, targets, "sync_full")
+    if failure:
+        return failure
     try:
         rows = sync_nodes_isolated(
             conn,
@@ -7787,8 +7836,16 @@ def cmd_audit_archive_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_audit_archive_restore(args: argparse.Namespace) -> int:
+    try:
+        return _cmd_audit_archive_restore(args)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        sys.stderr.write(_STORAGE.error_code(exc) + ": local cache import refused; inspect cache status\n")
+        return MUTATION_EXIT_PARTIAL
+
+
+def _cmd_audit_archive_restore(args: argparse.Namespace) -> int:
     aa = load_audit_archive_module()
-    conn = open_cache_for_sync()
+    conn = open_fleet_db(structured=True)
     try:
         before = {
             r[0]: r[1]
@@ -8639,6 +8696,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init", help="create a user-local fleet.json registry")
+    cache = sub.add_parser("cache", help="read-only local capacity and history status")
+    cache_sub = cache.add_subparsers(dest="cache_command", required=True)
+    cache_status = cache_sub.add_parser("status")
+    cache_status.add_argument("--json", action="store_true", dest="as_json")
 
     node = sub.add_parser("node", help="register and update fleet nodes")
     node_sub = node.add_subparsers(dest="node_command")
@@ -9636,6 +9697,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     if command == "init":
         return cmd_init()
+    if command == "cache":
+        try:
+            doc = cache_status_payload()
+        except (ValueError, OSError) as exc:
+            doc = {"schema_version":1,"state":"ERROR","error_code":"CACHE_POLICY_INVALID","import_allowed":False}
+        if args.as_json:
+            sys.stdout.write(json.dumps(doc, indent=2) + "\n")
+        else:
+            sys.stdout.write("Cache: " + doc["state"] + "\n" + json.dumps(doc, indent=2) + "\n")
+        return 0 if doc["import_allowed"] else MUTATION_EXIT_PARTIAL
     if command == "status":
         if getattr(args, "live", False):
             return run_journaled(

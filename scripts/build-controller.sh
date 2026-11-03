@@ -72,6 +72,7 @@ FILES=(
   schemas/monitor/v3.schema.json
   schemas/verify/v2.schema.json
   schemas/fleet-verify/v2.schema.json
+  schemas/cache-status/v1.schema.json
 )
 
 command -v python3 >/dev/null 2>&1 || {

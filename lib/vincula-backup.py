@@ -749,6 +749,8 @@ def _verify_members(
         return _fail("invalid_archive")
 
     actual = {name for name in members if name != "manifest.json"}
+    if not set(REQUIRED_COMPONENTS) <= actual or len(included_names) != len(set(included_names)) or len(files) != len(hash_by_path):
+        return _fail("invalid_archive")
     if set(included_names) != actual:
         return _fail("invalid_archive")
 
