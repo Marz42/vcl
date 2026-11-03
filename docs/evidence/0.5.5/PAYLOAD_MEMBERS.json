@@ -1,0 +1,452 @@
+{
+  "source_commit": "7bef780011b2e53db1989e6fb1db17b0173be53c",
+  "source_date_epoch": 1793689859,
+  "scope": "Archive members only; no live host inventory",
+  "archives": [
+    {
+      "archive": "vincula-node-0.5.5.tar.gz",
+      "members": [
+        {
+          "path": "vincula-node-0.5.5/bin/vincula",
+          "sha256": "ff8e2959c28a084e938d23f90c3f5c84d664bb0d8bd3e704fc669706cbc588f7",
+          "mode": "0o755"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/accountd_runtime.py",
+          "sha256": "5f8bb28271c6199434864c43086f151da517ff196f66d2d2111e59aa30e8072b",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/inspect_snapshot.py",
+          "sha256": "fa9e61dbf3d1e26853961b653270f88570e52eb1704c92b23748a49da9a13a94",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/legacy_seed.py",
+          "sha256": "fd7b1268f0e031c3e104eeea09723940a3c7c9839edab884785bbe20795f7a65",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/observer.py",
+          "sha256": "32895d07959ec595d8dc5f3388922f5117cf63c50e76eeaac6c1d0a498442747",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/sing-box-release.sh",
+          "sha256": "fa6642c0a06b0f87aca2a7a2d647631132b1053b58274227827c05bbbfd70565",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/storage_v5.py",
+          "sha256": "250c4748ce912c3efca9b4ff85cacd46edfe5719e17c37490d70d05ba320dd9b",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/telemetry_snapshot.py",
+          "sha256": "a96089520544fff001d877ccfd2c252c2e2c5937159ee557d0ebe66761a032b2",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/verify_snapshot.py",
+          "sha256": "667b8175d92e8c59acd315cce93d4f352ea9715a2fc82786b8606879968e207a",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-accountd.py",
+          "sha256": "63b0bfa7777873bd4c750421733a0979ed30e7f484ccfb82176f9fca74b3b1e4",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-accountd.service",
+          "sha256": "70c17195987bde2abf0dd90e1de9edcbd18431fc63071f30dd26ae3780669b19",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-audit.py",
+          "sha256": "e004d6aeb33bae4a829eb8120afd5469863cb79fa77d9f0c74c9dec91685ce31",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-backup.py",
+          "sha256": "48797da6c79bae97f49222aa94b59caf9d9f7b2d44898a57cbca06cb8e81eb19",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-common.sh",
+          "sha256": "8f3a19692c2c08e85f7bfce71d178f1bca2d4e847757fd5123aab4424f1f6343",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-observer.socket",
+          "sha256": "ad3c91e355c4a88c8c94c4167b90b13cdc982a96ddfa961f907299bbd96cc48d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-observer@.service",
+          "sha256": "796bbb7976dceaf465df3549cc0138536741ffc3d6324311436c3b926bae6553",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/lib/vincula-stats.py",
+          "sha256": "e2524cf53656183a459a9aa06733bc95e668cb77902a29909404bf49e31d70f1",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/release.lock",
+          "sha256": "25f0a6d035dd11064096e50bc291ae87aa27a41eb3c367322a4f73a2f89db5e5",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/schemas/history-coverage/v1.schema.json",
+          "sha256": "2fac91c73656781121e76be8ae19d1b0d38231962856342ba26ad420abff519a",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/tests/fixtures/schemas/history-coverage/v1-invalid-recovered.json",
+          "sha256": "e2cd15cb42cb2a1a9314f0e11329981d1440384ee14b8438cf7405452e857695",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/tests/fixtures/schemas/history-coverage/v1-valid.json",
+          "sha256": "05f98e57b892d75809e07a22d18fa08a37b539771b4e206e5b2a0c4beb661d8a",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-node-0.5.5/vincula-bootstrap.sh",
+          "sha256": "b3e9063287fe1b032972ed5830017a8e11cb4f3a4dead333b58d6f3d833bd89e",
+          "mode": "0o755"
+        },
+        {
+          "path": "vincula-node-0.5.5/vincula.sh",
+          "sha256": "454ad6fa29e99d934a7e915784fd1661510c5831d8ea5f843a08732e5b973015",
+          "mode": "0o755"
+        },
+        {
+          "path": "vincula-node-0.5.5/vincula.sh.sha256",
+          "sha256": "8cd25c57317c4fde7125aa4fae3bda8ae8ea1853bf8e7660a1e069dc6ad4a289",
+          "mode": "0o644"
+        }
+      ]
+    },
+    {
+      "archive": "vincula-controller-0.5.5.zip",
+      "members": [
+        {
+          "path": "vincula-controller-0.5.5/README-controller.md",
+          "sha256": "c3619cc00f37f57d6a4cb21e9b8bdd51140a0c2ec01c9b5fe82bb8303bfb3f7e",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/bin/vcl-fleet",
+          "sha256": "c9c66af5304719ee07d81165ba4d8146f4860bb22206b766f4538d1a8935b2a8",
+          "mode": "0o755"
+        },
+        {
+          "path": "vincula-controller-0.5.5/bin/vcl-fleet.cmd",
+          "sha256": "c61673fdb44faacb48f728917570717d821ddc45eb29ed28f390c7c323e492fb",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/controller.lock",
+          "sha256": "0b5e6dd04b11aa9b4d80f9bb111f420d4451e01b8252422ffdfbcee3c9a3071b",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/access.py",
+          "sha256": "e0ff961c771eb5deb921a4a299f6b398f5717ea7e45b25f42be2d1667a7f50d8",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/inspect_snapshot.py",
+          "sha256": "fa9e61dbf3d1e26853961b653270f88570e52eb1704c92b23748a49da9a13a94",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/legacy.py",
+          "sha256": "f4d6e8c8bb634778f7e27ea154b013d3d4ce331090f50c711fc48ee5d7dc0806",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/legacy_seed.py",
+          "sha256": "fd7b1268f0e031c3e104eeea09723940a3c7c9839edab884785bbe20795f7a65",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/node_upgrade.py",
+          "sha256": "1923dc7241773a175e1440afc2d2f9a1f6227752192db52a875ef915e64656ae",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/anomalies.py",
+          "sha256": "04054961825fb8dbf22f26c7048a40682b44ea177a1a2cd46d448c6d53935976",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/audit_health.py",
+          "sha256": "9b3242b39ca1494fe4b3909b06dfe8430f8126de6247d476a7d2cdf5c579fb93",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/capabilities.py",
+          "sha256": "a9cefb53d8e05e0302094d5bd7c45295c182f1e8cf871fa8020fe6d1527a9f26",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/findings.py",
+          "sha256": "94bf32a836dd180240bd64116d2075baa403371f2b7147b338a078ed41e6820d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/health.py",
+          "sha256": "d76f2a6162a41e758fa6b1ff642b3cbe665e63b56a891cb9ab93fe07c5b1ae1c",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/inspection.py",
+          "sha256": "1ade42f3080f19e228770ecad54772c0c63de30005569237c5b0b9e43df2a7d1",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/inspection_cache.py",
+          "sha256": "6d006f097ed6169f7fc2e7c53a78d7925cd2bd5eac19f98b8ff5a86b6b17fee8",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/monitor.py",
+          "sha256": "77e4e3318d4576a7cea8d7f6ce491b2d1a480ad83b6fbe86ce4809a05c46bea7",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/probe.py",
+          "sha256": "49d36ca54206b167d5a9d49e547abb341ee9cafe996eac9e155762140550f43d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/schema_validate.py",
+          "sha256": "0a98cefefa6e56c60bab6c6e05dac40e9ff458248dc190f329be945cd3679c79",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/store.py",
+          "sha256": "86a54053e449ef8b54b455e269b1c9ee973943cd759240d851a68e8a4c5fcba6",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/telemetry.py",
+          "sha256": "ff9e9c5f1fdefab66716b81d1473f3dea87fa0c549595361dd19ca665225d61d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/user_traffic.py",
+          "sha256": "f58fe17cd8fa6e88bdb0a19419409cb2338100cbe232e60326060f0d9a5f34ca",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/observation/verification.py",
+          "sha256": "33a1643624e674d8cbc090ffbc9c5a172b6636d3b3befef2f82684f80b64a78d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/provision.py",
+          "sha256": "0ae35f2ef1c694d4ea74d8fd3b56d41f800e0bc3af5c1e45f28613912738eea4",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/sing_box_release.py",
+          "sha256": "ee9b8274961eb2b681dbb5bf27d9d247a5e04284a3c162aa1f10e5aad18119e8",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/ssh_transport.py",
+          "sha256": "dccb6aab8dd6d1387731f51ab9d105c13042924f591cb26a5472f426c2d71056",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/storage_v5.py",
+          "sha256": "250c4748ce912c3efca9b4ff85cacd46edfe5719e17c37490d70d05ba320dd9b",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/trust.py",
+          "sha256": "904a1cc3dfc80a0385d153b31032640fe84744ae85d5053cb898d2a555366d57",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/verify_snapshot.py",
+          "sha256": "667b8175d92e8c59acd315cce93d4f352ea9715a2fc82786b8606879968e207a",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-audit-archive.py",
+          "sha256": "76809cc695de528bf26c0925286379ecf2d1a91a866fbae5afa35dcebd8cde70",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-audit.py",
+          "sha256": "e004d6aeb33bae4a829eb8120afd5469863cb79fa77d9f0c74c9dec91685ce31",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-backup.py",
+          "sha256": "48797da6c79bae97f49222aa94b59caf9d9f7b2d44898a57cbca06cb8e81eb19",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-fleet.py",
+          "sha256": "d991c21e7a5993280efb32ae08b70a312c63fb3fce6a7d6e8c8d26c3c3579ad0",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-ui/server.py",
+          "sha256": "15abfeb6e043a256dbc6dab98690e20d1270a109da666c1216f94a46673d68ed",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-ui/static/app.css",
+          "sha256": "cd493fc9678965888965a4ca3abeef811684279c5eaa5ae1ef9a5371197c74ae",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-ui/static/app.js",
+          "sha256": "fd00cc51f94340e5d760006c60fa3ecb5d7e75ebd9e8b1b27a7683d5f2b4e36d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/vincula-ui/static/index.html",
+          "sha256": "27dc79f63718346c6a73b2ec8cecd37a78a43ce437c2d74cdcf3160418e75400",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/lib/workspace.py",
+          "sha256": "65e9cdf7acfea28b90b3abd5e2cab9d800a3a4c0208f010e56968ab8d235e45b",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/payload/payload-manifest.json",
+          "sha256": "6aa3c9a9d4e9b3b32d9082361fdb74471d7eb8d1550d19b31aa8b1d81256e7cc",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/payload/vincula-node-0.5.5.tar.gz",
+          "sha256": "383362401f0574c44649e5071b81f31ab03f03f54588ee6456e62e4627524671",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/payload/vincula-node-0.5.5.tar.gz.sha256",
+          "sha256": "c83ce5fed79926e75eb1e33d0405a619100b6969a5a01851df552bbc6d429aae",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/audit-health/v1.schema.json",
+          "sha256": "1984456a6728f5066b7c3759fb4a788669cd3ad3f520898c85febfd3c8fb0c5d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/baseline/v1.schema.json",
+          "sha256": "e1ad7da3be48ddbc88098a16f619b80843d922fdcf115f73db0525b5813eb166",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/cache-status/v1.schema.json",
+          "sha256": "a6d88fdb0e3398a86a7c5f0ccdb312efb3a40922a7790435db792b2f162305f9",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/capabilities/v1.schema.json",
+          "sha256": "8c5789f3aa1d3ad78f80d515b347518c188d98d565ab01d6d9fee0843bc6fab1",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/findings/v1.schema.json",
+          "sha256": "196582f90bb53629b976d80ed05681c3b1e90f3b52e84a927a3eba180387e552",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/findings/v2.schema.json",
+          "sha256": "1f4c38be3a478aac202d8a9d22d0e4c3b114efda2f6f1ad6b326b2c60398fc49",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/fleet-verify/v2.schema.json",
+          "sha256": "59d88ce1cc74979d477cb5e0ccf1c17c5bbd84723bf0e31fe83fe96b93a3144d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/history-coverage/v1.schema.json",
+          "sha256": "2fac91c73656781121e76be8ae19d1b0d38231962856342ba26ad420abff519a",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/inspect-cache/v1.schema.json",
+          "sha256": "3e669b79871db7caa586d361bfabee8bdba44ac3ac97d83468cc5116f1811d03",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/inspect/v1.schema.json",
+          "sha256": "4d335f36bbeb82fb62f7ec832fd663bc19b4be02d92b381c4d589493751531d2",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/monitor/v1.schema.json",
+          "sha256": "494910b65191607d467273cde68e320087c9181ef5920e810f90b54f7d56de3d",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/monitor/v2.schema.json",
+          "sha256": "6a762b51714cf25308f1c1286a9f1708f4526d53a82ab3d6848c93a8eadb4af3",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/monitor/v3.schema.json",
+          "sha256": "1d61ac63a0766fa21a9e2ec484c84724144905a15678cc96e54cc6b49f84a421",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/telemetry/v1.schema.json",
+          "sha256": "b581980201feae3ee546f4d5aad6cbd99e72bab07d1f075edb65e476e2905b30",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/timeline/v1.schema.json",
+          "sha256": "08b64e52c37f3b61c679f65b9ac4168c9cff7145bdb230fdbfaabbe959d670fb",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/timeline/v2.schema.json",
+          "sha256": "6d69d1f50128c92eeeb6982d3a73158c0a9a535b4d1a4f7135f1e29509e5634f",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/user-traffic/v1.schema.json",
+          "sha256": "898cf7dc99ab897628b2546421ae3b0dd3388dde14d78e71e38f4ae82ce79c6e",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/schemas/verify/v2.schema.json",
+          "sha256": "7b4526d3faa8e5930892588b4fa311292bfc8dfb2a46e75ad8745cc465799bdf",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/tests/fixtures/schemas/cache-status/v1-absent-valid.json",
+          "sha256": "34c332947d82b953769b573c6f167f7dc246c0f02c2845ac467104d859ff82d1",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/tests/fixtures/schemas/cache-status/v1-unknown-invalid.json",
+          "sha256": "2b283887ee99dab1d7fcee7bffa5bbf1f4c23ca8e6a57097d643a60dbfcadeeb",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/tests/fixtures/schemas/history-coverage/v1-invalid-recovered.json",
+          "sha256": "e2cd15cb42cb2a1a9314f0e11329981d1440384ee14b8438cf7405452e857695",
+          "mode": "0o644"
+        },
+        {
+          "path": "vincula-controller-0.5.5/tests/fixtures/schemas/history-coverage/v1-valid.json",
+          "sha256": "05f98e57b892d75809e07a22d18fa08a37b539771b4e206e5b2a0c4beb661d8a",
+          "mode": "0o644"
+        }
+      ]
+    }
+  ]
+}

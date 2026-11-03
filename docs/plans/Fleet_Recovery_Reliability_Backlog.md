@@ -1,5 +1,7 @@
 # Fleet 恢复暴露的缺陷与 0.5.x 可靠性补丁候选
 
+2026-11-03 当前跟进：本页保留原调查及各次复验。R-01～R-16、N-01 与初始化锁预算的本轮解决/延期映射见 [0.5.5 执行清单](0.5.5_Closeout_Execution.md)，独立日保留为用户批准的合同升级；当前验证状态以 [0.5.5 证据](../evidence/0.5.5/SUMMARY.md)为准，未签 H05。
+
 日期：2026-10-08。依据：用户在另一台电脑的0.5.0 Controller回传、当前本地0.5.3源码、精确0.5.0临时集成复现。当前恢复记录见[阶段记录](../operations/fleet-recovery-status.md)，此前本地修复见[0.5.x收口](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。本清单是评估和实施候选，不代表本轮已经修入产品、发布或现场验收通过；继续遵守停在0.6.x之前的范围。
 
 当前用户回传：七台管理面probe均通过；先有neptunespear/hot-beam-1各1000条验证，后有七台连续追赶全部CAUGHT_UP_CLOSED_WINDOW，本轮处理1438369条。完整node/user缓存最终刷新也已全部OK，新增848条，七台缓存SSH/proxy/accounting/clock均OK，采样时刻为2026-10-07T17:06:51Z。epicfury/upperhand均核对为0.3.1-rc2，identity与安装文件MATCH。已知观测故障恢复阶段结束；这仍是0.5.0 mixed Fleet恢复，不能绑定为0.5.3验收。

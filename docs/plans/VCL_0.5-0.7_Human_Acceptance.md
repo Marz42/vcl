@@ -19,7 +19,7 @@
 
 | 关卡 | 候选版本 | 人工验收目标 | 实际记录落点（执行时建立） | 初始状态 |
 | --- | --- | --- | --- | --- |
-| H05 | 0.5.3 / 0.5.x RC | 可信 Observation，不改变数据面 | `docs/evidence/0.5.3/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
+| H05 | 0.5.5 / 0.5.x RC | 可信 Observation，schema-5/凭据/容量收口 | `docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
 | H06 | 0.6.4 / 0.6.x RC | 声明→计划→执行→验证→回滚，策略/出口隔离 | `docs/evidence/0.6.4/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
 | H07 | 0.7.4 / 0.7.x RC | 静态两跳、人工切换、计量与容量 | `docs/evidence/0.7.4/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
 
