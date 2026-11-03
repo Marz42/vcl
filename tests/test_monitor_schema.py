@@ -17,11 +17,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads((ROOT / "schemas/monitor/v1.schema.json").read_text())
 SUPPORTED = {"$schema", "$id", "$defs", "$ref", "title", "description", "type", "additionalProperties", "required",
-             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "pattern", "format", "propertyNames", "if", "then", "else", "allOf", "anyOf", "uniqueItems"}
+             "properties", "const", "enum", "maxItems", "items", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "pattern", "format", "propertyNames", "if", "then", "else", "allOf", "anyOf", "uniqueItems"}
 
 
 def validate(value, schema=SCHEMA):
     assert not set(schema) - SUPPORTED, "test evaluator needs new schema keyword support"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "exclusiveMinimum" in schema:
+            assert value > schema["exclusiveMinimum"]
+        if "exclusiveMaximum" in schema:
+            assert value < schema["exclusiveMaximum"]
     for child in schema.get("allOf", []):
         validate(value, child)
     if "anyOf" in schema:

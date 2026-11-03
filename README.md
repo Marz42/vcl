@@ -2,7 +2,10 @@
 
 面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
 
-**节点** `VINCULA_VERSION=0.5.3`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.4`（CLI：`vcl-fleet`）。
+**节点** `VINCULA_VERSION=0.5.5`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.5`（CLI：`vcl-fleet`）。
+
+**2026-11-03 当前收口候选：Node/Controller 0.5.5，尚未发布。** UTC/schema 5、独立日汇总、凭据隔离、容量停收与检查修复见 [0.5.5 证据](docs/evidence/0.5.5/SUMMARY.md) 和 [迁移/验收说明](docs/operations/0.5.5-closeout-runbook.md)。H05 前不合并；下列带日期的旧记录保留其原候选范围。
+
 
 **0.5.x 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。
 
@@ -73,8 +76,8 @@ flowchart LR
 
 | 项目 | 值 |
 | --- | --- |
-| Controller（开发候选） | **0.5.2** |
-| 新 provision Node（开发候选） | **0.5.2** |
+| Controller（开发候选） | **0.5.5** |
+| 新 provision Node（开发候选） | **0.5.5** |
 | 最低兼容 Node | **0.3.1** |
 | OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
 | Arch | amd64、arm64 |

@@ -17,6 +17,18 @@ spec.loader.exec_module(backup)
 
 
 class SecretInputs(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Bash authentication seam runs on Linux")
+    def test_authentication_requires_positive_and_both_negatives(self):
+        script = '''source "$1/lib/vincula-common.sh"
+clash_api_reachable_with_secret() { [[ "$2" == synthetic-good ]]; }
+clash_api_authenticated 9090 synthetic-good || exit 1
+clash_api_reachable_with_secret() { return 0; }
+if clash_api_authenticated 9090 synthetic-good; then exit 2; fi
+if clash_api_authenticated 9090 ""; then exit 3; fi
+'''
+        result = subprocess.run(["bash", "-c", script, "test", str(ROOT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_plaintext_cli_is_rejected_without_echo(self):
         for flag in ("--new-reality-private", "--new-clash-secret"):
             error = io.StringIO()

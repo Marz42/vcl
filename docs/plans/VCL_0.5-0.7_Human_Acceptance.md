@@ -1,5 +1,8 @@
 # VCL 0.5.x～0.7.x 大阶段人工验收
 
+**2026-11-03 用户批准的 H05 规模修订：**当前候选为 0.5.5；采用七台混合版本实机 + 至少十个模拟节点持续两小时替代旧十台实机默认。所有结果分别标实机/模拟，最终签署记录该偏差；仍需新 RC 连续 24h、真实代理和 Inspect/Drift。见 [0.5.5 SPEC](../specs/V0.5.5_Closeout.md)。
+
+
 **2026-10-07 当前范围：**0.5.x本地开发收口到0.5.3，按用户指令停在0.6.x实现之前。H05仍PENDING HUMAN，实机/24h soak PENDING LIVE；`a9655e2`远端CI #86七项通过，后续本地修复的CI需重新绑定。当前候选见[阶段收口](../evidence/0.5.3/PHASE_05_CLOSEOUT.md)。下文H06/H07为未来验收模板，不代表本轮已进入后续开发。
 
 **2026-10-05 更新：**0.5.3 Inspect/cache/显式baseline/七类Drift/八项Verify本地实现完成，Node/Controller/payload stamp0.5.3。固定输入、自动化和制品见[0.5.3 RC](../evidence/0.5.3/RC.md)。Human Gate H05/H06/H07仍PENDING HUMAN，实机/24h soak PENDING LIVE，remote required CI NOT RUN；按用户指令跳过人工等待，未代签或发布。
@@ -45,11 +48,11 @@ Live 只在明确选择的节点和测试身份上进行；通知测试使用已
 
 ## H05：0.5.x Observation Plane
 
-**前置环境：**至少一台可恢复的真实 0.5.x Node、独立 observe/admin identity、专用代理测试身份、真实 HTTPS 目标；旧 Node 0.3.1/0.3.2 的兼容/升级记录；≥10 节点受控混合监控矩阵及固定 RC 的 24h soak。
+**前置环境：**至少一台可恢复的真实 0.5.x Node、独立 observe/admin identity、专用代理测试身份、真实 HTTPS 目标；旧 Node 0.3.1/0.3.2 的兼容/升级记录；七台实机及 ≥10 模拟节点/2h 矩阵、固定 RC 的 24h soak。
 
 | ID | 人工操作或见证步骤 | 通过标准 | 证据/AC |
 | --- | --- | --- | --- |
-| H05-01 正常事实层 | 同时打开 Fleet/Node 视图与 CLI；现场比对资源、服务、telemetry age、真实代理 probe；检查 10 节点/2h 和 24h 记录 | 各健康维度、时间和缺测可解释；采样不拖垮整轮；代理可用由真实连接证明 | AC-5.1-01～03、05～06；monitor/soak/CLI/UI 记录 |
+| H05-01 正常事实层 | 同时打开 Fleet/Node 视图与 CLI；现场比对资源、服务、telemetry age、真实代理 probe；检查七台实机、≥10 模拟节点/2h 和 RC 24h 记录 | 各健康维度、时间和缺测可解释；采样不拖垮整轮；代理可用由真实连接证明 | AC-5.1-01～03、05～06；monitor/soak/CLI/UI 记录 |
 | H05-02 凭据与权限 | 独立 observer 读取；尝试其 shell/sudo/mutation/转发；撤销 observe 后再读，恢复后重试；核对 accountd 进程身份与文件访问边界 | 合法读取成功，越权拒绝；AUTH_FAILED 无 admin fallback；accountd 非 root 且无 secret 越权；SEC-050-01/02 已关闭 | AC-5.1-04；SECURITY、脱敏 SSH 拒绝结果 |
 | H05-03 代理与审计分离 | 受控停止 sing-box，观察 Proxy Health；恢复后停止 accountd，同时持续真实用户流量；最后恢复 accountd | 代理故障被准确识别；accounting 降级/AUDIT_STALLED，但代理继续；恢复后 Health/Finding 正确恢复 | AC-5.1-02、05；AC-5.2-02、05 |
 | H05-04 不可达与 Controller 离线 | 阻断测试 SSH 后恢复；再停止 Controller ≥5 分钟，同时持续真实用户代理 | SSH 故障按 SUSPECT→UNREACHABLE，恢复 RECOVERING→HEALTHY；Controller 离线不改变策略或中断既有代理服务 | 0.5.0 L5；AC-5.1-05～06；状态时间线、真实连接记录 |

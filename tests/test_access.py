@@ -313,6 +313,25 @@ class AccessTests(unittest.TestCase):
             list(pool.map(lambda i: self.mod.bind_identity_file(f"parallel-{i}", str(self.key)), range(12)))
         self.assertEqual(len(self.mod.list_bindings()), 12)
 
+    def test_explicit_legacy_selector_migration_and_mismatch_refusal(self) -> None:
+        self._agent_count(2)
+        binding = self.mod.bind_agent("legacy", self.mod.read_agent_keys()["keys"][0]["fingerprint"])
+        original = self.host.bindings_path.parent / binding["public_key_file"]
+        legacy = original.parent / "legacy.pub"
+        legacy.write_text(original.read_text(), encoding="utf-8")
+        data = self.mod.load_bindings()
+        data["bindings"]["legacy"]["public_key_file"] = "keys/legacy.pub"
+        self.mod.save_bindings(data)
+        report = self.mod.migrate_agent_selectors()
+        self.assertEqual(report["migrated_selectors"], ["legacy"])
+        self.assertEqual(self.mod._resolve_ref("legacy")["state"], "OK")
+        self.assertEqual(self.mod.migrate_agent_selectors()["migrated_selectors"], [])
+        original.write_text("invalid public key", encoding="utf-8")
+        before = self.host.bindings_path.read_bytes()
+        with self.assertRaises(SystemExit):
+            self.mod.migrate_agent_selectors()
+        self.assertEqual(self.host.bindings_path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

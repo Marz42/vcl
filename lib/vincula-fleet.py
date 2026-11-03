@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Sequence
 
-VCL_FLEET_VERSION = "0.5.4"
+VCL_FLEET_VERSION = "0.5.5"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
 FLEET_CACHE_SCHEMA_VERSION = 5
@@ -867,6 +867,7 @@ def fleet_db_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
 def open_cache_check(
     conn: sqlite3.Connection, *, expect_fleet_id: Optional[str] = None
 ) -> None:
+    conn.create_function("vcl_utc", 1, _STORAGE.utc, deterministic=True)
     ver = fleet_db_meta_get(conn, "schema_version")
     if ver not in ("4", str(FLEET_CACHE_SCHEMA_VERSION)):
         die(f"unsupported fleet-cache schema: {ver}")
@@ -888,6 +889,20 @@ def cache_policy_path() -> Path:
 
 def cache_status_payload() -> dict[str, Any]:
     return _STORAGE.cache_status(fleet_db_path(), _STORAGE.read_policy(cache_policy_path()))
+
+
+def cache_history_coverage() -> dict[str, Any]:
+    conn = open_cache_readonly_optional()
+    if conn is None:
+        return {"status":"UNAVAILABLE"}
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
+        value = json.loads(row[0]) if row else {"status":"LEGACY_UNVERIFIED"}
+        return value if isinstance(value, dict) else {"status":"UNKNOWN"}
+    except (ValueError, sqlite3.Error):
+        return {"status":"UNKNOWN"}
+    finally:
+        conn.close()
 
 
 def open_fleet_db(*, deadline=None, structured=False) -> sqlite3.Connection:
@@ -913,7 +928,12 @@ def _open_fleet_db(*, deadline=None) -> sqlite3.Connection:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=max(.001,min(.1,deadline-time.monotonic())) if deadline else .1)) as probe:
             version = fleet_db_meta_get(probe, "schema_version") if _has_meta_table(probe) else None
         if version in ("1", "2", "3", "4"):
-            _STORAGE.staged_migrate(path, _migrate_fleet_db_to_5, deadline=deadline)
+            def convert_checked(candidate):
+                _migrate_fleet_db_to_5(candidate)
+                capacity = _STORAGE.cache_status(path, policy, candidate, deadline=deadline)
+                if not capacity["import_allowed"]:
+                    raise _STORAGE.CapacityError(capacity["error_code"])
+            _STORAGE.staged_migrate(path, convert_checked, deadline=deadline)
     try:
         remaining = max(.001, min(5, deadline-time.monotonic())) if deadline else 5
         conn = sqlite3.connect(str(path), timeout=remaining, factory=_STORAGE.CacheConnection)
@@ -1422,6 +1442,12 @@ def _audit_insert_params(
         export_seq_i = int(export_seq)
     except (TypeError, ValueError) as exc:
         die(f"audit import row has invalid numeric field: {exc}")
+    try:
+        started_at = _STORAGE.utc(started_at)
+        last_seen_at = _STORAGE.utc(last_seen_at)
+        closed_at = _STORAGE.utc(row["closed_at"]) if row.get("closed_at") else None
+    except (ValueError, TypeError, OverflowError):
+        die("audit import row has an invalid or timezone-less connection timestamp")
     return (
         node_id,
         _optional_text(row.get("instance_id")),
@@ -1431,9 +1457,9 @@ def _audit_insert_params(
         generation,
         user_id,
         _optional_text(row.get("user_tag")),
-        _STORAGE.utc(started_at),
-        _STORAGE.utc(last_seen_at),
-        _STORAGE.utc(row["closed_at"]) if row.get("closed_at") else None,
+        started_at,
+        last_seen_at,
+        closed_at,
         _optional_text(row.get("destination_host")),
         _optional_text(row.get("destination_ip")),
         dest_port,
@@ -7668,6 +7694,7 @@ def query_fleet_audit(
     ORDER BY / LIMIT so pagination is not a post-filter over a truncated page.
     """
     audit = load_audit_module()
+    conn.create_function("vcl_utc", 1, _STORAGE.utc, deterministic=True)
     where = [
         audit.interval_overlap_sql(),
         "user_id = ?",
@@ -7941,6 +7968,7 @@ def cmd_audit_user(args: argparse.Namespace) -> int:
     if getattr(args, "as_json", False):
         payload = {
             "schema_version": AUDIT_JSON_SCHEMA_VERSION,
+            "history_coverage": cache_history_coverage(),
             "tag": tag,
             "user_id": user_id,
             "from": query_from,
@@ -8077,6 +8105,7 @@ def _emit_stats(
     if as_json:
         payload: dict[str, Any] = {
             "schema_version": STATS_JSON_SCHEMA_VERSION,
+            "history_coverage": cache_history_coverage(),
             "mode": mode,
             "days": days,
             "from": start,
@@ -8593,6 +8622,18 @@ def _migration_selection(args: argparse.Namespace) -> tuple[str, str]:
 
 @with_fleet_op_lock
 def cmd_access_migrate(args: argparse.Namespace) -> int:
+    if getattr(args, "selectors", False):
+        if getattr(args, "fingerprint", None):
+            die("--fingerprint requires --agent; selector migration does not select identities", 2)
+        refs = None
+        if args.node or args.purpose != "both":
+            registry = load_registry()
+            selected_nodes = [require_node(registry, args.node)] if args.node else registry.get("nodes", [])
+            purposes = ("admin", "observe") if args.purpose == "both" else (args.purpose,)
+            refs = {selected.get(purpose+"_credential_ref") for selected in selected_nodes for purpose in purposes}
+        result = _AC.migrate_agent_selectors(refs)
+        sys.stdout.write(json.dumps(result, indent=2) + "\n" if args.as_json else "migrated selectors: " + str(len(result["migrated_selectors"])) + "\n")
+        return 0
     targets = _migration_targets_for_args(args)
     if not targets:
         if bindings_file_schema_version() == BINDINGS_LEGACY_SCHEMA_VERSION:
@@ -9613,6 +9654,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="which credential class to migrate (default: both)",
     )
     mg = p_migrate.add_mutually_exclusive_group()
+    mg.add_argument("--selectors", action="store_true", help="migrate existing Agent public-key selector paths without SSH or choosing another key")
     mg.add_argument(
         "--agent",
         action="store_true",

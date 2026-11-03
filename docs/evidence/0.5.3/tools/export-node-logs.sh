@@ -46,7 +46,7 @@ done
 [[ -n "$NODE" ]] || { echo "usage: $0 NODE [--since ...] [--units ...] [--dry-run]" >&2; exit 2; }
 [[ "$CLASS" == "admin" || "$CLASS" == "observe" ]] || { echo "--class must be admin or observe" >&2; exit 2; }
 
-REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)
 FLEET=${VCL_FLEET_BIN:-$REPO/bin/vcl-fleet}
 SSH=${SSH_BIN:-ssh}
 SCP=${SCP_BIN:-scp}
@@ -184,7 +184,8 @@ fi
   for f in METADATA.txt journal-short-iso.txt.gz journal-export.gz; do
     [[ -f "$OUT/$f" ]] && echo "$(sha256sum "$OUT/$f")"
   done
-  echo "reimport_hint=journalctl --no-pager -o short-iso < zcat $OUT/journal-short-iso.txt.gz"
+  echo "read_hint=zcat '$OUT/journal-short-iso.txt.gz'"
+  echo "reimport_hint=decompress journal-export.gz and import with systemd-journal-remote before using journalctl --file on the resulting binary journal"
 } > "$OUT/MANIFEST.txt"
 echo "MANIFEST:"; cat "$OUT/MANIFEST.txt"
 echo "note: journal content may contain IPs/UUIDs; keep it local and sanitize before committing to docs."

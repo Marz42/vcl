@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.5.3
+# vincula v0.5.5
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.5.3"
+readonly VINCULA_VERSION="0.5.5"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -46,6 +46,7 @@ readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
 readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly STORAGE_PY="${LIB_DIR}/storage_v5.py"
 readonly OBSERVER_PY="${LIB_DIR}/observer.py"
 readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
 readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
@@ -237,6 +238,7 @@ rollback_install() {
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -305,6 +307,7 @@ rollback_migration() {
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -322,7 +325,7 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$OBSERVER_PY" || "$path" == "$OBSERVER_SOCKET" || "$path" == "$OBSERVER_UNIT" || "$path" == "$ACCOUNTD_RUNTIME_PY" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$INSPECT_PY" || "$path" == "$VERIFY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$OBSERVER_PY" || "$path" == "$OBSERVER_SOCKET" || "$path" == "$OBSERVER_UNIT" || "$path" == "$ACCOUNTD_RUNTIME_PY" || "$path" == "$STORAGE_PY" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$INSPECT_PY" || "$path" == "$VERIFY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
@@ -533,7 +536,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2|0.5.0|0.5.1|0.5.2) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2|0.5.0|0.5.1|0.5.2|0.5.3) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1165,6 +1168,7 @@ file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
 file=${ACCOUNTD_RUNTIME_PY}
+file=${STORAGE_PY}
 file=${OBSERVER_PY}
 file=${OBSERVER_SOCKET}
 file=${OBSERVER_UNIT}
@@ -1207,6 +1211,7 @@ file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
 file=${ACCOUNTD_RUNTIME_PY}
+file=${STORAGE_PY}
 file=${OBSERVER_PY}
 file=${OBSERVER_SOCKET}
 file=${OBSERVER_UNIT}
@@ -1529,6 +1534,7 @@ preflight_clean_install() {
     "$MANIFEST_FILE" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -1691,6 +1697,7 @@ backup_existing_install() {
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -1959,6 +1966,12 @@ verify_existing_install() {
 
   require_canonical_files
   [[ -e "$HELPER_PATH" ]] || die "Existing vincula installation is incomplete: missing ${HELPER_PATH}."
+  if verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" >/dev/null; then
+    log_ok "identity and credentials consistent"
+  else
+    log_warn "identity and credentials inconsistent; run vcl verify"
+    fail=1
+  fi
 
   printf '[Proxy Plane]\n'
   if sha256sum --check --status "$BINARY_CHECKSUM_FILE"; then
@@ -2017,7 +2030,7 @@ verify_existing_install() {
   clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$clash_port" ]] || clash_port=$DEFAULT_CLASH_API_PORT
   clash_secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
-  if validate_port "$clash_port" && clash_api_reachable_with_secret "$clash_port" "$clash_secret"; then
+  if validate_port "$clash_port" && clash_api_authenticated "$clash_port" "$clash_secret"; then
     log_ok "Clash API reachable"
     log_ok "Clash API authentication"
   else
@@ -2028,7 +2041,7 @@ verify_existing_install() {
 
   if [[ -r "$ACCOUNTING_DB_FILE" ]]; then
     log_ok "SQLite database readable"
-    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+    schema=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
 row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -2120,7 +2133,7 @@ install_accountd_artifacts() {
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
   atomic_install "${root}/lib/accountd_runtime.py" "$ACCOUNTD_RUNTIME_PY" 0644 root root
-  atomic_install "${root}/lib/storage_v5.py" "${LIB_DIR}/storage_v5.py" 0644 root root
+  atomic_install "${root}/lib/storage_v5.py" "$STORAGE_PY" 0644 root root
   atomic_install "${root}/lib/observer.py" "${LIB_DIR}/observer.py" 0644 root root
   atomic_install "${root}/lib/vincula-observer.socket" /etc/systemd/system/vincula-observer.socket 0644 root root
   atomic_install "${root}/lib/vincula-observer@.service" /etc/systemd/system/vincula-observer@.service 0644 root root
@@ -2169,6 +2182,7 @@ validate_accounting_artifacts() {
   [[ -f "$TELEMETRY_PY" ]] || die "Missing telemetry helper ${TELEMETRY_PY}"
   [[ -f "$INSPECT_PY" ]] || die "Missing inspect helper ${INSPECT_PY}"
   [[ -f "$VERIFY_PY" ]] || die "Missing verify helper ${VERIFY_PY}"
+  [[ -f "$STORAGE_PY" ]] || die "Missing storage helper ${STORAGE_PY}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
   python_syntax_check "$ACCOUNTD_PY" || die "vincula-accountd.py failed syntax check"
   python_syntax_check "$STATS_PY" || die "vincula-stats.py failed syntax check"
@@ -2177,6 +2191,7 @@ validate_accounting_artifacts() {
   python_syntax_check "$TELEMETRY_PY" || die "telemetry_snapshot.py failed syntax check"
   python_syntax_check "$INSPECT_PY" || die "inspect_snapshot.py failed syntax check"
   python_syntax_check "$VERIFY_PY" || die "verify_snapshot.py failed syntax check"
+  python_syntax_check "$STORAGE_PY" || die "storage_v5.py failed syntax check"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"
   fi
@@ -2210,7 +2225,7 @@ wait_for_accountd_healthy() {
   [[ -r "$ACCOUNTING_DB_FILE" ]] || return 1
   schema=""
   for (( remaining = 0; remaining < 15; remaining++ )); do
-    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+    schema=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 try:
     conn = sqlite3.connect(sys.argv[1])
@@ -2452,7 +2467,7 @@ render_users_owner_and_legacy() {
     printf '%s\n' "$installed_at"
     printf '%s\n' "$node_id"
   } >"$params"
-  python3 - "$params" "$output" <<'PY'
+  python_private "$params" "$output" <<'PY'
 import json, sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 if len(lines) != 9:

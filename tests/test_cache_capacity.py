@@ -28,6 +28,22 @@ backup=load('capacity_backup','lib/vincula-backup.py')
 
 
 class CacheCapacity(unittest.TestCase):
+    def test_public_cache_schema_positive_and_negative_fixtures(self):
+        import test_monitor_schema as evaluator
+        schema=json.loads((ROOT/'schemas/cache-status/v1.schema.json').read_text())
+        previous=evaluator.SCHEMA
+        try:
+            evaluator.SCHEMA=schema
+            for path in (ROOT/'tests/fixtures/schemas/cache-status').glob('*.json'):
+                doc=json.loads(path.read_text())
+                if 'invalid' in path.name:
+                    with self.assertRaises(AssertionError):
+                        evaluator.validate(doc,schema)
+                else:
+                    evaluator.validate(doc,schema)
+        finally:
+            evaluator.SCHEMA=previous
+
     def test_status_absent_does_not_create_anything(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'absent'/'fleet.db'

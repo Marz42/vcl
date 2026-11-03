@@ -1,11 +1,12 @@
-# Vincula 用户手册（Controller/Node 0.5.2 开发候选）
+# Vincula 用户手册（Controller/Node 0.5.5 开发候选）
 
+当前收口候选：Node/Controller **0.5.5**，accounting/fleet-cache **schema 5**；迁移、容量策略与验收状态见 [0.5.5 runbook](operations/0.5.5-closeout-runbook.md)。 历史段落仍绑定原版本，不代表新候选已验收。
 面向能使用终端、但不需要阅读源码的 VPS 管理者。
 架构与合同细节见 [`technical-guide.md`](technical-guide.md)。完整参数以 CLI `--help` 为准。
 
 **记账始终是 approximate（Clash 轮询），不能当发票。**
 
-0.5.2为本地开发候选。真实VPS/24h soak保留 `PENDING LIVE`，Human Gate保留 `PENDING HUMAN`，本轮跳过等待并记录。前台monitor、cache-only health、专用代理probe和observer配置见 [`监控操作说明`](operations/monitoring-runbook.md)。Node/User异常、审计可信度和本地时间轴见 [`Findings操作说明`](operations/findings-runbook.md)；验证边界见 [`0.5.2 evidence`](evidence/0.5.2/SUMMARY.md)。`monitor --json`运行汇总schema为monitor/v2，health/API仍是monitor/v1。
+0.5.5 为当前开发候选；真实 VPS、新 RC 连续 24h soak 和 H05 按实际完成情况分别记录，见 [0.5.5 evidence](evidence/0.5.5/SUMMARY.md)。监控、Findings、Inspect 的操作入口继续适用；`monitor --json` 为 monitor/v3，health/API 为 monitor/v1。新增 `cache status --json` 只读检查容量和历史覆盖，迁移前先阅读 [runbook](operations/0.5.5-closeout-runbook.md)。
 
 ---
 
@@ -90,7 +91,7 @@ vcl-fleet access verify
 vcl-fleet access migrate --node hk01
 ```
 
-- Agent 绑定只保存公钥、指纹和本机 `keys/<ref>.pub` 选择器；私钥内容、Agent Socket 不进入 workspace/备份。
+- Agent 绑定只保存公钥、指纹和本机 `keys/<content-sha256>.pub` 选择器；私钥内容、Agent Socket 不进入 workspace/备份。
 - 旧的 `access bind REF --openssh-default` 已删除；v1 绑定中 `openssh-default`/无身份节点会标记 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回明确错误，需用 `access migrate` 或 `access bind` 显式迁移。
 - VCL 连接统一加 `-F` 忽略 `~/.ssh/config`；`ProxyJump`/`ProxyCommand`/自定义 `Host` 别名不会生效（VCL 只做显式 host/user/port 直连）。Host Key 仍按 `trust/known_hosts` + `StrictHostKeyChecking=yes` 校验。
 

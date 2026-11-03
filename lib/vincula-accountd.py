@@ -443,6 +443,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
 
     if current > SCHEMA_VERSION:
         raise SystemExit(f"unsupported accounting-db schema: {current}")
+    if current == 5:
+        if not {"event_id", "export_seq", "generation", "instance_id"} <= set(_table_columns(conn, "connections")) or "daily_contributions" not in tables:
+            raise SystemExit("accounting-db schema 5 is incomplete; refusing implicit repair")
+        return
 
     if current < 2:
         # Legacy 0/1 → 2: add user_id. Fail closed if user_tag cannot map.
@@ -555,7 +559,11 @@ def open_db(path: str) -> sqlite3.Connection:
         with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as probe:
             tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             version = meta_get(probe, "schema_version", "0") if "meta" in tables else "0"
-        if int(version) < SCHEMA_VERSION:
+        try:
+            old_version = int(version)
+        except (ValueError, TypeError):
+            raise SystemExit("unsupported accounting-db schema") from None
+        if old_version < SCHEMA_VERSION:
             _STORE.staged_migrate(path, migrate_schema)
     conn: Optional[sqlite3.Connection] = None
     try:
@@ -640,14 +648,15 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         dest_port = None
     network = meta.get("network") or item.get("network") or None
     try:
-        started = _STORE.utc(item.get("start") or utc_now_iso())
+        start_value = item.get("start")
+        started = _STORE.utc(utc_now_iso() if start_value is None or start_value == "" else start_value)
     except (ValueError, TypeError, OverflowError):
         raise ClashSchemaError("connection has an invalid or timezone-less start timestamp") from None
 
     try:
         user_id = resolve_user_id(user_tag)
     except ValueError:
-        LOG.warning("skip connection %s: unknown user_tag %s", cid, user_tag)
+        LOG.warning("connection attribution unavailable; preserving snapshot liveness")
         return None
 
     upload_raw = item["upload"] if "upload" in item and item["upload"] is not None else 0
@@ -1145,6 +1154,8 @@ def decode_clash_connections_payload(data: Any) -> List[Dict[str, Any]]:
             raise ClashSchemaError("Clash API connection entry must be an object")
         if not isinstance(item.get("id"), str) or not item["id"]:
             raise ClashSchemaError("Clash API connection ID is missing")
+        if item["id"] in events.live_ids:
+            raise ClashSchemaError("Clash API snapshot contains duplicate connection IDs")
         events.live_ids.add(item["id"])
         ev = parse_clash_connection(item)
         if ev:
@@ -1388,24 +1399,6 @@ def commit_accounting(
         setter(reload_known_open_from_db(conn))
         raise
     setter(new_known)
-
-
-_DAILY_USAGE_AGGREGATE_SELECT = """
-        SELECT
-          substr(COALESCE(closed_at, started_at), 1, 10) AS date,
-          user_id,
-          user_tag,
-          CASE
-            WHEN destination_host IS NOT NULL AND destination_host != '' THEN destination_host
-            WHEN destination_ip IS NOT NULL AND destination_ip != '' THEN destination_ip
-            ELSE '(unknown)'
-          END AS destination_host,
-          SUM(upload_bytes),
-          SUM(download_bytes),
-          COUNT(*)
-        FROM connections
-        GROUP BY 1, 2, 3, 4
-"""
 
 
 def rollup_daily_usage(conn: sqlite3.Connection) -> None:

@@ -78,7 +78,7 @@ def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
     def check_deadline(*_args):
         if deadline is not None and time.monotonic() >= deadline:
             raise sqlite3.OperationalError('BUDGET_EXHAUSTED: migration deadline reached')
-    source = sqlite3.connect(str(path), timeout=max(.001, min(1, deadline-time.monotonic())) if deadline else 1)
+    source = sqlite3.connect(str(path), timeout=0 if deadline is not None else 1)
     try:
         if source.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise sqlite3.DatabaseError('migration source integrity check failed')
@@ -118,6 +118,10 @@ def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
 
 def _adjust(conn, contribution, sign):
     date, user_id, user_tag, host, up, down = contribution
+    existing = conn.execute('SELECT upload_bytes,download_bytes,connection_count FROM daily_usage WHERE date=? AND user_id=? AND destination_host=?', (date,user_id,host)).fetchone()
+    before = tuple(existing) if existing is not None else (0,0,0)
+    if any(type(value) is not int or not 0 <= value <= 2**63-1 for value in (before[0]+sign*up,before[1]+sign*down,before[2]+sign)):
+        raise sqlite3.IntegrityError('daily contribution exceeds the integer accounting range')
     conn.execute("""INSERT INTO daily_usage(date,user_id,user_tag,destination_host,
         upload_bytes,download_bytes,connection_count) VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(date,user_id,destination_host) DO UPDATE SET
@@ -133,9 +137,14 @@ def rollup(conn):
     conn.execute('SAVEPOINT durable_daily')
     try:
         conn.execute(NODE_DDL.strip().rstrip(';'))
-        cursor = conn.execute("""SELECT event_id,started_at,user_id,user_tag,
-            COALESCE(NULLIF(destination_host,''),NULLIF(destination_ip,''),'(unknown)'),
-            upload_bytes,download_bytes FROM connections ORDER BY event_id""")
+        cursor = conn.execute("""SELECT c.event_id,c.started_at,c.user_id,c.user_tag,
+            COALESCE(NULLIF(c.destination_host,''),NULLIF(c.destination_ip,''),'(unknown)'),
+            c.upload_bytes,c.download_bytes FROM connections c
+            LEFT JOIN daily_contributions d ON d.event_id=c.event_id
+            WHERE d.event_id IS NULL OR d.upload_bytes!=c.upload_bytes OR d.download_bytes!=c.download_bytes
+            OR d.user_id!=c.user_id OR d.user_tag IS NOT c.user_tag OR d.date!=substr(c.started_at,1,10)
+            OR d.destination_host!=COALESCE(NULLIF(c.destination_host,''),NULLIF(c.destination_ip,''),'(unknown)')
+            ORDER BY c.event_id""")
         while True:
             chunk = cursor.fetchmany(1000)
             if not chunk:
@@ -153,6 +162,7 @@ def rollup(conn):
                     _adjust(conn, current, 1)
                 conn.execute('INSERT OR REPLACE INTO daily_contributions VALUES(?,?,?,?,?,?,?)', (row[0],)+current)
         conn.execute('DELETE FROM daily_usage WHERE connection_count=0 AND upload_bytes=0 AND download_bytes=0')
+        conn.execute("INSERT OR REPLACE INTO meta VALUES('daily_last_rollup_at',?)",(utc(datetime.now(timezone.utc)),))
         conn.execute('RELEASE durable_daily')
     except BaseException:
         conn.execute('ROLLBACK TO durable_daily')
@@ -193,7 +203,7 @@ def read_policy(path):
             policy.update(supplied)
         except (ValueError, OSError):
             raise ValueError('invalid machine-local cache policy') from None
-    if policy['schema_version'] != 1 or any(type(policy[k]) is not int for k in ('max_bytes','min_free_bytes')) or policy['max_bytes'] < 16384 or policy['min_free_bytes'] < 0 or isinstance(policy['warning_fraction'], bool) or not isinstance(policy['warning_fraction'], (int,float)) or not 0 < policy['warning_fraction'] < 1:
+    if type(policy['schema_version']) is not int or policy['schema_version'] != 1 or any(type(policy[k]) is not int for k in ('max_bytes','min_free_bytes')) or policy['max_bytes'] < 16384 or policy['min_free_bytes'] < 0 or isinstance(policy['warning_fraction'], bool) or not isinstance(policy['warning_fraction'], (int,float)) or not 0 < policy['warning_fraction'] < 1:
         raise ValueError('invalid machine-local cache policy')
     return policy
 
@@ -223,7 +233,10 @@ def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None):
         if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
             return
         row = connection.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
-        report['history_coverage'] = json.loads(row[0]) if row else {"status":"LEGACY_UNVERIFIED"}
+        coverage = json.loads(row[0]) if row else {"status":"LEGACY_UNVERIFIED"}
+        if not isinstance(coverage, dict):
+            raise ValueError('invalid history coverage')
+        report['history_coverage'] = coverage
     try:
         if conn is not None:
             read(conn)
@@ -233,7 +246,9 @@ def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None):
             timeout = 0 if deadline is not None else timeout
             with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=timeout)) as reader:
                 read(reader)
-    except (sqlite3.Error, ValueError):
+    except sqlite3.Error as exc:
+        report.update(state='BUSY' if 'locked' in str(exc).lower() or 'busy' in str(exc).lower() else 'CACHE_CORRUPT',error_code='DATABASE_ERROR',import_allowed=False)
+    except ValueError:
         report.update(state='CACHE_CORRUPT',error_code='DATABASE_ERROR',import_allowed=False)
     report['database_bytes'] = allocated
     if free < policy['min_free_bytes']:

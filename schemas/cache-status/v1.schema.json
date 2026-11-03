@@ -6,7 +6,7 @@
   "required": ["schema_version", "state", "error_code", "import_allowed"],
   "properties": {
     "schema_version": {"const": 1},
-    "state": {"enum": ["ABSENT", "OK", "WARNING", "STOPPED", "CACHE_CORRUPT", "ERROR"]},
+    "state": {"enum": ["ABSENT", "OK", "WARNING", "STOPPED", "BUSY", "CACHE_CORRUPT", "ERROR"]},
     "error_code": {"enum": [null, "CACHE_LIMIT_REACHED", "DISK_SPACE_LOW", "DATABASE_ERROR", "CACHE_POLICY_INVALID"]},
     "import_allowed": {"type": "boolean"},
     "database_bytes": {"type": "integer", "minimum": 0},

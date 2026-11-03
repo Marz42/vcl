@@ -111,6 +111,8 @@ def smoke(root):
         require(surface("test")["schema"] == schema, "packaged cache surface mismatch")
         # CLI queries also run with an SSH tripwire first on PATH.
         require(json.loads(cli(command, "test", "--json"))["schema"] == schema, "packaged CLI schema mismatch")
+    require(fleet.cache_status_payload()["schema_version"] == 1, "packaged cache capacity contract mismatch")
+    require(json.loads(cli("cache", "status", "--json"))["schema_version"] == 1, "packaged cache CLI contract mismatch")
     require(not Path(os.environ["VCL_ARTIFACT_SSH_MARKER"]).exists(), "packaged CLI attempted SSH")
     require(files(home) == before, "cached reads changed Fleet files")
 
@@ -154,7 +156,7 @@ def smoke(root):
             require(doc["node_id"] is None and doc["instance_id"] is None, "fixture unexpectedly used installed identity")
         require(files(fixture) == before, "Node observation wrote missing fixture artifacts")
     print(json.dumps({"state": "PASS OFFLINE", "version": version, "schemas": len(SCHEMAS),
-                      "cache_only_surfaces": len(surfaces), "node_cli": "PASS" if node_cli else "NOT RUN"}))
+                      "cache_only_surfaces": len(surfaces)+1, "node_cli": "PASS" if node_cli else "NOT RUN"}))
 
 
 def main():

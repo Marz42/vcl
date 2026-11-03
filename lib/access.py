@@ -484,6 +484,35 @@ def bind_agent(
 
 
 _REF_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def migrate_agent_selectors(refs=None):
+    """Explicit local-only migration; verify every old fingerprint before publish."""
+    with bindings_lock():
+        data = load_bindings()
+        candidates = []
+        for ref, binding in data["bindings"].items():
+            if binding.get("type") != AGENT_BINDING_TYPE or (refs is not None and ref not in refs):
+                continue
+            path = binding_public_key_path(binding)
+            try:
+                line = path.read_text(encoding="utf-8") if path else ""
+                if fingerprint_public_key_line(line) != binding["fingerprint"]:
+                    raise ValueError()
+            except (ValueError, OSError):
+                _host.die("AGENT_KEY_MISSING: selector migration refused; explicitly rebind the intended fingerprint")
+            candidates.append((ref, line, binding))
+        changed = []
+        for ref, line, binding in candidates:
+            relative = _write_public_key_file(ref, line)
+            if relative != binding["public_key_file"]:
+                binding["public_key_file"] = relative
+                changed.append(ref)
+        if changed:
+            save_bindings(data)
+        return {"schema_version":1, "ok":True, "migrated_selectors":changed}
+
+
 CREDENTIAL_PURPOSES = ("admin", "observe")
 ADMIN_REF_KEY = "admin_credential_ref"
 OBSERVE_REF_KEY = "observe_credential_ref"

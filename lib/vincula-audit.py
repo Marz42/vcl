@@ -83,7 +83,7 @@ def interval_overlap_sql() -> str:
     started_at == query_to is excluded (<).
     COALESCE(closed_at, last_seen_at) == query_from is included (>=).
     """
-    return "started_at < ? AND COALESCE(closed_at, last_seen_at) >= ?"
+    return "vcl_utc(started_at) < ? AND vcl_utc(COALESCE(closed_at, last_seen_at)) >= ?"
 
 
 def normalize_destination_host(host: Optional[str]) -> Optional[str]:
@@ -203,6 +203,7 @@ def query_audit(
         raise SystemExit(1)
 
     _require_schema_4(conn)
+    conn.create_function("vcl_utc", 1, parse_rfc3339, deterministic=True)
 
     uid = _optional(user_id)
     tag = _optional(user_tag)
@@ -225,9 +226,6 @@ def query_audit(
     node = _optional(node_id)
 
     where = [interval_overlap_sql()]
-    if str(_meta_int(conn, "schema_version", 0)) == "4":
-        # Read legacy offset-bearing data without migrating it on a query.
-        where = ["julianday(started_at) < julianday(?) AND julianday(COALESCE(closed_at,last_seen_at)) >= julianday(?)"]
     params: List[Any] = [q_to, q_from]
     if uid:
         where.append("user_id = ?")
@@ -246,7 +244,7 @@ def query_audit(
     sql = (
         f"SELECT {cols} FROM connections WHERE "
         + " AND ".join(where)
-        + " ORDER BY started_at ASC, event_id ASC"
+        + " ORDER BY vcl_utc(started_at) ASC, event_id ASC"
     )
     try:
         rows = conn.execute(sql, params).fetchall()

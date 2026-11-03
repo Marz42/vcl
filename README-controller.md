@@ -1,5 +1,6 @@
 # Vincula controller (`vcl-fleet`)
 
+当前收口候选：Node/Controller **0.5.5**，accounting/fleet-cache **schema 5**；迁移、容量策略与验收状态见 [0.5.5 runbook](docs/operations/0.5.5-closeout-runbook.md)。 历史段落仍绑定原版本，不代表新候选已验收。
 Workstation Fleet Users & Audit CLI. **No root, no systemd, no `/etc/vincula`.**
 This zip is a user-local tool: it has no installer and no node `release.lock`.
 Integrity: `controller.lock` (per-member SHA-256) inside the zip, plus an
@@ -10,8 +11,8 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Development candidate (0.5.4):** Controller is `0.5.4`; the embedded Node payload
-remains `0.5.3` (minimum Node remains `0.3.1`). Includes the SSH credential manager
+**Development candidate (0.5.5):** Controller and embedded Node payload
+are both `0.5.5` (minimum Node remains `0.3.1`). Includes the SSH credential manager
 v2: deterministic Agent-fingerprint and Identity-File modes, machine-local public-key
 selectors, `CREDENTIAL_MIGRATION_REQUIRED`, and `access migrate`. Connections use
 `-F <null config>`, an explicit `-i`, and `IdentitiesOnly=yes`; OpenSSH no longer
@@ -33,14 +34,19 @@ identity check discards the earlier snapshot and reports AUTH_FAILED, TIMEOUT
 or ERROR; checks from a replaced instance are not shown as current evidence.
 Legacy `verify --json` is unchanged for upgrade/restore consumers.
 
-Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2 → 0.5.3. Sixteen public schemas
-ship under `schemas/` with `controller.lock`. Real VPS and 24h soak remain PENDING
-LIVE and Human Gate remains PENDING HUMAN. The Controller 0.5.4 credential
-candidate has passed the local Bash/Python suites and artifact checks; its remote
-required CI is recorded separately after push.
-Development stops at Controller 0.5.4 / Node 0.5.3 before 0.6.x. The candidate is
-unreleased. See `docs/evidence/0.5.4/CREDENTIALS.md` and
-`docs/evidence/0.5.3/SUMMARY.md`.
+Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2/0.5.3 → 0.5.5.
+Seventeen public schemas ship under `schemas/` with `controller.lock`.
+Accounting and fleet-cache schema 5 use verified staged migrations. Independent
+daily history survives raw pruning. `cache status --json` reports the local
+8 GiB cap, 80% warning and 512 MiB free-space floor; over-limit imports stop
+without deleting history. Node secrets use descriptors/private inputs, and Agent
+selector publication isolates refs and failed rebindings.
+
+The candidate is unreleased; Live, the new RC 24h soak and H05 remain pending.
+The approved scale is seven real mixed nodes plus ten simulated nodes for two
+hours. Current results and restrictions are in `docs/evidence/0.5.5/SUMMARY.md`.
+Development stops before 0.6.x until H05 is signed PASS.
+
 
 
 Requires **Python 3.10+** and the **system OpenSSH client**. Vincula does not

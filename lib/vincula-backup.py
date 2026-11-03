@@ -1965,10 +1965,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore_plan.add_argument("--listen", default="")
     restore_plan.add_argument("--port", default="")
     restore_plan.add_argument("--new-instance-id", default="")
-    restore_plan.add_argument("--new-reality-private", default="")
+    restore_plan.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--new-reality-public", default="")
     restore_plan.add_argument("--new-reality-short-id", default="")
-    restore_plan.add_argument("--new-clash-secret", default="")
+    restore_plan.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--project-version", default="")
     restore_plan.add_argument("--json", dest="json_flag", action="store_true")
     restore = sub.add_parser("restore", help="restore a backup onto a fresh node")
@@ -1986,10 +1986,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore.add_argument("--generated-config", default="")
     restore.add_argument("--safety-dir", default="")
     restore.add_argument("--new-instance-id", default="")
-    restore.add_argument("--new-reality-private", default="")
+    restore.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore.add_argument("--new-reality-public", default="")
     restore.add_argument("--new-reality-short-id", default="")
-    restore.add_argument("--new-clash-secret", default="")
+    restore.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore.add_argument("--project-version", default="")
     restore.add_argument("--defer-version", action="store_true")
     restore.add_argument("--manage-services", action="store_true")
@@ -2023,9 +2023,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                 if secret_file:
                     path = Path(secret_file)
                     info = path.stat()
-                    if not path.is_file() or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid())):
+                    if path.is_symlink() or not path.is_file() or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid())):
                         raise ValueError()
-                    value = path.read_text(encoding="utf-8")
+                    with path.open(encoding="utf-8") as stream:
+                        value = stream.read(16385)
                 elif secret_fd is not None:
                     if secret_fd < 3:
                         raise ValueError()

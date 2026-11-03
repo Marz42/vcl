@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Managed-By: vincula
-# Vincula-Version: 0.5.3
+# Vincula-Version: 0.5.5
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly VINCULA_VERSION="0.5.3"
+readonly VINCULA_VERSION="0.5.5"
 readonly STATE_DIR="${VCL_STATE_DIR:-/etc/vincula}"
 readonly SETTINGS_FILE="${STATE_DIR}/config.toml"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -24,6 +24,7 @@ readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
 readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly STORAGE_PY="${LIB_DIR}/storage_v5.py"
 readonly OBSERVER_PY="${LIB_DIR}/observer.py"
 readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
 readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
@@ -558,7 +559,7 @@ Refusing destructive uninstall."
     case "$kind" in
       file|symlink)
         case "$value" in
-          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$INSPECT_PY"|"$VERIFY_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
+          "$BINARY_PATH"|"$HELPER_PATH"|"$HELPER_ALIAS_PATH"|"$CONFIG_FILE"|"$STATE_FILE"|"$USERS_FILE"|"$SETTINGS_FILE"|"$URI_FILE"|"$CHECKSUM_FILE"|"$VERSION_FILE"|"$INSTALL_MANIFEST_FILE"|"$LOCK_FILE"|"$SYSTEMD_UNIT"|"$COMMON_FILE"|"$OBSERVER_PY"|"$OBSERVER_SOCKET"|"$OBSERVER_UNIT"|"$ACCOUNTD_RUNTIME_PY"|"$STORAGE_PY"|"/etc/vincula-accountd/runtime.json"|"$TELEMETRY_PY"|"$INSPECT_PY"|"$VERIFY_PY"|"$ACCOUNTD_PY"|"$STATS_PY"|"$AUDIT_PY"|"$BACKUP_PY"|"$EVENT_SCHEMA_FILE"|"$ACCOUNTD_UNIT"|"$ACCOUNTING_DB_FILE"|"$EVENTS_JSONL_FILE") ;;
           *) refuse_uninstall "install.manifest lists unexpected path ${value}; refusing destructive uninstall." ;;
         esac
         ;;
@@ -808,6 +809,7 @@ cmd_uninstall() {
     "$LOCK_FILE" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -916,7 +918,7 @@ accounting_schema_version() {
     printf '\n'
     return 0
   fi
-  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+  python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 try:
     conn = sqlite3.connect(sys.argv[1])
@@ -933,7 +935,7 @@ accounting_heartbeat_age_seconds() {
     printf '\n'
     return 0
   fi
-  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+  python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 from datetime import datetime, timezone
 try:
@@ -963,7 +965,7 @@ PY
 cmd_capabilities() {
   cli_require_json_flag capabilities "$@"
   [[ "${1:-}" == --json ]] || die "capabilities requires --json."
-  python3 - "$VINCULA_VERSION" <<'PY'
+  python_private "$VINCULA_VERSION" <<'PY'
 import json, sys
 print(
     json.dumps(
@@ -1060,7 +1062,7 @@ cmd_identity() {
   accounting_schema=$(accounting_schema_version)
 
   if (( as_json == 1 )); then
-    python3 - "$VINCULA_VERSION" "${node_id:-}" "${instance_id:-}" "${node_name:-}" "$utc_now" <<'PY'
+    python_private "$VINCULA_VERSION" "${node_id:-}" "${instance_id:-}" "${node_name:-}" "$utc_now" <<'PY'
 import json, sys
 version, node_id, instance_id, node_name, utc_now = sys.argv[1:6]
 doc = {
@@ -1121,7 +1123,7 @@ cmd_status() {
     fi
     heartbeat=$(accounting_last_success_status "$ACCOUNTING_DB_FILE" || true)
     heartbeat_age=$(accounting_heartbeat_age_seconds)
-    python3 - "$active" "$listening" "$owned" "$acc_active" "${heartbeat:-unreadable}" "${heartbeat_age:-}" <<'PY'
+    python_private "$active" "$listening" "$owned" "$acc_active" "${heartbeat:-unreadable}" "${heartbeat_age:-}" <<'PY'
 import json, sys
 
 def flag(value):
@@ -1229,7 +1231,7 @@ cmd_verify_json() {
   accountd_py=$(resolve_accountd_py) || accountd_py="$ACCOUNTD_PY"
   plane_json=""
   if [[ -f "$accountd_py" ]]; then
-    plane_json=$(python3 - "$accountd_py" "$ACCOUNTING_DB_FILE" "$service_active" "$raw_days" "$daily_days" <<'PY'
+    plane_json=$(python_private "$accountd_py" "$ACCOUNTING_DB_FILE" "$service_active" "$raw_days" "$daily_days" <<'PY'
 import importlib.util, json, sys
 mod_path, db, active, raw, daily = sys.argv[1:6]
 spec = importlib.util.spec_from_file_location("accountd", mod_path)
@@ -1250,7 +1252,7 @@ PY
     plane_json='{"ok": false, "checks": [{"name": "accounting plane checker", "ok": false, "detail": "missing"}]}'
   fi
 
-  python3 - "$identity_ok" "${node_id:-}" "${instance_id:-}" "$proxy_ok" "$utc_now" "$plane_json" <<'PY'
+  python_private "$identity_ok" "${node_id:-}" "${instance_id:-}" "$proxy_ok" "$utc_now" "$plane_json" <<'PY'
 import json, sys
 identity_ok = sys.argv[1] == "1"
 node_id = sys.argv[2]
@@ -1360,10 +1362,7 @@ cmd_verify_accounting_plane() {
   # Clash triad with secret: correct Bearer passes; empty Bearer and wrong secret must fail.
   if clash_api_reachable_with_secret "$clash_port" "$clash_secret"; then
     printf '✓ Clash API reachable\n'
-    if [[ -n "$clash_secret" ]] && {
-         clash_api_reachable_with_secret "$clash_port" "" \
-      || clash_api_reachable_with_secret "$clash_port" "wrong-${clash_secret}"
-       }; then
+    if ! clash_api_authenticated "$clash_port" "$clash_secret"; then
       printf '✗ Clash API authentication\n'
       fail=1
     else
@@ -1479,7 +1478,7 @@ cmd_diagnose() {
   else
     diag_fail "HTTPS/TLS handshake reachable"
   fi
-  if [[ -n "$uuid" && -n "$private_key" && -n "$public_key" && -n "$short_id" && -n "$reality_host" ]] \
+  if [[ -n "$uuid" && -n "$private_key" && -n "$public_key" && -n "$reality_host" ]] \
     && run_reality_self_test "$BINARY_PATH" "$uuid" "$private_key" "$public_key" "$short_id" "$reality_host"; then
     diag_ok "REALITY end-to-end self-test"
   else
@@ -1755,7 +1754,7 @@ cmd_user_add() {
   emit_user_add_error() {
     local error=$1 human=$2
     if (( as_json )); then
-      python3 - "$error" "$user_id" <<'PY'
+      python_private "$error" "$user_id" <<'PY'
 import json, sys
 error, uid = sys.argv[1], sys.argv[2]
 doc = {"schema_version": 1, "ok": False, "error": error}
@@ -1817,7 +1816,7 @@ PY
   credential_id=$(users_registry_field "$USERS_FILE" "$tag" active_credential_id)
   vless_uri=$(cmd_user_link "$tag")
   if (( as_json )); then
-    python3 - "$tag" "$user_id" "$credential_id" "$vless_uri" <<'PY'
+    python_private "$tag" "$user_id" "$credential_id" "$vless_uri" <<'PY'
 import json, sys
 tag, user_id, credential_id, vless_uri = sys.argv[1:5]
 print(json.dumps({
@@ -1897,7 +1896,7 @@ emit_user_enabled_json() {
   local tag=$1 enabled=$2
   local user_id
   user_id=$(users_registry_field "$USERS_FILE" "$tag" user_id)
-  python3 - "$tag" "$user_id" "$enabled" <<'PY'
+  python_private "$tag" "$user_id" "$enabled" <<'PY'
 import json, sys
 tag, user_id, enabled = sys.argv[1:4]
 print(json.dumps({
@@ -1912,7 +1911,7 @@ PY
 
 emit_user_rotate_json() {
   local tag=$1 credential_id=$2 vless_uri=$3
-  python3 - "$USERS_FILE" "$tag" "$credential_id" "$vless_uri" <<'PY'
+  python_private "$USERS_FILE" "$tag" "$credential_id" "$vless_uri" <<'PY'
 import json, sys
 path, tag, credential_id, vless_uri = sys.argv[1:5]
 with open(path, encoding="utf-8") as f:
@@ -2289,7 +2288,7 @@ cmd_accounting() {
       printf 'note:               polling ≠ exact billing\n'
       printf 'ingest:             Clash API poll only\n'
       if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
-        python3 - "$ACCOUNTING_DB_FILE" <<'PY'
+        python_private "$ACCOUNTING_DB_FILE" <<'PY'
 import sqlite3, sys
 from datetime import datetime, timezone
 db = sys.argv[1]
@@ -2440,7 +2439,7 @@ accounting_last_success_at() {
     printf '\n'
     return 0
   fi
-  python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+  python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 try:
     conn = sqlite3.connect(sys.argv[1])
@@ -2464,7 +2463,7 @@ warn_if_accounting_stale() {
     printf 'WARNING: accounting.db unreadable; stats may be incomplete.\n' >&2
     return 0
   fi
-  last_ok=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+  last_ok=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 from datetime import datetime, timezone
 conn = sqlite3.connect(sys.argv[1])
@@ -2497,7 +2496,7 @@ cmd_connections() {
   if [[ "$acc_state" != "active" ]]; then
     die "UNAVAILABLE: vincula-accountd is ${acc_state:-unknown}; live connections require an active collector (refusing to show SQLite as live)."
   fi
-  python3 - "$ACCOUNTING_DB_FILE" "$limit" <<'PY'
+  python_private "$ACCOUNTING_DB_FILE" "$limit" <<'PY'
 import sqlite3, sys
 db, limit = sys.argv[1], int(sys.argv[2])
 try:
@@ -3277,7 +3276,7 @@ cmd_restore() {
 
   restore_out=""
   restore_rc=0
-  restore_out=$(python3 "${args[@]}" 3<<<"$private_key" 4<<<"$clash_secret") || restore_rc=$?
+  restore_out=$(env -u VCL_RESTORE_REALITY_PRIVATE -u VCL_RESTORE_CLASH_SECRET python3 "${args[@]}" 3<<<"$private_key" 4<<<"$clash_secret") || restore_rc=$?
 
   emit_restore_failure_json() {
     local error=$1
@@ -3449,6 +3448,7 @@ cmd_upgrade_checkpoint() {
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
     "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
     "$OBSERVER_PY" \
     "$OBSERVER_SOCKET" \
     "$OBSERVER_UNIT" \
@@ -3469,7 +3469,7 @@ cmd_upgrade_checkpoint() {
 
   if [[ -f "$ACCOUNTING_DB_FILE" ]]; then
     if backup_py=$(resolve_backup_py 2>/dev/null); then
-      python3 - "$backup_py" "$ACCOUNTING_DB_FILE" "${dest}/accounting.db" <<'PY' \
+      python_private "$backup_py" "$ACCOUNTING_DB_FILE" "${dest}/accounting.db" <<'PY' \
         || die "Failed to snapshot accounting.db for upgrade checkpoint"
 import importlib.util, sys
 from pathlib import Path
@@ -3501,7 +3501,7 @@ EOF
   chmod 0600 "${dest}/${UPGRADE_CHECKPOINT_MARKER}"
 
   if (( json )); then
-    python3 - "$dest" "$ver" "$stamp" <<'PY'
+    python_private "$dest" "$ver" "$stamp" <<'PY'
 import json, sys
 print(json.dumps({
     "schema_version": 1,
@@ -3725,7 +3725,7 @@ cmd_upgrade_rollback() {
   upgrade_rollback_install_member "vcl"
 
   if (( json )); then
-    python3 - "$dir" "$ver" <<'PY'
+    python_private "$dir" "$ver" <<'PY'
 import json, sys
 print(json.dumps({
     "schema_version": 1,

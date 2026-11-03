@@ -56,6 +56,7 @@ class VerifyTests(unittest.TestCase):
     def build(self, **kw):
         return verify.build_snapshot(**self.options, accounting_db=self.db, runner=kw.get("runner", runner))
 
+    @unittest.skipIf(os.name != "nt" and os.geteuid() != 0, "requires root-owned fixture; required in Linux root CI")
     def test_nested_installer_identity_and_eight_checks_readonly_no_data_plane_inference(self):
         before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()}
         doc = self.build()
@@ -246,6 +247,7 @@ class VerifyTests(unittest.TestCase):
                 self.assertNotIn("private-", out.getvalue())
 
     @unittest.skipUnless(sys.platform == "linux", "Bash Node CLI")
+    @unittest.skipIf(os.name != "nt" and os.geteuid() != 0, "Node CLI requires root; required in Linux root CI")
     def test_packaged_style_extended_cli_argv_and_legacy_dispatch_are_separate(self):
         env = dict(os.environ, VCL_STATE_DIR=str(self.options["state_dir"]), VCL_CONFIG_FILE=str(self.options["config_path"]), VCL_SING_BOX_BIN=str(self.options["binary_path"]), VCL_ACCOUNTING_DB_FILE=str(self.db))
         before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()}
