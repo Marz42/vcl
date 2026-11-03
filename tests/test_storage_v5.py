@@ -136,3 +136,29 @@ class DurableStorage(unittest.TestCase):
                 disk.return_value.free = 0
                 with self.assertRaisesRegex(sqlite3.OperationalError, 'DISK_SPACE_LOW'):
                     store.staged_migrate(path, accountd.migrate_schema)
+
+    def test_concurrent_migrations_activate_once_and_preserve_history(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'accounting.db'
+            conn=database(path,'4');insert(conn,'2026-10-27T00:00:00Z');conn.close()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(lambda _:store.staged_migrate(path,accountd.migrate_schema),range(2)))
+            self.assertEqual(sum(value is not None for value in results),1)
+            with closing(sqlite3.connect(path)) as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM connections').fetchone()[0],1)
+                self.assertEqual(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],'5')
+
+    def test_source_write_during_conversion_aborts_activation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'accounting.db'
+            conn=database(path,'4');insert(conn,'2026-10-27T00:00:00Z');conn.close()
+            def convert(candidate):
+                accountd.migrate_schema(candidate)
+                with closing(sqlite3.connect(path)) as writer:
+                    writer.execute('UPDATE connections SET upload_bytes=101');writer.commit()
+            with self.assertRaisesRegex(sqlite3.OperationalError,'source changed'):
+                store.staged_migrate(path,convert)
+            with closing(sqlite3.connect(path)) as conn:
+                self.assertEqual(conn.execute('SELECT upload_bytes FROM connections').fetchone()[0],101)
+                self.assertEqual(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],'4')

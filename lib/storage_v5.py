@@ -3,7 +3,7 @@
 Stdlib only. No service, network, environment credentials or implicit repair.
 """
 from datetime import datetime, timezone
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
@@ -60,7 +60,48 @@ def normalize_table(conn, table, columns):
         conn.executemany(f"UPDATE {table} SET " + ','.join(c+'=?' for c in columns) + " WHERE rowid=?", values)
 
 
+@contextmanager
+def _migration_gate(path, deadline):
+    """Serialize competing schema-5 activations, including across processes."""
+    path=Path(path)
+    limit=deadline if deadline is not None else time.monotonic()+5
+    with path.with_name('.'+path.name+'.v5-migration.lock').open('a+b') as lock:
+        os.chmod(lock.name,0o600)
+        lock.seek(0,2)
+        if lock.tell()==0:
+            lock.write(b'0');lock.flush()
+        while True:
+            try:
+                if os.name=='nt':
+                    import msvcrt
+                    lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic()>=limit:
+                    raise sqlite3.OperationalError('BUDGET_EXHAUSTED: migration lock is busy')
+                time.sleep(.01)
+        try:
+            yield
+        finally:
+            if os.name=='nt':
+                lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
+            else:
+                fcntl.flock(lock.fileno(),fcntl.LOCK_UN)
+
+
 def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
+    with _migration_gate(path,deadline):
+        with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=0)) as probe:
+            row=probe.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() if probe.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone() else None
+            if row and str(row[0])=='5':
+                return None  # another migrator completed while this caller waited
+        return _staged_migrate(path,converter,minimum_free=minimum_free,deadline=deadline)
+
+
+def _staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
     """Offline/cooperatively locked migration; preserve a verified source backup.
 
     Caller holds its normal writer lock or has stopped its sole collector.
@@ -87,6 +128,7 @@ def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
         if result and result[0]:
             raise sqlite3.OperationalError('migration source is busy')
         source.execute('PRAGMA journal_mode=DELETE')
+        source_identity=(path.stat().st_dev,path.stat().st_ino,path.stat().st_size,path.stat().st_mtime_ns)
         version = source.execute('PRAGMA data_version').fetchone()[0]
         with closing(sqlite3.connect(backup_name)) as backup:
             source.backup(backup, pages=1024, progress=check_deadline)
@@ -105,10 +147,16 @@ def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
                 raise sqlite3.DatabaseError('migration candidate integrity check failed')
         if source.execute('PRAGMA data_version').fetchone()[0] != version:
             raise sqlite3.OperationalError('migration source changed; stop all writers before retrying')
+        if (path.stat().st_dev,path.stat().st_ino,path.stat().st_size,path.stat().st_mtime_ns)!=source_identity:
+            raise sqlite3.OperationalError('migration source identity changed; activation refused')
         check_deadline()
         source.close()
         os.chmod(stage_name, 0o600)
         os.replace(stage_name, path)
+        if os.name!='nt':
+            directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+            try:os.fsync(directory)
+            finally:os.close(directory)
         return backup_name
     finally:
         source.close()
