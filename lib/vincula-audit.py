@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -65,6 +66,8 @@ def parse_rfc3339(s: str) -> str:
         print(f"ERROR: invalid RFC3339 timestamp: {s}", file=sys.stderr)
         raise SystemExit(1)
     candidate = raw.replace("Z", "+00:00").replace("z", "+00:00")
+    # Python 3.10 accepts emitted ISO forms (.fff/.ffffff), not Go nanoseconds.
+    candidate = re.sub(r"\.(\d+)(?=[+-]\d{2}:\d{2}$)", lambda m: "."+(m[1]+"000000")[:6], candidate)
     try:
         when = datetime.fromisoformat(candidate)
     except ValueError:

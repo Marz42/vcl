@@ -7,6 +7,7 @@ from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -34,7 +35,9 @@ def utc(value):
         when = value
     elif isinstance(value, str):
         try:
-            when = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
+            candidate = value.replace("Z", "+00:00").replace("z", "+00:00")
+            candidate = re.sub(r"\.(\d+)(?=[+-]\d{2}:\d{2}$)", lambda m: "."+(m[1]+"000000")[:6], candidate)
+            when = datetime.fromisoformat(candidate)
         except ValueError:
             raise ValueError("invalid RFC3339 timestamp") from None
     else:

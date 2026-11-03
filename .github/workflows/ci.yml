@@ -39,6 +39,8 @@ jobs:
         run: sudo -n python3 -B tests/test_accountd_privileges.py
       - name: Complete observation contracts and Linux permission boundaries
         run: sudo -n python3 -B -m unittest discover -s tests -p 'test_*.py'
+      - name: Minimum supported Python 3.10 contracts (read-only checkout)
+        run: docker run --rm --network none -v "$PWD:/work:ro" -w /work python:3.10-slim python -B -m unittest discover -s tests -p 'test_*.py'
       - name: Node tests (sources fleet)
         run: bash tests/test.sh
 

@@ -43,6 +43,22 @@ def insert(conn, when, *, closed=None):
 
 
 class DurableStorage(unittest.TestCase):
+    def test_nanoseconds_are_normalized_before_minimum_runtime_parser(self):
+        import re
+        class MinimumDatetime(datetime):
+            @classmethod
+            def fromisoformat(cls,value):
+                fraction=re.search(r"\.(\d+)(?=[+-])",value)
+                if fraction and len(fraction[1]) not in (3,6):
+                    raise ValueError('minimum-runtime ISO parser')
+                return super().fromisoformat(value)
+        value='2026-10-26T23:30:00.123456789-07:00'
+        expected='2026-10-27T06:30:00.123456Z'
+        with mock.patch.object(store,'datetime',MinimumDatetime):
+            self.assertEqual(store.utc(value),expected)
+        with mock.patch.object(audit,'datetime',MinimumDatetime):
+            self.assertEqual(audit.parse_rfc3339(value),expected)
+
     def test_utc_is_fixed_precision_and_rejects_naive(self):
         self.assertEqual(store.utc('2026-10-26T23:30:00.123456789-07:00'), '2026-10-27T06:30:00.123456Z')
         self.assertEqual(store.utc('2026-10-27T08:00:00+08:00'), '2026-10-27T00:00:00.000000Z')
