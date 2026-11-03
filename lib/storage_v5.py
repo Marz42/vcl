@@ -256,7 +256,7 @@ def read_policy(path):
     return policy
 
 
-def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None):
+def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None, reserve_journal=True):
     """Read existing facts only; never create a database, policy or directory."""
     path = Path(path)
     def check_time():
@@ -299,11 +299,14 @@ def cache_status(path, policy, conn=None, *, timeout=.1, deadline=None):
     except ValueError:
         report.update(state='CACHE_CORRUPT',error_code='DATABASE_ERROR',import_allowed=False)
     report['database_bytes'] = allocated
-    if free < policy['min_free_bytes']:
+    reserve = max(0,allocated-aux) if reserve_journal else 0
+    report['journal_reserve_bytes'] = reserve
+    report['required_free_bytes'] = policy['min_free_bytes']+reserve
+    if free < report['required_free_bytes']:
         report.update(state='STOPPED',error_code='DISK_SPACE_LOW',import_allowed=False)
-    elif allocated+aux >= policy['max_bytes']:
+    elif allocated >= policy['max_bytes']:
         report.update(state='STOPPED',error_code='CACHE_LIMIT_REACHED',import_allowed=False)
-    elif allocated+aux >= policy['max_bytes']*policy['warning_fraction'] and report['import_allowed']:
+    elif allocated >= policy['max_bytes']*policy['warning_fraction'] and report['import_allowed']:
         report['state'] = 'WARNING'
     return report
 
@@ -312,15 +315,15 @@ class CacheConnection(sqlite3.Connection):
     capacity_path = None
     policy = None
 
-    def check_capacity(self):
+    def check_capacity(self, reserve_journal=False):
         if self.capacity_path is not None:
-            report = cache_status(self.capacity_path, self.policy, self)
+            report = cache_status(self.capacity_path, self.policy, self, reserve_journal=reserve_journal)
             if not report['import_allowed']:
                 raise CapacityError(report['error_code'])
 
     def execute(self, sql, parameters=(), /):
         if sql.lstrip().split(' ',1)[0].upper() in ('BEGIN','SAVEPOINT'):
-            self.check_capacity()
+            self.check_capacity(reserve_journal=not self.in_transaction)
         try:
             return super().execute(sql, parameters)
         except sqlite3.Error as exc:
@@ -336,7 +339,7 @@ class CacheConnection(sqlite3.Connection):
 
 def guard_cache(conn, path, policy):
     conn.capacity_path, conn.policy = Path(path), policy
-    conn.check_capacity()
+    conn.check_capacity(reserve_journal=True)
     page_size = conn.execute('PRAGMA page_size').fetchone()[0]
     conn.execute('PRAGMA max_page_count='+str(max(1,policy['max_bytes']//page_size)))
 

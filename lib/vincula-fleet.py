@@ -5964,6 +5964,8 @@ def _sync_result(
         or "missing node_id" in error
     ):
         row["remediation"] = remediation_sync_reseed(node["name"])
+    if error_code in ("CACHE_LIMIT_REACHED", "DISK_SPACE_LOW"):
+        row["remediation"] = "inspect: vcl-fleet cache status --json; preserve verified backups, free space or explicitly revise the machine-local limit; do not reseed"
     return row
 
 
@@ -6095,7 +6097,8 @@ def sync_nodes_isolated(
                 error_phase="audit_import",
                 retryable=True,
             )
-            row["remediation"] = f"rerun: vcl-fleet sync --node {node['name']}"
+            if not row.get("remediation"):
+                row["remediation"] = f"rerun: vcl-fleet sync --node {node['name']}"
             rows.append(row)
     return rows
 

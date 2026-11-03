@@ -88,6 +88,26 @@ class CacheCapacity(unittest.TestCase):
             with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as conn:
                 self.assertEqual(conn.execute('SELECT value FROM meta').fetchone()[0],'5')
 
+    def test_transaction_reserve_is_reported_without_double_reserving_at_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'fleet.db'
+            with closing(sqlite3.connect(path,factory=storage.CacheConnection)) as conn:
+                conn.execute('CREATE TABLE meta(key TEXT,value TEXT)');conn.commit()
+                size=path.stat().st_size
+                policy=dict(storage.DEFAULT_POLICY,min_free_bytes=1024)
+                with mock.patch.object(storage.shutil,'disk_usage') as disk:
+                    disk.return_value.free=size//2+1024
+                    report=storage.cache_status(path,policy)
+                    self.assertEqual(report['error_code'],'DISK_SPACE_LOW')
+                    self.assertEqual(report['required_free_bytes'],size+1024)
+                    disk.return_value.free=size+2048
+                    storage.guard_cache(conn,path,policy)
+                    conn.execute('BEGIN IMMEDIATE')
+                    conn.execute("INSERT INTO meta VALUES('synthetic','value')")
+                    disk.return_value.free=1025
+                    conn.commit()  # journal has already been allocated; floor still holds
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM meta').fetchone()[0],1)
+
     def test_initial_lock_failure_has_node_rows_and_is_bounded(self):
         fleet=load('capacity_fleet','lib/vincula-fleet.py')
         targets=[{'name':'synthetic','node_id':'11111111-1111-4111-8111-111111111111'}]

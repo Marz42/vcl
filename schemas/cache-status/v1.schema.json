@@ -12,6 +12,8 @@
     "database_bytes": {"type": "integer", "minimum": 0},
     "auxiliary_bytes": {"type": "integer", "minimum": 0},
     "free_bytes": {"type": "integer", "minimum": 0},
+    "journal_reserve_bytes": {"type": "integer", "minimum": 0},
+    "required_free_bytes": {"type": "integer", "minimum": 0},
     "history_coverage": {"type": "object"},
     "policy": {
       "type": "object", "additionalProperties": false,
