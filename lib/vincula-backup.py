@@ -760,6 +760,16 @@ def _verify_members(
         if digest != expected:
             return _fail("checksum_mismatch")
 
+    # Apply consumes both JSON roots as objects and config.toml as strict UTF-8.
+    # A valid manifest/hash alone must not admit structurally unreadable input.
+    try:
+        for name in ('state.json', 'users.json'):
+            if not isinstance(json.loads(_as_bytes(members[name]).decode('utf-8')), dict):
+                return _fail('invalid_archive')
+        _as_bytes(members['config.toml']).decode('utf-8')
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
+        return _fail('invalid_archive')
+
     out = dict(manifest)
     out["ok"] = True
     return out

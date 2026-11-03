@@ -172,6 +172,16 @@ class CacheCapacity(unittest.TestCase):
         result=backup._verify_members({'manifest.json':json.dumps(manifest).encode(),'state.json':content},Path('synthetic.tar.gz'))
         self.assertFalse(result['ok'])
 
+    def test_backup_verify_rejects_valid_hashes_for_unreadable_restore_inputs(self):
+        for bad_name,bad_value in (('state.json',b'[]'),('users.json',b'[]'),('config.toml',b'\xff')):
+            members={'state.json':b'{}','users.json':b'{}','config.toml':b'',bad_name:bad_value}
+            manifest={'schema_version':1,'secret_bearing':False,'encryption':'none','included_components':list(members),
+                      'files':[{'path':name,'sha256':hashlib.sha256(value).hexdigest()} for name,value in members.items()]}
+            members['manifest.json']=json.dumps(manifest).encode()
+            result=backup._verify_members(members,Path('synthetic.tar.gz'))
+            self.assertFalse(result['ok'],bad_name)
+            self.assertEqual(result['error'],'invalid_archive')
+
     def test_cache_cli_and_stats_wrong_path_leave_no_database(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
