@@ -3262,10 +3262,10 @@ cmd_restore() {
     --safety-dir "$safety"
     --reissue-output "$reissue_output"
     --new-instance-id "$instance_id"
-    --new-reality-private "$private_key"
+    --new-reality-private-fd 3
     --new-reality-public "$public_key"
     --new-reality-short-id "$short_id"
-    --new-clash-secret "$clash_secret"
+    --new-clash-secret-fd 4
     --project-version "$VINCULA_VERSION"
   )
   [[ -n "$identity" ]] && args+=(--age-identity "$identity")
@@ -3277,7 +3277,7 @@ cmd_restore() {
 
   restore_out=""
   restore_rc=0
-  restore_out=$(python3 "${args[@]}") || restore_rc=$?
+  restore_out=$(python3 "${args[@]}" 3<<<"$private_key" 4<<<"$clash_secret") || restore_rc=$?
 
   emit_restore_failure_json() {
     local error=$1

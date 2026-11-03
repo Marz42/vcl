@@ -2004,7 +2004,39 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     commit_ver.add_argument("--target-state-dir", required=True)
     commit_ver.add_argument("--safety-dir", default="")
     commit_ver.add_argument("--project-version", default="")
-    return parser.parse_args(argv)
+    actual = list(sys.argv[1:] if argv is None else argv)
+    if any(a.split("=", 1)[0] in ("--new-reality-private", "--new-clash-secret") for a in actual):
+        parser.error("plaintext secret options are disabled; use --new-reality-private-file/-fd and --new-clash-secret-file/-fd")
+    for target in (restore_plan, restore):
+        for field in ("new-reality-private", "new-clash-secret"):
+            group = target.add_mutually_exclusive_group()
+            group.add_argument("--" + field + "-file", default="")
+            group.add_argument("--" + field + "-fd", type=int)
+    args = parser.parse_args(actual)
+    for field in ("new_reality_private", "new_clash_secret"):
+        if hasattr(args, field):
+            try:
+                secret_file = getattr(args, field + "_file", "")
+                secret_fd = getattr(args, field + "_fd", None)
+                if secret_file:
+                    path = Path(secret_file)
+                    info = path.stat()
+                    if not path.is_file() or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid())):
+                        raise ValueError()
+                    value = path.read_text(encoding="utf-8")
+                elif secret_fd is not None:
+                    if secret_fd < 3:
+                        raise ValueError()
+                    with os.fdopen(os.dup(secret_fd), encoding="utf-8") as stream:
+                        value = stream.read(16385)
+                else:
+                    value = ""
+                if len(value) > 16384 or "\0" in value:
+                    raise ValueError()
+                setattr(args, field, value.removesuffix("\n"))
+            except (OSError, ValueError, UnicodeError):
+                parser.error("cannot read private secret input; require an owned private regular file or inherited fd >= 3")
+    return args
 
 
 def _print_restore_failure(exc: RestoreError, json_flag: bool) -> int:

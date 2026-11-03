@@ -348,9 +348,17 @@ clash_api_reachable_with_secret() {
   local url="http://127.0.0.1:${port}/connections"
   local args=(-fsS --max-time 5)
   if [[ -n "$secret" ]]; then
-    args+=(-H "Authorization: Bearer ${secret}")
+    args+=(-H @/dev/fd/3)
   fi
-  curl "${args[@]}" "$url" >/dev/null 2>&1
+  curl "${args[@]}" "$url" 3<<<"Authorization: Bearer ${secret}" >/dev/null 2>&1
+}
+
+# Positive and negative authentication checks share the same transport.
+clash_api_authenticated() {
+  local port=$1 secret=${2:-}
+  [[ -n "$secret" ]] && clash_api_reachable_with_secret "$port" "$secret" \
+    && ! clash_api_reachable_with_secret "$port" "" \
+    && ! clash_api_reachable_with_secret "$port" "wrong-${secret}"
 }
 
 # Print fresh|stale|missing|unreadable for meta.last_success_at. Exit 0 iff fresh.
@@ -437,14 +445,16 @@ render_sing_box_config_accounting() {
   local clash_secret=${9:-}
   local sniff=${10:-true}
   require_python3 || return 1
-  python3 - "$output" "$users_file" "$private_key" "$short_id" "$port" "$reality_host" \
-    "$listen" "$clash_port" "$clash_secret" "$sniff" <<'PY'
-import json, sys
+  python3 - "$output" "$users_file" "$short_id" "$port" "$reality_host" \
+    "$listen" "$clash_port" "$sniff" 3<<<"$private_key" 4<<<"$clash_secret" <<'PY'
+import json, sys, os
 
 (
-    output, users_file, private_key, short_id, port, reality_host,
-    listen, clash_port, clash_secret, sniff,
+    output, users_file, short_id, port, reality_host,
+    listen, clash_port, sniff,
 ) = sys.argv[1:]
+private_key = os.fdopen(3).read().removesuffix("\n")
+clash_secret = os.fdopen(4).read().removesuffix("\n")
 
 with open(users_file, encoding="utf-8") as f:
     data = json.load(f)
@@ -1456,22 +1466,22 @@ write_sing_box_server_config() {
   local clash_secret=${9:-}
   local sniff=${10:-true}
   require_python3 || return 1
-  python3 - "$output" "$users_json" "$private_key" "$short_id" "$port" "$reality_host" \
-    "$listen" "$clash_api_port" "$clash_secret" "$sniff" <<'PY'
-import json, sys
+  python3 - "$output" "$short_id" "$port" "$reality_host" \
+    "$listen" "$clash_api_port" "$sniff" 3<<<"$private_key" 4<<<"$clash_secret" 5<<<"$users_json" <<'PY'
+import json, sys, os
 
 (
     output,
-    users_json,
-    private_key,
     short_id,
     port,
     reality_host,
     listen,
     clash_api_port,
-    clash_secret,
     sniff,
-) = sys.argv[1:11]
+) = sys.argv[1:]
+private_key = os.fdopen(3).read().removesuffix("\n")
+clash_secret = os.fdopen(4).read().removesuffix("\n")
+users_json = os.fdopen(5).read()
 
 users = json.loads(users_json)
 if not isinstance(users, list) or not users:

@@ -116,7 +116,7 @@ class AccessTests(unittest.TestCase):
         binding = self.mod.bind_agent("agent-test", fingerprint)
         self.assertEqual(binding["type"], "agent")
         self.assertEqual(binding["fingerprint"], fingerprint)
-        self.assertEqual(binding["public_key_file"], "keys/agent-test.pub")
+        self.assertRegex(binding["public_key_file"], r"^keys/[0-9a-f]{64}\.pub$")
         selector = self.host.bindings_path.parent / binding["public_key_file"]
         self.assertTrue(selector.is_file())
         self.assertNotIn("PRIVATE KEY", selector.read_text(encoding="utf-8"))
@@ -169,7 +169,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(self.mod.node_credential_state(agent_node), "OK")
         result = self.mod.resolve_identity(agent_node, "admin")
         self.assertEqual(result["state"], "OK")
-        self.assertEqual(Path(result["path"]).name, "agent-test.pub")
+        self.assertRegex(Path(result["path"]).name, r"^[0-9a-f]{64}\.pub$")
         self.assertEqual(Path(result["path"]).parent.name, "keys")
 
         file_node = {
@@ -287,6 +287,31 @@ class AccessTests(unittest.TestCase):
         report = self.mod.verify_bindings_report()
         self.assertTrue(report["ok"], report)
         self.assertEqual(report["on_disk_bindings_schema_version"], 2)
+
+
+    def test_ref_selectors_are_isolated_and_failed_publish_keeps_old(self) -> None:
+        self._agent_count(3)
+        keys = self.mod.read_agent_keys()["keys"]
+        refs = ["node.admin", ".node.admin", "Admin", "admin", "中文", "文中"]
+        paths = []
+        for index, ref in enumerate(refs):
+            key = keys[index % len(keys)]
+            binding = self.mod.bind_agent(ref, key["fingerprint"])
+            paths.append(binding["public_key_file"])
+        self.assertEqual(len(set(paths)), len(refs))
+        for ref in refs:
+            self.assertEqual(self.mod._resolve_ref(ref)["state"], "OK")
+        before = self.mod._resolve_ref(refs[0])
+        with mock.patch.object(self.mod, "save_bindings", side_effect=OSError("injected publish failure")):
+            with self.assertRaises(OSError):
+                self.mod.bind_agent(refs[0], keys[1]["fingerprint"])
+        self.assertEqual(self.mod._resolve_ref(refs[0]), before)
+
+    def test_concurrent_binding_updates_keep_all_refs(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda i: self.mod.bind_identity_file(f"parallel-{i}", str(self.key)), range(12)))
+        self.assertEqual(len(self.mod.list_bindings()), 12)
 
 
 if __name__ == "__main__":

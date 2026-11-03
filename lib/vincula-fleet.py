@@ -3038,6 +3038,7 @@ def _replace_result(
     reissue_csv: Optional[str],
     state: str,
     error: Optional[str] = None,
+    observe_ref: Optional[str] = None,
 ) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "schema_version": REPLACE_JSON_SCHEMA_VERSION,
@@ -3049,6 +3050,9 @@ def _replace_result(
         "ssh_host": ssh_host,
         "reissue_csv": reissue_csv,
         "state": state,
+        "observe_credential_ref": observe_ref,
+        "observation_access": "CONFIGURED" if observe_ref else "NOT_CONFIGURED",
+        "observation_remediation": None if observe_ref else "bind and explicitly set an observe credential for the new endpoint before monitoring",
     }
     if error:
         doc["error"] = error
@@ -3067,6 +3071,8 @@ def _emit_replace_result(doc: dict[str, Any], as_json: bool) -> int:
     sys.stdout.write(f"old instance_id: {doc.get('old_instance_id') or '-'}\n")
     sys.stdout.write(f"new instance_id: {doc.get('new_instance_id') or '-'}\n")
     sys.stdout.write(f"ssh_host: {doc['ssh_host']}\n")
+    if doc.get("observation_access") == "NOT_CONFIGURED":
+        sys.stdout.write("WARNING: observation access is not configured on the replacement; bind and set an observe credential before monitoring.\n")
     if doc.get("reissue_csv"):
         sys.stdout.write(f"reissue_csv: {doc['reissue_csv']}\n")
     return 0
@@ -3165,6 +3171,13 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     new_node = _node_view(
         node, ssh_host=new_host, ssh_user=new_user, ssh_port=new_port
     )
+    observe_ref = _optional_text(getattr(args, "observe_credential_ref", None))
+    new_node.pop("observe_credential_ref", None)
+    if observe_ref:
+        resolved_observe = _AC.resolve_identity({"observe_credential_ref": observe_ref}, "observe")
+        if resolved_observe["state"] != "OK":
+            die("replacement observe credential is not usable; bind it explicitly before replacing")
+        new_node["observe_credential_ref"] = observe_ref
     ident_path = _optional_text(getattr(args, "identity_file", None))
     replace_admin_ref: Optional[str] = None
     if ident_path:
@@ -3176,8 +3189,6 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             replace_admin_ref = _apply_node_credential(
                 new_node, "admin", resolved, name=args.name
             )
-            # observe must be set explicitly after replace if needed
-            new_node.pop("observe_credential_ref", None)
         else:
             new_node["identity_file"] = resolved
     old_instance_id = _cursor_instance_id(node["node_id"])
@@ -3457,10 +3468,11 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
     stored["ssh_host"] = new_host
     stored["ssh_user"] = new_user
     stored["ssh_port"] = new_port
+    stored.pop("observe_credential_ref", None)
+    if observe_ref:
+        stored["observe_credential_ref"] = observe_ref
     if replace_admin_ref:
         stored["admin_credential_ref"] = replace_admin_ref
-        # observe must be set explicitly after replace if needed
-        stored.pop("observe_credential_ref", None)
         stored.pop("identity_file", None)
     elif new_node.get("identity_file"):
         if workspace_trust_active():
@@ -3500,6 +3512,7 @@ def cmd_node_replace(args: argparse.Namespace) -> int:
             ssh_host=new_host,
             reissue_csv=reissue_csv,
             state=OP_SUCCESS,
+            observe_ref=observe_ref,
         ),
         as_json,
     )
@@ -8826,6 +8839,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_replace.add_argument("name")
+    p_replace.add_argument("--observe-credential-ref", help="explicit observation identity for the new endpoint; old authorization is not reused")
     p_replace.add_argument("--host", required=True, help="new SSH hostname or IP")
     p_replace.add_argument(
         "--host-key",

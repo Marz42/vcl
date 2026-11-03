@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -368,10 +369,46 @@ def binding_public_key_path(
 def bind_identity_file(ref: str, path: str) -> dict[str, Any]:
     key = _validate_credential_ref(ref)
     resolved = validate_identity_file(path, must_exist=True)
-    data = load_bindings()
-    data["bindings"][key] = {"type": IDENTITY_BINDING_TYPE, "path": resolved}
-    save_bindings(data)
+    with bindings_lock():
+        data = load_bindings()
+        data["bindings"][key] = {"type": IDENTITY_BINDING_TYPE, "path": resolved}
+        save_bindings(data)
     return data["bindings"][key]
+
+
+@contextmanager
+def bindings_lock():
+    """Serialize read/modify/publish across processes, on Unix and Windows."""
+    parent = credential_bindings_path().parent
+    parent.mkdir(parents=True, exist_ok=True)
+    with (parent / ".credential-bindings.lock").open("a+b") as lock:
+        lock.seek(0, 2)
+        if lock.tell() == 0:
+            lock.write(b"0")
+            lock.flush()
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    _host.die("credential bindings are busy; retry after the current operation")
+                time.sleep(.025)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _write_public_key_file(ref: str, public_key: str) -> str:
@@ -381,7 +418,8 @@ def _write_public_key_file(ref: str, public_key: str) -> str:
         os.chmod(keys_dir, 0o700)
     except OSError:
         pass
-    name = f"{credential_ref_slug(ref)}.pub"
+    blob = _public_key_parts(public_key)[3]
+    name = hashlib.sha256(ref.encode("utf-8") + b"\0" + blob).hexdigest() + ".pub"
     target = keys_dir / name
     fd, tmp = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=str(keys_dir))
     try:
@@ -433,14 +471,15 @@ def bind_agent(
         if found is None:
             _host.die(f"{CODE_AGENT_KEY_MISSING}: {wanted} is not loaded in the SSH agent")
         line = found["public_key"]
-    rel = _write_public_key_file(key, line)
-    data = load_bindings()
-    data["bindings"][key] = {
-        "type": AGENT_BINDING_TYPE,
-        "fingerprint": wanted,
-        "public_key_file": rel,
-    }
-    save_bindings(data)
+    with bindings_lock():
+        rel = _write_public_key_file(key, line)
+        data = load_bindings()
+        data["bindings"][key] = {
+            "type": AGENT_BINDING_TYPE,
+            "fingerprint": wanted,
+            "public_key_file": rel,
+        }
+        save_bindings(data)
     return data["bindings"][key]
 
 
