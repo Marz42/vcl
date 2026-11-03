@@ -985,9 +985,9 @@ assert_success "build-release includes vincula-audit.py" \
 assert_success "build-release includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/scripts/build-release.sh"
 assert_success "python3 can compile vincula-stats" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-stats.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-stats.py"
 assert_success "python3 can compile vincula-audit" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-audit.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_failure "audit module does not import accountd" \
   grep -q 'vincula-accountd' "${PROJECT_DIR}/lib/vincula-audit.py"
 assert_success "helper notes polling is not exact billing" grep -q 'Polling ≠ exact billing' "${TEST_TMP}/vincula"
@@ -1071,7 +1071,7 @@ assert_success "accountd unit has ProtectControlGroups" \
 assert_success "accountd unit has RestrictRealtime" \
   grep -q '^RestrictRealtime=true$' "${PROJECT_DIR}/lib/vincula-accountd.service"
 assert_success "python3 can compile vincula-accountd" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-accountd.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-accountd.py"
 assert_failure "event schema file is not shipped" \
   test -f "${PROJECT_DIR}/lib/vincula-event.schema.json"
 assert_failure "gen-release-lock does not include event schema" \
@@ -5732,7 +5732,7 @@ assert_success "soak protocol documents 24h READY FOR RC" \
 
 # --- 0.3.0 vincula-backup.py strip/tar ---
 assert_success "python3 can compile vincula-backup" \
-  python3 -m py_compile "${PROJECT_DIR}/lib/vincula-backup.py"
+  python_syntax_check "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module pins schema 1" \
   grep -q 'BACKUP_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module uses sqlite3 Connection.backup" \

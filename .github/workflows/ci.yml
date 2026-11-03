@@ -18,6 +18,11 @@ concurrency:
 permissions:
   contents: read
 
+# Root permission tests spawn child interpreters; keep their imports from
+# creating root-owned bytecode in the checkout used by later non-root steps.
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
 jobs:
   unit-windows:
     name: unit (windows-latest)
