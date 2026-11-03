@@ -946,7 +946,7 @@ def _open_fleet_db(*, deadline=None) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
         if not _has_meta_table(conn):
-            conn.executescript(FLEET_DB_DDL)
+            conn.executescript('BEGIN IMMEDIATE;\n' + FLEET_DB_DDL)
             fleet_db_meta_set(
                 conn, "schema_version", str(FLEET_DB_SCHEMA_VERSION)
             )

@@ -380,10 +380,21 @@ class CacheConnection(sqlite3.Connection):
     def execute(self, sql, parameters=(), /):
         if sql.lstrip().split(' ',1)[0].upper() in ('BEGIN','SAVEPOINT'):
             self.check_capacity(reserve_journal=not self.in_transaction)
+        return self._capacity_call(super().execute, sql, parameters)
+
+    def executemany(self, sql, parameters, /):
+        self.check_capacity(reserve_journal=not self.in_transaction)
+        return self._capacity_call(super().executemany, sql, parameters)
+
+    def executescript(self, sql, /):
+        self.check_capacity(reserve_journal=not self.in_transaction)
+        return self._capacity_call(super().executescript, sql)
+
+    def _capacity_call(self, operation, *args):
         try:
-            return super().execute(sql, parameters)
+            return operation(*args)
         except sqlite3.Error as exc:
-            if 'full' in str(exc).lower() and self.capacity_path is not None:
+            if self.capacity_path is not None and (getattr(exc, 'sqlite_errorcode', 0) & 0xff == 13 or 'database or disk is full' in str(exc).lower()):
                 free = shutil.disk_usage(Path(self.capacity_path).parent).free
                 raise CapacityError('DISK_SPACE_LOW' if free < self.policy['min_free_bytes'] else 'CACHE_LIMIT_REACHED') from None
             raise

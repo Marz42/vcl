@@ -28,6 +28,32 @@ backup=load('capacity_backup','lib/vincula-backup.py')
 
 
 class CacheCapacity(unittest.TestCase):
+    def test_fresh_cache_limit_is_structured_and_schema_creation_is_atomic(self):
+        fleet=load('new_capacity_fleet','lib/vincula-fleet.py')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'fleet.db'
+            policy=dict(storage.DEFAULT_POLICY,max_bytes=16384,min_free_bytes=0)
+            with mock.patch.object(fleet,'fleet_db_path',return_value=path), mock.patch.object(fleet,'_ensure_fleet_home'), mock.patch.object(fleet._STORAGE,'read_policy',return_value=policy):
+                conn,failure=fleet._open_sync_cache({'budget':5},[{'name':'test','node_id':'synthetic'}],'sync')
+            self.assertIsNone(conn)
+            self.assertEqual(failure[0],2)
+            self.assertEqual(failure[1]['nodes'][0]['error_code'],'CACHE_LIMIT_REACHED')
+            with closing(sqlite3.connect(path)) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0],0)
+
+    def test_executemany_limit_rolls_back_the_whole_import_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'fleet.db'
+            with closing(sqlite3.connect(path,factory=storage.CacheConnection)) as conn:
+                conn.execute('CREATE TABLE audit(payload BLOB)');conn.commit()
+                used=path.stat().st_size
+                storage.guard_cache(conn,path,dict(storage.DEFAULT_POLICY,max_bytes=used+16384,min_free_bytes=0))
+                conn.execute('BEGIN IMMEDIATE')
+                with self.assertRaisesRegex(storage.CapacityError,'CACHE_LIMIT_REACHED'):
+                    conn.executemany('INSERT INTO audit VALUES(?)',[(b'x'*1000,)]*100)
+                conn.rollback()
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM audit').fetchone()[0],0)
+
     def test_public_cache_schema_positive_and_negative_fixtures(self):
         import test_monitor_schema as evaluator
         schema=json.loads((ROOT/'schemas/cache-status/v1.schema.json').read_text())
