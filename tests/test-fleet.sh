@@ -5193,7 +5193,7 @@ assert len(first) == 1, first
 assert first[0]["instance_id"] == old_iid
 assert first[0]["status"] == "active"
 assert first[0]["endpoint"] == "203.0.113.10"
-assert first[0]["started_at"] == "2026-08-16T04:00:00.000000Z"
+assert first[0]["started_at"] == "2026-08-16T04:00:00Z"
 
 mod.record_instance(
     conn, node_id, new_iid, "203.0.113.18", "203.0.113.18",
