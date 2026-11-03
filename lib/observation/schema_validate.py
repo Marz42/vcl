@@ -90,7 +90,7 @@ def validate_audit_health_v1(doc: Any) -> list[str]:
         value = doc.get(key)
         if value is not None and (type(value) is not int or not 0 <= value <= 2**63 - 1):
             errors.append("invalid audit numeric field")
-    if doc.get("db_state") == "OK" and doc.get("db_schema") != 4:
+    if doc.get("db_state") == "OK" and doc.get("db_schema") not in (4, 5):
         errors.append("inconsistent audit schema")
     return errors
 

@@ -2036,7 +2036,7 @@ print(row[0] if row else "")
 conn.close()
 PY
 )
-    if [[ "$schema" == "4" ]]; then
+    if [[ "$schema" == "5" ]]; then
       log_ok "expected DB schema"
     else
       log_warn "expected DB schema"
@@ -2120,6 +2120,7 @@ install_accountd_artifacts() {
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
   atomic_install "${root}/lib/accountd_runtime.py" "$ACCOUNTD_RUNTIME_PY" 0644 root root
+  atomic_install "${root}/lib/storage_v5.py" "${LIB_DIR}/storage_v5.py" 0644 root root
   atomic_install "${root}/lib/observer.py" "${LIB_DIR}/observer.py" 0644 root root
   atomic_install "${root}/lib/vincula-observer.socket" /etc/systemd/system/vincula-observer.socket 0644 root root
   atomic_install "${root}/lib/vincula-observer@.service" /etc/systemd/system/vincula-observer@.service 0644 root root
@@ -2220,10 +2221,10 @@ except Exception:
     pass
 PY
 )
-    [[ "$schema" == "4" ]] && break
+    [[ "$schema" == "5" ]] && break
     sleep 1
   done
-  [[ "$schema" == "4" ]] || return 1
+  [[ "$schema" == "5" ]] || return 1
 
   port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$port" ]] || port=$DEFAULT_CLASH_API_PORT

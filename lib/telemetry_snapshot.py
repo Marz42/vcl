@@ -318,7 +318,7 @@ def build_audit_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds
             value = int(value)
             return value if 0 <= value <= 2**63 - 1 else None
         out["db_schema"] = integer(meta.get("schema_version"))
-        if out["db_schema"] != 4:
+        if out["db_schema"] not in (4, 5):
             out["db_state"] = "SCHEMA_MISMATCH"
             return out
         required = {
@@ -393,7 +393,7 @@ def build_user_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds:
         meta = dict(conn.execute("SELECT key,value FROM meta WHERE key IN "
             "('schema_version','heartbeat_at','last_success_at','audit_pruned_max_export_seq') LIMIT 4"))
         required = {"user_id", "user_tag", "upload_bytes", "download_bytes", "closed_at"}
-        if meta.get("schema_version") != "4" or not required <= {row[1] for row in conn.execute("PRAGMA table_info(connections)")}:
+        if meta.get("schema_version") not in ("4", "5") or not required <= {row[1] for row in conn.execute("PRAGMA table_info(connections)")}:
             out["state"] = "SCHEMA_MISMATCH"
             return out
         polled, heartbeat, watermark = meta.get("last_success_at"), meta.get("heartbeat_at"), meta.get("audit_pruned_max_export_seq")

@@ -142,7 +142,7 @@ def accounting(reader, path, instance_id, node_id):
                     "started_at", "last_seen_at", "closed_at", "destination_host", "destination_ip", "destination_port", "network", "upload_bytes", "download_bytes", "export_seq"},
                     "poll_baseline": {"connection_id", "generation", "last_upload_counter", "last_download_counter", "accounted_upload", "accounted_download", "last_seen_at"},
                     "daily_usage": {"date", "user_id", "user_tag", "destination_host", "upload_bytes", "download_bytes", "connection_count"}}
-        if meta.get("schema_version") != "4" or any(not columns <= {r[1] for r in conn.execute(f"PRAGMA table_info({table})")} for table, columns in required.items()):
+        if meta.get("schema_version") not in ("4", "5") or any(not columns <= {r[1] for r in conn.execute(f"PRAGMA table_info({table})")} for table, columns in required.items()):
             return check("FAIL", "INVALID", 1)
         if conn.execute("PRAGMA quick_check(1)").fetchone() != ("ok",):
             return check("FAIL", "INVALID", 1)

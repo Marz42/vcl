@@ -70,7 +70,7 @@ class PrivilegeTests(unittest.TestCase):
         # The checkout may live below a private runner HOME; never chmod it.
         library = self.root / "installed-lib"
         library.mkdir(mode=0o755)
-        for name in ("vincula-accountd.py", "accountd_runtime.py"):
+        for name in ("vincula-accountd.py", "accountd_runtime.py", "storage_v5.py"):
             staged = library / name
             staged.write_bytes((ROOT / "lib" / name).read_bytes())
             staged.chmod(0o644)

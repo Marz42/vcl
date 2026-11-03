@@ -3588,6 +3588,7 @@ cmd_upgrade_rollback() {
       install.manifest) path=$INSTALL_MANIFEST_FILE; mode=0644; owner=root; group=root ;;
       vincula-common.sh) path=$COMMON_FILE; mode=0644; owner=root; group=root ;;
       vincula-accountd.py) path=$ACCOUNTD_PY; mode=0644; owner=root; group=root ;;
+      storage_v5.py) path="${LIB_DIR}/storage_v5.py"; mode=0644; owner=root; group=root ;;
       accountd_runtime.py) path=$ACCOUNTD_RUNTIME_PY; mode=0644; owner=root; group=root ;;
       observer.py) path=$OBSERVER_PY; mode=0644; owner=root; group=root ;;
       vincula-observer.socket) path=$OBSERVER_SOCKET; mode=0644; owner=root; group=root ;;
@@ -3647,6 +3648,7 @@ cmd_upgrade_rollback() {
     vincula-common.sh \
     vincula-accountd.py \
     accountd_runtime.py \
+    storage_v5.py \
     observer.py \
     vincula-observer.socket \
     vincula-observer@.service \

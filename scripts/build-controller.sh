@@ -28,6 +28,7 @@ FILES=(
   lib/vincula-audit-archive.py
   lib/provision.py
   lib/inspect_snapshot.py
+  lib/storage_v5.py
   lib/verify_snapshot.py
   lib/legacy_seed.py
   lib/sing_box_release.py

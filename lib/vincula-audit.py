@@ -73,7 +73,7 @@ def parse_rfc3339(s: str) -> str:
     if when.tzinfo is None:
         print(f"ERROR: RFC3339 timestamp must include a timezone: {s}", file=sys.stderr)
         raise SystemExit(1)
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return when.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def interval_overlap_sql() -> str:
@@ -170,9 +170,9 @@ def _require_schema_4(conn: sqlite3.Connection) -> None:
     ver = None
     if row is not None:
         ver = row["value"] if isinstance(row, sqlite3.Row) else row[0]
-    if ver != "4":
+    if ver not in ("4", "5"):
         print(
-            f"ERROR: accounting database schema_version={ver!r} is not 4 "
+            f"ERROR: accounting database schema_version={ver!r} is not 4/5 "
             "(Export Protocol v2 requires schema 4)",
             file=sys.stderr,
         )
@@ -225,6 +225,9 @@ def query_audit(
     node = _optional(node_id)
 
     where = [interval_overlap_sql()]
+    if str(_meta_int(conn, "schema_version", 0)) == "4":
+        # Read legacy offset-bearing data without migrating it on a query.
+        where = ["julianday(started_at) < julianday(?) AND julianday(COALESCE(closed_at,last_seen_at)) >= julianday(?)"]
     params: List[Any] = [q_to, q_from]
     if uid:
         where.append("user_id = ?")
@@ -629,6 +632,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             node_id=args.node or None,
             users_path=args.users,
         )
+        coverage_row = conn.execute("SELECT value FROM meta WHERE key='history_coverage'").fetchone()
+        coverage = json.loads(coverage_row[0]) if coverage_row else {"status":"LEGACY_UNVERIFIED"}
     finally:
         conn.close()
 
@@ -642,6 +647,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         node_id=args.node or None,
     )
     fmt = "json" if args.json_flag else args.format
+    query["history_coverage"] = coverage
     if fmt == "json":
         render_json(rows, query)
     else:

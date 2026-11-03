@@ -13,10 +13,15 @@ Canonical event equality uses remote event fields only — never imported_at
 from __future__ import annotations
 
 import os
+import importlib.util
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
+
+_storage_spec = importlib.util.spec_from_file_location("vcl_archive_storage", Path(__file__).with_name("storage_v5.py"))
+_storage = importlib.util.module_from_spec(_storage_spec)
+_storage_spec.loader.exec_module(_storage)
 
 ARCHIVE_NAMESPACE, ARCHIVE_SCHEMA_VERSION = "audit-archive", "1"  # D45 → audit-archive/v1
 ARCHIVE_SCHEMA_LABEL = f"{ARCHIVE_NAMESPACE}/v{ARCHIVE_SCHEMA_VERSION}"
@@ -99,15 +104,12 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
 
 
 def _event_values(row: Mapping[str, Any] | Any) -> tuple[Any, ...]:
-    return tuple(_row_get(row, c) for c in _EVENT_COLS)
+    return tuple(_storage.utc(_row_get(row, c)) if c in ("started_at", "last_seen_at", "closed_at") and _row_get(row, c) is not None else _row_get(row, c) for c in _EVENT_COLS)
 
 
 def _payload_equal(existing: Any, incoming: Any) -> bool:
     """Canonical equality: remote event fields only (excludes imported_at)."""
-    for col in _EVENT_COLS:
-        if _row_get(existing, col) != _row_get(incoming, col):
-            return False
-    return True
+    return _event_values(existing) == _event_values(incoming)
 
 
 def _meta_map(conn: sqlite3.Connection) -> dict[str, str]:

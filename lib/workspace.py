@@ -1267,11 +1267,8 @@ def _open_staging_fleet_db(path: Path) -> Any:
             conn.commit()
         else:
             ver = _host.fleet_db_meta_get(conn, "schema_version")
-            if ver == "1":
-                _host._migrate_fleet_db_1_to_2(conn)
-                ver = "2"
-            if ver == "2":
-                _host._migrate_fleet_db_2_to_3(conn)
+            if ver in ("1", "2", "3", "4"):
+                _host._migrate_fleet_db_to_5(conn)
             elif ver != str(_host.FLEET_DB_SCHEMA_VERSION):
                 conn.close()
                 _host.die(f"unsupported fleet-cache schema: {ver}")
@@ -1318,7 +1315,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
                     _host.die("fleet.db integrity_check failed")
                 if _host._has_meta_table(conn):
                     ver = _host.fleet_db_meta_get(conn, "schema_version")
-                    if ver not in ("1", "2", str(_host.FLEET_DB_SCHEMA_VERSION)):
+                    if ver not in ("1", "2", "3", "4", str(_host.FLEET_DB_SCHEMA_VERSION)):
                         _host.die(f"unsupported fleet-cache schema: {ver}")
                 for table in _COUNT_TABLES:
                     src_counts[table] = _table_count(conn, table)

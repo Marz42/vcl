@@ -35,7 +35,7 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Sequence
@@ -43,7 +43,7 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 VCL_FLEET_VERSION = "0.5.4"
 FLEET_REGISTRY_SCHEMA_VERSION = 2
 FLEET_SCHEMA_VERSIONS_READ = (1, 2)
-FLEET_CACHE_SCHEMA_VERSION = 4
+FLEET_CACHE_SCHEMA_VERSION = 5
 WORKSPACE_SCHEMA_VERSION = 1
 AUDIT_ARCHIVE_SCHEMA_VERSION = 1
 TELEMETRY_SCHEMA_VERSION = 1
@@ -339,6 +339,7 @@ class _FleetHostProxy:
 
 _FLEET_HOST = _FleetHostProxy(globals())
 
+_STORAGE = _load_controller_sibling("vcl_storage", "storage_v5.py")
 _WS = _load_controller_sibling("vcl_workspace", "workspace.py")
 _WS.bind(_FLEET_HOST)
 
@@ -867,7 +868,7 @@ def open_cache_check(
     conn: sqlite3.Connection, *, expect_fleet_id: Optional[str] = None
 ) -> None:
     ver = fleet_db_meta_get(conn, "schema_version")
-    if ver != str(FLEET_CACHE_SCHEMA_VERSION):
+    if ver not in ("4", str(FLEET_CACHE_SCHEMA_VERSION)):
         die(f"unsupported fleet-cache schema: {ver}")
     cached = fleet_db_meta_get(conn, "fleet_id") or ""
     expected = (
@@ -885,6 +886,11 @@ def open_fleet_db() -> sqlite3.Connection:
     path = fleet_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private(path.parent, 0o700)
+    if path.is_file() and path.stat().st_size:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as probe:
+            version = fleet_db_meta_get(probe, "schema_version") if _has_meta_table(probe) else None
+        if version in ("1", "2", "3", "4"):
+            _STORAGE.staged_migrate(path, _migrate_fleet_db_to_5)
     try:
         conn = sqlite3.connect(str(path), timeout=30)
     except sqlite3.Error as exc:
@@ -915,7 +921,7 @@ def open_fleet_db() -> sqlite3.Connection:
                 ver = "3"
             if ver == "3":
                 _migrate_fleet_db_3_to_4(conn)
-            elif ver != "4":
+            elif ver != "5":
                 conn.close()
                 die(f"unsupported fleet-cache schema: {ver}")
         _chmod_private(path, 0o600)
@@ -929,6 +935,26 @@ def open_fleet_db() -> sqlite3.Connection:
         except Exception:
             pass
         die(f"cannot initialize fleet.db: {exc}")
+
+
+def _migrate_fleet_db_to_5(conn: sqlite3.Connection) -> None:
+    version = fleet_db_meta_get(conn, "schema_version")
+    if version == "1":
+        _migrate_fleet_db_1_to_2(conn)
+        version = "2"
+    if version == "2":
+        _migrate_fleet_db_2_to_3(conn)
+        version = "3"
+    if version == "3":
+        _migrate_fleet_db_3_to_4(conn)
+    conn.execute("CREATE TABLE IF NOT EXISTS legacy_daily_usage AS SELECT * FROM daily_usage")
+    _STORAGE.normalize_table(conn, "audit_events", ("started_at", "last_seen_at", "closed_at"))
+    nodes = [r[0] for r in conn.execute("SELECT DISTINCT node_id FROM audit_events")]
+    for node_id in nodes:
+        rebuild_daily_usage_for_node(conn, node_id)
+    fleet_db_meta_set(conn, "history_coverage", json.dumps({"status":"RAW_RECONSTRUCTED", "legacy_unverified":True, "missing_history_recovered":False, "day_basis":"UTC_CONNECTION_START"}))
+    fleet_db_meta_set(conn, "schema_version", "5")
+    conn.commit()
 
 
 def _workspace_fleet_id_or_empty() -> str:
@@ -1380,9 +1406,9 @@ def _audit_insert_params(
         generation,
         user_id,
         _optional_text(row.get("user_tag")),
-        started_at,
-        last_seen_at,
-        _optional_text(row.get("closed_at")),
+        _STORAGE.utc(started_at),
+        _STORAGE.utc(last_seen_at),
+        _STORAGE.utc(row["closed_at"]) if row.get("closed_at") else None,
         _optional_text(row.get("destination_host")),
         _optional_text(row.get("destination_ip")),
         dest_port,
