@@ -12,7 +12,7 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
 **Development candidate (0.5.5):** Controller and embedded Node payload
-are both `0.5.5` (minimum Node remains `0.3.1`). Includes the SSH credential manager
+are both `0.5.5` (minimum supported Node `0.5.5`; paired runtime `0.5.5` only). Includes the SSH credential manager
 v2: deterministic Agent-fingerprint and Identity-File modes, machine-local public-key
 selectors, `CREDENTIAL_MIGRATION_REQUIRED`, and `access migrate`. Connections use
 `-F <null config>`, an explicit `-i`, and `IdentitiesOnly=yes`; OpenSSH no longer
@@ -34,7 +34,12 @@ identity check discards the earlier snapshot and reports AUTH_FAILED, TIMEOUT
 or ERROR; checks from a replaced instance are not shown as current evidence.
 Legacy `verify --json` is unchanged for upgrade/restore consumers.
 
-Typed upgrade supports 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2/0.5.3 → 0.5.5.
+One-time ingress allows 0.3.1/0.3.2/0.5.0/0.5.1/0.5.2/0.5.3 → 0.5.5; this is not a maintained old-Node runtime matrix. Prereleases are not normalized.
+Capability discovery preserves the reported version but returns UNSUPPORTED /
+NODE_VERSION_UNSUPPORTED outside the paired 0.5.5 runtime. Telemetry, monitoring
+and enhanced verification do not treat old Node capabilities as supported.
+Explicit identity/upgrade/recovery and historical data tools remain available
+for operator-directed migration; the support policy is not a universal SSH ACL.
 Seventeen public schemas ship under `schemas/` with `controller.lock`.
 Accounting and fleet-cache schema 5 use verified staged migrations. Independent
 daily history survives raw pruning. `cache status --json` reports the local
@@ -43,7 +48,7 @@ without deleting history. Node secrets use descriptors/private inputs, and Agent
 selector publication isolates refs and failed rebindings.
 
 The candidate is unreleased; Live, the new RC 24h soak and H05 remain pending.
-The approved scale is seven real mixed nodes plus ten simulated nodes for two
+The approved scale is seven real 0.5.5 nodes with OS/role diversity plus ten simulated nodes for two
 hours. Current results and restrictions are in `docs/evidence/0.5.5/SUMMARY.md`.
 Development stops before 0.6.x until H05 is signed PASS.
 
@@ -82,7 +87,7 @@ bin\vcl-fleet.cmd ui
 **Paths:** portable workspace = `VCL_FLEET_HOME` / `--workspace` /
 `%APPDATA%\vincula\` (`workspace.json`, `fleet.json`, `trust/`, `history/`).
 Machine-local bindings under `%APPDATA%\vincula\controllers\<fleet_id>\`.
-Cache `fleet.db` (fleet-cache/v4) and UI runtime under
+Cache `fleet.db` (schema 5 after verified migration) and UI runtime under
 `%LOCALAPPDATA%\vincula\<fleet_id>\` (override `VCL_FLEET_LOCAL_STATE`).
 
 ## Linux / macOS

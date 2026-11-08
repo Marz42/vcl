@@ -11,7 +11,7 @@
 | `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.4** |
 | `VINCULA_VERSION` | `vincula.sh` | **0.5.3** |
 | 新 provision payload pin | `lib/provision.py`（构建核对Node stamp） | Node **0.5.3** |
-| 最低兼容 Node | Spec / fleet | **0.3.1**（已有 0.3.1 不强制升级） |
+| 最低兼容 Node | Spec / fleet | **0.5.5**（旧 Node 仅作显式迁入来源） |
 
 0.5.5 为当前 Node/Controller 候选，使用 accounting/fleet-cache schema 5，加入独立日汇总、内容命名的 Agent 选择器、秘密 FD 输入、只读容量状态与超限停收。SSH 凭据管理 v2、Findings、Inspect/Drift/Verify 继续保留。迁移与兼容见 [0.5.5 SPEC](specs/V0.5.5_Closeout.md)，实际验收状态见 [0.5.5 evidence](evidence/0.5.5/SUMMARY.md)。
 
@@ -303,7 +303,7 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
 | 0.5.1（开发候选） | 0.5.1 | 0.3.1 | monitor/health；0.5.0 Node可观测但无新hardening；独立observe用户名需0.5.1 Controller；[实际验证矩阵](evidence/0.5.1/COMPATIBILITY.md) |
-| 0.5.5（当前候选） | 0.5.5 | 0.3.1 | schema 5、独立 daily、凭据隔离、容量停收；typed upgrade 支持原来源及 0.5.3；[当前验证](evidence/0.5.5/SUMMARY.md) |
+| 0.5.5（当前候选） | 0.5.5 | 0.5.5 | schema 5、独立 daily、凭据隔离、容量停收；typed upgrade 支持原来源及 0.5.3；[当前验证](evidence/0.5.5/SUMMARY.md) |
 | 0.5.2（历史候选） | 0.5.2 | 0.3.1 | Findings/Timeline；缺audit/user capability为UNKNOWN/UNSUPPORTED；typed upgrade 0.3.1/0.3.2/0.5.0/0.5.1→0.5.2；[当前验证](evidence/0.5.2/M4.md) |
 | 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |

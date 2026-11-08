@@ -78,7 +78,7 @@ flowchart LR
 | --- | --- |
 | Controller（开发候选） | **0.5.5** |
 | 新 provision Node（开发候选） | **0.5.5** |
-| 最低兼容 Node | **0.3.1** |
+| 最低支持 Node | **0.5.5**（当前配套版本） |
 | OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
 | Arch | amd64、arm64 |
 | Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |

@@ -15382,6 +15382,18 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "UNSUPPORTED", doc
 PY
 
+export VCL_FAKE_NODE_VERSION=0.5.0
+obs_old_cap=$(fleet capabilities lax --json)
+obs_old_tel=$(fleet telemetry lax --json)
+assert_success "support floor refuses old runtime despite valid capabilities" python3 - "$obs_old_cap" "$obs_old_tel" <<'PY'
+import json, sys
+for raw in sys.argv[1:]:
+    doc = json.loads(raw)
+    assert doc['state'] == 'UNSUPPORTED', doc
+    assert doc['reason'] == 'NODE_VERSION_UNSUPPORTED', doc
+    assert doc['support']['minimum_node_version'] == '0.5.5', doc
+    assert doc['support']['node_version'] == '0.5.0', doc
+PY
 export VCL_FAKE_NODE_VERSION=0.5.5
 obs_cap_ok=$(fleet capabilities lax --json)
 assert_success "obs050 capabilities OK when fake node 0.5.5" python3 - "$obs_cap_ok" <<'PY'

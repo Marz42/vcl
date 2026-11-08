@@ -8,6 +8,8 @@ from typing import Any, Literal, Optional
 
 _host: Any = None
 
+# One-time ingress paths only. This is NOT the supported runtime matrix.
+# In particular 0.3.1-rc2 is not 0.3.1; never rewrite deployed version strings.
 UPGRADE_ALLOWLIST: dict[str, str] = {
     "0.3.1": "0.5.5",
     "0.3.2": "0.5.5",

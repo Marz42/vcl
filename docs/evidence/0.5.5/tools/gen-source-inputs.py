@@ -64,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--artifact", action="append", default=[])
     ap.add_argument("--log", action="append", default=[])
     ap.add_argument("--payload-manifest", default=None)
+    ap.add_argument("--include-input", action="append", default=[],
+                    help="explicit new input not yet tracked by git")
+    ap.add_argument("--status", default="FROZEN CANDIDATE / UNRELEASED / PENDING LIVE / PENDING HUMAN")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -95,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
         if p.is_file():
             logs.append({"path": str(p).replace("\\", "/"), "sha256": sha256_file(p)})
 
+    inputs = set(tracked_inputs(root))
+    for item in args.include_input:
+        candidate = (root / item).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            ap.error("include-input must be an existing file within root")
+        inputs.add(candidate.relative_to(root).as_posix())
     doc = {
         "version": version,
         "controller_version": control,
@@ -105,11 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         "base_commit": args.base_commit,
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "source_date_epoch": args.source_date_epoch,
-        "status": "FROZEN CANDIDATE / UNRELEASED / PENDING LIVE / PENDING HUMAN",
+        "status": args.status,
         "stop_before": "0.6.x implementation",
         "source_files": [
             {"path": p, "sha256_lf": sha256_lf(root / p)}
-            for p in tracked_inputs(root)
+            for p in sorted(inputs)
         ],
         "artifacts": artifacts,
         "logs": logs,

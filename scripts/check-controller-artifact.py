@@ -88,6 +88,15 @@ def smoke(root):
     fleet.load_observation_telemetry_module()
     fleet.load_node_upgrade_module()
     fleet.load_ui_server_module()
+    support = fleet.load_observation_capabilities_module()
+    require(support.MINIMUM_NODE_VERSION == version, "packaged support floor mismatch")
+    require(support.SUPPORTED_NODE_VERSION == version, "packaged paired version mismatch")
+    for node_version, expected in ((version, "OK"), ("0.5.0", "UNSUPPORTED"),
+                                   ("0.3.1-rc2", "UNSUPPORTED"), ("99.0.0", "UNSUPPORTED")):
+        payload = {"schema": "capabilities/v1", "node_version": node_version,
+                   "capabilities": ["telemetry/v1"]}
+        result = support.fetch_capabilities({}, ssh_json=lambda **kw: ("OK", payload, ""))
+        require(result["state"] == expected, "packaged Node support gate mismatch")
 
     def cli(*args):
         result = subprocess.run([sys.executable, "-I", "-B", str(root / "bin/vcl-fleet"), *args],

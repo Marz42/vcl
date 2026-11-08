@@ -1,5 +1,13 @@
 # 0.5.5 closeout — offline candidate frozen
 
+**2026-11-09 current work:** support-boundary revision is implemented and has
+passed Linux local tests, build and deterministic rebuild, with an
+execution-identity deviation recorded in [revision status](SUPPORT_BOUNDARY.md).
+Final freeze remains PENDING new remote CI, a new synthetic 2h matrix, and
+Live/H05. The frozen inputs, artifacts and PASS results below are historical and
+do not cover that revision. User-reported canary preparation is also recorded
+there.
+
 Baseline `08af383`; approved contract: [SPEC](../../specs/V0.5.5_Closeout.md).
 Runtime source `7bef780`; fixed validation inputs `653f7dd`; Node/Controller 0.5.5.
 The [candidate](CANDIDATE_FREEZE.md) is frozen locally and has passed required
@@ -16,6 +24,7 @@ is unchanged. Historical evidence remains tied to its original inputs.
 | Full local/platform/artifact checks | PASS OFFLINE: Windows/root Linux 196 Python tests; root Bash 1,966, ordinary-user Bash 1,968; 18 contracts/five cache-only surfaces; [verification](VERIFICATION.md) records skips and retained failures |
 | Required remote code CI | PASS: [#129](https://github.com/Marz42/vcl/actions/runs/41595858638), all seven jobs; [snapshot](REMOTE_CI_CODE.json) |
 | RC fixed inputs and digests | FROZEN: 201 inputs; Node `38336240…`, Controller `14312b21…`, epoch 1793689859; reproducible rebuild PASS |
+| Support-boundary revision (2026-11-09) | LINUX LOCAL PASS (ENV DEVIATION): 203/203 Python user+root, 1,969 Bash user / 1,967 Bash root; Node `38336240…`, Controller `e2daaaf…`; CI/synthetic/Live PENDING; [details](SUPPORT_BOUNDARY.md) |
 | Seven-node Live + ten-node simulated two-hour matrix | DEFERRED USER / PENDING LIVE; synthetic dimension PASS OFFLINE: ten nodes, 7,200.016s, 2,400 samples, zero errors |
 | New RC continuous 24h integrated soak | DEFERRED USER / PENDING LIVE |
 | H05-01..08 human judgment/signature | PENDING HUMAN / NOT SIGNED |

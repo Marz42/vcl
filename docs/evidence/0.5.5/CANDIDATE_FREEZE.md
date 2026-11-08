@@ -1,5 +1,9 @@
 # 0.5.5 candidate identity
 
+**Historical original candidate.** The 2026-11-08 minimum-Node support revision
+is a different input set and is [not yet frozen](SUPPORT_BOUNDARY.md).
+Keep the digests below for reproduction; do not install them as that revision.
+
 **FROZEN CANDIDATE / CI PASS / UNRELEASED / DEFERRED LIVE / PENDING HUMAN.**
 This records one candidate; it is not a release, H05 signature or main merge.
 The user deferred field work on 2026-11-03 because the Controller/Workspace is
