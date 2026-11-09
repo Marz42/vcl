@@ -1,13 +1,13 @@
 # 0.5.5 support-boundary revision — 2026-11-08
 
-**IMPLEMENTED / LINUX LOCAL PASS (ENV DEVIATION) / PENDING CI / PENDING SYNTHETIC 2H / PENDING LIVE / PENDING HUMAN.**
+**OFFLINE GATES PASS / PENDING LIVE / PENDING HUMAN.**
 
 This revision is based on `56a1626` plus the explicitly hashed working-tree
-inputs in `SUPPORT_BOUNDARY_SOURCE_INPUTS.json`. It is not the already frozen
-`653f7dd` candidate. The revised Controller now has a Linux local artifact SHA
-and deterministic rebuild result, but no CI PASS, no new 2h synthetic matrix and
-no Live/H05 result yet. Do not use the old Controller ZIP to claim this behavior
-or start the final 24h soak.
+inputs in `SUPPORT_BOUNDARY_SOURCE_INPUTS.json`, frozen at source commit
+`465106440688ab73823cbe4871139c834488d4ae`. It is not the already frozen
+`653f7dd` candidate. Linux local tests/build, CI run `42531836471` (seven required
+jobs) and the ten-node 2h synthetic matrix have passed. Live/H05 remain pending;
+do not start the final 24h soak or claim live behavior from this offline result.
 
 ## Contract and implementation
 
@@ -37,19 +37,19 @@ or start the final 24h soak.
 | Targeted version/negotiation/ingress tests | 7 tests PASS on Windows Python 3.11 |
 | Full Windows suite before the final additional Inspect/Verify test | 202 discovered: 188 passed, 13 platform skips, 1 environment error |
 | Full-suite environment error | `test_http_inspect_get_remains_local_and_accept_requires_fresh_telemetry_identity`: loopback HTTP request rejected with WinError 10013; retained in `tmp/support-boundary-windows.log` |
-| Windows-side WSL execution (preparer) | BLOCKED: Wsl/E_ACCESSDENIED |
-| Windows-side Git Bash execution (preparer) | BLOCKED: NtCreateDirectoryObject permission error 0xC0000022 |
+| Windows-side WSL execution (preparer, historical) | NOT USED: Wsl/E_ACCESSDENIED; accepted Linux WSL2 execution recorded below |
+| Windows-side Git Bash execution (preparer, historical) | NOT USED: NtCreateDirectoryObject permission error 0xC0000022; Linux Bash coverage recorded below |
 | Linux Python user | PASS: 203 tests, 10 skipped, 0 failures (`python-user.log`) |
 | Linux Python root | PASS: 203 tests, 0 skipped, 0 failures (`python-root.log`) |
 | Linux Bash user | PASS: 1,969 tests, 0 failures (`bash-user.log`) |
 | Linux Bash root | PASS: 1,967 tests, 0 failures (`bash-root.log`) |
-| Linux/root execution identity | ENV DEVIATION: `marz` `sudo -n` needs a password; root suites ran via WSL root (`wsl -u root`), not `sudo` from `marz`. Strict README reading: BLOCKED. |
+| Linux/root execution identity | ACCEPTED DEVIATION: `marz` `sudo -n` needs a password; root suites ran via WSL root (`wsl -u root`). Root coverage passed; the human owner accepted this execution mode; no rerun required. |
 | Standard packages | PASS: Node `38336240…`, Controller `e2daaaf…` (`first-build.sha256`) |
 | Isolated artifact check | PASS OFFLINE: schemas 18, cache-only surfaces 5, `node_cli=PASS` |
 | Internal locks and sidecars | PASS: both sidecars, `release.lock`, `controller.lock` |
 | Deterministic rebuild | PASS: both archives byte-identical to first build |
-| Remote required CI | PENDING: not run for this commit yet; old CI #129 does not cover it |
-| Synthetic ten-node 2h matrix | PENDING: not run with revised Observation inputs |
+| Remote required CI | PASS: run [42531836471](https://github.com/Marz42/vcl/actions/runs/42531836471), seven required jobs, head `4651064`; old CI #129 does not cover this revision |
+| Synthetic ten-node 2h matrix | PASS OFFLINE: [report](SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.json), 2026-11-09 07:28:44–09:28:44 CST, 7,200.0056s, 10 nodes, 2,401 samples, 0 observation errors |
 | Live/H05 | PENDING: no Node contacted by this code revision |
 
 ## Linux local validation — 2026-11-08/09
@@ -64,12 +64,10 @@ skipped), Bash user 1,969 passed, Bash root 1,967 passed; zero failures/errors i
 all four. Root Python emitted one `ResourceWarning` (unclosed sqlite connection)
 but the suite was OK.
 
-Execution identity deviation: `sudo -n` as `marz` requires a password, so the
-README's noninteractive-sudo prerequisite is not literally met. The root suites
-were run in a WSL root shell (`wsl -u root`), where `sudo -n env ...` succeeded.
-This preserves actual root coverage but is not `sudo` invoked by `marz`; a strict
-reading of the README would record this section as BLOCKED until rerun on an
-executor with passwordless sudo.
+Execution identity deviation (accepted): `sudo -n` as `marz` requires a password,
+so the root suites were run in a WSL root shell (`wsl -u root`), where
+`sudo -n env ...` succeeded. Root coverage passed. The human owner accepted this
+execution mode; no rerun or passwordless-sudo configuration is required.
 
 First Node build recheck: the privileged Bash suite left `dist/` owned by root,
 so the first ordinary-user `build-release.sh` failed with `Permission denied`.
@@ -93,9 +91,10 @@ checker returned `{"state": "PASS OFFLINE", "version": "0.5.5", "schemas": 18,
 "cache_only_surfaces": 5, "node_cli": "PASS"}`. A second build with the same
 epoch produced byte-identical archives.
 
-Still pending: remote required CI for this commit, the ten-node synthetic 2h
-matrix with the revised Observation inputs, the new continuous 24h RC soak, and
-Live/H05. No Node was contacted and the formal Workspace was not used.
+Remote required CI (`42531836471`) and the ten-node 2h synthetic matrix have
+since passed. Still pending: the new continuous 24h RC soak, Live/H05, and the
+fresh050/Controller backup validation and upgrade window. No Node was contacted
+and the formal Workspace was not used for this offline validation.
 
 The additional test checks old-node Inspect/Verify perform zero remote calls.
 The distributed-artifact checker now also verifies the support floor and paired
@@ -121,6 +120,10 @@ These added artifact/Bash assertions still need their normal Linux execution.
    invalidate automatic reuse of the previous hash match. Run a new matrix.
 6. Only after those checks pass mark this revision FROZEN / PENDING LIVE. Start
    live acceptance and the new continuous 24h run on those exact bytes.
+
+The offline gates above are complete; the new [candidate freeze record](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md)
+binds the source commit, CI, artifacts and synthetic report. Live/H05 and the
+continuous 24h soak remain pending.
 
 Historical files CANDIDATE_FREEZE.md, SOURCE_INPUTS.json and REMOTE_CI_CODE.json
 continue to identify the original candidate. Their values are not overwritten.

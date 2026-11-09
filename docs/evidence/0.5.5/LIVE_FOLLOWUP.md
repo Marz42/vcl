@@ -1,9 +1,22 @@
 # 0.5.5 live acceptance — resumed preparation, 2026-11-08
 
-Status: **PREPARING / PENDING LIVE / PENDING HUMAN**. The user has resumed
-acceptance preparation. The November 3 deferral is historical; Controller and
-Workspace availability must now be checked. No current Node was contacted,
-upgraded, restarted or fault-injected by this review. H05 remains unsigned.
+Status: **OFFLINE GATES PASS / PREPARING LIVE / PENDING HUMAN**. The
+support-boundary candidate is frozen at source commit
+`465106440688ab73823cbe4871139c834488d4ae`; the user has resumed acceptance
+preparation. The November 3 deferral is historical; Controller and Workspace
+availability must now be checked. No current Node was contacted, upgraded,
+restarted or fault-injected by this review. H05 remains unsigned.
+
+## Support-boundary candidate frozen (2026-11-09)
+
+Source commit `465106440688ab73823cbe4871139c834488d4ae`; offline gates pass:
+Linux local tests/build, CI run [42531836471](https://github.com/Marz42/vcl/actions/runs/42531836471)
+(seven required jobs), and the ten-node 2h synthetic matrix. See
+[candidate freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md).
+
+Still pending: fresh050/Controller backup validation, upgrade window, real
+proxy/Inspect/Drift, continuous 24h RC soak, and H05. No Node was contacted by
+the offline validation. The 2026-11-08 operator preparation remains historical.
 
 ## Current scope (user decision, 2026-11-08)
 
@@ -64,6 +77,6 @@ URIs, raw credential files or secret-bearing backups.
 | T09 | Keep seven 0.5.5 Nodes available for fixed-RC continuous 24h soak; run/revalidate separate ten-node 2h synthetic matrix | Start/end times, immutable inputs, proxy/Inspect/cache evidence and raw log hashes; no splicing runs |
 | T10 | Review H05-01..08 evidence, limits and remaining defects | Explicit human verdict and time; no automatic PASS, merge, tag or release |
 
-The code owner handles local support-boundary closure, affected regression,
-packaging/freeze and evidence review. T01/T02 may proceed while that work is
-pending; production cutover and the final soak depend on the new frozen RC.
+The support-boundary candidate is now frozen. T01/T02 can proceed against the
+frozen RC; production cutover and the final soak still depend on the remaining
+live gates.
