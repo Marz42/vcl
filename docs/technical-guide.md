@@ -1,5 +1,6 @@
-# Vincula 技术手册（Controller 0.4.5 · Node 0.3.2）
+# Vincula 技术手册（Controller 0.5.4 / Node 0.5.3 开发候选）
 
+当前收口候选：Node/Controller **0.5.5**，accounting/fleet-cache **schema 5**；迁移、容量策略与验收状态见 [0.5.5 runbook](operations/0.5.5-closeout-runbook.md)。 历史段落仍绑定原版本，不代表新候选已验收。
 面向维护者与希望理解实现合同的读者。操作步骤见 [`user-guide.md`](user-guide.md)。
 设计规格见 [`specs/`](specs/README.md)；验收证据见 [`evidence/`](evidence/README.md)。
 
@@ -7,10 +8,12 @@
 
 | 常量 | 位置 | 值 |
 | --- | --- | --- |
-| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.4.5** |
-| `VINCULA_VERSION` | `vincula.sh` | **0.3.2** |
-| 新 provision payload pin | Controller | Node **0.3.2** |
-| 最低兼容 Node | Spec / fleet | **0.3.1**（已有 0.3.1 不强制升级） |
+| `VCL_FLEET_VERSION` | `lib/vincula-fleet.py` | **0.5.4** |
+| `VINCULA_VERSION` | `vincula.sh` | **0.5.3** |
+| 新 provision payload pin | `lib/provision.py`（构建核对Node stamp） | Node **0.5.3** |
+| 最低兼容 Node | Spec / fleet | **0.5.5**（旧 Node 仅作显式迁入来源） |
+
+0.5.5 为当前 Node/Controller 候选，使用 accounting/fleet-cache schema 5，加入独立日汇总、内容命名的 Agent 选择器、秘密 FD 输入、只读容量状态与超限停收。SSH 凭据管理 v2、Findings、Inspect/Drift/Verify 继续保留。迁移与兼容见 [0.5.5 SPEC](specs/V0.5.5_Closeout.md)，实际验收状态见 [0.5.5 evidence](evidence/0.5.5/SUMMARY.md)。
 
 ---
 
@@ -113,7 +116,7 @@ Schema 命名空间（D45）：
 | --- | --- |
 | accounting-db/v4 | 节点记账 |
 | fleet-registry/v2 | `fleet.json` |
-| fleet-cache/v4 | `fleet.db` |
+| fleet-cache/v5 | `fleet.db`；旧缓存只读兼容，写入前执行受控迁移 |
 | workspace/v1 | `workspace.json` |
 | audit-archive/v1 | 审计归档包 |
 
@@ -124,10 +127,17 @@ Schema 命名空间（D45）：
 | 层级 | 路径（缺省） | 内容 |
 | --- | --- | --- |
 | Portable root | `VCL_FLEET_HOME` / `--workspace`；Win `%APPDATA%\vincula\`；Unix `~/.config/vincula/` | **仅** `workspace.json` · `fleet.json` · `trust/` · `history/` |
-| CONFIG | `…/controllers/<fleet_id>/` | `controller.json` + `credential-bindings.json`（`access bind`） |
-| STATE | Unix `~/.local/state/vincula/<fleet_id>/`；Win `%LOCALAPPDATA%\vincula\<fleet_id>\`；可 `VCL_FLEET_LOCAL_STATE` | fleet-cache/v4 `fleet.db`、`archives/`、`ui-runtime/` |
+| CONFIG | `…/controllers/<fleet_id>/` | `controller.json` + `credential-bindings.json`（schema 2）+ `keys/<content-sha256>.pub`；`access bind` / `access migrate` |
+| STATE | Unix `~/.local/state/vincula/<fleet_id>/`；Win `%LOCALAPPDATA%\vincula\<fleet_id>\`；可 `VCL_FLEET_LOCAL_STATE` | fleet-cache/v5 `fleet.db`、`archives/`、`ui-runtime/` |
 
-SSH：workspace 激活时用 `trust/known_hosts`（`StrictHostKeyChecking=yes`）。身份文件经 `access bind` 绑定到机器本地，不把私钥写入可拷贝 workspace。
+SSH：workspace 激活时用 `trust/known_hosts`（`StrictHostKeyChecking=yes`）。凭据绑定在机器本地，不把私钥或 Agent Socket 写入可拷贝 workspace。
+
+Controller 0.5.4 的 `credential-bindings.json` schema 2 有两种模式：
+
+- `agent`：保存 `fingerprint` 与相对路径 `public_key_file`（`keys/<content-sha256>.pub`）；连接时用 Agent 中匹配的私钥。
+- `identity_file`：保存本机私钥绝对路径；连接时用 `-i`。
+
+所有 SSH/SCP 统一 `-F <os.devnull>`、显式 `-i`、`IdentitiesOnly=yes`、`PreferredAuthentications=publickey`；不读取用户 `~/.ssh/config`，也不遍历默认/额外身份。v1 的 `identity_file` 按 v2 语义读取；v1 `openssh-default`/无身份节点为 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回明确错误。
 
 ---
 
@@ -170,7 +180,7 @@ stateDiagram-v2
 
 | 操作 | 远端 | 用途 |
 | --- | --- | --- |
-| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；当前开发分支 payload pin **0.5.0**；可选 legacy seed |
+| `node provision` | 安装 + verify + 注册 + 默认 `sync --full` | 空 VPS；当前开发分支 payload pin **0.5.5**；可选 legacy seed |
 | `node adopt` | `vcl identity --json` + 注册 | 已装节点 |
 | `node register` / `add --offline` | **无 SSH** | 仅写 registry；后续须 adopt/set |
 | `node set` | 无（本地改 `ssh_host`） | **Endpoint rebind**；凭据不变 |
@@ -292,6 +302,9 @@ Controller **不**监听管理口。允许 `scp` 备份归档与 reissue CSV；*
 
 | Controller | 新 provision Node | 最低兼容 Node | 备注 |
 | --- | --- | --- | --- |
+| 0.5.1（开发候选） | 0.5.1 | 0.3.1 | monitor/health；0.5.0 Node可观测但无新hardening；独立observe用户名需0.5.1 Controller；[实际验证矩阵](evidence/0.5.1/COMPATIBILITY.md) |
+| 0.5.5（当前候选） | 0.5.5 | 0.5.5 | schema 5、独立 daily、凭据隔离、容量停收；typed upgrade 支持原来源及 0.5.3；[当前验证](evidence/0.5.5/SUMMARY.md) |
+| 0.5.2（历史候选） | 0.5.2 | 0.3.1 | Findings/Timeline；缺audit/user capability为UNKNOWN/UNSUPPORTED；typed upgrade 0.3.1/0.3.2/0.5.0/0.5.1→0.5.2；[当前验证](evidence/0.5.2/M4.md) |
 | 0.5.0 | 0.5.0 | 0.3.1 | capability/telemetry + **`node upgrade`** 0.3.1+→0.5.0；见 [`specs/V0.5.0_Spec.md`](specs/V0.5.0_Spec.md) · evidence [`evidence/0.5.0/SUMMARY.md`](evidence/0.5.0/SUMMARY.md) |
 | 0.4.5 | 0.3.2 | 0.3.1 | Legacy seed 需 0.3.2 |
 | 0.4.4 | 0.3.1 | 0.3.1 | UI v2 |

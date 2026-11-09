@@ -1,0 +1,1432 @@
+{
+  "$defs": {
+    "audit": {
+      "additionalProperties": false,
+      "properties": {
+        "above_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "accountd_active": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_mad": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_median": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_span_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "db_schema": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "db_state": {
+          "enum": [
+            "OK",
+            "MISSING",
+            "CORRUPT",
+            "UNREADABLE",
+            "SCHEMA_MISMATCH",
+            "UNKNOWN"
+          ]
+        },
+        "diagnostic_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "diagnostic_fresh": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "export_seq_delta": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "heartbeat_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "last_event_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "min_retained_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "poll_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "progression": {
+          "enum": [
+            "UNKNOWN",
+            "COLD",
+            "ADVANCING",
+            "STATIONARY",
+            "REGRESSED",
+            "REPLAYED"
+          ]
+        },
+        "pruned_max_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "received_cursor": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "remote_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "restart_delta": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "sample_count": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "sync_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "telemetry_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "threshold": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "transport": {
+          "enum": [
+            "OK",
+            "ERROR",
+            "AUTH_FAILED",
+            "UNSUPPORTED",
+            "TIMEOUT"
+          ]
+        },
+        "usage_ratio": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "value": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "window_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "baseline": {
+      "additionalProperties": false,
+      "properties": {
+        "above_seconds": {
+          "$ref": "#/$defs/number"
+        },
+        "baseline_mad": {
+          "$ref": "#/$defs/number"
+        },
+        "baseline_median": {
+          "$ref": "#/$defs/number"
+        },
+        "baseline_span_seconds": {
+          "$ref": "#/$defs/number"
+        },
+        "reason": {
+          "enum": [
+            "COLD",
+            "READY",
+            "MISSING",
+            "STALE",
+            "RESET",
+            "NO_NEW_SAMPLE",
+            "DB_UNAVAILABLE",
+            "UNSUPPORTED",
+            "RETENTION_CHANGED",
+            "COUNTER_RESET"
+          ]
+        },
+        "restart_delta": {
+          "$ref": "#/$defs/number"
+        },
+        "sample_count": {
+          "$ref": "#/$defs/number"
+        },
+        "threshold": {
+          "$ref": "#/$defs/number"
+        },
+        "value": {
+          "$ref": "#/$defs/number"
+        },
+        "window_seconds": {
+          "$ref": "#/$defs/number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "check": {
+      "enum": [
+        "ANOMALOUS",
+        "NORMAL",
+        "UNKNOWN"
+      ]
+    },
+    "context": {
+      "additionalProperties": false,
+      "properties": {
+        "accountd_active": {
+          "type": "boolean"
+        },
+        "accounting": {
+          "enum": [
+            "HEALTHY",
+            "SUSPECT",
+            "DEGRADED",
+            "UNREACHABLE",
+            "RECOVERING",
+            "UNKNOWN"
+          ]
+        },
+        "node": {
+          "enum": [
+            "HEALTHY",
+            "SUSPECT",
+            "DEGRADED",
+            "UNREACHABLE",
+            "RECOVERING",
+            "UNKNOWN"
+          ]
+        },
+        "observation": {
+          "enum": [
+            "HEALTHY",
+            "SUSPECT",
+            "DEGRADED",
+            "UNREACHABLE",
+            "RECOVERING",
+            "UNKNOWN"
+          ]
+        },
+        "probe_success": {
+          "type": "boolean"
+        },
+        "proxy": {
+          "enum": [
+            "HEALTHY",
+            "SUSPECT",
+            "DEGRADED",
+            "UNREACHABLE",
+            "RECOVERING",
+            "UNKNOWN"
+          ]
+        },
+        "sing_box_active": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "capacity_skipped": {
+          "$ref": "#/$defs/number"
+        },
+        "fresh": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "observed_users": {
+          "$ref": "#/$defs/number"
+        },
+        "sampled_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "state": {
+          "enum": [
+            "OK",
+            "PARTIAL",
+            "UNKNOWN",
+            "MISSING",
+            "CORRUPT",
+            "UNREADABLE",
+            "SCHEMA_MISMATCH",
+            "ERROR",
+            "AUTH_FAILED",
+            "UNSUPPORTED",
+            "TIMEOUT",
+            "CAPACITY"
+          ]
+        },
+        "stored_users": {
+          "$ref": "#/$defs/number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "evaluation": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "subject": {
+                "properties": {
+                  "kind": {
+                    "const": "node"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "baselines": {
+                "additionalProperties": false,
+                "properties": {
+                  "NETWORK_RATE_ANOMALY": {
+                    "$ref": "#/$defs/baseline"
+                  },
+                  "SERVICE_RESTART_LOOP": {
+                    "$ref": "#/$defs/baseline"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "checks": {
+                "additionalProperties": false,
+                "properties": {
+                  "ACCOUNTING_DB_CORRUPT": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "AUDIT_STALLED": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "DISK_PRESSURE": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "EXPORT_GAP": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "EXPORT_SEQUENCE_REGRESSION": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "MEMORY_PRESSURE": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "NETWORK_RATE_ANOMALY": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "SCHEMA_MISMATCH": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "SERVICE_RESTART_LOOP": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "SYNC_LAG": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "TELEMETRY_STALE": {
+                    "$ref": "#/$defs/check"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "subject": {
+                "properties": {
+                  "kind": {
+                    "const": "user"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "baselines": {
+                "additionalProperties": false,
+                "properties": {
+                  "SUSTAINED_TRAFFIC_ANOMALY": {
+                    "$ref": "#/$defs/baseline"
+                  },
+                  "USER_CONNECTION_SPIKE": {
+                    "$ref": "#/$defs/baseline"
+                  },
+                  "USER_TRAFFIC_SPIKE": {
+                    "$ref": "#/$defs/baseline"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "checks": {
+                "additionalProperties": false,
+                "properties": {
+                  "SUSTAINED_TRAFFIC_ANOMALY": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "USER_CONNECTION_SPIKE": {
+                    "$ref": "#/$defs/check"
+                  },
+                  "USER_TRAFFIC_SPIKE": {
+                    "$ref": "#/$defs/check"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "audit": {
+          "$ref": "#/$defs/audit"
+        },
+        "baselines": {
+          "additionalProperties": false,
+          "properties": {
+            "NETWORK_RATE_ANOMALY": {
+              "$ref": "#/$defs/baseline"
+            },
+            "SERVICE_RESTART_LOOP": {
+              "$ref": "#/$defs/baseline"
+            },
+            "SUSTAINED_TRAFFIC_ANOMALY": {
+              "$ref": "#/$defs/baseline"
+            },
+            "USER_CONNECTION_SPIKE": {
+              "$ref": "#/$defs/baseline"
+            },
+            "USER_TRAFFIC_SPIKE": {
+              "$ref": "#/$defs/baseline"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "checks": {
+          "additionalProperties": false,
+          "properties": {
+            "ACCOUNTING_DB_CORRUPT": {
+              "$ref": "#/$defs/check"
+            },
+            "AUDIT_STALLED": {
+              "$ref": "#/$defs/check"
+            },
+            "DISK_PRESSURE": {
+              "$ref": "#/$defs/check"
+            },
+            "EXPORT_GAP": {
+              "$ref": "#/$defs/check"
+            },
+            "EXPORT_SEQUENCE_REGRESSION": {
+              "$ref": "#/$defs/check"
+            },
+            "MEMORY_PRESSURE": {
+              "$ref": "#/$defs/check"
+            },
+            "NETWORK_RATE_ANOMALY": {
+              "$ref": "#/$defs/check"
+            },
+            "SCHEMA_MISMATCH": {
+              "$ref": "#/$defs/check"
+            },
+            "SERVICE_RESTART_LOOP": {
+              "$ref": "#/$defs/check"
+            },
+            "SUSTAINED_TRAFFIC_ANOMALY": {
+              "$ref": "#/$defs/check"
+            },
+            "SYNC_LAG": {
+              "$ref": "#/$defs/check"
+            },
+            "TELEMETRY_STALE": {
+              "$ref": "#/$defs/check"
+            },
+            "USER_CONNECTION_SPIKE": {
+              "$ref": "#/$defs/check"
+            },
+            "USER_TRAFFIC_SPIKE": {
+              "$ref": "#/$defs/check"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "evaluated_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "subject": {
+          "$ref": "#/$defs/subject"
+        },
+        "user_coverage": {
+          "$ref": "#/$defs/coverage"
+        }
+      },
+      "required": [
+        "subject",
+        "evaluated_at",
+        "checks",
+        "context",
+        "audit",
+        "user_coverage",
+        "baselines"
+      ],
+      "type": "object"
+    },
+    "event": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "FINDING_OPEN",
+                  "FINDING_RESOLVED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "detail": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "AUDIT_STALLED",
+                      "EXPORT_GAP",
+                      "SYNC_LAG",
+                      "DISK_PRESSURE",
+                      "MEMORY_PRESSURE",
+                      "TELEMETRY_STALE",
+                      "SCHEMA_MISMATCH",
+                      "ACCOUNTING_DB_CORRUPT",
+                      "EXPORT_SEQUENCE_REGRESSION",
+                      "SERVICE_RESTART_LOOP",
+                      "NETWORK_RATE_ANOMALY",
+                      "USER_TRAFFIC_SPIKE",
+                      "USER_CONNECTION_SPIKE",
+                      "SUSTAINED_TRAFFIC_ANOMALY"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "SERVICE_RESTART"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "detail": {
+                "additionalProperties": false,
+                "properties": {
+                  "restart_delta": {
+                    "maximum": 9223372036854775807,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "restart_delta"
+                ],
+                "type": "object"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "HEALTH_CHANGE",
+                  "SERVICE_CHANGE",
+                  "PROBE_RESULT"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "detail": {
+                "$ref": "#/$defs/context"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "detail": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "AUDIT_STALLED",
+                      "EXPORT_GAP",
+                      "SYNC_LAG",
+                      "DISK_PRESSURE",
+                      "MEMORY_PRESSURE",
+                      "TELEMETRY_STALE",
+                      "SCHEMA_MISMATCH",
+                      "ACCOUNTING_DB_CORRUPT",
+                      "EXPORT_SEQUENCE_REGRESSION",
+                      "SERVICE_RESTART_LOOP",
+                      "NETWORK_RATE_ANOMALY"
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "enum": [
+                  "FINDING_OPEN",
+                  "FINDING_RESOLVED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "detail": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "USER_TRAFFIC_SPIKE",
+                      "USER_CONNECTION_SPIKE",
+                      "SUSTAINED_TRAFFIC_ANOMALY"
+                    ]
+                  }
+                }
+              },
+              "kind": {
+                "enum": [
+                  "FINDING_OPEN",
+                  "FINDING_RESOLVED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "subject": {
+                "$ref": "#/$defs/userSubject"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "detail": {
+          "type": "object"
+        },
+        "id": {
+          "$ref": "#/$defs/hash"
+        },
+        "kind": {
+          "enum": [
+            "FINDING_OPEN",
+            "FINDING_RESOLVED",
+            "HEALTH_CHANGE",
+            "SERVICE_CHANGE",
+            "SERVICE_RESTART",
+            "PROBE_RESULT"
+          ]
+        },
+        "subject": {
+          "$ref": "#/$defs/subject"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "kind",
+        "subject",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "above_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "accountd_active": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_mad": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_median": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "baseline_span_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "db_schema": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "diagnostic_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "diagnostic_fresh": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "export_seq_delta": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "heartbeat_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "last_event_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "min_retained_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "poll_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "pruned_max_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "received_cursor": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "remote_export_seq": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "restart_delta": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "sample_count": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "sync_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "telemetry_age_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "threshold": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "usage_ratio": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "value": {
+          "$ref": "#/$defs/evidenceValue"
+        },
+        "window_seconds": {
+          "$ref": "#/$defs/evidenceValue"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "evidenceValue": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/number"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "finding": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "AUDIT_STALLED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "Accountd is inactive or its successful poll is older than 90 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "EXPORT_GAP"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "The local sync cursor is expired; retained remote audit history may be missing."
+              },
+              "severity": {
+                "const": "ERROR"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "SYNC_LAG"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "Unreceived export records remain and the last successful sync is older than 300 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "DISK_PRESSURE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "node"
+              },
+              "explanation": {
+                "const": "Filesystem usage is at least 90%; recovery requires usage below 85%."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "MEMORY_PRESSURE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "node"
+              },
+              "explanation": {
+                "const": "Memory usage is at least 90%; recovery requires usage below 85%."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "TELEMETRY_STALE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "observation"
+              },
+              "explanation": {
+                "const": "Telemetry is older than 90 seconds, replayed, or its clock is more than 30 seconds ahead."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "SCHEMA_MISMATCH"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "The Node accounting database does not satisfy the required schema 4 contract."
+              },
+              "severity": {
+                "const": "ERROR"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "ACCOUNTING_DB_CORRUPT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "SQLite reported accounting database corruption; audit data is not trustworthy."
+              },
+              "severity": {
+                "const": "ERROR"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "EXPORT_SEQUENCE_REGRESSION"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "audit"
+              },
+              "explanation": {
+                "const": "The audit export counter decreased within the same Node installation."
+              },
+              "severity": {
+                "const": "ERROR"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "SERVICE_RESTART_LOOP"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "node"
+              },
+              "explanation": {
+                "const": "At least three automatic sing-box restarts occurred within 300 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "NETWORK_RATE_ANOMALY"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "node"
+              },
+              "explanation": {
+                "const": "Network rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/nodeSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "USER_TRAFFIC_SPIKE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "user"
+              },
+              "explanation": {
+                "const": "User traffic rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/userSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "USER_CONNECTION_SPIKE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "user"
+              },
+              "explanation": {
+                "const": "Open user connections exceed the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/userSubject"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "SUSTAINED_TRAFFIC_ANOMALY"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": {
+                "const": "user"
+              },
+              "explanation": {
+                "const": "User traffic stayed above the rolling median/MAD threshold for at least 300 continuous seconds."
+              },
+              "severity": {
+                "const": "WARNING"
+              },
+              "subject": {
+                "$ref": "#/$defs/userSubject"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "audit",
+            "node",
+            "user",
+            "observation"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "explanation": {
+          "enum": [
+            "Accountd is inactive or its successful poll is older than 90 seconds.",
+            "The local sync cursor is expired; retained remote audit history may be missing.",
+            "Unreceived export records remain and the last successful sync is older than 300 seconds.",
+            "Filesystem usage is at least 90%; recovery requires usage below 85%.",
+            "Memory usage is at least 90%; recovery requires usage below 85%.",
+            "Telemetry is older than 90 seconds, replayed, or its clock is more than 30 seconds ahead.",
+            "The Node accounting database does not satisfy the required schema 4 contract.",
+            "SQLite reported accounting database corruption; audit data is not trustworthy.",
+            "The audit export counter decreased within the same Node installation.",
+            "At least three automatic sing-box restarts occurred within 300 seconds.",
+            "Network rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds.",
+            "User traffic rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds.",
+            "Open user connections exceed the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds.",
+            "User traffic stayed above the rolling median/MAD threshold for at least 300 continuous seconds."
+          ]
+        },
+        "finding_id": {
+          "$ref": "#/$defs/hash"
+        },
+        "first_seen": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "last_seen": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "severity": {
+          "enum": [
+            "WARNING",
+            "ERROR"
+          ]
+        },
+        "state": {
+          "enum": [
+            "ACTIVE",
+            "RESOLVED"
+          ]
+        },
+        "subject": {
+          "$ref": "#/$defs/subject"
+        },
+        "type": {
+          "enum": [
+            "AUDIT_STALLED",
+            "EXPORT_GAP",
+            "SYNC_LAG",
+            "DISK_PRESSURE",
+            "MEMORY_PRESSURE",
+            "TELEMETRY_STALE",
+            "SCHEMA_MISMATCH",
+            "ACCOUNTING_DB_CORRUPT",
+            "EXPORT_SEQUENCE_REGRESSION",
+            "SERVICE_RESTART_LOOP",
+            "NETWORK_RATE_ANOMALY",
+            "USER_TRAFFIC_SPIKE",
+            "USER_CONNECTION_SPIKE",
+            "SUSTAINED_TRAFFIC_ANOMALY"
+          ]
+        }
+      },
+      "required": [
+        "finding_id",
+        "type",
+        "category",
+        "severity",
+        "subject",
+        "state",
+        "first_seen",
+        "last_seen",
+        "evidence",
+        "explanation"
+      ],
+      "type": "object"
+    },
+    "hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+      "type": "string"
+    },
+    "nodeSubject": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/hash"
+        },
+        "kind": {
+          "const": "node"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "key"
+      ],
+      "type": "object"
+    },
+    "number": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "number"
+    },
+    "operation": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "detail": {
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": {
+              "maximum": 255,
+              "minimum": -255,
+              "type": "integer"
+            },
+            "operation": {
+              "enum": [
+                "sync",
+                "sync_full",
+                "reseed",
+                "probe",
+                "verify",
+                "node_upgrade",
+                "provision",
+                "provision_legacy_seed",
+                "adopt",
+                "replace",
+                "retire",
+                "backup",
+                "restore",
+                "user_add",
+                "user_import",
+                "user_rotate",
+                "user_disable",
+                "refresh_users",
+                "audit_archive_restore"
+              ]
+            },
+            "state": {
+              "enum": [
+                "SUCCESS",
+                "PARTIAL",
+                "FAILED",
+                "ERROR",
+                "OK",
+                "UNSUPPORTED",
+                "AUTH_FAILED",
+                "TIMEOUT"
+              ]
+            }
+          },
+          "required": [
+            "operation",
+            "state"
+          ],
+          "type": "object"
+        },
+        "id": {
+          "$ref": "#/$defs/hash"
+        },
+        "kind": {
+          "const": "OPERATION"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nodeSubject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "kind",
+        "subject",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/nodeSubject"
+        },
+        {
+          "$ref": "#/$defs/userSubject"
+        }
+      ]
+    },
+    "timestamp": {
+      "maximum": 253402300799,
+      "minimum": 0,
+      "type": "number"
+    },
+    "userSubject": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/hash"
+        },
+        "kind": {
+          "const": "user"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "node_key": {
+          "$ref": "#/$defs/hash"
+        },
+        "user_key": {
+          "$ref": "#/$defs/hash"
+        },
+        "user_tag": {
+          "$ref": "#/$defs/name"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "key",
+        "node_key",
+        "user_key",
+        "user_tag"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cache_state": {
+      "enum": [
+        "EMPTY",
+        "OK",
+        "PARTIAL",
+        "CACHE_CORRUPT"
+      ]
+    },
+    "events": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/event"
+          },
+          {
+            "$ref": "#/$defs/operation"
+          }
+        ]
+      },
+      "maxItems": 1000,
+      "type": "array"
+    },
+    "schema": {
+      "const": "timeline/v1"
+    },
+    "truncated": {
+      "items": {
+        "enum": [
+          "findings",
+          "timeline",
+          "evaluations",
+          "user_evaluations"
+        ]
+      },
+      "maxItems": 4,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "cache_state",
+    "events",
+    "truncated"
+  ],
+  "title": "timeline/v1 bounded cache-only incident timeline",
+  "type": "object"
+}

@@ -749,6 +749,8 @@ def _verify_members(
         return _fail("invalid_archive")
 
     actual = {name for name in members if name != "manifest.json"}
+    if not set(REQUIRED_COMPONENTS) <= actual or len(included_names) != len(set(included_names)) or len(files) != len(hash_by_path):
+        return _fail("invalid_archive")
     if set(included_names) != actual:
         return _fail("invalid_archive")
 
@@ -757,6 +759,16 @@ def _verify_members(
         expected = hash_by_path[name]
         if digest != expected:
             return _fail("checksum_mismatch")
+
+    # Apply consumes both JSON roots as objects and config.toml as strict UTF-8.
+    # A valid manifest/hash alone must not admit structurally unreadable input.
+    try:
+        for name in ('state.json', 'users.json'):
+            if not isinstance(json.loads(_as_bytes(members[name]).decode('utf-8')), dict):
+                return _fail('invalid_archive')
+        _as_bytes(members['config.toml']).decode('utf-8')
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
+        return _fail('invalid_archive')
 
     out = dict(manifest)
     out["ok"] = True
@@ -1963,10 +1975,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore_plan.add_argument("--listen", default="")
     restore_plan.add_argument("--port", default="")
     restore_plan.add_argument("--new-instance-id", default="")
-    restore_plan.add_argument("--new-reality-private", default="")
+    restore_plan.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--new-reality-public", default="")
     restore_plan.add_argument("--new-reality-short-id", default="")
-    restore_plan.add_argument("--new-clash-secret", default="")
+    restore_plan.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--project-version", default="")
     restore_plan.add_argument("--json", dest="json_flag", action="store_true")
     restore = sub.add_parser("restore", help="restore a backup onto a fresh node")
@@ -1984,10 +1996,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore.add_argument("--generated-config", default="")
     restore.add_argument("--safety-dir", default="")
     restore.add_argument("--new-instance-id", default="")
-    restore.add_argument("--new-reality-private", default="")
+    restore.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore.add_argument("--new-reality-public", default="")
     restore.add_argument("--new-reality-short-id", default="")
-    restore.add_argument("--new-clash-secret", default="")
+    restore.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore.add_argument("--project-version", default="")
     restore.add_argument("--defer-version", action="store_true")
     restore.add_argument("--manage-services", action="store_true")
@@ -2004,7 +2016,40 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     commit_ver.add_argument("--target-state-dir", required=True)
     commit_ver.add_argument("--safety-dir", default="")
     commit_ver.add_argument("--project-version", default="")
-    return parser.parse_args(argv)
+    actual = list(sys.argv[1:] if argv is None else argv)
+    if any(a.split("=", 1)[0] in ("--new-reality-private", "--new-clash-secret") for a in actual):
+        parser.error("plaintext secret options are disabled; use --new-reality-private-file/-fd and --new-clash-secret-file/-fd")
+    for target in (restore_plan, restore):
+        for field in ("new-reality-private", "new-clash-secret"):
+            group = target.add_mutually_exclusive_group()
+            group.add_argument("--" + field + "-file", default="")
+            group.add_argument("--" + field + "-fd", type=int)
+    args = parser.parse_args(actual)
+    for field in ("new_reality_private", "new_clash_secret"):
+        if hasattr(args, field):
+            try:
+                secret_file = getattr(args, field + "_file", "")
+                secret_fd = getattr(args, field + "_fd", None)
+                if secret_file:
+                    path = Path(secret_file)
+                    info = path.stat()
+                    if path.is_symlink() or not path.is_file() or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid())):
+                        raise ValueError()
+                    with path.open(encoding="utf-8") as stream:
+                        value = stream.read(16385)
+                elif secret_fd is not None:
+                    if secret_fd < 3:
+                        raise ValueError()
+                    with os.fdopen(os.dup(secret_fd), encoding="utf-8") as stream:
+                        value = stream.read(16385)
+                else:
+                    value = ""
+                if len(value) > 16384 or "\0" in value:
+                    raise ValueError()
+                setattr(args, field, value.removesuffix("\n"))
+            except (OSError, ValueError, UnicodeError):
+                parser.error("cannot read private secret input; require an owned private regular file or inherited fd >= 3")
+    return args
 
 
 def _print_restore_failure(exc: RestoreError, json_flag: bool) -> int:

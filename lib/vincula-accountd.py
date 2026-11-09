@@ -10,8 +10,7 @@ operational visibility, not metering for invoices.
 
 Clash API poll is the only production collector.
 
-Daily rollups use the UTC calendar date of closed_at (or started_at if
-still open during rebuild). Day boundaries are UTC.
+Daily rollups use the UTC connection start date and survive raw pruning.
 
 Durable poll_baseline is the source of per-connection counters. The
 in-memory known_open map is a cache: read DB → calculate delta → write
@@ -27,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -37,8 +37,13 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+_store_spec = importlib.util.spec_from_file_location("vcl_accounting_store", Path(__file__).with_name("storage_v5.py"))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 DEFAULT_DB_PATH = "/var/lib/vincula/accounting.db"
 DEFAULT_CLASH_URL = "http://127.0.0.1:9090/connections"
@@ -52,7 +57,7 @@ DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_RAW_RETENTION_DAYS = 90
 DEFAULT_DAILY_RETENTION_DAYS = 90
 RETENTION_DELETE_BATCH = 2000
-ACCOUNTING_DB_SCHEMA_VERSION = 4
+ACCOUNTING_DB_SCHEMA_VERSION = 5
 SCHEMA_VERSION = ACCOUNTING_DB_SCHEMA_VERSION
 INT64_MAX = 2**63 - 1
 HEARTBEAT_MAX_AGE_SECONDS = 300
@@ -172,11 +177,12 @@ CREATE TABLE IF NOT EXISTS daily_usage (
 
 CREATE INDEX IF NOT EXISTS idx_daily_user_date
   ON daily_usage(user_id, date);
+{_STORE.NODE_DDL}
 """
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _STORE.utc(datetime.now(timezone.utc))
 
 
 def utc_today() -> str:
@@ -329,6 +335,7 @@ def _ensure_schema_4_objects(conn: sqlite3.Connection) -> None:
         meta_set(conn, META_AUDIT_EXPORT_SEQ, "0")
     if not meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, ""):
         meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0")
+        meta_set(conn, "history_coverage", json.dumps(_STORE.coverage_snapshot(conn, 'connections', status='NEW_DATABASE')))
 
 
 def next_export_seq(conn: sqlite3.Connection) -> int:
@@ -437,6 +444,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
 
     if current > SCHEMA_VERSION:
         raise SystemExit(f"unsupported accounting-db schema: {current}")
+    if current == 5:
+        if not {"event_id", "export_seq", "generation", "instance_id"} <= set(_table_columns(conn, "connections")) or "daily_contributions" not in tables:
+            raise SystemExit("accounting-db schema 5 is incomplete; refusing implicit repair")
+        return
 
     if current < 2:
         # Legacy 0/1 → 2: add user_id. Fail closed if user_tag cannot map.
@@ -527,9 +538,11 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
 
     if current < 4:
         migrate_schema_3_to_4(conn)
-        return
+        current = 4
 
     _ensure_schema_4_objects(conn)
+    if current < 5:
+        _STORE.convert_node(conn)
     meta_set(conn, "schema_version", str(SCHEMA_VERSION))
     conn.commit()
 
@@ -543,6 +556,16 @@ def open_db(path: str) -> sqlite3.Connection:
         pass
 
     exists = Path(path).is_file() and Path(path).stat().st_size > 0
+    if exists:
+        with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as probe:
+            tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            version = meta_get(probe, "schema_version", "0") if "meta" in tables else "0"
+        try:
+            old_version = int(version)
+        except (ValueError, TypeError):
+            raise SystemExit("unsupported accounting-db schema") from None
+        if old_version < SCHEMA_VERSION:
+            _STORE.staged_migrate(path, migrate_schema)
     conn: Optional[sqlite3.Connection] = None
     try:
         conn = sqlite3.connect(path, timeout=30)
@@ -625,16 +648,16 @@ def parse_clash_connection(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except (TypeError, ValueError):
         dest_port = None
     network = meta.get("network") or item.get("network") or None
-    started = item.get("start") or utc_now_iso()
-    if isinstance(started, (int, float)):
-        started = datetime.fromtimestamp(started, timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+    try:
+        start_value = item.get("start")
+        started = _STORE.utc(utc_now_iso() if start_value is None or start_value == "" else start_value)
+    except (ValueError, TypeError, OverflowError):
+        raise ClashSchemaError("connection has an invalid or timezone-less start timestamp") from None
 
     try:
         user_id = resolve_user_id(user_tag)
     except ValueError:
-        LOG.warning("skip connection %s: unknown user_tag %s", cid, user_tag)
+        LOG.warning("connection attribution unavailable; preserving snapshot liveness")
         return None
 
     upload_raw = item["upload"] if "upload" in item and item["upload"] is not None else 0
@@ -1105,6 +1128,13 @@ def close_stale_open_connections(
     return closed
 
 
+class ConnectionSnapshot(list):
+    """Parsed attributable events plus the complete snapshot's live IDs."""
+    def __init__(self):
+        super().__init__()
+        self.live_ids = set()
+
+
 def decode_clash_connections_payload(data: Any) -> List[Dict[str, Any]]:
     """Strict Clash /connections JSON object → internal events.
 
@@ -1119,10 +1149,15 @@ def decode_clash_connections_payload(data: Any) -> List[Dict[str, Any]]:
     items = data["connections"]
     if not isinstance(items, list):
         raise ClashSchemaError("Clash API 'connections' must be a list")
-    events: List[Dict[str, Any]] = []
+    events = ConnectionSnapshot()
     for item in items:
         if not isinstance(item, dict):
             raise ClashSchemaError("Clash API connection entry must be an object")
+        if not isinstance(item.get("id"), str) or not item["id"]:
+            raise ClashSchemaError("Clash API connection ID is missing")
+        if item["id"] in events.live_ids:
+            raise ClashSchemaError("Clash API snapshot contains duplicate connection IDs")
+        events.live_ids.add(item["id"])
         ev = parse_clash_connection(item)
         if ev:
             events.append(ev)
@@ -1160,6 +1195,7 @@ def apply_poll_delta(
     assign the returned dict (D7). Counters come from durable poll_baseline,
     not from the in-memory cache.
     """
+    authoritative_ids = getattr(live, "live_ids", None)
     live_map: Dict[str, Dict[str, Any]] = {ev["connection_id"]: ev for ev in live}
     new_known: Dict[str, Dict[str, Any]] = {}
 
@@ -1254,6 +1290,11 @@ def apply_poll_delta(
         tracked.add(str(_row_get(row, "connection_id", 0)))
     now_close = utc_now_iso()
     for cid in tracked:
+        if authoritative_ids is not None and cid in authoritative_ids and cid not in live_map:
+            kept = _durable_prev_state(conn, cid) or known_open.get(cid)
+            if kept is not None:
+                new_known[cid] = kept
+            continue
         if cid in live_map:
             continue
         state = _durable_prev_state(conn, cid) or known_open.get(cid)
@@ -1361,75 +1402,9 @@ def commit_accounting(
     setter(new_known)
 
 
-_DAILY_USAGE_AGGREGATE_SELECT = """
-        SELECT
-          substr(COALESCE(closed_at, started_at), 1, 10) AS date,
-          user_id,
-          user_tag,
-          CASE
-            WHEN destination_host IS NOT NULL AND destination_host != '' THEN destination_host
-            WHEN destination_ip IS NOT NULL AND destination_ip != '' THEN destination_ip
-            ELSE '(unknown)'
-          END AS destination_host,
-          SUM(upload_bytes),
-          SUM(download_bytes),
-          COUNT(*)
-        FROM connections
-        GROUP BY 1, 2, 3, 4
-"""
-
-
 def rollup_daily_usage(conn: sqlite3.Connection) -> None:
-    """Rebuild daily_usage from connections (idempotent aggregate).
-
-    Builds into a temp table first, then swaps inside a savepoint so a
-    failed rebuild never leaves daily_usage empty. Uses UTC date of
-    closed_at when present, else started_at.
-    """
-    conn.execute("SAVEPOINT rollup_daily_usage")
-    try:
-        conn.execute("DROP TABLE IF EXISTS temp.daily_usage_rebuild")
-        conn.execute(
-            """
-            CREATE TEMP TABLE daily_usage_rebuild (
-              date TEXT NOT NULL,
-              user_id TEXT NOT NULL,
-              user_tag TEXT,
-              destination_host TEXT NOT NULL,
-              upload_bytes INTEGER NOT NULL DEFAULT 0,
-              download_bytes INTEGER NOT NULL DEFAULT 0,
-              connection_count INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO daily_usage_rebuild(
-              date, user_id, user_tag, destination_host,
-              upload_bytes, download_bytes, connection_count
-            )
-            """
-            + _DAILY_USAGE_AGGREGATE_SELECT
-        )
-        conn.execute("DELETE FROM daily_usage")
-        conn.execute(
-            """
-            INSERT INTO daily_usage(
-              date, user_id, user_tag, destination_host,
-              upload_bytes, download_bytes, connection_count
-            )
-            SELECT
-              date, user_id, user_tag, destination_host,
-              upload_bytes, download_bytes, connection_count
-            FROM daily_usage_rebuild
-            """
-        )
-        conn.execute("DROP TABLE daily_usage_rebuild")
-        conn.execute("RELEASE rollup_daily_usage")
-    except Exception:
-        conn.execute("ROLLBACK TO rollup_daily_usage")
-        conn.execute("RELEASE rollup_daily_usage")
-        raise
+    """Apply event contribution deltas; raw retention never erases daily history."""
+    _STORE.rollup(conn)
 
 
 def _delete_expired_connections_batch(
@@ -1451,6 +1426,7 @@ def _delete_expired_connections_batch(
     ).fetchall()
     if not rows:
         return 0
+    rollup_daily_usage(conn)
     ids = []
     max_pruned = int(meta_get(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, "0") or "0")
     for row in rows:
@@ -1461,6 +1437,7 @@ def _delete_expired_connections_batch(
             max_pruned = max(max_pruned, int(eseq))
     q = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM connections WHERE event_id IN ({q})", ids)
+    conn.execute(f"DELETE FROM daily_contributions WHERE event_id IN ({q})", ids)
     meta_set(conn, META_AUDIT_PRUNED_MAX_EXPORT_SEQ, str(max_pruned))
     return len(ids)
 
@@ -1502,15 +1479,14 @@ def apply_retention(
     now = datetime.now(timezone.utc)
     if raw_days > 0:
         cutoff = now.timestamp() - raw_days * 86400
-        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        cutoff_iso = _STORE.utc(cutoff)
         _delete_expired_connections_batch(conn, cutoff_iso)
         conn.commit()
     if daily_days > 0:
         cutoff_date = datetime.fromtimestamp(
             now.timestamp() - daily_days * 86400, timezone.utc
         ).strftime("%Y-%m-%d")
+        meta_set(conn, "daily_retention_cutoff", cutoff_date)
         _delete_expired_daily_usage_batch(conn, cutoff_date)
         conn.commit()
     meta_set(conn, "last_retention_at", utc_now_iso())
@@ -1894,17 +1870,24 @@ class AccountDaemon:
         """
         global TAG_TO_USER_ID
         try:
-            mtime = os.stat(self.users_path).st_mtime
+            info = os.stat(self.users_path)
+            mtime = (info.st_ino, info.st_mtime_ns, info.st_size)
         except OSError:
             return
         if self._users_mtime is not None and mtime == self._users_mtime:
             return
         try:
-            new_map = load_tag_to_user_id(self.users_path)
-        except SystemExit as exc:
+            runtime_loader = getattr(self, "runtime_loader", None)
+            if runtime_loader is not None:
+                runtime = runtime_loader()
+                if runtime["node"] != {"node_id": NODE_ID, "instance_id": INSTANCE_ID}:
+                    raise ValueError("accountd runtime identity changed; restart required")
+                new_map = {item["tag"]: item["user_id"] for item in runtime["users"]}
+            else:
+                new_map = load_tag_to_user_id(self.users_path)
+        except (SystemExit, ValueError, OSError):
             LOG.warning(
-                "users.json changed but failed to reload; keeping previous tag map (%s)",
-                exc,
+                "accounting identity mapping changed but failed validation; keeping previous map",
             )
             self._users_mtime = mtime
             return
@@ -1942,7 +1925,7 @@ class AccountDaemon:
     ) -> Tuple[bool, Optional[Dict[str, Dict[str, Any]]]]:
         try:
             live = fetch_clash_connections(self.clash_url, self.clash_secret)
-            live_ids = [ev["connection_id"] for ev in live]
+            live_ids = list(getattr(live, "live_ids", [ev["connection_id"] for ev in live]))
             self._last_live_ids = live_ids
             new_known = apply_poll_delta(conn, live, self._known_open)
             closed = close_stale_open_connections(conn, live_ids)
@@ -1972,11 +1955,16 @@ class AccountDaemon:
     def _tick(self, conn: sqlite3.Connection) -> None:
         self._cycles += 1
         self._reload_tag_map_if_changed()
+        # Liveness is independent from poll success; failed polls must not look like a dead collector.
+        meta_set(conn, "heartbeat_at", utc_now_iso())
+        conn.commit()
         success, new_known = self._collect(conn)
         if success:
             meta_set(conn, "last_success_at", utc_now_iso())
             # COMMIT collect first, then refresh cache. Never assign cache before COMMIT.
             commit_accounting(conn, new_known or {}, self._set_known_open)
+        else:
+            conn.rollback()
 
         if self._cycles == 1 or self._cycles % 720 == 0:
             rollup_daily_usage(conn)
@@ -2014,12 +2002,40 @@ def build_daemon_from_settings(settings_path: str = DEFAULT_SETTINGS) -> Account
     )
 
 
+def build_daemon_from_runtime(runtime_path: str) -> AccountDaemon:
+    """Restricted mode: no environment-secret or canonical settings/users/state fallback."""
+    import importlib.util
+    global NODE_ID, TAG_TO_USER_ID, INSTANCE_ID
+    spec = importlib.util.spec_from_file_location("vcl_accountd_runtime", Path(__file__).with_name("accountd_runtime.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    doc = module.read(Path(runtime_path))
+    NODE_ID, INSTANCE_ID = doc["node"]["node_id"], doc["node"]["instance_id"]
+    TAG_TO_USER_ID = {item["tag"]: item["user_id"] for item in doc["users"]}
+    daemon = AccountDaemon(
+        db_path=DEFAULT_DB_PATH,
+        clash_url=f"http://127.0.0.1:{doc['clash_api_port']}/connections",
+        clash_secret=doc["clash_api_secret"],
+        raw_retention_days=doc["raw_retention_days"],
+        daily_retention_days=doc["daily_retention_days"],
+        users_path=runtime_path,
+    )
+    # The mapping refresh must validate the entire projection and cannot turn a
+    # bad/replaced file into arbitrary canonical config reads.
+    daemon.runtime_loader = lambda: module.read(Path(runtime_path))
+    return daemon
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Vincula local accounting daemon. "
             "Polling Clash API is approximate and is not exact billing."
         )
+    )
+    parser.add_argument(
+        "--runtime",
+        help="root-owned minimal accountd-runtime/v1 projection (no canonical secret file fallback)",
     )
     parser.add_argument(
         "--settings",
@@ -2092,7 +2108,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     os.environ.setdefault("VCL_USERS_FILE", args.users)
     os.environ.setdefault("VCL_STATE_FILE", args.state)
-    daemon = build_daemon_from_settings(args.settings)
+    daemon = build_daemon_from_runtime(args.runtime) if args.runtime else build_daemon_from_settings(args.settings)
     if args.db:
         daemon.db_path = args.db
     if args.once:
