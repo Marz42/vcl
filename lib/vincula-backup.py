@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -299,7 +300,11 @@ def snapshot_sqlite(src: Path, dest: Path) -> None:
     try:
         dest_conn = sqlite3.connect(str(dest_path))
         try:
-            src_conn.backup(dest_conn)
+            # The sleep argument alone only handles BUSY; yield on successful batches too.
+            def yield_pages(status, remaining, total):
+                if remaining:
+                    time.sleep(0.005)
+            src_conn.backup(dest_conn, pages=256, progress=yield_pages, sleep=0.05)
         finally:
             dest_conn.close()
     finally:
@@ -708,7 +713,8 @@ def _load_members(
 
 
 def _verify_members(
-    members: Mapping[str, MemberSource], outer_path: Path
+    members: Mapping[str, MemberSource], outer_path: Path, *,
+    verified_hashes: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Steps 2–6: manifest, schema, flag/suffix consistency, sha256, members."""
     if "manifest.json" not in members:
@@ -755,7 +761,7 @@ def _verify_members(
         return _fail("invalid_archive")
 
     for name in included_names:
-        digest = _digest_member(members[name])
+        digest = verified_hashes[name] if verified_hashes is not None else _digest_member(members[name])
         expected = hash_by_path[name]
         if digest != expected:
             return _fail("checksum_mismatch")
@@ -884,6 +890,55 @@ def verify_archive(
     return result
 
 
+def _publish_created_archive(src: Path, dest: Path) -> None:
+    """Creation staging is on the destination filesystem; no second full copy."""
+    os.chmod(src, 0o600)
+    with src.open("r+b") as fh:
+        os.fsync(fh.fileno())
+    os.replace(src, dest)
+    if os.name == "posix":
+        fd = os.open(dest.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _stream_created_tar(path: Path, components: Mapping[str, Path]):
+    """Self-check bytes from the actual archive without extracting its large DB.
+
+    Private creation snapshots remain alive for the entire verification. This
+    is deliberately not used by restore, which needs extracted member files.
+    """
+    members, hashes = {}, {}
+    total = 0
+    with tarfile.open(path, "r|") as tf:
+        for info in tf:
+            name = _safe_member_name(info.name)
+            if name in members or not info.isreg():
+                raise tarfile.TarError("duplicate or non-regular member")
+            if name != "manifest.json" and name not in components:
+                raise tarfile.TarError("unexpected member")
+            total += info.size
+            if info.size < 0 or info.size > _member_size_cap(name) or total > MAX_ARCHIVE_BYTES:
+                raise tarfile.TarError("archive size cap exceeded")
+            stream = tf.extractfile(info)
+            digest, count, chunks = hashlib.sha256(), 0, []
+            while True:
+                chunk = stream.read(IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                count += len(chunk)
+                digest.update(chunk)
+                if name in IN_MEMORY_MEMBERS:
+                    chunks.append(chunk)
+            if count != info.size:
+                raise tarfile.TarError("short archive member")
+            hashes[name] = digest.hexdigest()
+            members[name] = b"".join(chunks) if name in IN_MEMORY_MEMBERS else components[name]
+    return members, hashes
+
+
 def create_backup(
     state_dir: Path,
     accounting_db: Optional[Path],
@@ -908,7 +963,10 @@ def create_backup(
     state_dir = Path(state_dir)
     output = resolve_backup_output(Path(output), include_secrets)
     when = created_at or utc_now_iso()
-    with tempfile.TemporaryDirectory(prefix="vincula-backup-") as tmp:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    timings = {}
+    began = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix=".vincula-backup-", dir=output.parent) as tmp:
         tmp_path = Path(tmp)
         parts = tmp_path / "parts"
         components = assemble_components(
@@ -917,6 +975,8 @@ def create_backup(
             accounting_db=accounting_db,
             include_secrets=include_secrets,
         )
+        timings["snapshot_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         included = [name for name in COMPONENT_NAMES if name in components]
         hashes = {name: sha256_file(components[name]) for name in included}
         state_doc = json.loads(components["state.json"].read_text(encoding="utf-8"))
@@ -945,18 +1005,20 @@ def create_backup(
             encryption=encryption,
             hashes=hashes,
         )
+        timings["manifest_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         staged = tmp_path / "archive.tar"
         try:
             write_tar(staged, components, manifest)
         except ValueError as exc:
             _die(str(exc))
-        extract_dir = tmp_path / "verify-extract"
-        extract_dir.mkdir()
+        timings["archive_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         try:
-            inner = _read_tar_members(staged, extract_dir=extract_dir)
+            inner, streamed_hashes = _stream_created_tar(staged, components)
         except (tarfile.TarError, OSError, ValueError) as exc:
             _die(str(exc) or "invalid_archive")
-        checked = _verify_members(inner, output)
+        checked = _verify_members(inner, output, verified_hashes=streamed_hashes)
         if not checked.get("ok"):
             _die(str(checked.get("error") or "failed"))
         if secret_bearing:
@@ -965,6 +1027,8 @@ def create_backup(
             bad = _assert_secretless_members(inner)
         if bad:
             _die(bad)
+        timings["verify_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         if include_secrets:
             encrypted = tmp_path / "archive.tar.age"
             assert age_recipient is not None
@@ -972,12 +1036,15 @@ def create_backup(
                 age_encrypt(staged, encrypted, Path(age_recipient))
             except AgeError:
                 _die("age encryption failed")
-            atomic_replace(encrypted, output, 0o600)
+            _publish_created_archive(encrypted, output)
         else:
-            atomic_replace(staged, output, 0o600)
+            _publish_created_archive(staged, output)
 
+    timings["publish_seconds"] = time.monotonic() - began
+    began = time.monotonic()
     archive_hash = sha256_file(output)
-    return {
+    timings["archive_hash_seconds"] = time.monotonic() - began
+    return {"timings": timings,
         "schema_version": 1,
         "ok": True,
         "path": str(output),

@@ -1928,6 +1928,58 @@ def _fake_run_vincula_installer(alias: str, argv: list[str]) -> int | None:
     return 0
 
 
+def _handle_prepare(alias: str, remote: list[str]) -> int:
+    """Emulate the preparation protocol, not its Linux process supervisor.
+
+    Reuse real fixture backup/checkpoint handlers; persist the result across SSH
+    invocations. Start acknowledges RUNNING, status supplies the terminal result.
+    """
+    import contextlib
+    import io
+    import uuid
+    if _state_root() is None:
+        return 1
+    action, operation_id = remote[2:4]
+    if str(uuid.UUID(operation_id)) != operation_id:
+        return 1
+    path = _alias_dir(alias) / "prepare-operations" / (operation_id + ".json")
+    if action == "status":
+        if not path.is_file():
+            _emit_json({"state": "UNKNOWN", "code": "FIXTURE_OPERATION_MISSING"})
+        else:
+            _emit_json(json.loads(path.read_text()))
+        return 0
+    if action != "start":
+        return 1
+    binding = json.loads(remote[remote.index("--binding") + 1])
+    if path.is_file():
+        doc = json.loads(path.read_text())
+        if doc["binding"] != binding:
+            return 1
+        _emit_json(doc)
+        return 0
+    doc = {"state": "RUNNING", "operation_id": operation_id, "binding": binding,
+           "phase": "backup", "migrate_started": False}
+    for phase, handler in (("backup", _handle_backup), ("checkpoint", _handle_upgrade)):
+        doc["phase"] = phase
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = handler(alias, ["create" if phase == "backup" else "checkpoint", "--json"])
+        try:
+            result = json.loads(out.getvalue())
+        except ValueError:
+            result = {}
+        if rc or result.get("ok") is not True:
+            doc.update(state="FAILED", code="PREPARATION_FAILED")
+            break
+        doc[phase] = result
+    else:
+        doc.update(state="SUCCEEDED", phase="prepared")
+    _write_json(path, doc)
+    _emit_json(dict(doc, state="RUNNING"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     joined = " ".join(argv)
@@ -1992,6 +2044,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 255
 
+    if len(remote) >= 4 and remote[0] == "python3" and remote[1].endswith("/upgrade_prepare.py"):
+        return _handle_prepare(alias, remote)
     kind, rest = _remote_kind(remote)
     if kind == "unknown" and rest and rest[0] == "test":
         return _handle_test(alias, rest[1:])

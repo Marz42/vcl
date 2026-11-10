@@ -16853,6 +16853,7 @@ PY
 assert_success "obs050 upgrade apply uses admin not observe for plan" python3 - \
   "${PROJECT_DIR}/lib/vincula-fleet.py" <<'PY'
 import importlib.util, os
+from unittest.mock import Mock
 from pathlib import Path
 
 fleet_path = Path(os.environ["PROJECT_DIR"]) / "lib/vincula-fleet.py"
@@ -16866,6 +16867,16 @@ class FakeProv:
 
     def _resolve_privilege_mode(self, **kwargs):
         return "root"
+    def resolve_node_payload(self):
+        return {}
+    def verify_local_payload(self, resolved):
+        return {"sha256": "a" * 64}
+    def _create_remote_stage(self, **kwargs):
+        return "/tmp/stage"
+    def upload_and_verify_remote_payload(self, *args, **kwargs):
+        pass
+    def _remote_stage_paths(self, stage):
+        return {"tar": stage + "/payload.tar", "unpack": stage}
 
 msgs = []
 
@@ -16887,8 +16898,9 @@ def fake_obs(node, remote_cmd, **kwargs):
             },
             "",
         )
-    if remote_cmd[:2] == ["vcl", "backup"]:
-        return "ERROR", None, "backup mocked fail"
+    if remote_cmd[0] == "python3" and remote_cmd[1].endswith("/upgrade_prepare.py"):
+        assert cls == "admin", cls
+        return "OK", {"state": "FAILED", "phase": "backup", "code": "PREPARATION_FAILED"}, ""
     return "ERROR", None, "unexpected " + " ".join(remote_cmd)
 
 fleet.observation_ssh_json = fake_obs  # type: ignore[attr-defined]
@@ -16896,6 +16908,7 @@ fleet.die = capture_die  # type: ignore[attr-defined]
 fleet.load_provision_module = lambda: FakeProv()  # type: ignore[attr-defined]
 fleet.SSH_BACKUP_TIMEOUT_SECONDS = 1
 fleet.node_identity_file_for_class = lambda node, cls: None  # type: ignore[attr-defined]
+fleet.ssh_run = Mock(return_value=Mock(returncode=0))
 upg.bind(fleet)
 node = {
     "name": "n",
@@ -16909,13 +16922,11 @@ assert observe_plan.get("state") == "AUTH_FAILED", observe_plan
 admin_plan = upg.run_upgrade_plan(node, credential_class="admin")
 assert admin_plan.get("state") == "PLANNED", admin_plan
 assert admin_plan.get("allowlist_ok") is True
-try:
-    upg.run_upgrade_apply(node, confirmed=True)
-except SystemExit:
-    pass
-assert msgs, "die not called"
-assert "observe denied" not in msgs[0], msgs[0]
-assert "backup" in msgs[0].lower(), msgs[0]
+result = upg.run_upgrade_apply(node, confirmed=True)
+assert result["phase"] == "backup", result
+assert result["code"] == "PREPARATION_FAILED", result
+assert result["migrate_started"] is False, result
+assert not msgs, msgs
 PY
 
 # Upgrade: post-check verify fail after migrate → PARTIAL (no silent SUCCESS)
@@ -16940,7 +16951,7 @@ class FakeProv:
         return {"tar": "/dev/null", "sha256": "x", "version": "0.5.5"}
 
     def verify_local_payload(self, resolved):
-        return None
+        return {"sha256": "a" * 64}
 
     def _create_remote_stage(self, **kwargs):
         return "/tmp/vcl-stage"
@@ -16964,6 +16975,12 @@ class FakeProc:
 
 def fake_obs(node, remote_cmd, **kwargs):
     cmd = list(remote_cmd)
+    if len(cmd) > 3 and cmd[0] == "python3" and cmd[1].endswith("/upgrade_prepare.py"):
+        import json
+        return "OK", {"state": "SUCCEEDED", "operation_id": cmd[3],
+            "binding": json.loads(cmd[cmd.index("--binding") + 1]),
+            "backup": {"path": "/tmp/b.tgz"},
+            "checkpoint": {"path": "/var/backups/vincula/upgrade-checkpoint-x"}}, ""
     if cmd[:2] == ["vcl", "identity"]:
         return (
             "OK",
@@ -17035,7 +17052,7 @@ class FakeProv:
         return {"tar": "/dev/null", "sha256": "x", "version": "0.5.5"}
 
     def verify_local_payload(self, resolved):
-        return None
+        return {"sha256": "a" * 64}
 
     def _create_remote_stage(self, **kwargs):
         return "/tmp/vcl-stage"
@@ -17059,6 +17076,12 @@ class FakeProc:
 
 def fake_obs(node, remote_cmd, **kwargs):
     cmd = list(remote_cmd)
+    if len(cmd) > 3 and cmd[0] == "python3" and cmd[1].endswith("/upgrade_prepare.py"):
+        import json
+        return "OK", {"state": "SUCCEEDED", "operation_id": cmd[3],
+            "binding": json.loads(cmd[cmd.index("--binding") + 1]),
+            "backup": {"path": "/var/backups/vincula/backup.tar"},
+            "checkpoint": {"path": "/var/backups/vincula/upgrade-checkpoint-x"}}, ""
     if cmd[:2] == ["vcl", "identity"]:
         return (
             "OK",
@@ -17140,7 +17163,7 @@ class FakeProv:
         return {"tar": "/dev/null", "sha256": "x", "version": "0.5.5"}
 
     def verify_local_payload(self, resolved):
-        return None
+        return {"sha256": "a" * 64}
 
     def _create_remote_stage(self, **kwargs):
         return "/tmp/vcl-stage"
@@ -17171,6 +17194,12 @@ ident_n = {"n": 0}
 def fake_obs(node, remote_cmd, **kwargs):
     cmd = list(remote_cmd)
     calls.append(cmd)
+    if len(cmd) > 3 and cmd[0] == "python3" and cmd[1].endswith("/upgrade_prepare.py"):
+        import json
+        return "OK", {"state": "SUCCEEDED", "operation_id": cmd[3],
+            "binding": json.loads(cmd[cmd.index("--binding") + 1]),
+            "backup": {"path": "/tmp/b.tgz"},
+            "checkpoint": {"path": "/var/backups/vincula/upgrade-checkpoint-x"}}, ""
     if cmd[:2] == ["vcl", "identity"]:
         ident_n["n"] += 1
         ver = "0.3.1" if ident_n["n"] == 1 else "0.5.5"
@@ -17227,10 +17256,10 @@ result = upg.run_upgrade_apply(node, confirmed=True)
 assert result.get("state") == "SUCCESS", (result, calls)
 assert not any(c[:3] == ["vcl", "upgrade", "checkpoint"] for c in calls), calls
 assert any(
-    c[:1] == ["bash"] and c[2:4] == ["upgrade", "checkpoint"] for c in calls
+    c[:1] == ["python3"] and c[1].endswith("/upgrade_prepare.py") for c in calls
 ), calls
 src = (Path(os.environ["PROJECT_DIR"]) / "lib/node_upgrade.py").read_text(encoding="utf-8")
-assert '["bash", staged_helper, "upgrade", "checkpoint"' in src
+assert "upgrade_prepare.py" in src
 assert '["vcl", "upgrade", "checkpoint"' not in src
 PY
 
@@ -17256,7 +17285,7 @@ class FakeProv:
         return {"tar": "/dev/null", "sha256": "x", "version": "0.5.5"}
 
     def verify_local_payload(self, resolved):
-        return None
+        return {"sha256": "a" * 64}
 
     def _create_remote_stage(self, **kwargs):
         return "/tmp/vcl-stage"
@@ -17282,6 +17311,12 @@ ident_calls = {"n": 0}
 
 def fake_obs(node, remote_cmd, **kwargs):
     cmd = list(remote_cmd)
+    if len(cmd) > 3 and cmd[0] == "python3" and cmd[1].endswith("/upgrade_prepare.py"):
+        import json
+        return "OK", {"state": "SUCCEEDED", "operation_id": cmd[3],
+            "binding": json.loads(cmd[cmd.index("--binding") + 1]),
+            "backup": {"path": "/tmp/b.tgz"},
+            "checkpoint": {"path": "/var/backups/vincula/upgrade-checkpoint-x"}}, ""
     if cmd[:2] == ["vcl", "identity"]:
         ident_calls["n"] += 1
         if ident_calls["n"] == 1:
@@ -17447,6 +17482,8 @@ export VCL_NODE_ARCHIVE="$UPG_FAIL_PAYLOAD/vincula-node-0.5.5.tar.gz"
 upg_fail_rc=0
 upg_fail_err=$(fleet node upgrade apply lax --yes --json 2>&1) || upg_fail_rc=$?
 assert_equal "upg050 migrate fail exits non-zero" 1 "$upg_fail_rc"
+assert_success "upg050 failure actually reached migrate" \
+  grep -q 'remote migrate failed:.*migrate failed' <<< "$upg_fail_err"
 unset VCL_FAKE_MIGRATE_FAIL
 
 # G1: upgrade apply happy path (fake migrate)
@@ -17518,7 +17555,7 @@ doc = json.loads(sys.argv[1])
 assert doc.get("state") == "OK", doc
 PY
 assert_success "upg050 apply uses admin identity in SSH log" \
-  test -s "$UPG_ARGV_LOG" && grep -q 'backup' "$UPG_ARGV_LOG"
+  test -s "$UPG_ARGV_LOG" && grep -q 'upgrade_prepare.py' "$UPG_ARGV_LOG"
 assert_success "upg050 journal has node_upgrade" \
   grep -q '"operation": "node_upgrade"' "$OBS050_HOME/ui-runtime/operations.jsonl"
 assert_success "upg050 journal redacts secrets" \

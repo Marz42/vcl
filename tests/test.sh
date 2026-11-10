@@ -958,7 +958,7 @@ assert_success "installer defines TELEMETRY_PY" \
   grep -q 'TELEMETRY_PY=' "${PROJECT_DIR}/vincula.sh"
 assert_failure "release.lock does not include event schema" \
   grep -q 'vincula-event.schema.json' "${PROJECT_DIR}/release.lock"
-assert_equal "release.lock has 19 first-party files" "19" \
+assert_equal "release.lock has 20 first-party files" "20" \
   "$(wc -l < "${PROJECT_DIR}/release.lock" | tr -d ' ')"
 assert_failure "release.lock does not include vincula-fleet.py" \
   grep -q 'vincula-fleet' "${PROJECT_DIR}/release.lock"
@@ -1257,7 +1257,7 @@ assert_success "dist archive exists" \
   test -f "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}.tar.gz"
 assert_failure "legacy dist archive name is unused" \
   test -f "${PROJECT_DIR}/dist/vincula-${VINCULA_VERSION}.tar.gz"
-assert_equal "dist node release.lock has 19 first-party files" "19" \
+assert_equal "dist node release.lock has 20 first-party files" "20" \
   "$(wc -l < "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock" | tr -d ' ')"
 assert_success "dist node release.lock includes vincula-backup.py" \
   grep -q 'lib/vincula-backup.py' "${PROJECT_DIR}/dist/vincula-node-${VINCULA_VERSION}/release.lock"
@@ -5736,7 +5736,7 @@ assert_success "python3 can compile vincula-backup" \
 assert_success "backup module pins schema 1" \
   grep -q 'BACKUP_SCHEMA_VERSION = 1' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module uses sqlite3 Connection.backup" \
-  grep -q 'src_conn.backup(dest_conn)' "${PROJECT_DIR}/lib/vincula-backup.py"
+  grep -q 'src_conn.backup(dest_conn, pages=256' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_failure "backup snapshot does not shutil.copyfile the live db" \
   grep -q 'shutil.copyfile' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module pins MAX_MEMBER_BYTES 1 GiB" \
@@ -6598,13 +6598,13 @@ PY
 assert_success "controller PARTIAL recovery cites durable rollback helper" \
   grep -q 'upgrade-rollback-helper' "${PROJECT_DIR}/lib/node_upgrade.py"
 assert_success "controller stages checkpoint via bash unpack helper" \
-  grep -q 'staged_helper' "${PROJECT_DIR}/lib/node_upgrade.py"
+  grep -q 'upgrade_prepare.py' "${PROJECT_DIR}/lib/node_upgrade.py"
 assert_success "controller does not call installed vcl upgrade checkpoint" \
   python3 - "${PROJECT_DIR}/lib/node_upgrade.py" <<'PY'
 from pathlib import Path
 import sys
 src = Path(sys.argv[1]).read_text(encoding="utf-8")
-assert '["bash", staged_helper, "upgrade", "checkpoint"' in src
+assert "upgrade_prepare.py" in src
 assert '["vcl", "upgrade", "checkpoint"' not in src
 PY
 

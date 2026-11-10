@@ -21,6 +21,7 @@ files=(
   lib/vincula-stats.py
   lib/vincula-audit.py
   lib/vincula-backup.py
+  lib/upgrade_prepare.py
   lib/telemetry_snapshot.py
   lib/inspect_snapshot.py
   lib/storage_v5.py

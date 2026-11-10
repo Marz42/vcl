@@ -2893,10 +2893,7 @@ HELP
 }
 
 resolve_backup_py() {
-  if [[ -f "$BACKUP_PY" ]]; then
-    printf '%s\n' "$BACKUP_PY"
-    return 0
-  fi
+  # Prefer the library belonging to this helper, including a staged release.
   local src root
   src=${BASH_SOURCE[0]-}
   if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
@@ -2905,6 +2902,10 @@ resolve_backup_py() {
       printf '%s\n' "${root}/lib/vincula-backup.py"
       return 0
     fi
+  fi
+  if [[ -f "$BACKUP_PY" ]]; then
+    printf '%s\n' "$BACKUP_PY"
+    return 0
   fi
   return 1
 }

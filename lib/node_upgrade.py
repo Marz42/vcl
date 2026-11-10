@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -126,7 +130,7 @@ def _plan_checks(
         {
             "id": "backup",
             "status": "pass",
-            "detail": "remote vcl backup create (secretless default)",
+            "detail": "bounded staged helper backup (secretless default)",
         }
     )
     checks.append(
@@ -192,7 +196,7 @@ def run_upgrade_plan(
         "target_version": target,
         "allowlist_ok": is_upgrade_allowed(current, target),
         "checks": checks,
-        "backup": "remote secretless vcl backup create + staged 0.5 helper upgrade checkpoint",
+        "backup": "bounded staged helper backup + upgrade checkpoint",
         "rollback": "vincula.sh migrate EXIT trap + vcl upgrade rollback <checkpoint>",
         "outage_budget_seconds": OUTAGE_BUDGET_SECONDS,
         "credential_class": credential_class,
@@ -202,6 +206,28 @@ def run_upgrade_plan(
             "vincula_version": current,
         },
     }
+
+
+def _prepare_remote(node, runner, operation_id, binding, helper, seconds):
+    command = ["python3", runner, "start", operation_id, "--binding", json.dumps(binding),
+               "--helper", helper, "--seconds", str(seconds)]
+    deadline = time.monotonic() + seconds + 30
+    while True:
+        state, doc, detail = _ssh_json(node, command, credential_class="admin",
+                                       timeout=20, require_exit_0=True)
+        if state == "OK" and isinstance(doc, dict):
+            if doc.get("state") in ("FAILED", "CANCELLED", "UNKNOWN"):
+                return doc
+            if doc.get("operation_id") != operation_id or doc.get("binding") != binding:
+                return {"state": "UNKNOWN", "code": "PREPARATION_BINDING_MISMATCH"}
+            if doc.get("state") == "SUCCEEDED":
+                if not all(isinstance(doc.get(k), dict) and doc[k].get("path") for k in ("backup", "checkpoint")):
+                    return {"state": "UNKNOWN", "code": "INVALID_PREPARATION_RESULT"}
+                return doc
+        if time.monotonic() >= deadline:
+            return {"state": "UNKNOWN", "code": "PREPARATION_STATUS_UNKNOWN", "detail": detail}
+        command = ["python3", runner, "status", operation_id]
+        time.sleep(2)
 
 
 def run_upgrade_apply(
@@ -255,30 +281,17 @@ def run_upgrade_apply(
         extra=extra,
     )
 
-    # Secretless archive on the *installed* helper (0.3.1+ has ``vcl backup``).
-    # Do NOT call ``vcl upgrade checkpoint`` on the installed helper: 0.3.1/0.3.2
-    # helpers have no ``upgrade`` subcommand, so apply would die before staging.
+    if skip_backup:
+        host.die("upgrade preparation cannot skip backup")
+    try:
+        prepare_seconds = int(os.environ.get("VCL_UPGRADE_PREPARE_SECONDS", "900"))
+        if not 30 <= prepare_seconds <= 7200:
+            raise ValueError()
+    except ValueError:
+        host.die("VCL_UPGRADE_PREPARE_SECONDS must be 30..7200")
     backup_path: Optional[str] = None
-    if not skip_backup:
-        ssh_state, backup_doc, backup_detail = _ssh_json(
-            node,
-            ["vcl", "backup", "create", "--json"],
-            credential_class="admin",
-            timeout=host.SSH_BACKUP_TIMEOUT_SECONDS,
-            require_exit_0=True,
-        )
-        if (
-            ssh_state != "OK"
-            or not isinstance(backup_doc, dict)
-            or backup_doc.get("ok") is not True
-        ):
-            host.die(
-                f"upgrade backup failed: {backup_detail or 'remote backup failed'}"
-            )
-        backup_path = _optional_backup_path(backup_doc)
-
     resolved = prov.resolve_node_payload()
-    prov.verify_local_payload(resolved)
+    manifest = prov.verify_local_payload(resolved)
     remote_stage = prov._create_remote_stage(
         ssh_host=node["ssh_host"],
         ssh_user=node["ssh_user"],
@@ -288,6 +301,8 @@ def run_upgrade_apply(
     )
     checkpoint_path: Optional[str] = None
     migrate_committed = False
+    preserve_stage = False
+    operation_id = str(uuid.uuid4())
     try:
         prov.upload_and_verify_remote_payload(
             resolved,
@@ -311,27 +326,25 @@ def run_upgrade_apply(
         if tar_proc.returncode != 0:
             host.die(f"remote tar unpack failed: {host._ssh_failure_detail(tar_proc)}")
 
-        # In-place checkpoint via the *staged* 0.5 helper (not the installed 0.3.x
-        # vcl). Fresh-node restore is unused: it refuses VERSION and rotates URI.
-        staged_helper = f"{paths['unpack']}/bin/vincula"
-        ssh_state, ck_doc, ck_detail = _ssh_json(
-            node,
-            ["bash", staged_helper, "upgrade", "checkpoint", "--json"],
-            credential_class="admin",
-            timeout=host.SSH_BACKUP_TIMEOUT_SECONDS,
-            require_exit_0=True,
-        )
-        if (
-            ssh_state != "OK"
-            or not isinstance(ck_doc, dict)
-            or ck_doc.get("ok") is not True
-        ):
-            host.die(
-                f"upgrade checkpoint failed: {ck_detail or 'remote checkpoint failed'}"
-            )
-        checkpoint_path = _optional_backup_path(ck_doc)
-        if not checkpoint_path:
-            host.die("upgrade checkpoint failed: missing path in JSON response")
+        runner = f"{paths['unpack']}/lib/upgrade_prepare.py"
+        binding = {"node_id": pre_node_id, "instance_id": pre_instance_id,
+                   "source_version": pre_version, "payload_sha256": manifest["sha256"]}
+        # Once start is sent, loss of SSH never proves that the worker stopped.
+        preserve_stage = True
+        prepared = _prepare_remote(node, runner, operation_id, binding,
+                                   f"{paths['unpack']}/bin/vincula", prepare_seconds)
+        if prepared.get("state") != "SUCCEEDED":
+            return {"ok": False, "state": "ERROR", "phase": prepared.get("phase", "prepare"),
+                    "code": prepared.get("code", "PREPARATION_FAILED"),
+                    "node": node.get("name"), "operation_id": prepared.get("operation_id", operation_id),
+                    "requested_operation_id": operation_id,
+                    "remote_state": prepared.get("state", "UNKNOWN"),
+                    "remote_stage": remote_stage, "retry_allowed": False,
+                    "migrate_started": False, "detail": prepared.get("detail", ""),
+                    "from_version": pre_version, "to_version": target}
+        backup_path = prepared["backup"]["path"]
+        checkpoint_path = prepared["checkpoint"]["path"]
+        preserve_stage = False
 
         install_argv = prov.installer_remote_argv(
             f"{paths['unpack']}/vincula.sh",
@@ -353,14 +366,15 @@ def run_upgrade_apply(
             host.die(f"remote migrate failed: {host._ssh_failure_detail(install_proc)}")
         migrate_committed = True
     finally:
-        prov._cleanup_remote_stage(
-            remote_stage,
-            ssh_host=node["ssh_host"],
-            ssh_user=node["ssh_user"],
-            ssh_port=int(node.get("ssh_port") or 22),
-            identity_file=identity_file,
-            extra=extra,
-        )
+        if not preserve_stage:
+            prov._cleanup_remote_stage(
+                remote_stage,
+                ssh_host=node["ssh_host"],
+                ssh_user=node["ssh_user"],
+                ssh_port=int(node.get("ssh_port") or 22),
+                identity_file=identity_file,
+                extra=extra,
+            )
 
     if not checkpoint_path:
         host.die("upgrade checkpoint path missing after staging")
@@ -373,6 +387,7 @@ def run_upgrade_apply(
             "to_version": target,
             "credential_class": "admin",
             "migrate_committed": True,
+            "operation_id": operation_id,
             "checkpoint_path": checkpoint_path,
             "backup_path": backup_path,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
