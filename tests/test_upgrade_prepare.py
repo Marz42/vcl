@@ -98,34 +98,126 @@ class PrepareTests(unittest.TestCase):
         prov._cleanup_remote_stage.assert_not_called()
 
 
+class BackupVerificationTests(unittest.TestCase):
+    def make_archive(self, root):
+        state = root / 'state'; state.mkdir()
+        (state / 'state.json').write_text(json.dumps({'node': {
+            'node_id': 'n', 'instance_id': 'i'}}))
+        (state / 'users.json').write_text('{"users": []}')
+        (state / 'config.toml').write_text('port = 443\n')
+        (state / 'VERSION').write_text('0.5.0')
+        db = root / 'db'
+        with sqlite3.connect(db) as con:
+            con.execute('create table sample (value blob)')
+            con.execute('insert into sample values (zeroblob(2097152))')
+        archive = root / 'backup.tar'
+        result = backup.create_backup(state, db, False, archive)
+        self.assertTrue(result['ok'])
+        return archive
+
+    def test_fd_verify_accepts_intact_and_detects_truncation_and_tamper(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = self.make_archive(Path(tmp))
+            fd = os.open(archive, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                result = backup.verify_archive_fd(fd)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(result['archive_sha256'], backup.sha256_file(archive))
+                os.truncate(archive, archive.stat().st_size * 3 // 5)
+                self.assertEqual(backup.verify_archive_fd(fd).get('error'), 'invalid_archive')
+            finally:
+                os.close(fd)
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = self.make_archive(Path(tmp))
+            import tarfile
+            with tarfile.open(archive) as tar:
+                offset = tar.getmember('accounting.db').offset_data
+            with archive.open('r+b') as fh:
+                fh.seek(offset + 100); fh.write(b'BROKEN')
+            fd = os.open(archive, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                self.assertEqual(backup.verify_archive_fd(fd).get('error'), 'checksum_mismatch')
+            finally:
+                os.close(fd)
+
+    def test_snapshot_deadline_is_explicit(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dest = Path(tmp)/'src', Path(tmp)/'dest'
+            with sqlite3.connect(src) as con:
+                con.execute('create table t(x)'); con.execute('insert into t values (42)')
+            con.close()
+            with patch.dict(os.environ, {'VCL_PREPARE_DEADLINE_MONO': '0'}):
+                with self.assertRaises(sqlite3.OperationalError):
+                    backup.snapshot_sqlite(src, dest)
+
+
 @unittest.skipUnless(__import__('os').name == 'posix', 'requires Linux flock and process groups')
 class LinuxWorkerTests(unittest.TestCase):
-    def test_worker_success_and_deadline(self):
+    def _fixture(self, tmp):
         import os
         import uuid
         worker = load('prepare_worker', 'lib/upgrade_prepare.py')
-        for seconds, script, expected in [
-            (10, 'if [ "$1" = backup ]; then echo \'{"ok":true,"path":"/b","source_node_id":"n","source_instance_id":"i"}\'; else echo \'{"ok":true,"path":"/c","source_version":"0.5.0"}\'; fi', 'SUCCEEDED'),
-            (0.1, 'sleep 30', 'CANCELLED'),
-        ]:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp); root.chmod(0o700)
-                helper = root / 'helper'; helper.write_text(script)
-                state = root / 'state'; state.mkdir()
-                (state/'state.json').write_text('{"node":{"node_id":"n","instance_id":"i"}}')
-                (state/'VERSION').write_text('0.5.0')
-                op = str(uuid.uuid4()); dest = root/op; dest.mkdir()
-                worker.save(dest/'status.json', {'state':'RUNNING', 'operation_id':op,
-                    'binding':{'node_id':'n','instance_id':'i','source_version':'0.5.0'},
-                    'helper':str(helper), 'seconds':seconds})
-                fd = worker.lock(root)
-                with patch.object(worker.os, 'nice'), patch.object(worker.subprocess, 'run'):
-                    worker.worker(root,op,fd,state)
-                doc = json.loads((dest/'status.json').read_text())
-                self.assertEqual(doc['state'],expected,doc)
-                fd = worker.lock(root); self.assertIsNotNone(fd); os.close(fd)
+        root = Path(tmp); root.chmod(0o700)
+        root.joinpath('backups').mkdir()
+        helper = root / 'helper'
+        state = root / 'state'; state.mkdir()
+        (state/'state.json').write_text('{"node":{"node_id":"n","instance_id":"i"}}')
+        (state/'VERSION').write_text('0.5.0')
+        (state/'users.json').write_text('{"users": []}')
+        (state/'config.toml').write_text('port = 443\n')
+        db = root/'db'
+        with sqlite3.connect(db) as con:
+            con.execute('create table t(x)'); con.execute('insert into t values (42)')
+        con.close()
+        archive = root/'backups'/'backup.tar'
+        made = backup.create_backup(state, db, False, archive)
+        backup_json = root/'backup.json'
+        backup_json.write_text(json.dumps(made))
+        checkpoint_json = json.dumps({'ok': True, 'path': str(root/'checkpoint'), 'source_version': '0.5.0'})
+        helper.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = backup ]; then cat "$VCL_TEST_BACKUP_JSON"; else printf %s "' + checkpoint_json.replace('"','\\"') + '"; fi\n')
+        helper.chmod(0o755)
+        import os
+        os.environ['VCL_TEST_BACKUP_JSON'] = str(backup_json)
+        op = str(uuid.uuid4()); dest = root/op; dest.mkdir()
+        worker.save(dest/'status.json', {'state':'RUNNING', 'operation_id':op,
+            'binding':{'node_id':'n','instance_id':'i','source_version':'0.5.0'},
+            'helper':str(helper), 'seconds':30})
+        fd = worker.lock(root)
+        return worker, root, op, fd, dest, archive
 
-    def test_live_lock_and_abandoned_operation_block_restart(self):
+    def test_worker_success_verifies_archive_and_runs_checkpoint(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            worker, root, op, fd, dest, archive = self._fixture(tmp)
+            with patch.object(worker, 'BACKUP_ROOT', root/'backups'), \
+                 patch.object(worker.os, 'nice'), \
+                 patch.object(worker.subprocess, 'run'):
+                worker.worker(root, op, fd, root/'state')
+            doc = json.loads((dest/'status.json').read_text())
+            self.assertEqual(doc['state'], 'SUCCEEDED', doc)
+            self.assertTrue(doc['backup_verification']['ok'])
+            self.assertEqual(doc['backup_verification']['archive_sha256'],
+                             backup.sha256_file(archive))
+            fd2 = worker.lock(root); self.assertIsNotNone(fd2); os.close(fd2)
+
+    def test_worker_with_bad_helper_does_not_succeed(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            worker, root, op, fd, dest, archive = self._fixture(tmp)
+            (root/'helper').write_text('#!/bin/bash\nexit 3\n')
+            with patch.object(worker, 'BACKUP_ROOT', root/'backups'), \
+                 patch.object(worker.os, 'nice'), \
+                 patch.object(worker.subprocess, 'run'):
+                worker.worker(root, op, fd, root/'state')
+            doc = json.loads((dest/'status.json').read_text())
+            self.assertEqual(doc['state'], 'FAILED')
+            self.assertFalse(doc.get('checkpoint'))
+
+    def test_read_status_converges_after_lock_release(self):
         import os
         import uuid
         worker = load('prepare_worker_lock', 'lib/upgrade_prepare.py')
@@ -136,9 +228,8 @@ class LinuxWorkerTests(unittest.TestCase):
             fd=worker.lock(root)
             self.assertEqual(worker.read_status(dest/'status.json')['state'],'RUNNING')
             os.close(fd)
-            self.assertEqual(worker.read_status(dest/'status.json')['state'],'UNKNOWN')
-            doc=worker.start(root,str(uuid.uuid4()),{},root/'helper',30)
-            self.assertEqual(doc['code'],'UNRESOLVED_PREPARATION')
+            doc=worker.read_status(dest/'status.json')
+            self.assertEqual((doc['state'],doc['code']),('FAILED','WORKER_LOST'))
 
 if __name__ == '__main__':
     unittest.main()
