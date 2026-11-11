@@ -204,6 +204,20 @@ class LinuxWorkerTests(unittest.TestCase):
                              backup.sha256_file(archive))
             fd2 = worker.lock(root); self.assertIsNotNone(fd2); os.close(fd2)
 
+    def test_start_refuses_without_pid_namespace(self):
+        import uuid
+        worker = load('prepare_start_refusal', 'lib/upgrade_prepare.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); root.chmod(0o700)
+            helper = root / 'helper'; helper.write_text('#!/bin/bash\nexit 0\n')
+            with patch.object(worker, 'lifecycle_available', return_value=False), \
+                 patch.object(worker.subprocess, 'Popen') as popen:
+                doc = worker.start(root, str(uuid.uuid4()),
+                                   {'node_id': 'n', 'instance_id': 'i', 'source_version': '0.5.0'},
+                                   helper, 30)
+            self.assertEqual((doc['state'], doc['code']), ('FAILED', 'LIFECYCLE_UNAVAILABLE'))
+            popen.assert_not_called()
+            self.assertFalse((root / doc['operation_id'] / 'worker.log').exists())
     def test_worker_with_bad_helper_does_not_succeed(self):
         import os
         with tempfile.TemporaryDirectory() as tmp:
