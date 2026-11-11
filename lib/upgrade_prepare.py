@@ -13,12 +13,15 @@ same namespace.  Kernel semantics give two important properties:
 * if the supervisor dies, the worker receives ``PR_SET_PDEATHSIG`` and dies,
   which in turn makes the kernel clear the namespace.
 
-The supervisor is the only process that enforces the deadline.  It holds a
-duplicate of the operation lock for the whole operation, so the lock cannot be
-released before the worker tree is gone.  If the supervisor is killed, the
-lock is still held by the worker until ``PDEATHSIG`` completes, and
-``read_status`` reconciles a stale RUNNING record only after it can acquire the
-lock.
+The supervisor is the primary process that enforces the deadline.  The worker
+also starts one deadline-guard thread with the **same absolute** monotonic
+deadline, so a stopped supervisor cannot leave the worker/helper running past
+it.  The guard is not a second budget.  After forking the worker, the supervisor
+closes its own lock fd; the worker and all helpers inherit the only copy, so
+the kernel namespace teardown releases it only after the worker tree is gone.
+If the supervisor is killed, the lock is still held by the worker until
+``PDEATHSIG`` completes, and ``read_status`` reconciles a stale RUNNING record
+only after it can acquire the lock.
 """
 from __future__ import annotations
 import argparse
@@ -32,6 +35,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -260,6 +264,17 @@ def supervise(root, op, fd, deadline):
                 traceback.print_exc()
                 os._exit(1)
         os.close(read_fd)
+        # From this point the worker and all helpers inherit the only lock fd.
+        # The supervisor must not retain a duplicate: if the supervisor is
+        # SIGSTOPed, its fd would otherwise keep the lock after the worker
+        # guard has already torn the namespace down.  Kernel teardown of the
+        # PID namespace closes the inherited helper fds, so the lock cannot be
+        # released before the worker tree is gone.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        fd = -1
         save(path.parent / 'lifecycle.json', {
             'operation_id': op,
             'supervisor_pid': os.getpid(),
@@ -335,10 +350,11 @@ def supervise(root, op, fd, deadline):
                        detail=f'supervisor failed: {exc}', finished_at=time.time())
             save(path, doc)
     finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _load_backup_module():
@@ -426,6 +442,60 @@ def worker(root, op, fd, state_dir=None):
     doc = json.loads(path.read_text())
     proc = None
     archive_fd = None
+    status_lock = threading.Lock()
+    deadline_fired = threading.Event()
+    proc_holder = {'proc': None}
+    raw_deadline = os.environ.get('VCL_PREPARE_DEADLINE_MONO', '').strip()
+    try:
+        deadline = float(raw_deadline) if raw_deadline else None
+    except ValueError:
+        raise ValueError('invalid VCL_PREPARE_DEADLINE_MONO')
+
+    def save_status(current):
+        # Once the absolute deadline has fired, no later main-thread write may
+        # resurrect a RUNNING or SUCCEEDED record.
+        with status_lock:
+            if deadline_fired.is_set() and current.get('state') != 'CANCELLED':
+                current.update(state='CANCELLED', code='PREPARATION_DEADLINE',
+                               detail='absolute preparation deadline expired (worker guard)',
+                               finished_at=time.time(), deadline_owner='worker_guard')
+            save(path, current)
+
+    def _deadline_guard():
+        # Independent of proc.wait(), snapshot_sqlite() and archive
+        # verification: this thread only depends on the supervisor-provided
+        # absolute monotonic deadline.  It is not a new 900 s budget.
+        if deadline is None:
+            return
+        left = deadline - time.monotonic()
+        if left > 0:
+            time.sleep(left)
+        with status_lock:
+            try:
+                current = json.loads(path.read_text())
+            except (OSError, ValueError):
+                return
+            if current.get('state') != 'RUNNING':
+                return
+            current.update(state='CANCELLED', code='PREPARATION_DEADLINE',
+                           detail='absolute preparation deadline expired while supervisor was not scheduling',
+                           finished_at=time.time(), deadline_owner='worker_guard')
+            save(path, current)
+            deadline_fired.set()
+            helper = proc_holder.get('proc')
+        if helper is not None:
+            try:
+                os.killpg(helper.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        # Same 5 s grace as the supervisor.  If the helper ignores TERM, the
+        # worker (namespace PID 1) exits and the kernel clears the namespace.
+        time.sleep(5)
+        os._exit(1)
+
+    if deadline is not None:
+        threading.Thread(target=_deadline_guard, name='deadline-guard', daemon=True).start()
+
     os.nice(15)
     try:
         doc['ionice_applied'] = subprocess.run(
@@ -456,12 +526,16 @@ def worker(root, op, fd, state_dir=None):
         for phase, args in [('backup', ['backup', 'create', '--json']),
                             ('checkpoint', ['upgrade', 'checkpoint', '--json'])]:
             doc['phase'] = phase
-            save(path, doc)
+            save_status(doc)
             began = time.monotonic()
             with (path.parent / (phase + '.json')).open('wb') as out, (path.parent / (phase + '.log')).open('wb') as err:
                 proc = subprocess.Popen(['bash', doc['helper'], *args], stdout=out,
                                         stderr=err, start_new_session=True, pass_fds=(fd,))
-                rc = proc.wait()
+                proc_holder['proc'] = proc
+                try:
+                    rc = proc.wait()
+                finally:
+                    proc_holder['proc'] = None
             if rc:
                 raise ValueError(phase + ' command failed')
             result = json.loads((path.parent / (phase + '.json')).read_text())
@@ -482,13 +556,13 @@ def worker(root, op, fd, state_dir=None):
                             doc['backup_verification'] = json.loads(verification_path.read_text())
                         except ValueError:
                             pass
-                    save(path, doc)
+                    save_status(doc)
                     raise
                 doc['backup_verification'] = evidence
             else:
                 doc['checkpoint'] = result
             doc[phase + '_seconds'] = time.monotonic() - began
-            save(path, doc)
+            save_status(doc)
         if archive_fd is not None:
             _check_archive_unchanged(archive_fd, doc['backup_verification'])
         doc.update(state='SUCCEEDED', phase='prepared')
@@ -501,7 +575,7 @@ def worker(root, op, fd, state_dir=None):
             except OSError:
                 pass
         doc['finished_at'] = time.time()
-        save(path, doc)
+        save_status(doc)
         os.close(fd)
 
 

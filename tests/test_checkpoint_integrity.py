@@ -111,6 +111,20 @@ class CheckpointIntegrityTests(unittest.TestCase):
         self.assertEqual(doc["error"], "checkpoint_integrity_failed")
         self.assertEqual(self.digest(self.db), before)
 
+    def test_verify_only_checks_manifest_without_mutation(self):
+        ck = self.checkpoint()
+        (self.state / "VERSION").write_text("0.5.6\n")
+        before = self.digest(self.db)
+        proc = subprocess.run(self.run_cli + ["rollback", str(ck),
+                                              "--verify-only", "--json"],
+                              env=self.env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        doc = json.loads(proc.stdout)
+        self.assertTrue(doc["ok"])
+        self.assertTrue(doc["verified"])
+        self.assertEqual(self.digest(self.db), before)
+        self.assertEqual((self.state / "VERSION").read_text().strip(), "0.5.6")
+
     def test_valid_checkpoint_rolls_back(self):
         ck = self.checkpoint()
         (self.state / "VERSION").write_text("0.5.6\n")

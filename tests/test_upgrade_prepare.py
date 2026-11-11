@@ -112,6 +112,33 @@ class PrepareTests(unittest.TestCase):
         prov._cleanup_remote_stage.assert_not_called()
 
 
+class AutoRollbackCompatibilityTests(unittest.TestCase):
+    def test_old_or_unknown_installed_helper_is_not_used_for_mutation(self):
+        host = Mock()
+        upgrade.bind(host)
+        with patch.object(upgrade, '_ssh_json',
+                          side_effect=[('ERROR', None, 'unknown option')]) as ssh:
+            result = upgrade._attempt_post_upgrade_rollback(
+                {'name': 'n', 'node_id': 'n'},
+                checkpoint_path='/backups/ck', backup_path='/backups/b.tar',
+                post_check_detail='verify failed', pre_version='0.5.0',
+                target='0.5.5')
+        self.assertIsNone(result)
+        self.assertEqual(ssh.call_count, 1)
+        argv = ssh.call_args.args[1]
+        self.assertIn('--verify-only', argv)
+
+    def test_new_helper_preflight_then_real_rollback(self):
+        host = Mock()
+        upgrade.bind(host)
+        with patch.object(upgrade, '_ssh_json', side_effect=[('OK', {'ok': True, 'verified': True}, ''), ('OK', {'ok': True, 'restored_version': '0.5.5'}, '')]) as ssh:
+            result = upgrade._attempt_post_upgrade_rollback({'name': 'n', 'node_id': 'n'}, checkpoint_path='/backups/ck', backup_path='/backups/b.tar', post_check_detail='verify failed', pre_version='0.5.0', target='0.5.5')
+        self.assertIsNotNone(result)
+        self.assertEqual(result['state'], 'ROLLED_BACK')
+        self.assertEqual(ssh.call_count, 2)
+        self.assertIn('--verify-only', ssh.call_args_list[0].args[1])
+        self.assertNotIn('--verify-only', ssh.call_args_list[1].args[1])
+
 class BackupVerificationTests(unittest.TestCase):
     def make_archive(self, root):
         state = root / 'state'; state.mkdir()
@@ -235,6 +262,38 @@ class LinuxWorkerTests(unittest.TestCase):
             self.assertEqual((doc['state'], doc['code']), ('FAILED', 'LIFECYCLE_UNAVAILABLE'))
             popen.assert_not_called()
             self.assertFalse((root / doc['operation_id'] / 'worker.log').exists())
+    def test_worker_deadline_guard_covers_blocked_verification(self):
+        import os
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            worker, root, op, fd, dest, archive = self._fixture(tmp)
+            deadline = time.monotonic() + 1.0
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    with patch.object(worker, '_verify_backup',
+                                      side_effect=lambda *a, **k: time.sleep(10)), \
+                         patch.object(worker, 'BACKUP_ROOT', root/'backups'), \
+                         patch.object(worker.os, 'nice'), \
+                         patch.object(worker.subprocess, 'run'):
+                        os.environ['VCL_PREPARE_DEADLINE_MONO'] = repr(deadline)
+                        worker.worker(root, op, fd, root/'state')
+                finally:
+                    os._exit(0)
+            os.close(fd)
+            began = time.monotonic()
+            os.waitpid(pid, 0)
+            elapsed = time.monotonic() - began
+            doc = json.loads((dest/'status.json').read_text())
+            self.assertEqual((doc['state'], doc['code']),
+                             ('CANCELLED', 'PREPARATION_DEADLINE'), doc)
+            self.assertEqual(doc.get('deadline_owner'), 'worker_guard')
+            self.assertNotIn(doc['state'], ('SUCCEEDED', 'RUNNING'))
+            self.assertLess(elapsed, 8)
+            fd2 = worker.lock(root)
+            self.assertIsNotNone(fd2)
+            os.close(fd2)
+
     def test_worker_with_bad_helper_does_not_succeed(self):
         import os
         with tempfile.TemporaryDirectory() as tmp:

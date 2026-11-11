@@ -140,7 +140,7 @@ Usage:
   vcl restore FILE [--include-secrets] [--age-identity FILE] [--reissue-output FILE] [--server HOST] [--json]
   vcl upgrade checkpoint [--json]
                         In-place upgrade checkpoint via helper (staged on apply)
-  vcl upgrade rollback DIR [--json]
+  vcl upgrade rollback DIR [--verify-only] [--json]
                         Roll back to an upgrade checkpoint; fail-closed on services
   vcl uninstall        Remove this Vincula-managed installation
   vcl uninstall --yes  Uninstall without interactive confirmation
@@ -3561,12 +3561,13 @@ cmd_upgrade_rollback() {
   local json=0 dir="" name path mode owner group ver
   local ctl=${VCL_SYSTEMCTL:-systemctl}
   local expect_node_id="" expect_instance_id="" got_node_id="" got_instance_id=""
-  local skip_service=0 ck_verify_err=""
+  local skip_service=0 ck_verify_err="" verify_only=0
   local unit
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json=1; shift ;;
+      --verify-only) verify_only=1; shift ;;
       -h|--help) cmd_upgrade_usage; return 0 ;;
       -*)
         die "Unknown upgrade rollback option: $1"
@@ -3705,6 +3706,20 @@ if seen != set(files):
 PY
   ); then
     upgrade_rollback_fail "checkpoint integrity verification failed: ${ck_verify_err:-unknown}" "checkpoint_integrity_failed"
+  fi
+
+  if (( verify_only )); then
+    if (( json )); then
+      python_private "$dir" "$ver" <<'PY'
+import json, sys
+print(json.dumps({"schema_version": 1, "ok": True, "mode": "in_place",
+                  "path": sys.argv[1], "source_version": sys.argv[2],
+                  "verified": True}, sort_keys=True))
+PY
+    else
+      printf 'checkpoint verified: %s (source_version=%s)\n' "$dir" "$ver"
+    fi
+    return 0
   fi
 
   # Stop first; never overwrite live DB/config while services are still active.

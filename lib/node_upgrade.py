@@ -524,6 +524,20 @@ def _attempt_post_upgrade_rollback(
     URI credentials. Returns ROLLED_BACK on success, or None → PARTIAL.
     """
     host = _require_host()
+    # A preflight through the *installed* helper proves it understands the
+    # checkpoint manifest.  An old helper fails --verify-only harmlessly instead
+    # of being called for an unverified mutation.
+    verify_argv = [
+        "vcl", "upgrade", "rollback", checkpoint_path,
+        "--verify-only", "--json",
+    ]
+    timeout = getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60)
+    ssh_state, verify_doc, verify_detail = _ssh_json(
+        node, verify_argv, credential_class="admin",
+        timeout=timeout, require_exit_0=False,
+    )
+    if ssh_state != "OK" or not isinstance(verify_doc, dict) or verify_doc.get("ok") is not True:
+        return None
     rollback_argv = [
         "vcl",
         "upgrade",
@@ -531,7 +545,6 @@ def _attempt_post_upgrade_rollback(
         checkpoint_path,
         "--json",
     ]
-    timeout = getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60)
     ssh_state, doc, restore_detail = _ssh_json(
         node,
         rollback_argv,
