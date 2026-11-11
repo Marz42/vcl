@@ -28,6 +28,7 @@ class BackupTests(unittest.TestCase):
             (state / 'VERSION').write_text('0.5.0')
             db = root / 'db'
             with sqlite3.connect(db) as con:
+                con.execute('pragma journal_mode=wal')
                 con.execute('create table sample (value blob)')
                 con.execute('insert into sample values (zeroblob(2097152))')
             con.close()
@@ -49,6 +50,7 @@ class BackupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
             src, dest = Path(tmp)/'src', Path(tmp)/'dest'
             with sqlite3.connect(src) as con:
+                con.execute('pragma journal_mode=wal')
                 con.execute('create table t(x)'); con.execute('insert into t values (42)')
             con.close()
             backup.snapshot_sqlite(src, dest)
@@ -56,6 +58,18 @@ class BackupTests(unittest.TestCase):
                 self.assertEqual(con.execute('pragma integrity_check').fetchone()[0], 'ok')
                 self.assertEqual(con.execute('select x from t').fetchone()[0], 42)
             con.close()
+
+    def test_snapshot_rejects_non_wal(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            src, dest = Path(tmp)/'src', Path(tmp)/'dest'
+            with sqlite3.connect(src) as con:
+                con.execute('create table t(x)')
+                con.execute('insert into t values (42)')
+            con.close()
+            with self.assertRaises(sqlite3.OperationalError) as ctx:
+                backup.snapshot_sqlite(src, dest)
+            self.assertIn('requires WAL', str(ctx.exception))
+            self.assertFalse(dest.exists())
 
 class PrepareTests(unittest.TestCase):
     def test_lost_start_reply_queries_same_operation(self):
@@ -108,6 +122,7 @@ class BackupVerificationTests(unittest.TestCase):
         (state / 'VERSION').write_text('0.5.0')
         db = root / 'db'
         with sqlite3.connect(db) as con:
+            con.execute('pragma journal_mode=wal')
             con.execute('create table sample (value blob)')
             con.execute('insert into sample values (zeroblob(2097152))')
         archive = root / 'backup.tar'
@@ -146,6 +161,7 @@ class BackupVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src, dest = Path(tmp)/'src', Path(tmp)/'dest'
             with sqlite3.connect(src) as con:
+                con.execute('pragma journal_mode=wal')
                 con.execute('create table t(x)'); con.execute('insert into t values (42)')
             con.close()
             with patch.dict(os.environ, {'VCL_PREPARE_DEADLINE_MONO': '0'}):
@@ -169,6 +185,7 @@ class LinuxWorkerTests(unittest.TestCase):
         (state/'config.toml').write_text('port = 443\n')
         db = root/'db'
         with sqlite3.connect(db) as con:
+            con.execute('pragma journal_mode=wal')
             con.execute('create table t(x)'); con.execute('insert into t values (42)')
         con.close()
         archive = root/'backups'/'backup.tar'

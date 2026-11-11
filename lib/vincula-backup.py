@@ -307,6 +307,14 @@ def snapshot_sqlite(src: Path, dest: Path) -> None:
         except ValueError:
             raise ValueError("invalid VCL_PREPARE_DEADLINE_MONO") from None
     try:
+        # A rollback-journal source turns the pinned read transaction into a
+        # long SHARED lock: writers block or fail for the whole copy.  The
+        # accounting DB is WAL by construction; refuse anything else instead of
+        # silently exporting that failure mode.
+        mode = str(src_conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            raise sqlite3.OperationalError(
+                f"unsupported journal_mode {mode!r}; accounting snapshot requires WAL")
         # Pin one WAL snapshot for the whole copy.  Without this, a writer that
         # commits between backup steps makes sqlite3_backup restart from page 1;
         # the old per-progress sleep made that restart loop effectively

@@ -44,6 +44,7 @@ readonly VAR_LIB_SING_BOX="/var/lib/sing-box"
 readonly BACKUP_ROOT="${VCL_BACKUP_ROOT:-/var/backups/vincula}"
 readonly BACKUP_MARKER=".vincula-backup"
 readonly UPGRADE_CHECKPOINT_MARKER=".vincula-upgrade-checkpoint"
+readonly UPGRADE_CHECKPOINT_MANIFEST=".vincula-upgrade-checkpoint.manifest.json"
 readonly COMMON_FILE="${LIB_DIR}/vincula-common.sh"
 
 die() {
@@ -3501,6 +3502,43 @@ created_at=${stamp}
 EOF
   chmod 0600 "${dest}/${UPGRADE_CHECKPOINT_MARKER}"
 
+  # Integrity manifest last: a marker without a manifest is an incomplete
+  # checkpoint and rollback refuses it.  Hash every member, including the
+  # marker, so a partial restore cannot silently replace live state.
+  python_private "$dest" "$ver" "$stamp" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+root, ver, stamp = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+name = ".vincula-upgrade-checkpoint.manifest.json"
+files = {}
+for entry in sorted(os.scandir(root), key=lambda e: e.name):
+    if entry.name == name:
+        continue
+    st = entry.stat(follow_symlinks=False)
+    mode = stat.S_IMODE(st.st_mode)
+    if entry.is_symlink():
+        files[entry.name] = {"type": "symlink", "target": os.readlink(entry.path), "mode": mode}
+    elif stat.S_ISREG(st.st_mode):
+        h = hashlib.sha256()
+        with open(entry.path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        files[entry.name] = {"type": "regular", "sha256": h.hexdigest(),
+                             "size": st.st_size, "mode": mode}
+    else:
+        raise SystemExit(f"unsupported checkpoint member: {entry.name}")
+manifest = {"schema_version": 1, "source_version": ver,
+            "created_at": stamp, "files": files}
+tmp = root / (name + ".tmp")
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(manifest, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+os.chmod(tmp, 0o600)
+os.replace(tmp, root / name)
+PY
+
   if (( json )); then
     python_private "$dest" "$ver" "$stamp" <<'PY'
 import json, sys
@@ -3523,7 +3561,7 @@ cmd_upgrade_rollback() {
   local json=0 dir="" name path mode owner group ver
   local ctl=${VCL_SYSTEMCTL:-systemctl}
   local expect_node_id="" expect_instance_id="" got_node_id="" got_instance_id=""
-  local skip_service=0
+  local skip_service=0 ck_verify_err=""
   local unit
 
   while [[ $# -gt 0 ]]; do
@@ -3615,6 +3653,59 @@ cmd_upgrade_rollback() {
       install -m "$mode" "${dir}/${name}" "$path"
     fi
   }
+
+  # Verify the checkpoint manifest before stopping services or touching any
+  # live file.  The marker proves completeness; the manifest proves bytes.
+  if ! ck_verify_err=$(python_private "$dir" "$ver" <<'PY' 2>&1
+import hashlib, json, os, stat, sys
+from pathlib import Path
+root, ver = Path(sys.argv[1]), sys.argv[2]
+name = ".vincula-upgrade-checkpoint.manifest.json"
+mp = root / name
+if mp.is_symlink() or not mp.is_file():
+    raise SystemExit("manifest missing")
+try:
+    doc = json.loads(mp.read_text(encoding="utf-8"))
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"manifest unreadable: {exc}")
+if doc.get("schema_version") != 1:
+    raise SystemExit("unsupported manifest schema")
+if doc.get("source_version") != ver:
+    raise SystemExit("manifest source_version mismatch")
+files = doc.get("files")
+if not isinstance(files, dict) or not files:
+    raise SystemExit("manifest has no files")
+seen = set()
+for entry in sorted(os.scandir(root), key=lambda e: e.name):
+    if entry.name == name:
+        continue
+    rec = files.get(entry.name)
+    if not isinstance(rec, dict):
+        raise SystemExit(f"unlisted member: {entry.name}")
+    seen.add(entry.name)
+    st = entry.stat(follow_symlinks=False)
+    if stat.S_IMODE(st.st_mode) != rec.get("mode"):
+        raise SystemExit(f"mode mismatch: {entry.name}")
+    if rec.get("type") == "symlink":
+        if not entry.is_symlink() or os.readlink(entry.path) != rec.get("target"):
+            raise SystemExit(f"symlink mismatch: {entry.name}")
+    elif rec.get("type") == "regular":
+        if not stat.S_ISREG(st.st_mode) or st.st_size != rec.get("size"):
+            raise SystemExit(f"type/size mismatch: {entry.name}")
+        h = hashlib.sha256()
+        with open(entry.path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        if h.hexdigest() != rec.get("sha256"):
+            raise SystemExit(f"checksum mismatch: {entry.name}")
+    else:
+        raise SystemExit(f"unknown member type: {entry.name}")
+if seen != set(files):
+    raise SystemExit("manifest lists missing members")
+PY
+  ); then
+    upgrade_rollback_fail "checkpoint integrity verification failed: ${ck_verify_err:-unknown}" "checkpoint_integrity_failed"
+  fi
 
   # Stop first; never overwrite live DB/config while services are still active.
   if (( skip_service == 0 )); then
