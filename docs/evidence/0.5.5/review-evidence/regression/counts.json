@@ -1,0 +1,6 @@
+{
+  "python": {"passed": 225, "skipped": 10, "failed": 0, "log": "python.log"},
+  "bash_user": {"reported": "All 1970 tests passed", "passed": 1970, "failed": 0, "seconds": 641.558, "log": "test-sh-user.log"},
+  "bash_root_namespace": {"reported": "All 1968 tests passed", "passed": 1968, "failed": 0, "seconds": 641.270, "log": "test-sh-root.log"},
+  "original_worktree": {"passed": 392, "failed": 11, "classification": "environment failure: root-owned 0600 frozen dist; not counted as pass"}
+}

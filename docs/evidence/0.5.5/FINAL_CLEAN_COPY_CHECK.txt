@@ -1,0 +1,3 @@
+vcl-final-user: files=393 missing_or_mismatch=0
+vcl-final-root: files=393 missing_or_mismatch=0
+copies_byte_identical_before_tests=yes (git archive f86dd5e; diff -qr empty at 00:19)

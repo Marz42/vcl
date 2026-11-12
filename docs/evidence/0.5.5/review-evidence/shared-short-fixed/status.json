@@ -1,0 +1,56 @@
+{
+  "backup": {
+    "backup_schema_version": 1,
+    "encryption": "none",
+    "ok": true,
+    "path": "/var/backups/vincula/node-node-fix-20261111T080938Z.tar",
+    "schema_version": 1,
+    "secret_bearing": false,
+    "sha256": "38ee4225a875c49d891283d7f98fb83deac7b1f7097d823237513930fcac0f4f",
+    "source_instance_id": "inst-node-fix",
+    "source_node_id": "node-fix",
+    "timings": {
+      "archive_hash_seconds": 0.014131039002677426,
+      "archive_seconds": 0.015548096009297296,
+      "manifest_seconds": 0.01537028601160273,
+      "publish_seconds": 0.0014986809983383864,
+      "snapshot_seconds": 0.01818255500984378,
+      "verify_seconds": 0.03921868099132553
+    }
+  },
+  "backup_seconds": 40.30855621499359,
+  "backup_verification": {
+    "archive_dev": 112,
+    "archive_ino": 140494,
+    "archive_mtime_ns": 1794384578792872951,
+    "archive_sha256": "38ee4225a875c49d891283d7f98fb83deac7b1f7097d823237513930fcac0f4f",
+    "archive_size": 21022720,
+    "encryption": "none",
+    "ok": true,
+    "path": "/var/backups/vincula/node-node-fix-20261111T080938Z.tar",
+    "schema_version": 1,
+    "seconds": 0.11956292201648466,
+    "secret_bearing": false,
+    "source_instance_id": "inst-node-fix",
+    "source_node_id": "node-fix",
+    "vincula_version": "0.5.5"
+  },
+  "binding": {
+    "instance_id": "inst-node-fix",
+    "node_id": "node-fix",
+    "source_version": "0.5.5"
+  },
+  "code": "PREPARATION_DEADLINE",
+  "deadline_owner": "worker_guard",
+  "detail": "absolute preparation deadline expired (worker guard)",
+  "finished_at": 1794384638.6015422,
+  "helper": "/tmp/payload/bin/vincula",
+  "ionice_applied": true,
+  "migrate_started": false,
+  "nice": 15,
+  "operation_id": "01d4b532-6d0d-4853-bcab-36a348700452",
+  "phase": "checkpoint",
+  "seconds": 60,
+  "started_at": 1794384578.599087,
+  "state": "CANCELLED"
+}

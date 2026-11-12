@@ -58,8 +58,10 @@ window, but removing the sleep alone does not fix the restart loop.
   preserving an explicit, bounded failure.
 
 The transaction is rolled back on error and committed after the copy. A
-non-WAL source can still block its writer for the duration of the copy; that is
-inherent to a consistent snapshot without a WAL snapshot.
+non-WAL source is explicitly refused (`unsupported journal_mode ...; accounting
+snapshot requires WAL`): the pinned read transaction would otherwise hold a
+SHARED lock and block/fail writers for the whole copy. Only the WAL accounting
+DB is supported.
 
 ## 3. Backup handoff verification
 
@@ -96,7 +98,23 @@ it actually consumes; the recorded digest/inode is the value to compare.
 * A stopped supervisor (`SIGSTOP`) cannot enforce its deadline; the record is
   not reported as success, but it can remain `RUNNING` until the supervisor is
   continued or killed.
-* The test environment used a process-level write throttle because cgroup
-  `io.max` was not delegated; read limits and a cold-cache 10 MB/s verification
-  were not exercised.
+* A later real-block-device run (loop ext4 + cgroup v2) enforced
+  `cpu.max=200%` and `io.max=10 MiB/s` for reads and writes. A process-level
+  write throttle remains only as supplemental evidence.
+* The supervisor `SIGSTOP` case is a measured deadline gap: while stopped it
+  cannot enforce the deadline. On `SIGCONT` it converges; this is not counted
+  as a pass.
 * No production node was contacted, no apply/migrate/rollback was performed.
+
+
+## Review-round additions
+
+* `cmd_upgrade_checkpoint` now writes an integrity manifest last. Every
+  checkpoint member (regular file hash/size/mode or symlink target, including
+  the completion marker) is covered.
+* `cmd_upgrade_rollback` verifies that manifest before the service stop gate
+  and before any target write. A tampered or manifest-less checkpoint is
+  rejected with `checkpoint_integrity_failed`; the valid checkpoint path is
+  unchanged.
+* The manifest is corruption detection, not a signature: a writer able to
+  replace both the checkpoint and its manifest can forge it.

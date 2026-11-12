@@ -1,0 +1,30 @@
+{
+  "cap_eff": "000001ffffdfffff",
+  "fallback_to_detached_worker": false,
+  "helper_marker_files": [],
+  "helper_pid_file": false,
+  "lifecycle_file": false,
+  "lock_free": true,
+  "op": "a1763390-f128-41f0-99d2-68f369808e8c",
+  "scenario": "refuse-without-cap-sys-admin",
+  "start_response": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "LIFECYCLE_UNAVAILABLE",
+    "detail": "CLONE_NEWPID is unavailable; refusing to run without a bounded process tree",
+    "finished_at": 1794500504.1625817,
+    "helper": "/tmp/payload/bin/vincula",
+    "migrate_started": false,
+    "operation_id": "a1763390-f128-41f0-99d2-68f369808e8c",
+    "seconds": 30,
+    "started_at": 1794500504.1614347,
+    "state": "FAILED"
+  },
+  "structured_refusal": true,
+  "unshare_pid_errno": 1,
+  "unshare_pid_rc": -1,
+  "worker_log": false
+}

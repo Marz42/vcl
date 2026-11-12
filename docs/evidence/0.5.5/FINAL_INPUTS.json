@@ -1,0 +1,67 @@
+{
+  "candidate": {
+    "A_B_equal": true,
+    "controller_sha256": "b4f51881155f6e14a00a63874dbbec7f0ec2eb68ee081f3889ad927520868b41",
+    "directory": "/mnt/d/Repos/Vincula/release-candidates/0.5.5-f86dd5e",
+    "frozen": false,
+    "node_sha256": "34a46feeca3975a4a7a93aee355d7c04495ae76fe9c0e6680995dcfba81aa14e",
+    "source_date_epoch": 1794384920
+  },
+  "captured_at": "2026-11-13T00:35:00+08:00",
+  "code_sha256": {
+    "bin/vincula": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+    "lib/node_upgrade.py": "d98d10764682ecfcb3578ca60ec904d5002f03d671cc427a08e93b0dba182f54",
+    "lib/upgrade_prepare.py": "5fb7077f75bbe8e33e7949f3674fc8b9f9683ee65f30b513d655fad617079d41",
+    "lib/vincula-backup.py": "5f5392097c3db138d43e8f59a27c0ddae7b9681642f30e0277097421d703aca5",
+    "release.lock": "092545e412125a403fd663dc970a1ae8bdb50f618c05f28b5f22a7f06e72ae03",
+    "tests/test_checkpoint_integrity.py": "bbabe7b32fa9a4de88f8efdcf244ead3a87f81332a13d407112ced0c4a598862",
+    "tests/test_upgrade_prepare.py": "60f9006eb0c09a741542a3f992cb1388a02afc3f522a2f9a911853f86538110e"
+  },
+  "frozen_artifacts_modified": false,
+  "git": {
+    "final_commit": "f86dd5e46f44411f539c0fb5dab5cc87172251d8",
+    "final_commit_subject": "fix(0.5.5): guard worker deadline and preflight rollback helper",
+    "previous_round_commit": "fdd801e0a1a01c40379dcc0d0e5537fa5692250b",
+    "worktree": "/tmp/vcl-followup-wt",
+    "worktree_clean": true
+  },
+  "live": "BLOCKED",
+  "patch_application": {
+    "full_02": "applies to 4651064; equals f86dd5e (0 differing files)",
+    "pipeline_00_then_01": "applies to 4651064; equals f86dd5e (0 differing files)"
+  },
+  "patches": {
+    "01-three-fixes.patch": "8df53b738647994fddffcd48afdd893836423c0b5ccf2e60971ff28671ff456d",
+    "02-full.patch": "822af77f1933b94c8b0888e9351b1af06b4ea84d28ee73b2621fa0dfd402aebd",
+    "03-review2-consumer-wal.patch": "4ce0a552f274711087ea073e0142e93e63000d2ea393b63051d9ed1ae3d5fe28",
+    "04-pause-and-rollback-preflight.patch": "79d2370160b6beacf1c81e430b8d0c5e153b06521d3f6b0e06c6cd1d3cca1f44"
+  },
+  "production_apply_run": false,
+  "production_node_contacted": false,
+  "schema_version": 3,
+  "source_manifest": {
+    "path": "results/final-identity/source-manifest.txt",
+    "sha256": "c98c3a4480d64c6b276b2a3deed3086d8cf566007f87c518cbe3f5e247924c51",
+    "tracked_files": 393
+  },
+  "tests": {
+    "bash_root_namespace_clean_copy": {
+      "failed": 0,
+      "passed": 1968
+    },
+    "bash_user_clean_copy": {
+      "failed": 0,
+      "passed": 1970
+    },
+    "original_worktree": {
+      "classified": "environment failure: frozen root 0600 dist; not counted as pass",
+      "failed": 11,
+      "passed": 392
+    },
+    "python": {
+      "failed": 0,
+      "passed": 225,
+      "skipped": 10
+    }
+  }
+}

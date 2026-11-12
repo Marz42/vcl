@@ -1,0 +1,11 @@
+{
+  "err": "ERROR: checkpoint integrity verification failed: type/size mismatch: accounting.db\n",
+  "new_actual_result": {
+    "error": "checkpoint_integrity_failed",
+    "mode": "in_place",
+    "ok": false,
+    "schema_version": 1
+  },
+  "new_actual_rollback_rc": 1,
+  "target_unchanged": true
+}
