@@ -18,7 +18,7 @@ upgrade = load('prepare_upgrade', 'lib/node_upgrade.py')
 
 class BackupTests(unittest.TestCase):
     def test_create_streams_without_extracting_and_detects_tamper(self):
-        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = root / 'state'; state.mkdir()
             (state / 'state.json').write_text(json.dumps({'node': {
@@ -47,7 +47,7 @@ class BackupTests(unittest.TestCase):
             self.assertFalse(backup.verify_manifest(archive)['ok'])
 
     def test_snapshot_preserves_database(self):
-        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             src, dest = Path(tmp)/'src', Path(tmp)/'dest'
             with sqlite3.connect(src) as con:
                 con.execute('pragma journal_mode=wal')
@@ -60,7 +60,7 @@ class BackupTests(unittest.TestCase):
             con.close()
 
     def test_snapshot_rejects_non_wal(self):
-        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             src, dest = Path(tmp)/'src', Path(tmp)/'dest'
             with sqlite3.connect(src) as con:
                 con.execute('create table t(x)')

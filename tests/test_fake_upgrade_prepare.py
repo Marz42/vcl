@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FakePreparationTests(unittest.TestCase):
     def test_start_status_idempotency_and_backup_failure(self):
         for fail in (False, True):
-            with self.subTest(fail=fail), tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
                 node = Path(tmp) / 'lax'; node.mkdir()
                 identity = {'node_id': 'n', 'instance_id': 'i'}
                 (node/'state.json').write_text(json.dumps({'node':identity}))
