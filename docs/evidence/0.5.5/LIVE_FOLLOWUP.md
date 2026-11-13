@@ -1,13 +1,30 @@
-# 0.5.5 live acceptance — resumed preparation, 2026-11-08
+# 0.5.5 live acceptance — PR #15 consolidated entry (2026-11-13)
 
-Status: **OFFLINE GATES PASS / PREPARING LIVE / PENDING HUMAN**. The
-support-boundary candidate is frozen at source commit
-`465106440688ab73823cbe4871139c834488d4ae`; the user has resumed acceptance
-preparation. The November 3 deferral is historical; Controller and Workspace
-availability must now be checked. No current Node was contacted, upgraded,
-restarted or fault-injected by this review. H05 remains unsigned.
+Status: **OFFLINE GATES PASS (UNFROZEN REVIEW-4 CANDIDATE) / PREPARING LIVE / PENDING HUMAN**.
+PR #13's final support-boundary offline freeze and ten-node 2h synthetic matrix
+evidence (`86f292b`) have been consolidated into **PR #15 (`review/0.5.5-upgrade-preparation`)**
+without changing runtime code (`21aba22..HEAD` is docs/evidence only). No current
+Node was contacted, upgraded, restarted or fault-injected. Live remains
+**BLOCKED / PENDING** and H05 remains unsigned.
 
-## Support-boundary candidate frozen (2026-11-09)
+## Current PR #15 candidate (2026-11-13, unfrozen)
+
+- Runtime source commit: `21aba22157994d70bfcf2c17c1ec4ff38b9e9880`
+  (preparation lifecycle, WAL snapshot, checkpoint integrity, review-4 fixes;
+  [REVIEW4_FIXES.md](REVIEW4_FIXES.md), [UPGRADE_PREPARATION_LIFECYCLE_FIX.md](UPGRADE_PREPARATION_LIFECYCLE_FIX.md)).
+- Unfrozen review-4 artifacts (`SOURCE_DATE_EPOCH=1794384920`): Node
+  `7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`, Controller
+  `784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892`
+  ([review-artifacts/](review-artifacts/README.md)).
+- Consolidated offline gates from PR #13: support-boundary CI
+  [42531836471](https://github.com/Marz42/vcl/actions/runs/42531836471) and
+  ten-node 2h synthetic matrix ([SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md](SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md);
+  17/17 observation/fixture/runner inputs match `21aba22`/HEAD).
+- Before T03/T04/T09 production mutation or 24h soak, explicitly freeze and
+  verify the PR #15 `21aba22` candidate packages rather than installing the
+  historical `4651064` or `653f7dd` archives.
+
+## Support-boundary candidate frozen (2026-11-09, historical baseline consolidated from PR #13)
 
 Source commit `465106440688ab73823cbe4871139c834488d4ae`; offline gates pass:
 Linux local tests/build, CI run [42531836471](https://github.com/Marz42/vcl/actions/runs/42531836471)
@@ -50,7 +67,7 @@ named production window and makes the final H05 judgment.
 | 5 | H05-02..07 permissions, Agent keys, observer, accountd, proxy/accounting separation, SSH/Controller outage, Finding and Drift/Inspect | Separate before/fault/recovery records, actual proxy probes and effective Inspect data, zero unintended writes on observation-only paths |
 | 6 | Seven real 0.5.5 nodes plus a separately recorded ten-node synthetic matrix; continuous >=24h integrated new RC soak | Fixed inputs, real UTC/monotonic window, real proxy, Inspect/Drift, cache growth/stop/recovery and raw log hashes; no duration stitching; prior synthetic evidence reusable only with matching relevant inputs/scope |
 | 7 | One-page H05-01..08 review and explicit human PASS | Acceptor/time/signature, scale deviation, known limits, all required evidence and deferred backlog |
-| 8 | Final PR #13 title/body, undraft and merge-commit checks | Final head/base/seven CI checks, preserved history, main CI/version/docs confirmation; no tag/release |
+| 8 | Final PR #15 title/body, undraft and merge-commit checks (closing/superseding draft PR #13) | Final head/base/seven CI checks, preserved history, main CI/version/docs confirmation; no tag/release |
 
 Old A/B/C evidence remains useful only within its original scope. The
 [impact review](HISTORICAL_EVIDENCE_IMPACT.md) explains what needs a new run.
@@ -77,6 +94,7 @@ URIs, raw credential files or secret-bearing backups.
 | T09 | Keep seven 0.5.5 Nodes available for fixed-RC continuous 24h soak; run/revalidate separate ten-node 2h synthetic matrix | Start/end times, immutable inputs, proxy/Inspect/cache evidence and raw log hashes; no splicing runs |
 | T10 | Review H05-01..08 evidence, limits and remaining defects | Explicit human verdict and time; no automatic PASS, merge, tag or release |
 
-The support-boundary candidate is now frozen. T01/T02 can proceed against the
-frozen RC; production cutover and the final soak still depend on the remaining
-live gates.
+PR #13's offline freeze and 2h synthetic evidence are consolidated into PR #15.
+T01/T02 read-only discovery may proceed immediately; production cutover (T04)
+and the final soak (T09) must use the frozen PR #15 (`21aba22`) RC and remain
+blocked until Live/H05 completion.
