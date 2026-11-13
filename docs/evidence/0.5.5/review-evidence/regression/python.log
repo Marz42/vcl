@@ -1,0 +1,20 @@
+..........sssss....accounting identity mapping changed but failed validation; keeping previous map
+..................................................................................s...........[ui] 127.0.0.1 - "GET /api/inspect?node=test HTTP/1.1" 200 -
+....................................................vcl-fleet: IDENTITY_FILE_MISSING: legacy identity_file does not exist
+................connection attribution unavailable; preserving snapshot liveness
+..../usr/lib/python3.13/tempfile.py:1131: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/vincula-members-v7ej3ahh'>
+  _warnings.warn(warn_message, ResourceWarning)
+/usr/lib/python3.13/tempfile.py:1131: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/vincula-members-nz620909'>
+  _warnings.warn(warn_message, ResourceWarning)
+......../usr/lib/python3.13/ctypes/__init__.py:384: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7902f85a0e50>
+  class _FuncPtr(_CFuncPtr):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/ctypes/__init__.py:384: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7902f9e6cf40>
+  class _FuncPtr(_CFuncPtr):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..deadline guard: cannot persist status: [Errno 28] No space left on device
+...................s........s.s.s
+----------------------------------------------------------------------
+Ran 228 tests in 20.636s
+
+OK (skipped=10)

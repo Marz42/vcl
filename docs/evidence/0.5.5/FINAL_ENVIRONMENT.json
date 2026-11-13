@@ -1,77 +1,4 @@
 {
-  "captured_at": "2026-11-13T00:30:00+08:00",
-  "round": 3,
-  "git": {
-    "previous_round_commit": "fdd801e0a1a01c40379dcc0d0e5537fa5692250b",
-    "final_commit": "f86dd5e46f44411f539c0fb5dab5cc87172251d8",
-    "worktree": "/tmp/vcl-followup-wt",
-    "worktree_clean": true,
-    "source_manifest": "results/final-identity/source-manifest.txt",
-    "source_manifest_sha256": "c98c3a4480d64c6b276b2a3deed3086d8cf566007f87c518cbe3f5e247924c51",
-    "tracked_files": 393
-  },
-  "code_sha256": {
-    "lib/upgrade_prepare.py": "5fb7077f75bbe8e33e7949f3674fc8b9f9683ee65f30b513d655fad617079d41",
-    "lib/vincula-backup.py": "5f5392097c3db138d43e8f59a27c0ddae7b9681642f30e0277097421d703aca5",
-    "lib/node_upgrade.py": "d98d10764682ecfcb3578ca60ec904d5002f03d671cc427a08e93b0dba182f54",
-    "bin/vincula": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
-    "release.lock": "092545e412125a403fd663dc970a1ae8bdb50f618c05f28b5f22a7f06e72ae03",
-    "tests/test_upgrade_prepare.py": "60f9006eb0c09a741542a3f992cb1388a02afc3f522a2f9a911853f86538110e",
-    "tests/test_checkpoint_integrity.py": "bbabe7b32fa9a4de88f8efdcf244ead3a87f81332a13d407112ced0c4a598862"
-  },
-  "patches": {
-    "01-three-fixes.patch": "8df53b738647994fddffcd48afdd893836423c0b5ccf2e60971ff28671ff456d",
-    "02-full.patch": "822af77f1933b94c8b0888e9351b1af06b4ea84d28ee73b2621fa0dfd402aebd",
-    "04-pause-and-rollback-preflight.patch": "79d2370160b6beacf1c81e430b8d0c5e153b06521d3f6b0e06c6cd1d3cca1f44"
-  },
-  "supervisor_pause_fix": {
-    "mechanism": "one worker deadline_guard thread using the same absolute VCL_PREPARE_DEADLINE_MONO; atomic CANCELLED; helper TERM; worker exits; kernel namespace teardown; supervisor closes its inherited lock fd after fork",
-    "stop_supervisor": {
-      "status": "CANCELLED/PREPARATION_DEADLINE",
-      "deadline_owner": "worker_guard",
-      "paused_seconds": 40.14758340700064,
-      "descendants_alive_at_40s": 0,
-      "lock_free_while_paused": true,
-      "gap": false
-    },
-    "stop_worker": {"state": "CANCELLED", "elapsed_seconds": 34.61224508701707, "descendants_gone_seconds": 34.54313990200171, "lock_free": true},
-    "kill_worker_first": {"state": "FAILED", "code": "WORKER_LOST", "descendants_gone": true, "lock_free": true},
-    "kill_supervisor_first": {"state": "FAILED", "code": "WORKER_LOST", "descendants_gone": true, "lock_free": true},
-    "overlap_rejected": true,
-    "shared_60s_no_reset": {"checkpoint_started_at": 40.610659477999434, "remaining": 19.389340522000566, "elapsed": 60.25234860202181}
-  },
-  "latency_32s": {
-    "default_auto_checkpoint": {"long_commit_ms": 32650.206736987457, "long_commit_state": "D", "backlog_over_1s": 159, "wal_before": 4115912, "wal_after": 4128272, "checkpoint_write_lock_probe": "204/204 acquired", "busy_timeout_ms": 10000, "io_pressure_some_avg10": 92.59},
-    "control_auto_checkpoint_0": {"max_commit_ms": 0.26677799178287387, "backlog_over_1s": 0, "wal_max": 5265392, "checkpoint_write_lock_probe": "206/206 acquired", "io_pressure_some_avg10": 84.19},
-    "conclusion": "writer-triggered auto WAL checkpoint at 1000 pages, waiting for the long reader under the 10 MiB/s shared IO quota; not DB write-lock wait and not SQLite busy timeout; not only general IO contention"
-  },
-  "checkpoint_compatibility": {
-    "preparation_helper": "/tmp/payload/bin/vincula",
-    "candidate_helper_sha256": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
-    "old_helper_sha256": "aca00a2001168727000756bd36fecbbb0a0346a92b88093e36b1bf2a90ed3348",
-    "old_helper_accepts_tampered_checkpoint": true,
-    "new_verify_only_rejects_tampered_or_missing_manifest": true,
-    "automatic_path": "node_upgrade.py first calls installed vcl upgrade rollback --verify-only; old helper preflight fails without mutation; current candidate preflight succeeds then actual rollback",
-    "valid_rollback_retained": true
-  },
-  "candidate": {
-    "directory": "/mnt/d/Repos/Vincula/release-candidates/0.5.5-f86dd5e",
-    "frozen": false,
-    "source_date_epoch": 1794384920,
-    "node_sha256": "34a46feeca3975a4a7a93aee355d7c04495ae76fe9c0e6680995dcfba81aa14e",
-    "controller_sha256": "b4f51881155f6e14a00a63874dbbec7f0ec2eb68ee081f3889ad927520868b41",
-    "A_B_equal": true,
-    "node_lock_verified": true,
-    "controller_lock_verified": true,
-    "node_help_rc": 0,
-    "controller_help_rc": 0
-  },
-  "tests": {
-    "python": {"passed": 225, "skipped": 10, "failed": 0},
-    "bash_user_clean_copy": {"passed": 1970, "failed": 0},
-    "bash_root_namespace_clean_copy": {"passed": 1968, "failed": 0},
-    "original_worktree": {"passed": 392, "failed": 11, "classification": "environment failure: root-owned 0600 frozen dist; not counted as pass"}
-  },
   "boundaries": [
     "real VPS/systemd/container",
     "physical block device or separate VM",
@@ -81,8 +8,149 @@
     "manifest forgery by an actor able to rewrite checkpoint and manifest",
     "Live/migrate/rollback"
   ],
-  "production_node_contacted": false,
-  "production_apply_run": false,
+  "candidate": {
+    "A_B_equal": true,
+    "controller_help_rc": 0,
+    "controller_lock_verified": true,
+    "controller_sha256": "784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892",
+    "directory": "/mnt/d/Repos/Vincula/release-candidates/0.5.5-21aba22",
+    "frozen": false,
+    "node_help_rc": 0,
+    "node_lock_verified": true,
+    "node_sha256": "7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b",
+    "source_date_epoch": 1794384920
+  },
+  "captured_at": "2026-11-13T10:30:30+08:00",
+  "checkpoint_compatibility": {
+    "automatic_path": "node_upgrade.py first calls installed vcl upgrade rollback --verify-only; old helper preflight fails without mutation; current candidate preflight succeeds then actual rollback",
+    "candidate_helper_sha256": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+    "new_verify_only_rejects_tampered_or_missing_manifest": true,
+    "old_helper_accepts_tampered_checkpoint": true,
+    "old_helper_sha256": "aca00a2001168727000756bd36fecbbb0a0346a92b88093e36b1bf2a90ed3348",
+    "preparation_helper": "/tmp/payload/bin/vincula",
+    "valid_rollback_retained": true
+  },
+  "code_sha256": {
+    "bin/vincula": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+    "lib/node_upgrade.py": "d98d10764682ecfcb3578ca60ec904d5002f03d671cc427a08e93b0dba182f54",
+    "lib/upgrade_prepare.py": "46c7fca93b14f431ed5cefb9895017a6afb6ebe5c279d424ed644cce74e590c9",
+    "lib/vincula-backup.py": "5f5392097c3db138d43e8f59a27c0ddae7b9681642f30e0277097421d703aca5",
+    "release.lock": "29dabae9586054f8f17a7834d311409229d4266d788359822e9a7b8a184d50cd",
+    "tests/test_checkpoint_integrity.py": "bbabe7b32fa9a4de88f8efdcf244ead3a87f81332a13d407112ced0c4a598862",
+    "tests/test_upgrade_prepare.py": "ed130a184cf6209cdd7bbf65f221bc80da7ec4c4ec6d373d373a6bf7923c0f1d"
+  },
   "frozen_artifacts_modified": false,
-  "live": "BLOCKED"
+  "git": {
+    "final_commit": "21aba22157994d70bfcf2c17c1ec4ff38b9e9880",
+    "previous_round_commit": "f86dd5e46f44411f539c0fb5dab5cc87172251d8",
+    "reviewed_head": "424d5abb7a21defe6cdcaf4d24ef561f9d8e8198",
+    "source_manifest": "docs/evidence/0.5.5/FINAL_SOURCE_MANIFEST.txt",
+    "source_manifest_scope": "f86dd5e supported source path set refreshed at 21aba22; review-only docs/artifacts outside scope",
+    "source_manifest_sha256": "252cfc6c519356251a17871e48da14287ee427566e6ab22756ffa0b06a825161",
+    "tracked_files": 393,
+    "worktree": "/tmp/vcl-followup-wt",
+    "worktree_clean": true
+  },
+  "latency_32s": {
+    "conclusion": "writer-triggered auto WAL checkpoint at 1000 pages, waiting for the long reader under the 10 MiB/s shared IO quota; not DB write-lock wait and not SQLite busy timeout; not only general IO contention",
+    "control_auto_checkpoint_0": {
+      "backlog_over_1s": 0,
+      "checkpoint_write_lock_probe": "206/206 acquired",
+      "io_pressure_some_avg10": 84.19,
+      "max_commit_ms": 0.26677799178287387,
+      "wal_max": 5265392
+    },
+    "default_auto_checkpoint": {
+      "backlog_over_1s": 159,
+      "busy_timeout_ms": 10000,
+      "checkpoint_write_lock_probe": "204/204 acquired",
+      "io_pressure_some_avg10": 92.59,
+      "long_commit_ms": 32650.206736987457,
+      "long_commit_state": "D",
+      "wal_after": 4128272,
+      "wal_before": 4115912
+    }
+  },
+  "live": "BLOCKED",
+  "patches": {
+    "05-review4-fixes.patch": "ce3fa6a1fee34e47939f365d36b40bfd6b9c66cccf60005ba2caf041d98c0260"
+  },
+  "production_apply_run": false,
+  "production_node_contacted": false,
+  "review4_fixes": {
+    "commit": "21aba22157994d70bfcf2c17c1ec4ff38b9e9880",
+    "findings": [
+      "P1 deadline guard save failure skipped helper TERM/namespace exit; event/helper capture now precede save and write errors are caught",
+      "P1 read_status stale RUNNING snapshot could overwrite published SUCCEEDED; status is re-read under the lock and terminal states are preserved",
+      "P2 archive stability compared only fd vs pathname; verification-time size and mtime_ns are now part of the expected tuple"
+    ],
+    "targeted_tests": [
+      "test_worker_deadline_guard_survives_status_write_failure",
+      "test_read_status_keeps_terminal_state_published_before_lock",
+      "test_archive_stability_rejects_in_place_growth"
+    ]
+  },
+  "round": 4,
+  "supervisor_pause_fix": {
+    "kill_supervisor_first": {
+      "code": "WORKER_LOST",
+      "descendants_gone": true,
+      "lock_free": true,
+      "state": "FAILED"
+    },
+    "kill_worker_first": {
+      "code": "WORKER_LOST",
+      "descendants_gone": true,
+      "lock_free": true,
+      "state": "FAILED"
+    },
+    "mechanism": "one worker deadline_guard thread using the same absolute VCL_PREPARE_DEADLINE_MONO; atomic CANCELLED; helper TERM; worker exits; kernel namespace teardown; supervisor closes its inherited lock fd after fork",
+    "overlap_rejected": true,
+    "shared_60s_no_reset": {
+      "checkpoint_started_at": 40.610659477999434,
+      "elapsed": 60.25234860202181,
+      "remaining": 19.389340522000566
+    },
+    "stop_supervisor": {
+      "deadline_owner": "worker_guard",
+      "descendants_alive_at_40s": 0,
+      "gap": false,
+      "lock_free_while_paused": true,
+      "paused_seconds": 40.14758340700064,
+      "status": "CANCELLED/PREPARATION_DEADLINE"
+    },
+    "stop_worker": {
+      "descendants_gone_seconds": 34.54313990200171,
+      "elapsed_seconds": 34.61224508701707,
+      "lock_free": true,
+      "state": "CANCELLED"
+    }
+  },
+  "tests": {
+    "bash_root_namespace_clean_copy": {
+      "failed": 0,
+      "passed": 1968,
+      "seconds": 610
+    },
+    "bash_source_note": "Bash clean copies used b256a33; runtime files byte-identical to 21aba22. Only the Python test deadline margin differs and is not executed by Bash.",
+    "bash_user_clean_copy": {
+      "failed": 0,
+      "passed": 1970,
+      "seconds": 626
+    },
+    "original_worktree_round3": {
+      "classification": "root-owned 0600 frozen dist environment failure; not counted",
+      "failed": 11,
+      "passed": 392
+    },
+    "python": {
+      "failed": 0,
+      "passed": 228,
+      "skipped": 10
+    },
+    "targeted_review4": {
+      "failed": 0,
+      "passed": 19
+    }
+  }
 }

@@ -1,5 +1,12 @@
 # 0.5.5 preparation 第三轮收敛与未冻结候选
 
+> **Review-4 update (2026-11-13):** this is the round-3 record.  Review of
+> PR HEAD `424d5ab` found three reproducible issues (deadline write failure,
+> stale status convergence, in-place archive growth); they are fixed at
+> `21aba22` and documented in [REVIEW4_FIXES.md](REVIEW4_FIXES.md).  That file
+> carries the current candidate hashes and test counts.  Sections 1–3 below
+> remain the round-3 findings and are unchanged.
+
 **结论：supervisor 暂停缺口已修复并通过定向复测；32 秒延迟已定位为 writer
 自动 WAL checkpoint + 共享 IO 配额组合；checkpoint helper 兼容性已补
 `--verify-only` 预检；已生成两个独立构建、哈希一致的未冻结候选。**

@@ -118,3 +118,25 @@ it actually consumes; the recorded digest/inode is the value to compare.
   unchanged.
 * The manifest is corruption detection, not a signature: a writer able to
   replace both the checkpoint and its manifest can forge it.
+
+## Review-4 corrections
+
+Three follow-up defects found at PR HEAD `424d5ab` are fixed at `21aba22`:
+
+* The worker deadline guard publishes `deadline_fired` and captures the helper
+  **before** writing the diagnostic CANCELLED record.  A failed status write
+  (for example `ENOSPC`) is caught, and the guard still sends `SIGTERM` to the
+  helper group and exits the namespace.  The main thread's later writes also
+  see the event and cannot resurrect a successful/RUNNING record.
+* `read_status()` re-reads `status.json` after acquiring the operation lock.
+  It converges only a record that is still `RUNNING`; a terminal state
+  published by the worker between the first read and lock acquisition is
+  preserved.
+* The archive handoff stability check now compares both the pinned fd and the
+  current pathname against the `dev`, `ino`, `size` and `mtime_ns` saved by
+  `verify_archive_fd()`.  This catches in-place growth/truncation or a
+  same-size rewrite, not only pathname replacement.  It remains a handoff
+  check: the consumer must still verify the bytes it opens.
+
+Targeted regressions and current candidate identity are in
+[REVIEW4_FIXES.md](REVIEW4_FIXES.md).

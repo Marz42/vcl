@@ -1,0 +1,2861 @@
+ok 1 - maps x86_64 to amd64
+ok 2 - maps aarch64 to arm64
+ok 3 - rejects unsupported architecture
+ok 4 - supports Debian 12
+ok 5 - supports Debian 13
+ok 6 - supports Ubuntu 26.04
+ok 7 - rejects Ubuntu 20.04
+ok 8 - rejects Alpine
+ok 9 - accepts port 1
+ok 10 - accepts port 443
+ok 11 - accepts port 65535
+ok 12 - rejects port 0
+ok 13 - rejects port 65536
+ok 14 - rejects port with leading zeros
+ok 15 - rejects non-numeric port
+ok 16 - accepts IPv4 server
+ok 17 - accepts IPv6 server
+ok 18 - accepts DNS server
+ok 19 - rejects bracketed IPv6 input
+ok 20 - rejects malformed IPv4
+ok 21 - rejects overlong IPv6
+ok 22 - rejects repeated IPv6 compression
+ok 23 - rejects malformed DNS name
+ok 24 - pins amd64 archive digest
+ok 25 - pins arm64 archive digest
+ok 26 - builds immutable amd64 release URL
+ok 27 - runs when read from standard input
+ok 28 - uses vincula state directory
+ok 29 - uses vincula lib directory
+ok 30 - installs vincula helper
+ok 31 - installs vcl alias
+ok 32 - flags RFC1918 10/8 as unusable public address
+ok 33 - flags RFC1918 192.168/16 as unusable public address
+ok 34 - flags CGNAT as unusable public address
+ok 35 - flags TEST-NET-3 as reserved
+ok 36 - does not flag 8.8.8.8 as private
+ok 37 - migrates from 0.1.0
+ok 38 - migrates from 0.1.4
+ok 39 - migrates from 0.1.5
+ok 40 - migrates from 0.2.0
+ok 41 - migrates from 0.2.1
+ok 42 - migrates from 0.2.2
+ok 43 - migrates from 0.2.3
+ok 44 - migrates from 0.2.4
+ok 45 - migrates from 0.2.5
+ok 46 - migrates from 0.2.6
+ok 47 - migrates from 0.2.7
+ok 48 - migrates from 0.2.8
+ok 49 - migrates from 0.2.9
+ok 50 - migrates from 0.3.0
+ok 51 - migrates from 0.3.1-dev
+ok 52 - migrates from 0.3.1-rc1
+ok 53 - migrates from 0.3.1-rc2
+ok 54 - migrates from 0.3.1
+ok 55 - migrates from 0.3.2
+ok 56 - migrates from 0.5.0
+ok 57 - migrates from 0.5.1
+ok 58 - does not migrate the current version
+ok 59 - does not migrate 0.3.0-dev
+  Migrated legacy default daily retention 730 → 90.
+ok 60 - D18 730 from 0.2.6 becomes 90
+  Migrated legacy default daily retention 730 → 90.
+ok 61 - D18 730 from 0.2.5 becomes 90
+ok 62 - D18 custom 365 preserved
+ok 63 - D18 custom 180 preserved
+ok 64 - D18 custom 30 preserved
+ok 65 - D18 already 90 stays 90
+ok 66 - D18 730 from 0.2.8 is preserved
+ok 67 - D18 730 from 0.2.9 is preserved
+ok 68 - D18 730 from 0.3.0 is preserved
+ok 69 - D18 730 logs migration message
+ok 70 - migrate reads daily retention from settings
+ok 71 - accepts owner tag
+ok 72 - accepts alice tag
+ok 73 - accepts tag with hyphen and underscore
+ok 74 - accepts tag with dots
+ok 75 - rejects empty tag
+ok 76 - rejects uppercase tag
+ok 77 - rejects tag starting with hyphen
+ok 78 - rejects overlong tag
+ok 79 - accepts display_name with spaces
+ok 80 - accepts unicode display_name
+ok 81 - accepts empty department
+ok 82 - rejects display_name with newline
+ok 83 - rejects display_name with tab
+ok 84 - rejects overlong display_name
+ok 85 - flags www.microsoft.com as known-bad for pinned sing-box
+ok 86 - known-bad REALITY host match is case-insensitive
+ok 87 - does not flag www.cloudflare.com as known-bad
+ok 88 - does not flag microsoft.com apex as known-bad
+ok 89 - default REALITY host is not on the pinned known-bad list
+ok 90 - uses default REALITY host when unset
+ok 91 - respects explicit REALITY host
+ok 92 - explicit microsoft REALITY host is rejected without fallback
+ok 93 - matches sing-box pid in ss line
+ok 94 - rejects other process owning the port
+ok 95 - rejects sing-box line with a different pid
+ok 96 - parses REALITY private key
+ok 97 - parses REALITY public key
+ok 98 - renders IPv4 VLESS URI
+ok 99 - brackets IPv6 in VLESS URI
+ok 100 - parses VLESS UUID
+ok 101 - parses VLESS host
+ok 102 - parses VLESS port
+ok 103 - parses VLESS SNI
+ok 104 - parses VLESS public key
+ok 105 - parses VLESS short ID
+ok 106 - parses VLESS flow
+ok 107 - parses bracketed VLESS host
+ok 108 - parses bracketed VLESS port
+ok 109 - P1 gate: test.sh HOME isolated under TEST_TMP
+ok 110 - renders valid config JSON
+ok 111 - renders valid state JSON
+ok 112 - renders valid users JSON
+ok 113 - users.json schema_version is 2
+ok 114 - users.json has owner tag
+ok 115 - users.json has user_id
+ok 116 - users.json has credential_id
+ok 117 - users.json has node_id UUID
+ok 118 - users.json does not hardcode local node_id
+ok 119 - renders valid self-test server JSON
+ok 120 - renders valid self-test client JSON
+ok 121 - extracts owner uuid from users registry
+ok 122 - state includes node_id UUID
+ok 123 - state.json schema_version is 2
+ok 124 - state includes instance_id UUID
+ok 125 - state does not keep owner.uuid as SoT
+ok 126 - settings include node_id UUID
+ok 127 - settings do not hardcode local node_id
+ok 128 - settings do not store instance_id
+ok 129 - preserves existing instance_id
+ok 130 - fresh instance_id is UUID
+ok 131 - fresh instance_id is not node_id
+ok 132 - refuses node_id copy as instance_id
+ok 133 - copied-path mint is UUID
+ok 134 - re-run does not remint instance_id
+ok 135 - schema 1 state has no instance_id
+ok 136 - schema 1 migrate keeps node_id
+ok 137 - schema 1 migrate mints instance_id UUID
+ok 138 - schema 1 migrate does not copy node_id
+ok 139 - schema 1 migrate remint is idempotent
+ok 140 - schema 1 migrate writes schema 2
+ok 141 - schema 1 migrate preserves node_id in schema 2
+ok 142 - schema 1 migrate writes minted instance_id
+ok 143 - fresh render_state instance_id is UUID
+ok 144 - fresh render_state instance_id is not node_id
+ok 145 - fresh render_state keeps node_id
+ok 146 - fresh render_state writes schema 2
+ok 147 - install_new_node mints instance_id
+ok 148 - migrate_existing_install mints instance_id when missing
+ok 149 - 0.3.0 upgrade path keeps identity, credentials, Reality, and dual-service snapshot
+ok 150 - 0.3.0 instance_id is preserved
+ok 151 - verify_existing_install does not remint instance_id
+ok
+ok 152 - 0.3.1→0.5.5 shaped migrate fixture preserves identity
+ok 153 - legacy_seed_owner_allowed accepts EUID
+ok 154 - install_runtime_only writes marker and skips VERSION/identity
+ok 155 - vincula.sh --help names --runtime-only
+ok 156 - vincula.sh --help names VCL_RUNTIME_ONLY
+ok 157 - self-test server binds localhost only
+ok 158 - self-test client exposes localhost SOCKS
+ok 159 - renders syntactically valid helper
+ok 160 - renders expected service user
+ok 161 - renders low-port capability
+ok 162 - unit disables Go MPTCP listeners
+ok 163 - keeps management state private by design
+ok 164 - render_settings snapshot has daily retention 90
+ok 165 - render_settings default daily retention is 90
+ok 166 - render_settings default raw retention is 90
+ok 167 - render_settings snapshot has billing_cycle_start_day 1
+ok 168 - render_settings default billing_cycle_start_day is 1
+ok 169 - render_settings honors explicit billing_cycle_start_day
+ok 170 - migrate reads existing billing_cycle_start_day
+ok 171 - reads canonical port from state
+✓ UUID consistent
+✓ Reality key consistent
+✓ short ID consistent
+✓ SNI consistent
+✓ port consistent
+✓ flow consistent
+ok 172 - generated artifacts match canonical state
+✗ UUID consistent
+✓ Reality key consistent
+✓ short ID consistent
+✓ SNI consistent
+✓ port consistent
+✓ flow consistent
+ok 173 - detects UUID drift between URI and state
+ok 174 - helper documents vcl verify
+ok 175 - migration tolerates legacy inbound check failure
+ok 176 - migration uses owner_active_uuid_from_registry
+ok 177 - migration skips health wait for legacy config
+ok 178 - helper must not reassign readonly USERS_FILE
+ok 179 - user_mutation_apply passes staged users path
+ok 180 - helper tracks vincula state dir
+ok 181 - helper documents vcl command
+ok 182 - helper documents logs follow
+ok 183 - helper documents diagnose
+ok 184 - diagnose reports untestable external reachability
+ok 185 - diagnose includes REALITY self-test
+ok 186 - helper status checks listener ownership
+ok 187 - helper documents vcl identity
+ok 188 - node helper usage has no fleet
+ok 189 - cmd_identity reads instance_id from state.json
+ok 190 - status accepts --json in dispatch
+ok 191 - verify accepts --json in dispatch
+ok 192 - identity accepts --json in dispatch
+ok 193 - capabilities accepts --json in dispatch
+ok 194 - telemetry snapshot subcommand in dispatch
+ok 195 - helper documents vcl capabilities
+ok 196 - helper documents vcl telemetry snapshot
+ok 197 - capabilities/v1 valid fixture parses
+ok 198 - telemetry/v1 valid fixture parses
+{"schema": "capabilities/v1", "node_version": "0.5.5", "capabilities": ["telemetry/v1"]}
+ok 199 - 0.5.5 capabilities contract assembly
+Failed to connect to system scope bus via local transport: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)
+Failed to connect to system scope bus via local transport: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)
+ok
+ok 200 - telemetry_snapshot build_snapshot contract keys
+ok 201 - identity-sample.json is valid JSON
+ok 202 - state.json schema_version is 2 for identity assembly
+ok 203 - assembled node_id is UUID
+ok 204 - assembled instance_id is UUID
+ok 205 - assembled instance_id is not node_id
+ok 206 - identity JSON assembly has frozen keys
+ok 207 - identity JSON schema_version is contract 1
+ok 208 - identity-sample.json has frozen keys
+ok 209 - identity-sample.json schema_version is 1
+ok 210 - identity-sample.json instance_id is not node_id
+ok 211 - identity-sample.json node_name is lax
+ok 212 - identity-sample.json vincula_version matches tree
+ok 213 - status --json top-level keys
+ok 214 - status --json proxy keys
+ok 215 - status --json accounting keys
+ok 216 - status --json heartbeat enum includes fresh
+ok 217 - verify --json top-level keys
+ok 218 - verify --json identity keys
+ok 219 - verify --json proxy keys
+ok 220 - verify --json accounting has checks array
+ok 221 - verify --json check keys
+ok 222 - cmd_status --json emits proxy and accounting heartbeat keys
+ok 223 - cmd_verify --json emits identity proxy accounting checks
+ok 224 - unit is labeled as vincula-managed
+ok 225 - unit checks config before start
+ok 226 - unit has Managed-By ownership marker
+ok 227 - helper has Managed-By ownership marker
+ok 228 - install.manifest records project vincula
+ok 229 - install.manifest lists sing-box binary
+ok 230 - install.manifest lists vcl symlink
+ok 231 - install.manifest lists state directory
+ok 232 - persists Vincula-created service account
+ok 233 - persists Vincula-created service group
+ok 234 - persists reused service account
+ok 235 - treats created_by_vincula true as owned
+ok 236 - treats created_by_vincula false as not owned
+ok 237 - accepts uninstall confirmation y
+ok 238 - accepts uninstall confirmation YES
+ok 239 - rejects uninstall confirmation n
+ok 240 - rejects uninstall confirmation Yes
+ok 241 - accepts matching binary checksum
+ok 242 - rejects mismatched binary checksum
+ok 243 - accepts Vincula vcl symlink
+ok 244 - rejects foreign vcl file
+ok 245 - rejects vcl symlink to another program
+! /tmp/vincula-tests.5E8RNPvY/unmanaged-dir contains unmanaged files; directory preserved.
+ok 246 - preserves non-empty unmanaged directory
+ok 247 - unmanaged file still exists after rmdir attempt
+✓ Removed /tmp/vincula-tests.5E8RNPvY/empty-dir
+ok 248 - removes empty managed directory
+ok 249 - empty directory is gone after rmdir
+ok 250 - managed file is deleted
+! /tmp/vincula-tests.5E8RNPvY/not-a-file-dir is a directory; not removing with file deletion.
+ok 251 - does not delete directories via file removal
+ok 252 - helper documents vcl uninstall
+ok 253 - helper documents uninstall --yes
+ok 254 - helper rejects uninstall --force
+ok 255 - helper documents vcl connections
+ok 256 - helper documents vcl stats
+ok 257 - helper documents vcl accounting status
+ok 258 - helper documents vcl accounting check
+ok 259 - helper documents vcl audit user
+ok 260 - helper documents vcl audit --user-id
+ok 261 - helper documents vcl audit export
+ok 262 - helper documents vcl backup create
+ok 263 - helper documents vcl backup verify
+ok 264 - helper documents vcl restore FILE
+ok 265 - helper implements backup create
+ok 266 - helper implements audit export
+ok 267 - accounting status does not prefer JSONL ingest
+ok 268 - accounting status is Clash poll only
+ok 269 - helper documents stats month
+ok 270 - helper documents stats top
+ok 271 - helper documents stats host
+ok 272 - helper documents accounting retention
+ok 273 - helper documents accounting check
+ok 274 - helper documents accounting cycle
+ok 275 - helper documents accounting cycle --set
+ok 276 - helper documents stats --date
+ok 277 - helper routes audit command
+ok 278 - helper defines resolve_audit_py
+ok 279 - helper routes backup command
+ok 280 - helper defines resolve_backup_py
+ok 281 - vcl help lists audit
+ok 282 - vcl help lists audit export
+ok 283 - vcl help lists backup create
+ok 284 - vcl help lists backup verify
+ok 285 - vcl help lists restore
+ok 286 - vcl help must not document --replace-node
+ok 287 - vcl help lists accounting check
+ok 288 - stats --month help mentions billing cycle start
+ok 289 - connections fail when accountd inactive
+ok 290 - gen-release-lock includes vincula-stats.py
+ok 291 - gen-release-lock includes vincula-audit.py
+ok 292 - gen-release-lock includes vincula-backup.py
+ok 293 - gen-release-lock includes vincula-bootstrap.sh
+ok 294 - release.lock includes vincula-bootstrap.sh
+ok 295 - release.lock includes vincula-audit.py
+ok 296 - release.lock includes vincula-backup.py
+ok 297 - release.lock includes legacy_seed.py
+ok 298 - gen-release-lock includes legacy_seed.py
+ok 299 - gen-release-lock includes telemetry_snapshot.py
+ok 300 - release.lock includes telemetry_snapshot.py
+ok 301 - installer installs telemetry_snapshot.py
+ok 302 - installer defines TELEMETRY_PY
+ok 303 - release.lock does not include event schema
+ok 304 - release.lock has 20 first-party files
+ok 305 - release.lock does not include vincula-fleet.py
+ok 306 - gen-release-lock does not include vincula-fleet.py
+ok 307 - verify_sibling_release_lock warns when lock is missing
+ok 308 - missing release.lock prints WARN and continues
+ok 309 - build-release includes vincula-stats.py
+ok 310 - build-release includes vincula-audit.py
+ok 311 - build-release includes vincula-backup.py
+ok 312 - python3 can compile vincula-stats
+ok 313 - python3 can compile vincula-audit
+ok 314 - audit module does not import accountd
+ok 315 - helper notes polling is not exact billing
+ok 316 - uninstall does not call curl wget or apt
+ok 317 - uninstall does not rm -rf managed roots
+ok 318 - looks up IPv4 from api.ipify.org
+ok 319 - production listener is IPv4
+ok 320 - generated config listens on IPv4
+ok 321 - settings listen on IPv4
+ok 322 - detects SOCKS5 via curl --help all
+ok 323 - helper uses curl --help all for SOCKS5
+ok 324 - helper does not use truncated curl --help for SOCKS5
+ok 325 - keeps a healthy REALITY host during migration
+ok 326 - refuses known-bad REALITY host without VCL_REALITY_HOST
+ok 327 - replaces known-bad REALITY host when VCL_REALITY_HOST is set
+ok 328 - recognizes a marked Vincula backup directory
+ok 329 - recognizes a legacy unmarked Vincula backup
+ok 330 - rejects a foreign backup directory
+ok 331 - matches persisted service account identity
+ok 332 - rejects service account UID drift
+ok 333 - rejects incomplete service account identity
+ok 334 - persists service account uid
+ok 335 - persists service account home
+ok 336 - install.manifest matches the renderer
+ok 337 - helper stops the service before deleting files
+ok 338 - helper uninstall lists migration backups
+ok 339 - accountd unit has Managed-By marker
+ok 340 - accountd unit After=sing-box
+ok 341 - accountd unit has NoNewPrivileges
+ok 342 - accountd unit version stamp is 0.5.5
+ok 343 - accountd unit has ProtectKernelTunables
+ok 344 - accountd unit has ProtectKernelModules
+ok 345 - accountd unit has ProtectControlGroups
+ok 346 - accountd unit has RestrictRealtime
+ok 347 - python3 can compile vincula-accountd
+ok 348 - event schema file is not shipped
+ok 349 - gen-release-lock does not include event schema
+ok 350 - build-release does not include event schema
+ok 351 - accountd has no JSONL ingest path
+ok 352 - technical-guide documents approximate accounting
+ok 353 - preflight lists VAR_LIB_VINCULA
+ok 354 - preflight_clean_install mentions ACCOUNTING_DB_FILE
+ok 355 - rollback_install removal loop includes -wal
+ok 356 - rollback_install removal loop includes -shm
+ok 357 - cmd_uninstall removal loop includes -wal
+ok 358 - cmd_uninstall removal loop includes -shm
+ok 359 - cmd_uninstall removes product __pycache__
+ok 360 - rollback_install removes product __pycache__
+ok 361 - rollback_migration removes product __pycache__
+ok 362 - validate_accounting_artifacts does not use py_compile
+ok 363 - validate_accounting_artifacts uses python_syntax_check
+ok 364 - py_compile writes __pycache__ (baseline)
+ok 365 - install-validate syntax check does not create __pycache__
+ok 366 - python_syntax_check rejects invalid syntax
+ok 367 - syntax-error check does not create __pycache__
+ok 368 - pycache prevents rmdir of LIB_DIR
+ok 369 - simulated uninstall removes pycache
+ok 370 - LIB_DIR empty after uninstall of listed files + pycache
+ok 371 - preflight refusal message contains rm -f guidance
+ok 372 - enable_accountd hard-fails on health
+ok 373 - enable_accountd has no log_warn soft-fail path
+ok 374 - install.manifest does not list events.jsonl
+ok 375 - install.manifest does not list event schema
+ok 376 - helper uninstall mentions historical accounting data
+ok 377 - bootstrap script exists
+ok 378 - gen-release-lock script exists
+ok 379 - build-release script exists
+ok 380 - build-controller script exists
+ok 382 - dist tree contains release.lock
+ok 383 - dist archive exists
+ok 384 - legacy dist archive name is unused
+ok 385 - dist node release.lock has 20 first-party files
+ok 386 - dist node release.lock includes vincula-backup.py
+ok 387 - node release.lock does not include vincula-fleet.py
+ok 388 - node tarball does not contain vincula-fleet.py
+ok 389 - node tarball contains vincula-backup.py
+ok 390 - node tarball has canonical POSIX modes
+ok 393 - controller zip exists
+ok 394 - controller zip sidecar sha256 exists
+ok 395 - controller zip sha256sum -c verifies
+ok 396 - AC-2.8-11 controller zip members
+ok 397 - controller zip contains vincula-audit.py
+ok 398 - controller zip contains vincula-backup.py
+ok 399 - controller zip black-box unpack has vcl-fleet
+ok 400 - controller zip black-box unpack has vincula-audit.py
+ok 401 - controller zip black-box unpack has vincula-backup.py
+ok 402 - controller zip black-box unpack has workspace.py
+ok 403 - controller zip black-box unpack has access.py
+ok 404 - controller zip black-box unpack has trust.py
+ok 405 - controller zip black-box unpack has legacy.py
+ok 406 - controller zip contains controller.lock manifest
+ok 407 - controller.lock verifies unpacked members
+ok 408 - controller.lock lists vincula-fleet.py
+ok 409 - controller.lock lists vincula-audit.py
+ok 410 - controller.lock lists vincula-backup.py
+ok 411 - controller.lock lists workspace.py
+ok 412 - controller.lock lists access.py
+ok 413 - controller.lock lists trust.py
+ok 414 - controller.lock lists legacy.py
+ok 415 - controller.lock lists vincula-ui server
+ok 416 - controller zip contains vincula-ui static index
+ok 417 - controller zip black-box version
+ok 418 - controller zip black-box init
+ok 419 - controller zip black-box stats top users
+ok 420 - controller zip black-box audit loads zip lib
+ok 421 - controller zip black-box node replace reaches real command
+ok 422 - controller zip black-box load_audit_module uses zip lib
+ok 423 - controller zip black-box load_backup_module uses zip lib
+ok 424 - controller zip black-box loader ignores repo PYTHONPATH
+ok 425 - README mentions vincula-node artifact
+ok 426 - README mentions vincula-controller artifact
+ok 427 - controller zip sha256sum -c rejects a tampered zip
+ok 428 - bootstrap documents sibling digest is not a production pin
+ok 429 - bootstrap comments require RELEASE_SHA256 in production
+ok 430 - README documents production bootstrap pin
+ok 431 - GitHub Actions workflow exists
+ok 432 - ci.yml is valid YAML (PyYAML)
+ok 433 - ci.yml has unit job
+ok 434 - ci.yml has concurrency job
+ok 435 - ci.yml has failure-injection job
+ok 436 - ci.yml has artifact job
+ok 437 - ci.yml runs debian:12 container tests
+ok 438 - ci.yml debian apt step is dash-safe (set -eu)
+ok 439 - ci.yml debian apt step does not enable pipefail
+ok 440 - ci.yml runs debian:13 container tests
+ok 441 - ci.yml runs tests/test.sh
+ok 442 - ci.yml greps fleet lock tests in test-fleet.sh
+ok 443 - ci.yml does not double-run standalone test-fleet.sh
+ok 444 - ci.yml builds release and controller artifacts
+ok 445 - ci.yml builds controller zip
+ok 446 - ci.yml does not require repository secrets
+ok 447 - ci.yml does not run live upgrade driver
+ok 448 - README documents GitHub Actions CI
+ok 449 - ci.yml pins actions/checkout to a full SHA
+ok 450 - ci.yml pins actions/upload-artifact to a full SHA
+ok 451 - ci.yml does not use mutable checkout tags
+ok 452 - ci.yml does not use mutable upload-artifact tags
+ok 453 - ci.yml top-level permissions are contents: read only
+ok 454 - Dependabot config exists
+ok 455 - Dependabot updates GitHub Actions
+ok 456 - 0.3.1 living-tree readiness doc exists
+ok 457 - 0.3.1 living-tree known-issues doc exists
+ok 458 - README gate links to 0.3.1 readiness
+ok 459 - README gate links to 0.3.1 known-issues
+ok 460 - README artifact examples are not hardcoded 0.3.0 tarballs
+ok 461 - bootstrap without pin refuses in production
+ok 462 - bootstrap with mismatched pin refuses
+ok 463 - bootstrap with pin vs mismatched shipped digest refuses
+ok 464 - bootstrap with pin and matching archive succeeds
+ok 465 - stats/connections warn on stale accounting
+ok 466 - accountd health rejects wrong Clash secret
+ok 467 - accounting config is valid JSON
+ok 468 - accounting config binds clash_api to 127.0.0.1
+ok 469 - accounting config must not bind clash_api to 0.0.0.0
+ok 470 - accounting config has acct/owner outbound
+ok 471 - accounting config has auth_user route
+ok 472 - accounting config uses sniff route action not inbound sniff
+ok 473 - accounting config must not use removed inbound sniff field
+ok 474 - accounting config uses route action for auth_user
+ok 475 - accounting config keeps route.final direct
+ok 476 - settings include clash_api_port
+ok 477 - settings include clash_api_secret
+ok 478 - install.manifest lists vincula-accountd.py
+ok 479 - install.manifest lists vincula-stats.py
+ok 480 - install.manifest lists vincula-audit.py
+ok 481 - install.manifest lists vincula-backup.py
+ok 482 - install.manifest lists vincula-accountd.service
+ok 483 - accountd upserts sample connection
+ok 484 - ingested connection row has user_id
+ok 485 - meta.schema_version is 4
+ok 486 - destination host normalized lowercase strip dot
+ok 487 - multi-user config has acct/alice
+ok 488 - multi-user config has acct/owner
+ok 489 - multi-user clash_api is localhost
+ok 490 - event parse + rollup + stale close + poll baseline + restart bytes preserved
+ok 491 - upsert_connection UPDATE-first keeps sqlite_sequence stable across 100 polls
+ok 492 - schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only
+ok 493 - schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT
+ok 494 - open_db empty database is schema 4
+ok 495 - D5 historical instance_id stays NULL after migrate
+refusing instance_id that equals node_id in /tmp/vincula-tests.5E8RNPvY/d5-state/copied.json (D5 copy forbidden)
+refusing instance_id that equals node_id in /tmp/vincula-tests.5E8RNPvY/d5-state/copied.json (D5 copy forbidden)
+ok 496 - D5 new INSERT stamps instance_id from state.json
+ok 497 - D5 UPDATE does not overwrite instance_id
+ok 498 - load_instance_id refuses node_id copy and missing state
+skip connection c-unknown: invalid counters (upload_bytes out of range)
+skip connection c-unknown: invalid counters (upload_bytes out of range)
+ok 499 - reload_known_open_from_db matches poll_baseline
+ok 500 - same-generation monotonic delta
+ok 501 - counter reset opens new generation without negative delta
+ok 502 - unknown active connection is baseline only
+ok 503 - commit failure reloads cache from DB
+ok 504 - startup loads known_open from poll_baseline
+ok 505 - rollup failure does not empty daily_usage
+ok 506 - retention x rollup keeps recent daily rows at 90/90
+ok 507 - retention deletes at most 2000 rows per call
+ok 508 - retention batches daily_usage at most 2000 rows per call
+ok 509 - retention backlog drains across calls
+ok 510 - retention does not hold collection commit
+ok 511 - retention leaves open rows and recent closed rows
+connection attribution unavailable; preserving snapshot liveness
+accounting identity mapping changed but failed validation; keeping previous map
+ok 512 - mtime hot-reload maps new tag after users.json change
+Clash API poll failed: <urlopen error fake clash down>
+Clash API poll failed: <urlopen error fake clash down>
+ok 513 - failed Clash poll does not refresh last_success_at
+skip connection c-bad: invalid counters (upload='nope' download=1)
+skip connection c-bad: invalid counters (upload='nope' download=1)
+Clash API poll failed: Clash API response missing 'connections' list
+Clash API poll failed: Clash API response missing 'connections' list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API 'connections' must be a list
+Clash API poll failed: Clash API response must be a JSON object
+Clash API poll failed: Clash API response must be a JSON object
+Clash API poll failed: Clash API connection entry must be an object
+Clash API poll failed: Clash API connection entry must be an object
+skip connection c-pre: invalid counters (upload='nope' download=99)
+skip connection c-pre: invalid counters (upload_bytes must be a non-negative int)
+skip connection c-pre: invalid counters (upload='nope' download=99)
+skip connection c-pre: invalid counters (upload_bytes must be a non-negative int)
+Clash API poll failed: Clash API response exceeds 32 bytes
+ok 514 - P1-05 empty object is protocol error not empty snapshot
+ok 515 - P1-05 connections string is protocol error
+ok 516 - P1-05 non-object connection entries are protocol error
+ok 517 - P1-05 oversized Clash body is rejected
+ok 518 - P1-05 non-int counters are skipped
+ok 519 - P1-05 legal empty connections list still closes stale
+ok 520 - P1-05 happy-path Clash object list still ingests
+[Registry]
+✓ schema_version 2
+✓ 2 users
+✓ user IDs unique
+✓ tags unique
+✓ credential IDs unique
+
+[Credentials]
+✓ active UUIDs unique
+✓ each enabled user has exactly one active credential
+✓ revoked credentials excluded from active set
+
+[sing-box]
+✓ disabled users have no sing-box auth entry
+✓ generated auth users match Registry
+
+[Accounting]
+✓ all active auth users map to stable user_id
+
+Result: PASS
+ok 521 - users_registry_verify passes for consistent registry/config
+[Registry]
+✓ schema_version 2
+✓ 2 users
+✓ user IDs unique
+✓ tags unique
+✓ credential IDs unique
+
+[Credentials]
+✓ active UUIDs unique
+✓ each enabled user has exactly one active credential
+✓ revoked credentials excluded from active set
+
+[sing-box]
+✓ disabled users have no sing-box auth entry
+✗ sing-box inbound user ghost not an enabled registry active credential
+
+[Accounting]
+✓ all active auth users map to stable user_id
+
+Result: FAIL
+ok 522 - users_registry_verify fails when config has extra inbound user
+ok 523 - users_registry_mutate set updates metadata
+ok 524 - set updates display_name
+ok 525 - set updates department
+ok 526 - metadata-only set leaves rendered config unchanged
+ok 527 - users_registry_mutate remove is unknown action
+ok 528 - remove action does not purge alice
+ok 529 - users_registry_mutate add still works
+ok 530 - users_registry_mutate disable still works
+ok 531 - users_registry_mutate enable still works
+ok 532 - users_registry_mutate set still works after remove deletion
+ok 533 - users_registry_mutate set rejects display_name with newline
+ok 534 - rejected set leaves display_name unchanged
+ok 535 - users_registry_mutate add carol with empty user_id
+ok 536 - generated carol user_id is UUID
+ok 537 - generated carol user_id is not the tag
+ok 538 - generated carol credential_id is UUID
+ok 539 - credential_id is not user_id
+ok 540 - users_registry_mutate add dave with explicit user_id
+ok 541 - injected dave user_id is preserved
+ok 542 - duplicate user_id in same registry is rejected
+ok 543 - eve was not written after duplicate user_id
+ok 544 - invalid user_id is rejected
+ok 545 - users_registry_list human includes user_id without vless uuid
+ok 546 - users_registry_show_human omits raw UUID
+ok 547 - users_registry_show_human surfaces User ID
+ok 548 - users_registry_show_human lists credential_id
+ok 549 - user list/show JSON schema_version 1 includes user_id without vless uuid
+ok 550 - rotate alice for credential summary JSON
+ok 551 - list/show JSON credential summary after rotate has no vless uuid
+ok 552 - users_registry_verify catches duplicate user_id
+User import dry-run
+
+Input rows:       2
+Valid new users:  2
+Conflicts:        0
+Invalid rows:     0
+
+No changes were made.
+ok 553 - import dry-run accepts valid CSV with dotted tags
+User import dry-run
+
+Input rows:       4
+Valid new users:  1
+Conflicts:        1
+Invalid rows:     2
+
+Errors:
+  line 2: tag alice already exists
+  line 3: invalid tag "Bad Tag"
+  line 5: duplicate tag bob.li
+
+No changes were made.
+ok 554 - import dry-run rejects conflicts and invalid tags
+ok 555 - import dry-run rejects display_name with newline
+User import plan
+
+Input rows:       2
+Valid new users:  2
+Conflicts:        0
+Invalid rows:     0
+ok 556 - import prepare writes staged registry
+ok 557 - import staged registry includes bob.li
+ok 558 - import credential CSV is written
+ok 559 - import credential CSV has vless_uri
+ok 560 - users_export_csv metadata goes to stdout
+ok 561 - 100-user registry builds with unique ids
+[Registry]
+✓ schema_version 2
+✓ 101 users
+✓ user IDs unique
+✓ tags unique
+✓ credential IDs unique
+
+[Credentials]
+✓ active UUIDs unique
+✓ each enabled user has exactly one active credential
+✓ revoked credentials excluded from active set
+
+[sing-box]
+✓ disabled users have no sing-box auth entry
+✓ generated auth users match Registry
+
+[Accounting]
+✓ all active auth users map to stable user_id
+
+Result: PASS
+ok 562 - 100-user verify PASS after disable/rotate/metadata
+ok 563 - helper documents user import
+ok 564 - helper documents user export
+ok 565 - helper documents user verify
+ok 566 - helper documents user set
+ok 567 - helper documents user add --user-id
+ok 568 - helper notes --user-id is advanced/controller
+ok 569 - user add dispatch documents --user-id
+ok 570 - cmd_user_add parses --user-id
+ok 571 - user list dispatch accepts --json
+ok 572 - user show dispatch accepts --json
+ok 573 - user rotate dispatch accepts --json
+ok 574 - user enable dispatch accepts --json
+ok 575 - user disable dispatch accepts --json
+ok 576 - helper documents user list --json
+ok 577 - helper documents user show --json
+ok 578 - helper documents user rotate --json
+ok 579 - helper notes user commands accept --json
+ok 580 - helper warns on user mutation restart
+ok 581 - helper documents metadata-only user set skips restart
+ok 582 - user mutation compares rendered config before restart
+ok 583 - user mutation compares owner uri before restart
+ok 584 - user-guide says metadata-only user set does not restart
+ok 585 - user-guide documents user list --json
+ok 586 - user-guide documents user rotate --json
+ok 587 - RC CLI coverage keeps pre-add remove cleanup
+ok 588 - RC CLI coverage expects user remove exit 2
+ok 589 - RC CLI coverage expects bob still listed after remove
+ok 590 - RC CLI coverage must not assert remove success
+ok 591 - users_registry_mutate has no remove action
+stats-ok
+ok 592 - vincula-stats today/yesterday/dept/host/top/csv/json/100k
+dates-ok
+ok 593 - vincula-stats --date/--from/--to and billing cycle windows
+ERROR: invalid RFC3339 timestamp: 2026-08-10
+ERROR: RFC3339 timestamp must include a timezone: 2026-08-10T09:00:00
+ERROR: unknown user tag 'nobody'
+ERROR: accounting database schema_version='2' is not 4/5 (Export Protocol v2 requires schema 4)
+audit-ok
+ok 594 - vincula-audit interval-overlap RFC3339 filters and json
+ERROR: --after must be an integer >= 0
+ERROR: --limit must be an integer >= 1
+export-ok
+ok 595 - vincula-audit export --after jsonl Protocol v2 CURSOR_EXPIRED CURSOR_AHEAD and --limit
+ok 596 - toml_set appends billing_cycle_start_day
+ok 597 - toml_set billing_cycle_start_day is 5
+ok 598 - toml_set preserves clash_api_secret
+ok 599 - toml_set preserves port
+ok 600 - toml_set replaces existing billing_cycle_start_day
+ok 601 - toml_set billing_cycle_start_day updated to 12
+ok 602 - toml_set still preserves clash_api_secret after replace
+ok 603 - missing billing_cycle_start_day prints 1
+ok 604 - vcl accounting cycle --set 5 prints value
+ok 605 - vcl accounting cycle --set 5 persists
+ok 606 - cycle --set 5 preserves clash_api_secret
+ok 607 - vcl accounting cycle prints persisted 5
+ERROR: billing_cycle_start_day must be an integer from 1 to 28
+ok 608 - vcl accounting cycle --set 0 fails
+ERROR: billing_cycle_start_day must be an integer from 1 to 28
+ok 609 - vcl accounting cycle --set 29 fails
+ERROR: billing_cycle_start_day must be an integer from 1 to 28
+ok 610 - vcl accounting cycle --set abc fails
+ok 611 - failed --set leaves persisted 5
+ok 612 - cycle --set 0 error mentions 1 to 28
+ok 613 - cmd_verify uses shared accounting plane checker
+ok 614 - accounting_plane_checks is defined
+ok 615 - vcl accounting check aliases the shared accounting plane checker
+ok 616 - installer health checks expect accounting schema 5
+ok 617 - installer health checks no longer expect accounting schema 3
+ok 618 - B18 accountd SCHEMA_VERSION is 4
+ok 619 - B18 audit export requires schema 4
+ok 620 - B18 wait_for_accountd_healthy is the install commit gate
+ok 621 - B18 no runtime health path expects accounting schema 3
+ok 622 - cmd_verify no longer inlines schema SQL
+ok 623 - cmd_verify no longer expects accounting schema 2
+ok 624 - installer health checks no longer expect accounting schema 2
+ok 625 - D5: instance_id is never assigned from node_id
+ok 626 - cmd_verify checks collector heartbeat
+ok 627 - cmd_verify documents Bearer triad
+ok 628 - cmd_verify rejects wrong Clash secret
+ok 629 - clash_api_reachable_with_secret is defined in common
+ok 630 - installer no longer defines clash_api_reachable_with_secret
+ok 631 - installer still calls clash_api_reachable_with_secret
+ok 632 - installer collector success requires last_success_at
+ok 633 - installer must not print collector success from wait_for_accountd_healthy alone
+ok 634 - fresh last_success_at status is fresh
+ok 635 - fresh last_success_at is healthy
+ok 636 - last_success_at older than 300s is stale
+ok 637 - last_success_at older than 300s is unhealthy
+ok 638 - stale last_success_at fails wait without sleeping
+ok 639 - stale last_success_at wait returns immediately
+ok 640 - missing last_success_at status is missing
+ok 641 - missing last_success_at is unhealthy
+ok 642 - accounting_plane_checks schema 2 fails schema expected
+ok 643 - accounting_plane_checks schema 4 healthy passes schema
+ok 644 - accounting_plane_checks schema 4 healthy passes database readable
+ok 645 - accounting_plane_checks schema 4 healthy passes counter sanity
+ok 646 - accounting_plane_checks schema 4 healthy passes heartbeat
+ok 647 - accounting_plane_checks service_active True is healthy
+ok 648 - accounting_plane_checks service_active False is unhealthy
+ok 649 - accounting_plane_checks stale heartbeat is unhealthy
+ok 650 - accounting_plane_checks negative counter is unhealthy
+ok 651 - accounting_plane_checks open without baseline is unhealthy
+ok 652 - accounting_plane CLI reports FAIL schema expected on schema 2
+ok 653 - restart empty known_open preserves generation bytes
+ok 654 - open_db fail-closed on unknown schema_version
+ok 655 - soak protocol script exists
+ok 656 - soak protocol is LIVE-ONLY and not a CI gate
+ok 657 - soak protocol documents 24h READY FOR RC
+ok 658 - python3 can compile vincula-backup
+ok 659 - backup module pins schema 1
+ok 660 - backup module uses sqlite3 Connection.backup
+ok 661 - backup snapshot does not shutil.copyfile the live db
+ok 662 - backup module pins MAX_MEMBER_BYTES 1 GiB
+ok 663 - backup module pins MAX_ARCHIVE_BYTES 2 GiB
+ok 664 - backup module pins IO_CHUNK_BYTES 1 MiB
+ok 665 - backup module documents MAX_TEXT_MEMBER_BYTES
+ok 666 - backup verify does not extracted.read() whole members
+ok 667 - docs/technical-guide.md documents MAX_MEMBER_BYTES
+ok 668 - docs/technical-guide.md documents MAX_ARCHIVE_BYTES
+ok 669 - fake-age fixture is executable
+ok 670 - fake-age uses python3 shebang
+ok 671 - fake-age does not invoke real age
+ok 672 - secretless backup strips reality_private_key
+ok 673 - secretless users keep credential_id history without uuid
+ok 674 - secretless config.toml drops clash_api_secret
+ok 675 - include-secrets rendering keeps secrets verbatim
+ok 676 - sqlite backup API snapshot is consistent under WAL
+ok 677 - backup tar manifest schema 1 with per-file sha256
+ok 678 - verify_manifest checks sha256 and secret-bearing flag
+ok 679 - secretless archive is 0600 and not age-encrypted
+ok 680 - fake-age encrypt/decrypt round-trip
+ok 681 - verify missing_manifest and unsupported_schema
+ok 682 - D17 missing age dies with exact ERROR line
+ok 683 - include-secrets fake-age archive verifies after decrypt
+ok 684 - backup size caps are 1 GiB member / 2 GiB archive / 1 MiB chunks
+ok 685 - atomic_replace and _read_tar_members use chunked I/O (structural)
+ok 686 - oversized tar member is invalid_archive before extractfile
+ok 687 - oversized total archive is invalid_archive before second extractfile
+ok 688 - streaming verify of 2MiB accounting.db does not Path.read_bytes the member
+ok 689 - atomic_replace copies without Path.read_bytes
+ok 690 - helper mentions Secret-bearing backup requires age
+ok 691 - helper backup create invokes backup.py
+ok 692 - helper backup create passes --state-dir
+ok 693 - helper default backup name uses node_id and UTC
+ok 694 - vcl backup create writes default node-id UTC tar
+ok 695 - vcl backup create archive is 0600
+ok 696 - vcl backup create prints manifest summary
+ok 697 - vcl backup verify round-trip summary
+ok 698 - vcl backup create --json reports path and source_node_id
+ok 699 - vcl backup verify --json round-trip
+ok 700 - vcl backup unknown subcommand dies
+ok 701 - helper implements upgrade checkpoint
+ok 702 - helper rollback verifies service active
+ok 703 - helper rollback fail-closes when still active after stop
+ok 704 - helper defers vincula/vcl restore until after verification
+ok 705 - controller PARTIAL recovery cites durable rollback helper
+ok 706 - controller stages checkpoint via bash unpack helper
+ok 707 - controller does not call installed vcl upgrade checkpoint
+ok 708 - vcl upgrade checkpoint writes atomic unique dir
+ok 709 - vcl upgrade checkpoint embeds durable rollback helper
+ok 710 - vcl upgrade checkpoint directories are unique
+ok 711 - vcl upgrade rollback restores VERSION with skip-service
+ok 712 - vcl upgrade rollback fail-closes on stop failure without overwriting state
+ok 713 - vcl upgrade rollback fail-closes when service not active
+ok 714 - PARTIAL recovery documents upgrade-rollback-helper path
+ok 715 - helper implements cmd_restore
+ok 716 - restore CLI names --reissue-output
+ok 717 - restore refuses existing VERSION
+ok 718 - restore skip-health hook is test-only env
+ok 719 - restore fail-after hook lives in backup.py
+ok 720 - apply_restore verifies and preflights before safety backup
+ok 721 - apply_restore commits CSV and VERSION inside the rollback transaction
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+ok 722 - restore preflight refuses existing install and secretless --include-secrets
+ok 723 - safe restore keeps node_id and mints new instance_id
+ok 724 - safe restore rotates Reality keys and credential UUIDs
+ok 725 - safe restore preserves user_id metadata and accounting event_id=5
+ok 726 - safe restore writes 0600 reissue CSV with five columns
+ok 727 - restore to existing VERSION is refused without mutation
+ok 728 - corrupt backup is refused before dest mutation
+ok 729 - secrets restore reuses UUIDs and Reality private key
+ok 730 - mid-restore failure restores safety backup (AC-3.0-12)
+ok 731 - backup verify --json success/failure contracts
+ok 732 - vcl restore --json fresh-node contract
+ok 733 - vcl restore reissue CSV is 0600
+ok 734 - vcl restore refuses existing install without mutation
+ok 735 - vcl restore refuses --replace-node
+ok 736 - vcl restore refuses --output
+ok 737 - runtime-only dest restore writes VERSION last and clears marker
+ok 738 - vcl restore --json emits a single success document after VERSION
+ok 739 - vcl backup verify --json failure contract
+ok 740 - restore --help does not document VCL_RESTORE_FAIL_AFTER
+ok 741 - restore --help does not document VCL_RESTORE_SKIP_HEALTH
+ok 742 - restore --help does not document VCL_RESTORE_SKIP_PORT
+ok 743 - cmd_restore rolls back on injected health failure
+ok 744 - cmd_restore health rollback does not restart sing-box
+ok 745 - cmd_restore defers VERSION until after health
+ok 746 - rollback_restore_target invokes backup rollback subcommand
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/reissue-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa-20261113T021912Z.csv contains authentication credentials.
+Store and distribute it securely.
+ok 747 - bit-flip backup verify is checksum_mismatch before mutation
+ok 748 - restore refuses missing_manifest unsupported_schema secret_bearing_unencrypted
+ok 749 - mid-restore stage inject leaves target and source unchanged; retry succeeds
+ok 750 - AC-3.0-01 fixture PASS: default backup includes identity and accounting
+ok 751 - AC-3.0-02 fixture PASS: default backup is secretless without encryption
+ok 752 - AC-3.0-04 fixture PASS: verify detects bit-flip checksum mismatch
+ok 753 - AC-3.0-08 fixture PASS: restore keeps user_id
+ok 754 - AC-3.0-09 fixture PASS: restore keeps accounting event_id history
+ok 755 - AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set
+ok 756 - AC-3.0-12 fixture PASS: failed restore does not mutate source or target
+ok 757 - AC-3.0-03 fixture PASS: missing age dies with exact ERROR and writes no tar
+ok 758 - restore health inject rolls back target and leaves source tar unchanged
+ok 759 - restore health inject rolls back generated config, reissue CSV, and VERSION
+ok 760 - restore succeeds after health-inject rollback
+ok 761 - restore --json health inject emits unique ok:false and does not write VERSION
+ok 762 - restore fail-closes when accountd is not enabled/active and does not write VERSION
+ok 763 - deferred restore commits VERSION then emits a single ok:true JSON
+ok 764 - version-boundary rollback restores .runtime-only and removes VERSION
+ok 765 - AC-3.0-05 fixture PASS: restore keeps backup node_id
+ok 766 - AC-3.0-06 fixture PASS: restore mints new instance_id
+ok 767 - AC-3.0-07 fixture PASS: safe restore rotates Reality and credentials
+ok 768 - AC-3.0-10 fixture PASS: reissue CSV maps old to new credential_id
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-canonical/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-csv/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-csv/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-config/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-config/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-health/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-health/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-version/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-version/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-enospc/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-enospc/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-eacces/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-eacces/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-csvdir/csv-ro/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p102-csvdir/csv-ro/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p201-runtime/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: /tmp/vincula-tests.5E8RNPvY/backup030/p201-runtime/reissue.csv contains authentication credentials.
+Store and distribute it securely.
+ERROR: rollback_partial: disable sing-box.service failed (exit 1)
+ERROR: rollback_partial: stop sing-box.service failed (exit 1)
+ERROR: rollback_partial: disable vincula-accountd.service failed (exit 1)
+ERROR: rollback_partial: stop vincula-accountd.service failed (exit 1)
+ok 769 - restore FAIL_AFTER=canonical|csv|config|health|version fully rolls back (AC-3.0-12)
+ok 770 - restore csv ENOSPC inject leaves no VERSION and no reissue CSV; retry succeeds
+ok 771 - restore VERSION EACCES inject rolls back credentials and CSV; retry succeeds
+ok 772 - restore chmod a-w CSV dir rolls back; retry succeeds
+ok 773 - restore failure restores original sing-box and accountd service state
+ok 774 - version-boundary rollback restores .runtime-only marker
+ok 775 - systemctl rollback failure is rollback_partial not rolled-back
+ok 776 - migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop
+ok 777 - migrate_existing_install runs disk/schema/file preflight before service mutation
+ok 778 - migrate_existing_install happy path still backups, atomic_installs, and commits
+ok 779 - rollback_migration restores exact enabled/active and does not restart missing-active units
+ok 780 - installer usage does not document VCL_MIGRATE_FAIL_AFTER
+ok 781 - migrate_fail_after is a no-op when unset
+ok 782 - migrate_fail_after dies on matching inject point
+ok 783 - acct_active in backup matches real pre-migration active state
+ok 784 - acct_active in backup matches real pre-migration inactive state
+ok 785 - apply_installer_service_state restarts accountd that was active before migrate
+ok 786 - apply_installer_service_state leaves originally inactive accountd stopped
+ok 787 - snapshot_accounting_db uses Python Backup API without stopping a writer
+ok 788 - require_migration_disk_space succeeds on this host
+ok 789 - migrate FAIL_AFTER preflight|armed|backup|health-wait|accountd-stop|health|accountd restores original service state
+ok 790 - preflight inject before MIGRATION_STARTED leaves no accountd stop side effect
+ok 791 - common.sh resolves /run/lock/vincula.lock
+ok 792 - common.sh falls back to /var/lock/vincula.lock
+ok 793 - common.sh uses flock
+ok 794 - busy error names another vincula operation in progress
+ok 795 - cmd_user_add acquires operation lock
+ok 796 - cmd_restore acquires operation lock
+ok 797 - migrate_existing_install acquires operation lock
+ok 798 - install_new_node acquires operation lock
+ok 799 - install_runtime_only acquires operation lock
+ok 800 - users_registry_mutate acquires operation lock
+ok 801 - concurrent user add keeps both tags (serialized, no lost update)
+ok 802 - concurrent user add busy stderr names busy
+ok 803 - held node lock makes concurrent mutate busy
+ok 804 - busy mutate does not write carol
+ok 805 - node lock released on failure (trap)
+ok 806 - restore acquires node lock (busy while held)
+..................................
+----------------------------------------------------------------------
+Ran 34 tests in 0.293s
+
+OK
+ok 807 - 0.5.5 monitoring state storage scheduler regression
+....accounting identity mapping changed but failed validation; keeping previous map
+.
+----------------------------------------------------------------------
+Ran 5 tests in 0.015s
+
+OK
+ok 808 - 0.5.5 minimal accountd runtime contracts
+...vcl-fleet: IDENTITY_FILE_MISSING: legacy identity_file does not exist
+...
+----------------------------------------------------------------------
+Ran 6 tests in 0.018s
+
+OK
+ok 809 - 0.5.5 observer command and credential boundaries
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.021s
+
+OK
+ok 810 - 0.5.5 monitor JSON schema contract
+...................
+----------------------------------------------------------------------
+Ran 19 tests in 2.123s
+
+OK
+ok 811 - 0.5.5 findings foundation local contracts
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 0.051s
+
+OK
+ok 812 - 0.5.5 bounded audit health diagnostics and contracts
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.026s
+
+OK
+ok 813 - 0.5.5 statistical baselines and node anomaly lifecycle
+.............
+----------------------------------------------------------------------
+Ran 13 tests in 0.196s
+
+OK
+ok 814 - 0.5.5 user traffic samples and anomaly lifecycle
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.148s
+
+OK
+ok 815 - 0.5.5 public findings and timeline schema contracts
+............
+----------------------------------------------------------------------
+Ran 12 tests in 2.401s
+
+OK
+ok 816 - 0.5.5 bounded inspection inventory and fingerprints
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.730s
+
+OK
+ok 817 - 0.5.5 immutable credential selectors
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.030s
+
+OK
+ok 818 - 0.5.5 private secret inputs and authentication negatives
+.............connection attribution unavailable; preserving snapshot liveness
+..
+----------------------------------------------------------------------
+Ran 15 tests in 0.037s
+
+OK
+ok 819 - 0.5.5 staged migrations and independent retention
+............
+----------------------------------------------------------------------
+Ran 12 tests in 0.168s
+
+OK
+ok 820 - 0.5.5 cache limits and truthful failures
+ok 821 - P1 gate: fleet suite HOME isolated from real user dir
+ok 822 - P1 gate: fleet suite XDG_CONFIG_HOME isolated under TEST_TMP
+ok 823 - ssh-keygen cross-check matches hashlib lax fingerprint
+ok 824 - clock skew warn is 30s
+ok 825 - clock skew fail is 300s
+ok 826 - clock skew fail check is audit-clock-health
+ok 827 - fleet-registry/v2 constant
+ok 828 - fleet-cache/v5 constant
+ok 829 - fleet schema aliases retained
+ok 830 - fleet.db schema alias retained
+ok 831 - namespaced fleet-cache error
+ok 832 - namespaced fleet-registry error
+ok 833 - no bare fleet.json schema die
+ok 834 - build-controller uses VCL_FLEET_VERSION
+ok 835 - build-controller pins node payload via VINCULA_VERSION
+ok 836 - RO seam
+ok 837 - RW seam
+ok 838 - D57 admin_credential_ref
+ok 839 - D57 observe_credential_ref
+ok 840 - planned_credential_refs
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-b1/fleet.json
+ok 841 - B1 workspace fleet init
+ok 842 - B1 workspace manifest mint/digest/detect/CAS
+ok 843 - P1-1 workspace init
+ok 844 - P1-1 init revision is 1
+OK fleet_id=8d4b4cf7-cea7-4a73-b092-1cff7b303825 revision=1
+ok 845 - P1-1 verify after init
+Registered p11node
+ok 846 - P1-1 offline node add
+ok 847 - P1-1 registry save bumps revision/parent
+OK fleet_id=8d4b4cf7-cea7-4a73-b092-1cff7b303825 revision=2
+ok 848 - P1-1 verify after registry
+ok 849 - P1-1 trust append bumps revision/parent
+OK fleet_id=8d4b4cf7-cea7-4a73-b092-1cff7b303825 revision=3
+ok 850 - P1-1 verify after trust
+ok 851 - P1-1 history append bumps revision/parent
+OK fleet_id=8d4b4cf7-cea7-4a73-b092-1cff7b303825 revision=4
+ok 852 - P1-1 verify after history
+ok 853 - P1-1 external fork (same rev diff write_id) detected
+ok
+ok 854 - P1-1 portable writers gated by workspace_mutation
+{
+  "ok": true,
+  "fleet_id": "f6c828d7-1dfe-4585-835d-cc2b82d2d2a9",
+  "ref_map": {
+    "migrated-key-1": "/tmp/vincula-tests.5E8RNPvY/ssh-three-key"
+  },
+  "warnings": [
+    "TRUST_MIGRATION_REQUIRED"
+  ],
+  "legacy_backup": "/tmp/vincula-tests.5E8RNPvY/ws-p1-1-mig/legacy-pre-workspace-20261113T021945Z",
+  "history_exported": 0
+}
+ok 855 - P1-1 migrate
+ok 856 - P1-1 migrate revision is 1
+ok 857 - P1-1 migrate parent_revision is 0
+OK fleet_id=f6c828d7-1dfe-4585-835d-cc2b82d2d2a9 revision=1
+ok 858 - P1-1 verify after migrate
+ok 859 - P1-1 export-home init
+/tmp/vincula-tests.5E8RNPvY/ws-p1-1.tgz
+ok 860 - P1-1 export
+imported fleet_id=645c650f-0498-4e06-aa4f-a42e63969aa2 revision=2
+ok 861 - P1-1 import
+ok 862 - P1-1 import bumped revision
+OK fleet_id=645c650f-0498-4e06-aa4f-a42e63969aa2 revision=2
+ok 863 - P1-1 verify after import
+ok 864 - B2 access workspace init
+bound admin-default	identity_file	/tmp/vincula-tests.5E8RNPvY/ws-b2-id_ed25519
+ok 865 - B2 access bind identity-file
+ok 866 - B2 access list shows admin-default identity_file
+ok 867 - B2 access list shows absolute identity path
+credential bindings OK: 1 binding(s), 0 node/class row(s)
+ok 868 - B2 access verify after identity bind
+ok 869 - B2 agent list has >10 keys
+bound agent-key	agent	SHA256:2JzMQc+ckOAtRT3YsgC5sciKX0fzU+Z9IePdMkxyDfs keys/eab61ee89744d9306f10d7a2d43b222f8b4c499960561c5b4c63ffe469a45246.pub
+ok 870 - B2 access bind agent by fingerprint
+ok 871 - B2 access list shows agent fingerprint
+ok 872 - B2 bindings stay machine-local (not in fleet.json)
+ok 873 - B2 bindings file under CONFIG controllers
+ok 874 - B2 bindings file schema v2
+ok 875 - B2 agent public key selector stored machine-locally
+ok 876 - B2 agent public key selector is not a private key
+ok 877 - B2 no bindings under workspace machine-local
+ok 878 - B2 controller.json under CONFIG
+Registered b2-node
+ok 879 - B2 node add for credential wiring
+vcl-fleet: CREDENTIAL_UNBOUND: credential ref missing-ref is not bound; run access bind missing-ref --agent|--identity-file first
+ok 880 - B2 node set rejects unbound admin ref
+Updated b2-node
+ok 881 - B2 node set admin+observe refs
+credential bindings OK: 2 binding(s), 2 node/class row(s)
+ok 882 - B2 access verify after node refs
+ok 883 - B2 node show exposes credential refs
+Registered b2-migrate
+ok 884 - B2 node add bare node
+CREDENTIAL_UNBOUND: b2-migrate:admin: node has no admin credential ref; migration is required
+CREDENTIAL_UNBOUND: b2-migrate:observe: node has no observe credential ref; migration is required
+next: run vcl-fleet access migrate, or rebind with access bind
+ok 885 - B2 access verify flags migration-required node
+migrated b2-migrate admin -> b2-migrate-admin (identity_file)
+migrated b2-migrate observe -> b2-migrate-observe (identity_file)
+ok 886 - B2 access migrate binds both classes
+credential bindings OK: 4 binding(s), 4 node/class row(s)
+ok 887 - B2 access verify after migration
+ok 888 - B2 credential resolve / agent / migration state / strict argv
+ok 889 - fleet.db DDL includes instance_history
+ok 890 - fleet.db uses UPSERT for audit_events
+ok 891 - vcl-fleet Unix entry exists
+ok 892 - vcl-fleet Windows entry exists
+ok 893 - build-controller.sh packs vincula-audit.py
+ok 894 - build-controller.sh packs vincula-backup.py
+ok 895 - build-controller.sh packs vincula-ui server
+ok 896 - build-controller.sh packs vincula-ui static
+ok 897 - build-controller.sh writes controller.lock
+ok 898 - build-controller.sh writes zip sha256 sidecar
+ok 899 - load_audit_module resolves controller lib siblings
+ok 900 - CTRL 0.5.5
+ok 901 - NODE 0.5.5
+ok 902 - vcl-fleet version
+ok 903 - vcl-fleet.py version
+ok
+ok 904 - 0.4.5 operation journal helpers
+ok
+ok 905 - 0.4.5 legacy_seed + provision argv
+ok 906 - node -h lists replace
+ok 907 - node -h lists instances
+ok 908 - node set -h names rebind
+ok 909 - node set -h documents --identity-file
+ok 910 - node set -h documents --clear-identity-file
+ok 911 - node replace -h names replace
+ok 912 - node replace -h names rebind
+ok 913 - node replace -h requires --host-key
+ok 914 - node replace -h documents --identity-file
+ok 915 - node replace -h names runtime-only
+ok 916 - node replace -h names --reissue-output
+ok 917 - node replace -h does not teach --replace-node
+ok 918 - node replace -h is not fail-closed
+ok 919 - node instances -h exists
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home/fleet.json
+ok 920 - init creates fleet.json
+ok 921 - init wrote fleet.json under VCL_FLEET_HOME
+ok 922 - VCL_FLEET_HOME is isolated under TEST_TMP
+ok 923 - init creates schema-2 empty registry
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home/fleet.json
+ok 924 - init is idempotent on empty registry
+Registered lax
+ok 925 - offline add lax
+ok 926 - node list contains lax
+ok 927 - node list contains lax node_id
+ok 928 - node list header has STATUS
+ok 929 - node list shows active status
+ok 930 - duplicate node_id rejected
+ok 931 - duplicate node_id error names node_id
+ok 932 - invalid node_id rejected
+ok 933 - invalid node_id error names node_id
+ok 934 - invalid name rejected
+ok 935 - invalid name error names name
+ok 936 - empty ssh_host rejected
+Updated lax
+ok 937 - node set lax host
+ok 938 - node show host updated
+ok 939 - node show node_id unchanged
+ok 940 - node set does not copy instance_id into show
+lax disabled status=disabled
+ok 941 - node disable lax
+ok 942 - node show enabled false after disable
+ok 943 - node show status disabled after disable
+lax enabled status=active
+ok 944 - node enable lax
+ok 945 - node show enabled true after enable
+ok 946 - node show status active after enable
+ok 947 - fleet.json stores no password
+ok 948 - fleet.json schema 2 has status and no instance_id
+Registered tokyo
+ok 949 - offline add tokyo
+ok 950 - duplicate name rejected
+ok 951 - duplicate name error names name
+Registered sg
+ok 952 - offline add sg
+ok 953 - AC-2.8-01 fixture lax listed
+ok 954 - AC-2.8-01 fixture tokyo listed
+ok 955 - AC-2.8-01 fixture sg listed
+ok 956 - init refuses to overwrite a non-empty registry
+ok 957 - node add without --host-key is non-zero
+ok 958 - non-interactive add requires --host-key even if keyscan exists
+ok 959 - SSH failure does not register nantes
+ok 960 - --offline without --node-id rejected
+ok 961 - AC-2.8-09 registry survives a new process
+ok 962 - fake-ssh is executable
+ok 963 - fake-ssh-keyscan is executable
+ok 964 - fake-scp is executable
+ok 965 - fake-scp uses python3 shebang
+ok 966 - fake-scp never sets StrictHostKeyChecking=no
+ok 967 - fake-scp never sets UserKnownHostsFile=/dev/null
+ok 968 - fake-ssh-keyscan lax exits 0
+ok 969 - fake-ssh-keyscan prints ed25519 candidate
+ok 970 - fake-ssh lax identity exits 0
+ok 971 - fake-ssh lax identity has fixture node_id
+ok 972 - fake-ssh sg exits 255
+ok 973 - fake-ssh sg stderr is connection refused
+ok 974 - fake-ssh badkey exits 255
+ok 975 - fake-ssh badkey stderr is host key verification failed
+ok 976 - fake-ssh ask exits 255
+ok 977 - fake-ssh ask stderr is authenticity prompt
+ok 978 - fake-ssh rejects StrictHostKeyChecking=no
+ok 979 - fake-ssh forbidden option names FORBIDDEN_HOSTKEY_OPTION
+ok 980 - fake-ssh rejects UserKnownHostsFile=/dev/null
+vcl-fleet: identity file not found: /tmp/tmp4jzm62ad/id_ed25519.missing
+ok 981 - ssh_argv/ssh_run use injectable ssh without host-key weakening
+ok 982 - fleet.py does not hardcode IdentitiesOnly=no
+ok 983 - fleet.py can pass IdentitiesOnly=yes
+ok 984 - node add -h documents --identity-file
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-identity/fleet.json
+ok 985 - identity-file fleet init
+Registered keyn
+ok 986 - offline add with --identity-file
+ok 987 - offline add persists absolute identity_file
+ok 988 - node show prints identity_file path
+Updated keyn
+ok 989 - node set --clear-identity-file
+ok 990 - clear-identity-file drops identity_file
+Updated keyn
+ok 991 - node set --identity-file without --host
+ok 992 - missing --identity-file is refused
+ok 993 - P1-01 ssh_argv quotes remote argv; injection payloads stay one arg
+ok 994 - P1-01 fake-ssh records exact quoted argv (spaces/;/backticks)
+ok 995 - P1-01 invalid ssh_user/ssh_host die without spawning ssh
+ok 996 - P1-01 display_name newline/control chars rejected
+ok 997 - fleet.py uses shlex.join for remote SSH commands
+ok 998 - fleet.py never sets StrictHostKeyChecking=no
+ok 999 - fleet.py never sets UserKnownHostsFile=/dev/null
+ok 1000 - fleet.py has scp_bin
+ok 1001 - fleet.py reads VCL_FLEET_SCP
+ok 1002 - node replace does not send --include-secrets
+ok 1003 - vcl-fleet never sets StrictHostKeyChecking=no
+ok 1004 - vcl-fleet never sets UserKnownHostsFile=/dev/null
+ok 1005 - vcl-fleet.cmd never sets StrictHostKeyChecking=no
+ok 1006 - vcl-fleet.cmd never sets UserKnownHostsFile=/dev/null
+ok 1007 - AC-2.8-02 / AC-2.9-10 controller has no bind
+ok 1008 - AC-2.8-02 / AC-2.9-10 controller has no listen/http.server
+ok 1009 - B15 ui server is loopback-gated
+ok 1010 - B15 ui refuses 0.0.0.0 by policy text
+ok 1011 - B15 ui does not default-bind 0.0.0.0
+ok 1012 - B15 ui caps concurrent workers
+ok 1013 - B15 ui sets request socket timeout
+ok 1014 - B15 ui uses a bounded semaphore
+ok 1015 - AC-2.8-10 shipped controller has no StrictHostKeyChecking=no
+ok 1016 - AC-2.8-10 shipped controller has no UserKnownHostsFile=/dev/null
+ok 1017 - vincula-backup.py has no bind/HTTPServer
+ok 1018 - vincula-backup.py never sets StrictHostKeyChecking=no
+ok 1019 - vincula-backup.py never sets UserKnownHostsFile=/dev/null
+ok 1020 - fake-age has no bind/HTTPServer
+ok 1021 - fake-age never sets StrictHostKeyChecking=no
+ok 1022 - fake-age never sets UserKnownHostsFile=/dev/null
+ok 1023 - fake-scp has no bind/HTTPServer
+ok 1024 - host-key policy: keyscan candidates, pin, TTY authenticity guidance
+ok 1025 - B3 D27 workspace trust store + extract API
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-b4/fleet.json
+ok 1026 - B4 history fleet init
+ok 1027 - B4 portable instance history jsonl dual-write + export
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-b4-offline-add/fleet.json
+ok 1028 - B4 offline-add fleet init
+Registered lax
+ok 1029 - B4 offline node add does not call record_instance
+ok 1030 - B4 offline node add leaves history/instances.jsonl absent (D48)
+ok 1031 - B4 dry-run still reports history_gaps (D48)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-b5-migrate/fleet.json
+ok 1032 - B5 fleet init
+Registered b5n
+ok 1033 - B5 offline node add with identity_file
+ok 1034 - B5 dry-run exit 0
+ok 1035 - B5 dry-run zero side effects (file list+mtime+size)
+ok 1036 - B5 dry-run JSON dry_run/side_effects/pipeline/note
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-b5-gap/fleet.json
+ok 1037 - B5 gap fleet init
+Registered gapn
+ok 1038 - B5 gap offline add (no history)
+ok 1039 - B5 dry-run reports history_gaps>=1 (D48)
+ok 1040 - B5 fail-after create temporary Workspace preserves legacy (M03)
+ok 1041 - B5 fail-after migrate registry preserves legacy (M03)
+ok 1042 - B5 real migrate exit 0
+ok
+ok 1043 - B5 real migrate workspace+bindings+trust+history+legacy (M01/M02)
+ok 1044 - B5 dry-run after migrate exit 0
+ok 1045 - B5 dry-run after migrate still plans
+ok 1046 - B6 workspace init via --workspace
+ok 1047 - B6 workspace.json exists
+ok 1048 - B6 trust dir
+ok 1049 - B6 history dir
+ok 1050 - B6 no machine-local dir
+ok 1051 - B6 fleet.json exists after init
+ok 1052 - B6 controller.json under CONFIG
+ok 1053 - B6 workspace-view under STATE
+portable-root-ok
+ok 1054 - B6 workspace root only portable entries
+ok 1055 - B6 workspace show exit 0
+ok 1056 - B6 workspace show prints fleet_id UUID + D52 fields
+OK fleet_id=d36f8463-6f91-4dfc-8140-6f9f72de60d0 revision=1
+ok 1057 - B6 verify clean
+ok 1058 - B6 verify detects WORKSPACE_INCONSISTENT (S02)
+restored
+OK fleet_id=d36f8463-6f91-4dfc-8140-6f9f72de60d0 revision=1
+ok 1059 - B6 verify after restore
+rollback-seeded
+ok 1060 - B6 verify detects WORKSPACE_ROLLBACK (S02)
+diverged-seeded
+ok 1061 - B6 verify detects WORKSPACE_DIVERGED (S02)
+ok 1062 - B6 export-home init
+32fdffb1-2543-42a9-a199-cca18a034edf
+ok 1063 - B6 bad-export init
+bad-seeded
+ok 1064 - B6 export refuses identity_file secrets (D22/D28)
+/tmp/vincula-tests.5E8RNPvY/ws-b6.tgz
+ok 1065 - B6 export clean refs-only
+ok 1066 - B6 export archive exists
+ok 1067 - B6 export contains workspace.json
+ok 1068 - B6 export contains fleet.json
+ok 1069 - B6 export omits machine-local/fleet.db/last-status
+ok 1070 - B6 export payload has no identity_file/home/machine-local/fleet.db
+imported fleet_id=32fdffb1-2543-42a9-a199-cca18a034edf revision=3
+ok 1071 - B6 import into new home
+ok 1072 - B6 import preserves fleet_id
+OK fleet_id=32fdffb1-2543-42a9-a199-cca18a034edf revision=3
+ok 1073 - B6 import verify OK
+ok 1074 - B6 import did not copy machine-local bindings
+ok 1075 - B6 import did not create CONFIG bindings
+ok 1076 - B6 import created controller.json
+ok 1077 - B6 import did not copy fleet.db
+ok 1078 - B6 VCL_FLEET_WORKSPACE alias show exit 0
+ok 1079 - B6 VCL_FLEET_WORKSPACE alias works for workspace show
+ok 1080 - B6 dry-run exit 0
+ok 1081 - B6 dry-run zero side-effect files
+ok 1082 - B6 dry-run still plans without SSH
+ok 1083 - B6 workspace.py has no ssh_run/candidate_host_keys
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-hostkey/fleet.json
+ok 1084 - host-key fleet home init
+ok 1085 - AC-2.8-10 non-TTY add without --host-key fails
+ok 1086 - non-TTY error names --host-key SHA256
+ok 1087 - non-TTY without --host-key does not register lax
+ok 1088 - --host-key mismatch fails
+ok 1089 - --host-key mismatch names host key mismatch
+ok 1090 - --host-key mismatch does not register lax
+ok 1091 - invalid --host-key format rejected
+ok 1092 - invalid --host-key names SHA256
+ok 1093 - node add 203.0.113.13 fails after pin
+ok 1094 - pinned badkey names Host key verification failed
+ok 1095 - host-key failure does not register badkey
+Registered lax
+ok 1096 - live SSH add lax with --host-key
+ok 1097 - live add registers remote node_id
+ok 1098 - live add records ssh_host
+ok 1099 - live add defaults ssh_user root
+ok 1100 - live add does not store instance_id
+ok 1101 - pinned lax host key landed in user known_hosts
+ok 1102 - known_hosts is not /dev/null
+Registered tokyo
+ok 1103 - live SSH add tokyo via user@host and --host-key
+ok 1104 - live tokyo uses remote node_id
+ok 1105 - live tokyo ssh_host strips user
+ok 1106 - live SSH add sg without --host-key fails
+ok 1107 - live SSH add sg without --host-key names --host-key
+ok 1108 - SSH failure does not register sg before offline add
+ok 1109 - live SSH add rejects duplicate remote node_id
+ok 1110 - live duplicate names node_id
+Registered sg
+ok 1111 - offline add sg into SSH fleet home
+ok 1112 - AC-2.8-01 SSH fleet list has lax
+ok 1113 - AC-2.8-01 SSH fleet list has tokyo
+ok 1114 - AC-2.8-01 SSH fleet list has sg
+ok 1115 - AC-2.8-01 list has exactly 3 fixture nodes
+ok 1116 - live SSH registry stores remote node_ids without instance_id
+ok 1117 - clock_skew_result 0=OK 31=WARN 301=FAIL; accounting stale vs fail
+ok 1118 - verify --help mentions 30
+ok 1119 - verify --help mentions 300
+ok 1120 - verify --help mentions audit-clock-health
+ok 1121 - status --help lists NODE_ID column
+ok 1122 - status --help mentions cache-only (D58)
+ok 1123 - AC-2.8-03 three-fixture probe exits non-zero (sg SSH FAIL)
+ok 1124 - probe table header has NAME NODE_ID INSTANCE SSH PROXY ACCOUNTING
+ok 1125 - AC-2.8-03 probe lax OK/OK/OK
+ok 1126 - AC-2.8-03 probe tokyo OK/OK/STALE
+ok 1127 - AC-2.8-03 probe sg FAIL/UNKNOWN/UNKNOWN
+ok 1128 - probe --json exits non-zero with sg FAIL
+ok 1129 - probe --json shape: lax OK tokyo STALE sg FAIL/UNKNOWN
+ok 1130 - verify three-fixture exits non-zero (sg FAIL)
+ok 1131 - verify reports lax version
+ok 1132 - verify reports lax node_id
+ok 1133 - verify reports lax instance_id
+ok 1134 - verify lax ssh OK
+ok 1135 - verify sg SSH FAIL
+ok 1136 - verify tokyo accounting STALE
+ok 1137 - verify --json exits non-zero with sg FAIL
+ok 1138 - verify --json shape: lax pass, tokyo STALE, sg FAIL
+sg disabled status=disabled
+ok 1139 - disable sg for stale-only probe
+ok 1140 - probe exits 0 when only accounting STALE remains
+ok 1141 - probe without --all omits disabled sg
+ok 1142 - probe --all shows disabled sg
+ok 1143 - verify exits 0 when sg is disabled and tokyo is STALE
+sg enabled status=active
+ok 1144 - re-enable sg
+ok 1145 - AC-4.1-02 bare status zero SSH
+ok 1146 - status --live SSHes
+ok 1147 - probe SSHes
+ok 1148 - status --json mode is cache
+ok 1149 - cache status table has LAST_SYNC and DATA_AGE
+ok 1150 - cache status --json has last_sync_at/data_age/cursor_status
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-clock/fleet.json
+ok 1151 - clock-skew fleet home init
+Registered lax
+ok 1152 - clock-skew register lax
+ok 1153 - clock skew 45s verify still exits 0
+ok 1154 - clock skew 45s prints WARN
+ok 1155 - clock skew 45s warn names 30s threshold
+ok 1156 - clock skew 400s verify exits non-zero
+ok 1157 - clock skew 400s names audit-clock-health
+ok 1158 - clock skew 400s --json FAIL check is audit-clock-health
+ok 1159 - AC-2.8-04 node_id is a stable UUID in registry (not recast)
+Updated lax
+ok 1160 - AC-2.8-06 node set lax host for identity check
+ok 1161 - AC-2.8-06 ssh_host change does not alter node_id
+ok 1162 - AC-2.8-06 ssh_host updated
+Updated lax
+ok 1163 - AC-2.8-06 restore lax ssh_host
+ok 1164 - AC-2.8-05 reinstall fixture keeps node_id and mints a new instance_id
+sg disabled status=disabled
+ok 1165 - disable sg for reinstall verify
+ok 1166 - AC-2.8-05 baseline verify writes last-status before reinstall
+ok 1167 - AC-2.8-05 reinstall verify still exits 0 (WARN, not FAIL)
+ok 1168 - AC-2.8-05 verify WARNs instance changed, node_id stable
+ok 1169 - AC-2.8-05 registry node_id unchanged and instance_id not stored
+ok 1170 - AC-2.8-05 registry node_id identical after reinstall verify
+sg enabled status=active
+ok 1171 - re-enable sg after reinstall verify
+ok 1172 - AC-2.8-07 live add of already-registered node_id refused
+ok 1173 - AC-2.8-07 duplicate live add names node_id
+ok 1174 - AC-2.8-07 duplicate live add does not register lax-reinstall
+ok 1175 - PARTIAL OP_SUCCESS/OP_FAILED constants
+ok 1176 - PARTIAL exit code is 2
+ok 1177 - PARTIAL state machine: all-ok SUCCESS, one-fail/all-fail PARTIAL, exit 0/2
+ok 1178 - fake-ssh classifies remote argv, not identity substring
+ok 1179 - fake-ssh unknown vcl subcommand exits 1
+ok 1180 - fake-ssh unknown subcommand does not emit identity JSON
+ok 1181 - fake-ssh user commands require VCL_FAKE_STATE_DIR
+ok 1182 - fake-ssh identity still works without VCL_FAKE_STATE_DIR
+ok 1183 - fake-ssh user add alice on lax exits 0
+ok 1184 - fake-ssh user add on lax is visible in lax list, not tokyo
+ok 1185 - fake-ssh wrote lax users.json under VCL_FAKE_STATE_DIR
+ok 1186 - fake-ssh initialized empty tokyo users.json
+ok 1187 - fake-ssh user show alice includes user_id
+ok 1188 - fake-ssh user show credentials omit vless uuid field
+ok 1189 - fake-ssh refuses to disable the last enabled user
+ok 1190 - fake-ssh user add bob on lax exits 0
+ok 1191 - fake-ssh rotate alice on lax exits 0
+ok 1192 - fake-ssh rotate alice on lax changes credential_id
+ok 1193 - fake-ssh disable alice is reflected in subsequent list
+ok 1194 - fake-ssh enable alice reports enabled true
+ok 1195 - fake-ssh VCL_FAKE_FAIL_USER_ADD=tokyo injects per-host user add failure
+ok 1196 - fake-ssh identity still works with VCL_FAKE_STATE_DIR set
+ok 1197 - fake-ssh status still works with VCL_FAKE_STATE_DIR set
+ok 1198 - SSH mutation timeout is 60s
+ok 1199 - user add -h prints PARTIAL/--nodes/--user-id help
+ok 1200 - user add help does not promise rollback
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-users/fleet.json
+ok 1201 - user-test fleet init
+Registered lax
+ok 1202 - user-test offline add lax
+Registered tokyo
+ok 1203 - user-test offline add tokyo
+user.add alice PLANNED nodes=lax,tokyo
+user.add alice APPLYING lax
+user.add alice APPLYING tokyo
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 14e830a3-2da5-467a-9f2b-f5cd326265e1
+ok 1204 - AC-2.9-01 user add alice --nodes lax,tokyo exits 0
+ok 1205 - AC-2.9-07 credential CSV header
+ok 1206 - AC-2.9-01 same user_id two nodes different credential UUID
+ok 1207 - AC-2.9-07 credential CSV is node-specific (lax/tokyo hosts)
+ok 1208 - P1-01 user add display_name with spaces exits 0
+ok 1209 - P1-01 Alice Smith stays one remote argv; stored display_name intact
+ok 1210 - P1-01 user add rejects display_name with newline
+ok 1211 - P1-01 node add rejects ssh_host with semicolon
+ok 1212 - user add --json is idempotent SUCCESS with the same user_id
+ok 1213 - user list header TAG USER_ID NODES
+ok 1214 - user list alice spans lax,tokyo
+ok 1215 - user list --json aggregates alice by user_id
+ok 1216 - user show alice names both nodes
+ok 1217 - user show alice includes tokyo
+ok 1218 - user show alice --json reports per-node credentials
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+ok 1219 - user rotate alice --node lax exits 0
+ok 1220 - rotate stdout is a credential CSV row
+ok 1221 - AC-2.9-02 rotate one node does not change the other node's credential
+user.add dave PLANNED nodes=lax
+user.add dave APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 68a4b325-bf34-4bec-8252-f30cc2f6e203
+ok 1222 - user add dave on lax (so alice is not last enabled)
+ok 1223 - user disable alice --node lax exits 0
+ok 1224 - AC-2.9-03 disable one node does not disable the user on other nodes
+ok 1225 - user enable alice --node lax exits 0
+ok 1226 - user disable without --node is refused
+ok 1227 - AC-2.9-06 partial user add exits 2
+ok 1228 - AC-2.9-06 output contains PARTIAL
+ok 1229 - AC-2.9-06 overall state is not SUCCESS
+ok 1230 - AC-2.9-06 tokyo FAILED
+ok 1231 - AC-2.9-06 remediation includes --user-id
+ok 1232 - AC-2.9-06 successful lax row is still in CSV
+ok 1233 - AC-2.9-06 bob exists on lax only after tokyo FAIL inject
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-import/fleet.json
+ok 1234 - import-test fleet init
+Registered lax
+ok 1235 - import-test offline add lax
+Registered tokyo
+ok 1236 - import-test offline add tokyo
+ok 1237 - user import -h documents CSV header and --dry-run
+ok 1238 - P1-01 user import rejects display_name with newline
+ok 1239 - P1-01 user import dry-run accepts display_name with spaces
+ok 1240 - user import --dry-run prints plan for quoted lax,tokyo cell
+ok 1241 - user import --dry-run does not mutate node users
+ok 1242 - user import rejects duplicate tag in CSV
+ok 1243 - duplicate tag import performs zero mutation
+ok 1244 - user import rejects unknown node mars
+ok 1245 - validation failure (unknown node) applies zero rows
+ok 1246 - user import rejects inexact CSV header
+user.import charlie PLANNED nodes=lax,tokyo
+user.import charlie APPLYING lax
+user.import charlie APPLYING tokyo
+WARNING: /tmp/vincula-tests.5E8RNPvY/import-charlie-creds.csv contains authentication credentials.
+Store and distribute it securely.
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+ok 1247 - user import charlie --nodes lax,tokyo exits 0
+ok 1248 - import stdout credential CSV header
+ok 1249 - user import charlie yields two node-specific CSV rows
+ok 1250 - import --output credential CSV is mode 0600
+ok 1251 - user export --credentials requires --output FILE
+ok 1252 - user export metadata header is per-node
+ok 1253 - user export metadata includes charlie on lax
+ok 1254 - user export metadata includes charlie on tokyo
+WARNING: /tmp/vincula-tests.5E8RNPvY/export-credentials.csv contains authentication credentials.
+Store and distribute it securely.
+ok 1255 - user export --credentials --output exits 0
+ok 1256 - credentials export is mode 0600 with node-specific URIs
+ok 1257 - fake-ssh lax accounting.db fixture seeded
+ok 1258 - fake-ssh audit export --after 0 exits 0
+ok 1259 - fake-ssh audit export --after 0 emits Protocol v2 JSONL plus stderr meta
+ok 1260 - fake-ssh audit export after=10 max_export_seq=3 is CURSOR_AHEAD exit 3
+ok 1261 - VCL_FAKE_FAIL_EXPORT=lax makes audit export exit 1
+ok 1262 - VCL_FAKE_FAIL_AUDIT_EXPORT=lax makes audit export exit 1
+ok 1263 - open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600
+vcl-fleet: instance_id must not equal node_id
+vcl-fleet: unsupported fleet-cache schema: 99
+ok 1264 - fleet.db schema 1→2→3→4 preserves data and records instance history
+ok 1265 - B3 v3→v4 stamp+mismatch
+ok 1266 - import_audit_batch is atomic, UPSERT-idempotent, and rejects unlabeled rows
+ok 1267 - cmd_sync is defined
+ok 1268 - sync --reseed flag exists
+ok 1269 - sync uses audit export --after
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-sync/fleet.json
+ok 1270 - sync-test fleet init
+Registered lax
+ok 1271 - sync-test offline add lax
+ok 1272 - sync -h documents --node/--reseed/CURSOR_EXPIRED/CURSOR_AHEAD
+ok 1273 - sync --node unknown dies
+ok 1274 - sync fixture seeded lax accounting.db export_seq 1-5
+ok 1275 - initial sync --node lax exits 0
+ok 1276 - initial sync after 0 imports 5 events and last_export_seq=5
+ok 1277 - restart sync (new process) exits 0
+ok 1278 - controller restart continues from last_export_seq; COUNT stays 5
+ok 1279 - incremental fixture appended export_seq 6-7
+ok 1280 - incremental sync imports new rows after last_export_seq
+ok 1281 - idempotent re-run does not duplicate rows
+ok 1282 - VCL_FAKE_FAIL_EXPORT does not advance last_export_seq
+ok 1283 - retry after VCL_FAKE_FAIL_EXPORT succeeds from same last_export_seq
+ok 1284 - CURSOR_EXPIRED fixture: pruned_max_export_seq=3 and last_export_seq forced to 1
+ok 1285 - CURSOR_EXPIRED reports reseed and does not import a hole
+ok 1286 - --reseed lax replaces local rows with remaining export window
+ok 1287 - PROTOCOL_MISMATCH fixture: cursor_kind=event_id
+ok 1288 - CURSOR_PROTOCOL_MISMATCH: no import; reseed remediation
+ok 1289 - reseed after PROTOCOL_MISMATCH restores export_seq cursor
+ok 1290 - fleet audit SUM(upload/download) matches node closed connections
+ok 1291 - jsonl rows missing node_id fail closed and do not advance cursor
+ok 1292 - validate_export_batch Protocol v2: export_seq monotonic, gaps OK, rejects dup/desc/protocol
+ERROR: JSONL row 0 node_id=cccccccc-cccc-4ccc-8ccc-cccccccccccc != aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+ok 1293 - stamp_export_rows fills missing identity and refuses mismatch
+ok 1294 - reseed remote export can pass --stamp-identity
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-unlab/fleet.json
+ok 1295 - unlabeled-sync fleet init
+Registered lax
+ok 1296 - unlabeled-sync offline add lax
+ok 1297 - unlabeled-sync fixture seeded empty node_id row
+ok 1298 - normal sync fails closed on unlabeled export rows and does not advance cursor
+ok 1299 - reseed --stamp-identity imports previously unlabeled rows
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-p104/fleet.json
+ok 1300 - P1-04 fleet init
+Registered lax
+ok 1301 - P1-04 offline add lax
+ok 1302 - P1-04 fixture seeded export_seq 1-5
+ok 1303 - P1-04 happy path sync imports 1-5 last_export_seq=5
+ok 1304 - P1-04 forced last_export_seq=10 against max=5
+ok 1305 - CURSOR_AHEAD after=10 max_export_seq=5: no import, cursor unchanged, reseed
+ok 1306 - P1-04 sparse event_id / gapped export_seq fixture: cursor last_export_seq=5
+ok 1307 - sparse event_ids with increasing export_seq: import OK
+ok 1308 - P1-04 lying-meta fixture: remote 1-8, last_export_seq=5
+ok 1309 - lying meta count=5 vs 3 delivered: ERROR, no import, cursor unchanged
+ok 1310 - P1-04 reset last_export_seq=5 before next_cursor lie
+ok 1311 - lying next_cursor=99: ERROR, no import, cursor unchanged
+ok 1312 - honest retry after lying meta imports 6-8 and advances last_export_seq
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-instance-history/fleet.json
+ok 1313 - instance-history fleet init
+Registered lax
+ok 1314 - instance-history offline add lax
+ok 1315 - instance-history fixture seeded lax accounting.db
+ok 1316 - instance-history first sync exits 0
+ok 1317 - first-sight sync records one active instance_history row
+ok 1318 - VCL_FAKE_REINSTALL sync WARNs instance changed and exits 0
+ok 1319 - instance change records new row and retires the previous instance
+ok 1320 - cmd_audit_user is defined
+ok 1321 - fleet audit loads vincula-audit interval-overlap
+ok 1322 - fleet stats queries daily_usage
+ok 1323 - fleet query skips unlabeled node_id
+ok 1324 - audit -h documents interval-overlap and user_id merge
+ok 1325 - stats -h documents daily_usage and by_node totals
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-query/fleet.json
+ok 1326 - query-test fleet init
+Registered lax
+ok 1327 - query-test offline add lax
+Registered tokyo
+ok 1328 - query-test offline add tokyo
+user.add alice PLANNED nodes=lax,tokyo
+user.add alice APPLYING lax
+user.add alice APPLYING tokyo
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 8aee56ad-8c56-4fd3-b294-566cec3d3d31
+user.add bob PLANNED nodes=lax
+user.add bob APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: a1000379-8d83-4a4b-ab65-1c26acf86ea2
+ok 1329 - query-test provisioned alice (lax+tokyo) and bob (lax)
+ok 1330 - query fixture seeded alice/bob audit_events and unlabeled rows
+ok 1331 - AC-2.9-04 audit user alice human output includes lax and tokyo
+ok 1332 - AC-2.9-04 audit merges Alice across lax+tokyo by user_id
+ok 1333 - audit --node lax filters to one node
+ok 1334 - audit interval-overlap includes lax closed_at==from and excludes tokyo started_at==to
+ok 1335 - AC-2.9-05 stats user alice preserves node attribution
+ok 1336 - stats user alice human rows are per node
+ok 1337 - AC-2.9-05 stats top users keeps (user_id, node) rows
+ok 1338 - AC-2.9-05 stats top hosts keeps per-node host rows
+ok 1339 - stats node lax is node-tagged and excludes tokyo
+ok 1340 - stats --days 1 excludes older UTC days
+ok 1341 - audit unknown tag dies
+ok 1342 - stats --days 0 is rejected
+ok 1343 - audit dies on tag user_id conflict across nodes
+ok 1344 - node retire is a CLI command
+ok 1345 - node retire -h documents final sync and retired
+ok 1346 - schema 1 load lists lax
+ok 1347 - schema 1 load lists tokyo
+ok 1348 - schema 1 load lists sg
+ok 1349 - schema 1 missing status defaults active for enabled
+ok 1350 - schema 1 missing status defaults disabled for disabled
+ok 1351 - schema 1 load upgrades in memory; save writes schema 2 with status
+vcl-fleet: unsupported fleet-registry schema: 3
+ok 1352 - unsupported fleet-registry schema 3 is rejected
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-retire/fleet.json
+ok 1353 - retire-test fleet init
+Registered lax
+ok 1354 - retire-test offline add lax
+Registered tokyo
+ok 1355 - retire-test offline add tokyo
+ok 1356 - retire unknown node is refused
+user.add alice PLANNED nodes=lax,tokyo
+user.add alice APPLYING lax
+user.add alice APPLYING tokyo
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 2cb7c10a-a12b-4de3-959a-fd14807e4a49
+user.add bob PLANNED nodes=lax
+user.add bob APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 09cc6c6b-6121-4be9-9ab1-f81bbe7f7654
+ok 1357 - retire-test provisioned alice (lax+tokyo) and bob (lax)
+ok 1358 - retire fixture seeded lax events 1-5 and tokyo event 1
+ok 1359 - retire-test initial sync lax exits 0
+ok 1360 - retire fails when final sync export fails
+ok 1361 - failed retire leaves lax active, cursor=5, no snapshot dir
+ok 1362 - node retire lax succeeds with preserved-history and uninstall hint
+ok 1363 - retired snapshot identity.json exists
+ok 1364 - retired snapshot cursor.json exists
+ok 1365 - retired snapshot last-status.json exists
+ok 1366 - node list still includes retired lax
+ok 1367 - node list marks lax retired
+ok 1368 - AC-2.9-08 final sync committed cursor=8 before status=retired; last enabled user kept
+ok 1369 - retire of already-retired node is refused
+ok 1370 - retired node cannot be enabled
+ok 1371 - status default scope omits retired lax
+ok 1372 - status --all includes retired lax with SSH=-
+ok 1373 - verify default scope omits retired lax
+ok 1374 - verify --all shows retired placeholder
+ok 1375 - sync --node retired lax is refused
+ok 1376 - default sync after retire exits 0
+ok 1377 - retired lax excluded from default sync; historical rows unchanged
+ok 1378 - AC-2.9-09 historical audit still queryable after retire
+ok 1379 - cmd_node_replace is defined
+ok 1380 - cmd_node_instances is defined
+ok 1381 - replace does not auto-reseed
+ok 1382 - cmd_node_replace uses --reissue-output
+ok 1383 - cmd_node_replace does not send --replace-node
+ok 1384 - controller restore argv is accepted by real bin/vincula parser
+ok 1385 - fake-ssh rejects restore --replace-node
+ok 1386 - direct backup fixture seeded
+ok 1387 - fake-ssh backup create writes alias backup.tar
+ok 1388 - fake-ssh backup create is secretless and verifies
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-rebind/fleet.json
+ok 1389 - rebind-test fleet init
+Registered lax
+ok 1390 - rebind-test offline add lax
+ok 1391 - rebind-test fixture seeded
+ok 1392 - rebind-test first sync exits 0
+Updated lax
+ok 1393 - rebind node set lax host
+ok 1394 - node set rebind keeps credentials and instance_id
+ok 1395 - node instances still available after rebind
+ok 1396 - node instances after rebind lists active
+ok 1397 - node instances --json still available after rebind
+ok 1398 - replace unknown node is refused
+WARNING: skipping final sync for lax (VCL_FLEET_RETIRE_SKIP_SYNC=1); AC-2.9-08 is not satisfied on this path
+WARNING: lax: remote user disable was best-effort: ssh exit 255: SSH transport failed
+ok 1399 - rebind-test retire lax for replace-refuse
+ok 1400 - replace retired node is refused
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-replace/fleet.json
+ok 1401 - replace-test fleet init
+Registered lax
+ok 1402 - replace-test offline add lax
+ok 1403 - replace-test fixture seeded
+ok 1404 - replace-test pre-sync exits 0
+ok 1405 - node replace lax happy path exits 0
+ok 1406 - AC-3.0-05/06/07/10 replace keeps node_id, mints instance, writes reissue CSV
+ok 1407 - node instances lists old retired instance
+ok 1408 - node instances lists retired then active
+ok 1409 - node instances lists active
+ok 1410 - node instances --json shows both physical instances
+ok 1411 - replace WARNs instance changed, node_id stable
+ok 1412 - sync after replace exits 0 without auto-reseed
+ok 1413 - AC-3.0-09 replace sync keeps old instance rows and cursor
+ok 1414 - replace CURSOR_EXPIRED fixture: pruned_max=99 cursor=5
+ok 1415 - post-replace gap yields CURSOR_EXPIRED and --reseed guidance
+reseed lax: local audit_events and daily_usage deleted; cursor=0
+ok 1416 - post-replace --reseed lax exits 0
+ok 1417 - reseed after replace keeps instance_history and labeled node_id
+ok 1418 - AC-3.0-11 fixture PARTIAL (LIVE-ONLY): replaced node revoked old credential; inbound omits old uuid
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-bootstrapped/fleet.json
+ok 1419 - bootstrapped-target fleet init
+Registered lax
+ok 1420 - bootstrapped-target offline add lax
+ok 1421 - replace against bootstrapped NEW_HOST fails without registry change
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-empty-runtime/fleet.json
+ok 1422 - empty-runtime fleet init
+Registered lax
+ok 1423 - empty-runtime offline add lax
+ok 1424 - replace against host without runtime fails without registry change
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-inject/fleet.json
+ok 1425 - inject-test fleet init
+Registered lax
+ok 1426 - inject-test offline add lax
+ok 1427 - inject-test fixture seeded with good/tamper/wrong-node archives
+ok 1428 - inject-test pre-sync exits 0
+ok 1429 - replace aborts when old-node backup create fails
+ok 1430 - backup-create fail leaves registry host and old credentials unchanged
+ok 1431 - replace aborts when scp pull of the backup fails
+ok 1432 - scp fail leaves old node active and registry unchanged
+ok 1433 - replace aborts when restore on the new node fails
+ok 1434 - restore fail leaves old node active, still serving original credentials
+ok 1435 - replace rejects restore ok:true with non-zero exit
+ok 1436 - restore lie-ok leaves registry unchanged
+ok 1437 - replace aborts when pulled backup verify fails
+ok 1438 - verify-fail --from-backup does not change registry or old node
+ok 1439 - 0.4.5 from-backup verify fail journals FAILED not SUCCESS
+ok 1440 - replace refuses backup whose source_node_id is not the registry node
+ok 1441 - wrong-node backup leaves target registry node_id and old host unchanged
+ok 1442 - inject-test disable lax
+ok 1443 - replace disabled node is refused
+ok 1444 - docs/technical-guide.md exists
+ok 1445 - docs/technical-guide.md documents vcl-fleet.cmd
+ok 1446 - docs/technical-guide.md documents --host-key
+ok 1447 - docs/technical-guide.md names CLOCK_SKEW_WARN_SECONDS 30
+ok 1448 - docs/technical-guide.md names CLOCK_SKEW_FAIL_SECONDS 300
+ok 1449 - docs/technical-guide.md has AC-2.9-01
+ok 1450 - docs/technical-guide.md has AC-2.9-10
+ok 1451 - docs/technical-guide.md documents runtime-only replace
+ok 1452 - docs/technical-guide.md does not teach restore --replace-node
+ok 1453 - docs/technical-guide.md names --reissue-output
+ok 1454 - README does not mark node replace NOT IMPLEMENTED
+ok 1455 - fleet lock path is $FLEET_HOME/.lock
+ok 1456 - fleet lock uses fcntl.flock
+ok 1457 - fleet busy message matches node busy text
+ok 1458 - cmd_node_add holds fleet operation lock
+ok 1459 - cmd_sync holds fleet operation lock
+ok 1460 - save_registry acquires fleet operation lock
+ok 1461 - write_sync_cursor acquires fleet operation lock
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-op-lock/fleet.json
+ok 1462 - op-lock fleet init
+ok 1463 - concurrent fleet node add keeps both nodes (serialized, no lost update)
+ok 1464 - held fleet lock makes concurrent node add busy
+ok 1465 - fleet lock released on failure (finally)
+ok 1466 - fleet lock uses threading.RLock
+ok 1467 - fleet lock depth is not a process-global counter
+vcl-fleet: busy: another vincula operation in progress
+ok 1468 - fleet lock is per-thread reentrant and exclusive across threads
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fleet-home-ui/fleet.json
+ok 1469 - ui-test fleet init
+Registered lax
+ok 1470 - ui-test offline add lax
+Updated lax
+ok 1471 - ui-test set identity-file
+ok 1472 - ui-test seeded fleet.db + last-status
+ok 1473 - AC-3.1-01 ui refuses non-loopback bind
+[ui] 127.0.0.1 - "GET /api/meta HTTP/1.1" 403 -
+[ui] 127.0.0.1 - "GET /api/meta HTTP/1.1" 401 -
+[ui] 127.0.0.1 - "GET /api/meta HTTP/1.1" 401 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 403 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 415 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 400 -
+[ui] 127.0.0.1 - "GET /api/meta HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/overview HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/health HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/nodes/lax HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/nodes/lax HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=7 HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 200 -
+vcl-fleet: invalid ssh_host: 203.0.113.10;rm
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 400 -
+vcl-fleet: invalid --host-key: expected SHA256:<base64>
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 400 -
+[ui] 127.0.0.1 - "POST /api/command-builder HTTP/1.1" 400 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users/alice HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/refresh/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=7 HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=7&node=lax HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=7&node=tokyo HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=7&user=nosuchuser HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/recipes HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/meta HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&destination=target&limit=1 HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&destination=no-such-host&limit=1 HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&destination=target&limit=1&after_started_at=2026-08-10T08:03:00.000000Z&after_event_id=3&after_node_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&destination=target&limit=1&after_started_at=2026-08-10T08:05:00.000000Z&after_event_id=5&after_node_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=cccccccc-cccc-4ccc-8ccc-cccccccccccc&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&destination=example HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-01T00:00:00Z&to=2026-08-17T00:00:00Z&limit=1 HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-01-01T00:00:00Z&to=2026-08-17T00:00:00Z HTTP/1.1" 400 -
+[ui] 127.0.0.1 - "POST /api/user/add HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/user/rotate HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/node/retire HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/node/replace HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/restore HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/mutate HTTP/1.1" 405 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/overview HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/refresh/probe HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/nodes HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "POST /api/sync HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/operations HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET / HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/findings HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/timeline HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/inspect HTTP/1.1" 200 -
+ui api ok
+ok 1474 - AC-3.1 UI six-page overview/nodes/users/traffic/audit/operations + probe overlay
+vcl-fleet: invalid workspace.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+vcl-fleet: WORKSPACE_INCONSISTENT: refuse ui-runtime under portable workspace root (fix or recreate workspace.json)
+vcl-fleet: invalid workspace.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+vcl-fleet: WORKSPACE_INCONSISTENT: refuse ui-runtime under portable workspace root (fix or recreate workspace.json)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/ok/fleet.json
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/no-mkdir/fleet.json
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/get-no-mkdir/fleet.json
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/rollback/fleet.json
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/diverged/fleet.json
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-ro-five/inconsistent/fleet.json
+ws-ro-five ok
+ok 1475 - AC-4.4-05 read-only workspace five states + GET no write
+ok 1476 - ui -h documents localhost bind
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ac-041-offline/fleet.json
+ok 1477 - AC-4.0 fixture fleet init
+Registered lax
+ok 1478 - AC-4.0 fixture offline add lax with identity_file
+seeded
+ok
+ok 1479 - AC-4.0-M06 dry-run exit 0
+ok 1480 - AC-4.0-M06 dry-run mtime/size unchanged
+ok 1481 - AC-4.0-M06 dry-run JSON history_gaps nonempty
+ok 1482 - AC-4.0-M03 fail-inject preserves legacy fleet.json sha256
+ok 1483 - AC-4.0-M02 migrate with SSH=/bin/false rc=0
+ok
+ok 1484 - AC-4.0-M01 node_id/ssh_host/ssh_port/status(+user_id) equal pre/post
+ok
+Updated lax
+ok 1485 - AC-4.0-M04 explicitly bind migrated observe credential
+lax
+  version: 0.3.1
+  node_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+  instance_id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+  ssh: OK
+  proxy: OK
+  accounting: OK
+  registry: OK
+  clock: OK
+  clock_detail: clock drift 0s
+ok 1486 - AC-4.0-M04 post-migrate verify
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        0        1
+ok 1487 - AC-4.0-M04 post-migrate sync --node lax
+ok 1488 - AC-4.0-M04 post-migrate status cache mode
+NAME     NODE_ID  LAST_SYNC            DATA_AGE NODE_STATUS CURSOR
+lax      aaaaaaaa 2026-11-13T02:21:04Z 0s       OK          ok
+ok 1489 - AC-4.0-M04 post-migrate status
+usage: vcl-fleet audit [-h] {user,archive} ...
+
+Merge connection rows across nodes by stable user_id. Window is RFC3339 interval-overlap (same predicate as node `vcl audit`: started_at < --to AND COALESCE(closed_at, last_seen_at) >= --from). Output columns: time node instance destination traffic. Rows without node_id are never merged. Local Read Plane: TAG resolves from user_snapshot, then audit_events/daily_usage (no SSH). 0 ids → unknown local user; >1 → LOCAL_USER_ID_CONFLICT. Pass --user-id to bypass. Live observation remains `user list` / `user show`.
+
+positional arguments:
+  {user,archive}
+    user          connections for TAG in an RFC3339 window (local cache)
+    archive       audit-archive/v1 .vclaudit (D37/D38; no cursor)
+
+options:
+  -h, --help      show this help message and exit
+ok 1490 - AC-4.0-M04 post-migrate audit
+Period: 2026-11-13 → 2026-11-13 (UTC days, from daily_usage)
+USER_ID NODE TAG UP DOWN TOTAL CONNECTIONS
+(no usage in window)
+ok 1491 - AC-4.0-M04 post-migrate stats top users --days 1
+usage: vcl-fleet ui [-h] [--host HOST] [--port PORT]
+
+Serve a loopback-only read-only Local Audit UI over stdlib HTTP. Default bind
+127.0.0.1 (optional ::1). Non-loopback binds are refused. Data comes from
+$FLEET_HOME cache; Refresh/Verify/Sync trigger existing SSH-backed controller
+commands. No add/rotate/retire/replace/restore/import in UI.
+
+options:
+  -h, --help   show this help message and exit
+  --host HOST  loopback bind address (default: 127.0.0.1; ::1 allowed)
+  --port PORT  TCP port (default: 8765)
+ok 1492 - AC-4.0-M04 post-migrate ui --help
+ok 1493 - AC-4.1-S01 CHANGELOG mentions cache-only
+ok 1494 - AC-4.1-S01 status help mentions cache
+rollback-seeded
+ok 1495 - AC-4.0-S02 stderr contains WORKSPACE_ROLLBACK|DIVERGED|INCONSISTENT|CAS_REJECTED
+restored
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/m05-a/fleet.json
+ok 1496 - AC-4.0-M05-A fleet init
+Registered lax
+ok 1497 - AC-4.0-M05-A offline add
+fleet.db ready
+ok 1498 - AC-4.0-M05-A fleet.db pre-migrate
+{
+  "ok": true,
+  "fleet_id": "6b0f99ee-60eb-4f68-b7c7-2969fd2fa3f6",
+  "ref_map": {
+    "migrated-key-1": "/tmp/vincula-tests.5E8RNPvY/m05-a/keys/id"
+  },
+  "warnings": [],
+  "legacy_backup": "/tmp/vincula-tests.5E8RNPvY/m05-a/legacy-pre-workspace-20261113T022106Z",
+  "history_exported": 0,
+  "fleet_db": "/tmp/vincula-tests.5E8RNPvY/m05-a-local-state/6b0f99ee-60eb-4f68-b7c7-2969fd2fa3f6/fleet.db"
+}
+ok 1499 - AC-4.0-M05-A migrate
+ok 1500 - AC-4.0-M05-A cache fleet.db
+ok 1501 - AC-4.0-M05-A no home fleet.db after migrate
+ok 1502 - AC-4.0-M05-A bindings under CONFIG
+ok 1503 - AC-4.0-M05-A no machine-local under workspace
+ok 1504 - AC-4.0-M05-B has no machine-local before bind
+ok 1505 - AC-4.0-M05-B has no fleet.db before bind/sync
+portable-ok
+ok 1506 - AC-4.0-M05-B portable workspace root only
+ok 1507 - AC-4.0-M05-B has no CONFIG bindings before bind
+note: migrated-key-1 is shared by lax:admin; all of them now use this credential
+bound migrated-key-1	identity_file	/tmp/vincula-tests.5E8RNPvY/m05-b/keys/id
+ok 1508 - AC-4.0-M05-B access bind credential
+ok 1509 - AC-4.0-M05-B bindings under own CONFIG
+ok 1510 - AC-4.0-M05-A bindings still under A CONFIG
+ok
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        1        0
+ok 1511 - AC-4.0-M05-B sync structural
+NAME     NODE_ID  LAST_SYNC            DATA_AGE NODE_STATUS CURSOR
+lax      aaaaaaaa 2026-11-13T02:21:06Z 1s       UNKNOWN     ok
+ok 1512 - AC-4.0-M05-B status structural
+usage: vcl-fleet ui [-h] [--host HOST] [--port PORT]
+
+Serve a loopback-only read-only Local Audit UI over stdlib HTTP. Default bind
+127.0.0.1 (optional ::1). Non-loopback binds are refused. Data comes from
+$FLEET_HOME cache; Refresh/Verify/Sync trigger existing SSH-backed controller
+commands. No add/rotate/retire/replace/restore/import in UI.
+
+options:
+  -h, --help   show this help message and exit
+  --host HOST  loopback bind address (default: 127.0.0.1; ::1 allowed)
+  --port PORT  TCP port (default: 8765)
+ok 1513 - AC-4.0-M05-B ui --help structural
+ok 1514 - AC-4.0-M05-B fleet.db exists
+ok 1515 - AC-4.0-M05-A fleet.db still exists
+ok 1516 - AC-4.0-M05 independent fleet.db (A and B not same inode)
+ok
+ok 1517 - AC-4.0-M05 same fleet_id + node_ids on A and B (offline half)
+ok 1518 - AC-4.0-M05 SKIP (REQUIRES-LIVE)
+ok 1519 - ci.yml never sets VCL_LIVE_M05
+ok 1520 - AC-4.0-M05 runbook README exists
+ok 1521 - AC-4.0-M05 RUNBOOK exists
+ok 1522 - AC-4.0-M05 SUMMARY is NOT RUN
+ok 1523 - B1 init
+ok 1524 - B1 path/digest/export-excl
+ok 1525 - B1 legacy home db
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/ws-042-b2/fleet.json
+ok 1526 - B2 fleet init
+Registered lax
+ok 1527 - B2 offline node add
+{
+  "ok": true,
+  "fleet_id": "c92b526a-6f9c-4436-be37-bf7dec793aa6",
+  "ref_map": {
+    "migrated-key-1": "/tmp/vincula-tests.5E8RNPvY/ws-042-b2-id_ed25519"
+  },
+  "warnings": [],
+  "legacy_backup": "/tmp/vincula-tests.5E8RNPvY/ws-042-b2/legacy-pre-workspace-20261113T022108Z",
+  "history_exported": 1,
+  "fleet_db": "/tmp/vincula-tests.5E8RNPvY/xdg-b2/c92b526a-6f9c-4436-be37-bf7dec793aa6/fleet.db"
+}
+ok 1528 - B2 migrate
+ok 1529 - B2 cache db
+ok 1530 - B2 bak db
+ok 1531 - B2 no home db
+ok
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        1        0
+ok 1532 - B2 sync
+ok 1533 - B2 status cache
+usage: vcl-fleet audit [-h] {user,archive} ...
+
+Merge connection rows across nodes by stable user_id. Window is RFC3339 interval-overlap (same predicate as node `vcl audit`: started_at < --to AND COALESCE(closed_at, last_seen_at) >= --from). Output columns: time node instance destination traffic. Rows without node_id are never merged. Local Read Plane: TAG resolves from user_snapshot, then audit_events/daily_usage (no SSH). 0 ids → unknown local user; >1 → LOCAL_USER_ID_CONFLICT. Pass --user-id to bypass. Live observation remains `user list` / `user show`.
+
+positional arguments:
+  {user,archive}
+    user          connections for TAG in an RFC3339 window (local cache)
+    archive       audit-archive/v1 .vclaudit (D37/D38; no cursor)
+
+options:
+  -h, --help      show this help message and exit
+ok 1534 - B2 audit
+Period: 2026-11-13 → 2026-11-13 (UTC days, from daily_usage)
+USER_ID NODE TAG UP DOWN TOTAL CONNECTIONS
+(no usage in window)
+ok 1535 - B2 stats
+ok 1536 - B2 dry-run 16-step zero side effects
+ok 1537 - B4 RO query / RW sync / delete journal
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b5-full/fleet.json
+ok 1538 - B5 init
+Registered lax
+ok 1539 - B5 add lax
+Registered tokyo
+ok 1540 - B5 add tokyo
+user.add alice PLANNED nodes=lax,tokyo
+user.add alice APPLYING lax
+user.add alice APPLYING tokyo
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 19e71ab1-4cc4-4a75-8e84-6a9fdef551f7
+user,node,credential_id,vless_uri
+alice,lax,38ad4538-0745-412c-85dc-e73b55c45715,vless://38ad4538-0745-412c-85dc-e73b55c45715@203.0.113.10:443?encryption=none&type=tcp#alice
+alice,tokyo,2f9b3c99-5390-401a-952a-e1b036e832e0,vless://2f9b3c99-5390-401a-952a-e1b036e832e0@203.0.113.11:443?encryption=none&type=tcp#alice
+ok 1541 - B5 seed users
+ok 1542 - B5 seed audit DBs
+ok 1543 - B5 sync --full exits 0
+ok 1544 - B5 PARTIAL exit 2
+ok 1545 - B5 legacy sync ok
+ok 1546 - B5 status cache-only
+/tmp/vincula-tests.5E8RNPvY/b5-full/last-status.json
+ok 1547 - P1-3 status after sync --full reads node_snapshot (no last-status)
+ok 1548 - P1-3 probe makes SSH
+ok 1549 - P1-3 probe does not write last-status.json
+ok 1550 - P1-3 status zero SSH
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/p13-fallback/fleet.json
+ok 1551 - P1-3 fallback init
+Registered lax
+ok 1552 - P1-3 fallback add lax
+ok 1553 - P1-3 legacy last-status honored when node_snapshot empty
+ok 1554 - B5 stub gone
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/f71-home/fleet.json
+ok 1555 - F7-1 T2 init
+Registered lax
+ok 1556 - F7-1 T2 add lax
+{
+  "ok": true,
+  "fleet_id": "a4e99b3b-0192-4e80-a236-83a443c66c99",
+  "ref_map": {
+    "migrated-key-1": "/tmp/vincula-tests.5E8RNPvY/ssh-three-key"
+  },
+  "warnings": [],
+  "legacy_backup": "/tmp/vincula-tests.5E8RNPvY/f71-home/legacy-pre-workspace-20261113T022114Z",
+  "history_exported": 0
+}
+ok 1557 - F7-1 T2 migrate
+OK fleet_id=a4e99b3b-0192-4e80-a236-83a443c66c99 revision=1
+ok 1558 - F7-1 T2 verify before
+bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+ok 1559 - F7-1 T2 seed empty audit meta
+ok 1560 - F7-1 T2 sync --full injected failure exit 2
+ok
+ok 1561 - F7-1 T2 no half-commit: DB rollback + history/digest unchanged
+OK fleet_id=a4e99b3b-0192-4e80-a236-83a443c66c99 revision=1
+ok 1562 - F7-1 T2 workspace verify after rollback
+ok 1563 - F7-1 T2 sync --full success exit 0
+ok
+ok 1564 - F7-1 T2 success path flushes history after DB commit
+OK fleet_id=a4e99b3b-0192-4e80-a236-83a443c66c99 revision=2
+ok 1565 - F7-1 T2 verify after success
+ok 1566 - F7-1 sync_full uses _record_instance_db_pending
+ok 1567 - F7-1 sync_full flushes via append_instance_history_lines
+ok 1568 - F7-2 T3 live init
+Registered f72n
+ok 1569 - F7-2 T3 live add
+OK fleet_id=9501ab32-8a6e-4518-9c85-16b535d84769 revision=2
+ok 1570 - F7-2 T3 live verify
+ok 1571 - F7-2 T3 export-home init
+Registered exp72
+ok 1572 - F7-2 T3 export-home add
+/tmp/vincula-tests.5E8RNPvY/f72-good.tgz
+ok 1573 - F7-2 T3 export
+ok 1574 - F7-2 T3 good archive exists
+ok
+ok 1575 - F7-2 T3 corrupt fleet import fails
+ok 1576 - F7-2 T3 corrupt: live SHA256 set unchanged
+OK fleet_id=9501ab32-8a6e-4518-9c85-16b535d84769 revision=2
+ok 1577 - F7-2 T3 corrupt: live still verifies
+ok 1578 - F7-2 T3 digest-mismatch import fails
+ok 1579 - F7-2 T3 digest-mismatch error mentions refuse/re-sign
+ok 1580 - F7-2 T3 mismatch: live SHA256 set unchanged
+ok 1581 - F7-2 T3 mismatch: no auto re-sign (digest unchanged)
+ok 1582 - F7-2 T3 mismatch: revision unchanged
+OK fleet_id=9501ab32-8a6e-4518-9c85-16b535d84769 revision=2
+ok 1583 - F7-2 T3 mismatch: live still verifies
+imported fleet_id=3262f75c-0077-4d26-a385-ca90625bc51c revision=3
+ok 1584 - F7-2 T3 valid import
+OK fleet_id=3262f75c-0077-4d26-a385-ca90625bc51c revision=3
+ok 1585 - F7-2 T3 valid import verifies
+ok
+ok 1586 - F7-2 T3 valid import bumps revision / parent chain
+imported fleet_id=3262f75c-0077-4d26-a385-ca90625bc51c revision=3
+ok 1587 - F7-2 T3 import falls back when ~/tmp is unusable
+OK fleet_id=3262f75c-0077-4d26-a385-ca90625bc51c revision=3
+ok 1588 - F7-2 T3 fallback import verifies
+ok 1589 - F7-2 T3 fallback import kept the registry
+ok
+ok 1590 - F7-2 import_workspace has no refresh-on-mismatch
+ok 1591 - F7-3 T1 workspace init
+Registered n
+ok 1592 - F7-3 T1 node add --identity-file
+ok
+ok 1593 - F7-3 T1 add: fleet.json has refs, no identity_file
+Updated n
+ok 1594 - F7-3 T1 explicit observe=admin via node set
+ok 1595 - F7-3 T1 observe ref set
+ok 1596 - F7-3 T1 access list shows per-node binding after add
+ok 1597 - F7-3 T1 CONFIG binding file exists
+ok 1598 - F7-3 T1 no identity_file string in fleet.json
+Updated n
+ok 1599 - F7-3 T1 node set --identity-file
+ok
+ok 1600 - F7-3 T1 set: fleet.json still has no identity_file
+ok 1601 - F7-3 T1 access list keeps old ref and adds rotated ref
+OK fleet_id=164b7c8f-edf5-4441-935e-818fe1334f27 revision=4
+ok 1602 - F7-3 T1 workspace verify PASS
+/tmp/vincula-tests.5E8RNPvY/f73-export.tgz
+ok 1603 - F7-3 T1 workspace export PASS
+ok 1604 - F7-3 T1 export archive exists
+ok 1605 - F7-3 T1 export payload has no identity_file
+vcl-fleet: workspace active: refusing to write identity_file into fleet.json (nodes[0]); use credential bindings (access bind / admin_credential_ref)
+ok 1606 - F7-3 T1 registry save refuses identity_file when workspace active
+ok 1607 - FR-01 workspace init
+Registered fr1-one
+ok 1608 - FR-01 add node one
+Registered fr1-two
+ok 1609 - FR-01 add node two
+Updated fr1-one
+ok 1610 - FR-01 observe key for node one
+Updated fr1-two
+ok 1611 - FR-01 observe key for node two
+ok
+ok 1612 - FR-01 two nodes x two purposes use four distinct refs
+bound fr1-shared	identity_file	/tmp/vincula-tests.5E8RNPvY/fr1-k1
+ok 1613 - FR-01 explicit shared ref via access bind
+Updated fr1-one
+ok 1614 - FR-01 node one observe via shared ref
+Updated fr1-two
+ok 1615 - FR-01 node two observe via shared ref
+Updated fr1-one
+ok 1616 - FR-01 rotate node one admin key
+Updated fr1-two
+ok 1617 - FR-01 same-key re-set on node two
+ok
+ok 1618 - FR-01 rotation is copy-on-write and keeps shared consumers
+vcl-fleet: SSH failed for root@203.0.113.10: exit 1
+ok 1619 - FR-01 failed adopt exits non-zero
+ok
+ok 1620 - FR-01 failed adopt leaves registry and bindings untouched
+vcl-fleet: cannot replace fr1-one: SSH identity failed (exit 1); final sync required
+ok 1621 - FR-01 failed replace exits non-zero
+ok
+ok 1622 - FR-01 failed replace keeps old credentials and orphans the candidate
+ok
+ok 1623 - FR-01 registry write failure leaves no dangling reference
+credential bindings OK: 8 binding(s), 4 node/class row(s)
+ok 1624 - FR-01 access verify
+OK fleet_id=f2f681ad-7802-4229-8f2b-0dd223b6b1ea revision=9
+ok 1625 - FR-01 workspace verify
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/f74-home/fleet.json
+ok 1626 - F7-4 T4 init
+Registered lax
+ok 1627 - F7-4 T4 add lax
+seeded-fail
+ok
+ok 1628 - F7-4 T4 FAIL snapshot → status --json ok=false exit non-zero
+seeded-ok
+ok
+ok 1629 - F7-4 T4 healthy snapshot → status --json ok=true exit 0
+seeded-stale
+ok
+ok 1630 - F7-4 T4 UNKNOWN/STALE keep ok=true (existing contract)
+ok 1631 - F7-5 T5 workspace init
+OK fleet_id=c2c10a3e-1b2c-4d02-aaae-b0b49712521f revision=1
+ok 1632 - F7-5 T5 verify clean
+/tmp/vincula-tests.5E8RNPvY/f75-export.tgz
+ok 1633 - F7-5 T5 export clean OK
+ok 1634 - F7-5 T5 export archive exists
+ok 1635 - F7-5 T5 verify FAIL on stale digest
+ok 1636 - F7-5 T5 export FAIL on inconsistent (no tgz)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/p15-home/fleet.json
+ok 1637 - P1-5 init
+Registered lax
+ok 1638 - P1-5 add lax
+Registered tokyo
+ok 1639 - P1-5 add tokyo
+ok 1640 - P1-5 snapshot resolve zero SSH
+ok 1641 - P1-5 tag resolves from user_snapshot
+ok 1642 - P1-5 events fallback zero SSH
+ok 1643 - P1-5 tag resolves from audit_events/daily_usage fallback
+ok 1644 - P1-5 ambiguous tag → LOCAL_USER_ID_CONFLICT
+ok 1645 - P1-5 conflict zero SSH
+ok 1646 - P1-5 unknown tag → unknown local user
+ok 1647 - P1-5 unknown zero SSH
+ok 1648 - P1-5 stats user zero SSH
+ok 1649 - P1-5 --user-id bypass zero SSH
+ok 1650 - P1-5 --user-id bypasses tag resolution
+ok 1651 - P1-5 resolve_fleet_user_id no _list_users
+ok 1652 - P1-5 UI resolve has no allow_ssh SSH branch
+ok 1653 - P1-5 status is cache-only (run_cached_status)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/p15-full/fleet.json
+ok 1654 - P1-5 full init
+Registered lax
+ok 1655 - P1-5 full add
+user.add alice PLANNED nodes=lax
+user.add alice APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 11111111-1111-4111-8111-111111111111
+user,node,credential_id,vless_uri
+alice,lax,70034e6f-02bf-4730-9742-8fb66b2e5a2b,vless://70034e6f-02bf-4730-9742-8fb66b2e5a2b@203.0.113.10:443?encryption=none&type=tcp#alice
+ok 1656 - P1-5 full user add
+ok 1657 - P1-5 full seed audit
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        1        0
+ok 1658 - P1-5 sync --full
+ok 1659 - P1-5 post-sync audit/stats/status zero SSH
+ok 1660 - P1-5 audit/stats/status Local Read Plane after sync --full
+ok 1661 - B6 create/verify/restore/dedupe/conflict/no-cursor
+ok 1662 - B6 age encrypt
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b7-a/fleet.json
+ok 1663 - B7 ws+seed
+Registered lax
+ok 1664 - B7 add node
+user.add alice PLANNED nodes=lax
+user.add alice APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 11111111-1111-4111-8111-111111111111
+user,node,credential_id,vless_uri
+alice,lax,33eeb9e0-55d4-4f0b-a6d7-5956c623e764,vless://33eeb9e0-55d4-4f0b-a6d7-5956c623e764@203.0.113.10:443?encryption=none&type=tcp#alice
+ok 1665 - B7 add alice
+ok 1666 - B7 create report
+ok 1667 - B7 archive no imported_at
+ok 1668 - B7 verify ok
+ok 1669 - B7 verify tables
+ok 1670 - B7 inspect
+ok 1671 - B7 restore dedupe
+ok 1672 - B7 cursor unchanged
+ok 1673 - B7 fleet mismatch rc
+ok 1674 - B7 fleet mismatch msg
+vcl-fleet: ARCHIVE_CONFLICT
+ok 1675 - B7 ARCHIVE_CONFLICT
+ok 1676 - B7 conflict rollback
+ok 1677 - B7 conflict daily_usage untouched
+imported fleet_id=2047c296-4f5a-4c69-a495-c120d113b81a revision=3
+ok 1678 - B7 fresh import
+ok 1679 - B7 fresh imported
+ok 1680 - B7 fresh no cursor
+ok 1681 - B7 historical query
+ok 1682 - B7 stats after restore
+ok 1683 - B7 age file
+ok 1684 - B7 age report
+ok 1685 - P1-1r workspace init
+Registered p11r
+ok 1686 - P1-1r offline node add
+ok 1687 - P1-1r registry save bumps revision/write_id/parent
+OK fleet_id=9390e00f-2b2c-4542-937f-2f5b6c6b5ac0 revision=2
+ok 1688 - P1-1r verify after registry
+ok 1689 - P1-1r trust append bumps revision/write_id/parent
+OK fleet_id=9390e00f-2b2c-4542-937f-2f5b6c6b5ac0 revision=3
+ok 1690 - P1-1r verify after trust
+ok 1691 - P1-1r history append bumps revision/write_id/parent
+OK fleet_id=9390e00f-2b2c-4542-937f-2f5b6c6b5ac0 revision=4
+ok 1692 - P1-1r verify after history
+ok 1693 - P1-1r fleet.json bypass → verify INCONSISTENT
+ok
+ok 1694 - P1-2r rollback journal / RO / legacy WAL
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/p13r-home/fleet.json
+ok 1695 - P1-3r init
+Registered lax
+ok 1696 - P1-3r add lax
+ok 1697 - P1-3r seed audit
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        1        0
+ok 1698 - P1-3r sync --full
+/tmp/vincula-tests.5E8RNPvY/p13r-home/last-status.json
+ok 1699 - P1-3r status after sync --full reads node_snapshot (no probe)
+/tmp/vincula-tests.5E8RNPvY/p13r-home/last-status.json
+ok 1700 - P1-3r probe makes SSH
+ok 1701 - P1-3r probe does not write last-status.json
+ok 1702 - P1-3r no last-status under FLEET_HOME
+ok 1703 - P1-3r status zero SSH
+ok 1704 - P1-4r ws init
+Registered lax
+ok 1705 - P1-4r add node
+user.add alice PLANNED nodes=lax
+user.add alice APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 11111111-1111-4111-8111-111111111111
+user,node,credential_id,vless_uri
+alice,lax,b79d0456-b9e4-4493-8205-5cea133c0098,vless://b79d0456-b9e4-4493-8205-5cea133c0098@203.0.113.10:443?encryption=none&type=tcp#alice
+ok 1706 - P1-4r add alice
+created /tmp/vincula-tests.5E8RNPvY/p14r.vclaudit
+events: 2
+range: 2026-08-01T00:00:00.000000Z → 2026-08-21T00:00:00.000000Z
+sha256: 674dbfcb57d2c64a039bc0e0b252db51d79a531d5e883ff07b5ed3bddde68f58
+ok 1707 - P1-4r archive create
+ok 1708 - P1-4r archive schema no imported_at
+ok
+ok 1709 - P1-4r imported_at-only dedupes
+ok 1710 - P1-4r cursor untouched after dedupe restore
+ok 1711 - P1-4r fleet mismatch rc
+ok 1712 - P1-4r ARCHIVE_FLEET_MISMATCH
+ok 1713 - P1-4r cursor untouched after mismatch
+imported fleet_id=4055350c-3a92-4cfd-91fb-4830a95aadfe revision=3
+ok 1714 - P1-4r B import workspace
+ok 1715 - P1-4r B restore imported
+ok 1716 - P1-4r B no cursor from archive
+ok 1717 - P1-4r B stats after restore (daily_usage rebuilt)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/p15r-home/fleet.json
+ok 1718 - P1-5r init
+Registered lax
+ok 1719 - P1-5r add lax
+user.add alice PLANNED nodes=lax
+user.add alice APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: 11111111-1111-4111-8111-111111111111
+user,node,credential_id,vless_uri
+alice,lax,92cb7edd-9c3b-444e-aa5e-2011f53bfeca,vless://92cb7edd-9c3b-444e-aa5e-2011f53bfeca@203.0.113.10:443?encryption=none&type=tcp#alice
+ok 1720 - P1-5r user add alice
+ok 1721 - P1-5r seed audit
+NAME     STATUS   AFTER    CURSOR   INSERTED UPDATED
+lax      ok       0        1        1        0
+ok 1722 - P1-5r sync --full
+Registered tokyo
+ok 1723 - P1-5r add tokyo
+ok 1724 - P1-5r audit/stats/status zero SSH
+[ui] 127.0.0.1 - "GET /api/overview HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/users HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/audit?user=alice&from=2026-08-10T00:00:00Z&to=2026-08-11T00:00:00Z HTTP/1.1" 200 -
+[ui] 127.0.0.1 - "GET /api/stats/top?kind=users&days=30 HTTP/1.1" 200 -
+ok
+ok 1725 - P1-5r UI JSON GET zero SSH
+ok 1726 - P1-5r post-UI SSH still zero
+ok 1727 - P1-5r unknown tag → unknown local user
+ok 1728 - P1-5r unknown zero SSH
+ok 1729 - P1-5r ambiguous tag → LOCAL_USER_ID_CONFLICT
+ok 1730 - P1-5r conflict zero SSH
+ok 1731 - P1-5r user list/show still SSH
+ok 1732 - P1-6r workspace init
+Registered lax
+ok 1733 - P1-6r offline add
+bound admin-default	identity_file	/tmp/vincula-tests.5E8RNPvY/p16r-id_ed25519
+ok 1734 - P1-6r access bind
+ok
+ok 1735 - P1-6r FLEET_HOME only portable entries
+ok 1736 - P1-6r no machine-local under workspace
+ok 1737 - P1-6r bindings under CONFIG
+ok 1738 - P1-6r view under STATE
+ok 1739 - P1-6r access list sees bind on A
+OK fleet_id=6397dcab-a0d7-4443-8630-5fb1e165880c revision=2
+ok 1740 - P1-6r verify on A
+OK fleet_id=6397dcab-a0d7-4443-8630-5fb1e165880c revision=2
+ok 1741 - P1-6r verify after cp -r (fresh machine)
+ok 1742 - P1-6r B has no CONFIG bindings before re-bind
+ok 1743 - P1-6r access list empty on B before re-bind
+bound admin-default	identity_file	/tmp/vincula-tests.5E8RNPvY/p16r-id_ed25519
+ok 1744 - P1-6r re-bind on B
+ok 1745 - P1-6r access list sees bind after re-bind on B
+ok 1746 - P1-6r B bindings under own CONFIG
+ok 1747 - P1-6r A bindings still under A CONFIG
+ok 1748 - P1-6r B still no machine-local
+ok 1749 - B1 load_provision_module
+ok 1750 - B1 packs provision.py
+ok 1751 - B2 missing apt-get fails stage-1 preflight
+ok 1752 - B2 already_vincula fails with adopt remedy
+ok 1753 - B2 non-interactive without host-key dies
+ok 1754 - P1-1 sing-box release asset URL parity py/sh
+ok 1755 - P1-1 preflight passes when bare dir URL fails but asset URL ok
+ok 1756 - P1-2 root preflight passes without sudo cmd
+ok 1757 - P1-2 non-root sudo preflight privilege_mode sudo
+ok 1758 - P1-2 neither root nor sudo fails preflight
+provision: bootstrap
+ok 1759 - LIVE-P1 missing python3 bootstraps and preflight passes
+ok 1760 - P2-6 reality preflight runs with default target
+ok 1761 - P2-6 reality preflight honors VCL_REALITY_HOST
+ok 1762 - P2-6 reality preflight fails on unreachable target
+ok 1763 - 0.4.5 listen_port preflight free for non-443
+ok 1764 - 0.4.5 listen_port preflight fails when URI port busy
+ok 1765 - 0.4.5 listen_port 443 busy does not block URI port 20687
+ok 1766 - B3 digest mismatch refuses install
+ok 1767 - B3 unsupported_arch refuses install
+ok dist/vincula-controller-0.5.5.zip
+ok 1768 - B3 controller zip embeds payload/
+ok resolve from dist flat
+ok 1769 - B3 build-controller installs payload triple to dist for source provisioning
+ok 1770 - B4 remote digest mismatch refuses installer
+provision: upload
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1771 - B4 provision success registers node
+provision: upload
+provision: install
+provision: verify
+provision: register
+ok 1772 - B4 REMOTE_READY_LOCAL_UNCOMMITTED on registry commit fail
+provision: upload
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1773 - B4 success path calls sync --full once
+provision: upload
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1774 - P1-2 sudo install invokes sudo -n env VCL_SERVER bash vincula.sh
+ok 1775 - P1-3 duplicate name blocked before remote install
+provision: upload
+provision: install
+provision: verify
+provision: register
+vcl-fleet: duplicate node_id: injected
+ok 1776 - P1-3 SystemExit on commit returns REMOTE_READY_LOCAL_UNCOMMITTED
+provision: upload
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1777 - P1-4 provision PARTIAL when initial sync fails
+vcl-fleet: provision PARTIAL (remote ready): vcl-fleet sync --full --node lax
+ok 1778 - P1-4 provision CLI exit 2 on sync PARTIAL
+provision: upload
+provision: install
+provision: verify
+provision: register
+ok 1779 - P2-5 provision happy path cleans random staging dir
+ok 1780 - P2-5 digest failure cleans random staging dir
+ok 1781 - P2-5 verify failure cleans random staging dir
+provision: upload
+provision: upload-legacy-seed
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1782 - 0.4.5 seed E2E root harden + dual-user
+provision: upload
+provision: upload-legacy-seed
+provision: install
+provision: verify
+provision: register
+provision: sync
+ok 1783 - 0.4.5 seed E2E sudo harden chown/chmod
+ok 1784 - 0.4.5 seed E2E chown fail is zero-install
+ok 1785 - 0.4.5 seed E2E chmod fail is zero-install
+ok 1786 - 0.4.5 seed E2E refuse existing VERSION clean host
+ok 1787 - 0.5.5 vincula.sh refuses seed when VERSION exists
+ok 1788 - 0.5.5 is_supported_upgrade_from 0.3.1
+ok 1789 - 0.5.5 is_supported_upgrade_from 0.3.2
+ok 1790 - 0.5.5 migrate preserves UUID/Reality guards present
+ok 1791 - 0.5.5 build-controller packs observation modules
+ok 1792 - 0.5.5 build-controller packs node_upgrade
+ok 1793 - 0.5.5 build-controller packs ssh_transport
+ok 1794 - 0.5.5 schema_validate fixtures
+ok 1795 - 0.5.5 parse_stdout_json rejects Infinity/NaN
+vcl-fleet: CREDENTIAL_UNBOUND: node has no observe credential ref; migration is required
+ok 1796 - 0.5.5 observe/admin credential routing
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/obs050-fleet/fleet.json
+ok 1797 - obs050 fleet init
+Registered lax
+ok 1798 - obs050 add lax offline
+ok 1799 - obs050 real-node Unknown command maps UNSUPPORTED
+ok 1800 - obs050 capabilities UNSUPPORTED on 0.3.x lax
+ok 1801 - obs050 telemetry UNSUPPORTED on 0.3.x lax
+ok 1802 - support floor refuses old runtime despite valid capabilities
+ok 1803 - obs050 capabilities OK when fake node 0.5.5
+ok 1804 - obs050 telemetry OK when fake node 0.5.5
+ok 1805 - obs050 telemetry rejects wrong node and instance identity
+ok 1806 - 0.5.1 to 0.5.5 upgrade plan uses observe and permits supported source
+ok 1807 - obs050 upgrade plan allowlist 0.3.1
+ok 1808 - obs050 upgrade apply without --yes fails
+ok 1809 - obs050 upgrade apply without --yes message
+ok 1810 - obs-auth workspace init
+Registered lax
+ok 1811 - obs-auth add lax
+ok 1812 - obs-auth capabilities exit non-zero on AUTH_FAILED
+ok 1813 - obs-auth capabilities AUTH_FAILED
+ok 1814 - obs-auth probe exits non-zero without admin fallback
+ok 1815 - obs-auth probe reports AUTH_FAILED
+ok 1816 - obs-auth verify exits non-zero without admin fallback
+ok 1817 - obs-auth verify reports AUTH_FAILED
+ok 1818 - obs050 probe and verify use observe for every remote read
+ok 1819 - FR-03 classifier separates limit, denial and ordinary text
+ok 1820 - FR-03 capabilities exits non-zero on AUTH_LIMIT
+ok 1821 - FR-03 capabilities keeps AUTH_FAILED and adds AUTH_LIMIT
+ok 1822 - FR-03 probe exits non-zero on AUTH_LIMIT
+ok 1823 - FR-03 probe carries ssh_reason without raw remote text
+ok 1824 - FR-03 verify exits non-zero on AUTH_LIMIT
+ok 1825 - FR-03 verify reports AUTH_FAILED/AUTH_LIMIT
+ok 1826 - FR-04 failure detail never echoes stdout
+ok 1827 - FR-04 shareable summary keeps identity out of the text
+ok 1828 - FR-04 sync row carries codes next to a safe error string
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/fr2-home/fleet.json
+ok 1829 - FR-02 fleet init
+Registered lax
+ok 1830 - FR-02 add lax
+ok 1831 - FR-02 multi-page catch-up exit 0
+ok 1832 - FR-02 multi-page catch-up imports every page
+ok 1833 - FR-02 page cap exits 2
+ok 1834 - FR-02 page cap reports MORE_PENDING, never success
+ok 1835 - FR-02 resume from committed cursor exits 0
+ok 1836 - FR-02 resume finishes the backlog
+ok 1837 - FR-02 exhausted run budget exits 2
+ok 1838 - FR-02 exhausted run budget reports MORE_PENDING
+ok 1839 - FR-02 second-page failure exits 2
+ok 1840 - FR-02 second-page failure keeps the committed first page
+ok 1841 - FR-02 second-page timeout exits 2
+ok 1842 - FR-02 second-page timeout is TIMEOUT with first page kept
+ok 1843 - FR-02 oversized page exits 2
+ok 1844 - FR-02 oversized page imports nothing
+ok 1845 - FR-02 identity change exits 2
+ok 1846 - FR-02 identity change rejects the page and keeps prior pages
+ok 1847 - FR-02 mid-run retention gap exits 2
+ok 1848 - FR-02 mid-run retention gap is EXPIRED with prior pages kept
+ok 1849 - FR-02 retire exits non-zero while MORE_PENDING
+ok 1850 - FR-02 retire reports MORE_PENDING
+ok 1851 - FR-02 retire did not mark the node retired
+ok 1852 - FR-02 replace exits non-zero while MORE_PENDING
+ok 1853 - FR-02 replace reports MORE_PENDING
+ok 1854 - FR-02 replace left the endpoint unchanged
+vcl-fleet: cannot retire lax: audit is still behind (MORE_PENDING after 2 page(s), cursor 7); rerun sync until it reports ok, then retire
+vcl-fleet: cannot retire lax: final sync failed (boom); not marking retired
+vcl-fleet: cannot retire lax: CURSOR_EXPIRED; run: vcl-fleet sync --reseed lax
+ok 1855 - FR-02 final-sync gate rejects anything not caught up
+WARNING: lax: local cache refused the transaction; continuing
+ok 1856 - FR-02 database errors fail one node, not the run
+ok 1857 - FR-02R post-catch-up full sync exits 0
+ok 1858 - FR-02R snapshot reflects the post-catch-up state
+ok 1859 - FR-02R seed an old snapshot before the drift run
+WARNING: lax: audit advanced 3 page(s) to cursor 8; full snapshot refresh did not complete
+ok 1860 - FR-02R identity drift during catch-up exits 2
+ok 1861 - FR-02R identity drift keeps pages and the old snapshot
+ok 1862 - FR-02R snapshot timestamp is the collection time
+ok 1863 - FR-02R budget covers import, locks and the snapshot txn
+ok 1864 - FR-02R missing max_export_seq exits 2
+ok 1865 - FR-02R missing watermark is a protocol error, not success
+ok 1866 - FR-02R retire is blocked without a watermark
+ok 1867 - FR-02R retire reports the protocol failure
+ok 1868 - FR-02R transport failures carry no endpoint or port
+ok 1869 - FR-02R protocol rejections keep identities out of the text
+ok 1870 - FR-02R probe reports an unreachable node without leaking it
+ok 1871 - obs050 oversize capabilities rejected
+ok 1872 - obs050 padded raw oversize rejected before json.loads
+ok 1873 - obs050 bounded SSH capture honors timeout
+ok 1874 - obs050 upgrade plan REFUSED exit non-zero
+ok 1875 - obs050 upgrade plan REFUSED state
+ok 1876 - obs-auth telemetry exit non-zero on AUTH_FAILED
+ok 1877 - obs-auth telemetry AUTH_FAILED
+ok 1878 - obs050 upgrade apply SKIPPED when already 0.5.5
+ok 1879 - obs050 upgrade apply uses admin not observe for plan
+ok 1880 - obs050 upgrade post-check PARTIAL on verify fail
+ok 1881 - obs050 upgrade post-check ROLLED_BACK on restore
+ok 1882 - obs050 upgrade checkpoint uses staged helper not installed vcl
+ok 1883 - obs050 upgrade identity drift PARTIAL
+ok 1884 - obs050 telemetry audit stable
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/upg050-fail-fleet/fleet.json
+ok 1885 - upg050-fail fleet init
+Registered lax
+ok 1886 - upg050-fail add lax
+ok 1887 - upg050 migrate fail exits non-zero
+ok 1888 - upg050 failure actually reached migrate
+ok 1889 - upg050 apply success
+ok 1890 - upg050 post-upgrade capabilities OK
+ok 1891 - upg050 apply uses admin identity in SSH log
+ok 1892 - upg050 journal has node_upgrade
+ok 1893 - upg050 journal redacts secrets
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/mix050-fleet/fleet.json
+ok 1894 - mix050 fleet init
+Registered lax
+ok 1895 - mix050 add lax
+Registered obsnode
+ok 1896 - mix050 add obsnode
+ok 1897 - mix050 lax UNSUPPORTED
+ok 1898 - mix050 obsnode OK
+ok 1899 - mix050 probe lax not ERROR
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/res050-fleet/fleet.json
+ok 1900 - res050 fleet init
+Registered lax
+ok 1901 - res050 add lax offline
+ok 1904 - res050 controller reload preserves observation API
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/soak050-fleet/fleet.json
+ok 1905 - soak050 fleet init
+Registered obsnode
+ok 1906 - soak050 add obsnode
+ok 1907 - soak050 1000x telemetry
+ok 1908 - soak050 missing metrics fail closed
+ok 1909 - upg050 fake-ssh checkpoint rollback preserves VERSION
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b6-alias/fleet.json
+ok 1910 - B6 alias home init
+ok 1911 - B6 add -h adopt alias
+ok 1912 - B6 adopt -h --host-key
+Registered lax
+ok 1913 - B6 adopt
+ok 1914 - B6 adopt list
+ok 1915 - B6 adopt identity
+Registered tokyo
+ok 1916 - B6 add --offline
+ok 1917 - B6 offline SSH=0
+ok 1918 - B6 reg ws init
+Registered regn
+ok 1919 - B6 register
+ok 1920 - B6 show
+ok 1921 - B6 reg no SSH
+OK fleet_id=2ead1ab3-abad-459d-82fe-e0f83abcb4cd revision=2
+ok 1922 - B6 ws verify
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b6-dig-home/fleet.json
+ok 1923 - B6 dig home init
+ok 1924 - B6 dig non-zero
+ok 1925 - B6 dig msg
+ok 1926 - B6 no install
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b6-preflight/fleet.json
+ok 1927 - B6 preflight home init
+ok 1928 - B6 apt fail
+ok 1929 - B6 apt fail zero install
+ok 1930 - B6 apt fail zero register
+ok 1931 - B6 use adopt
+ok 1932 - B6 AC-4.2-03 prov
+ok 1933 - B6 AC-4.2-03 adopt
+ok 1934 - B6 no password flag
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/b6-ok-home/fleet.json
+ok 1935 - B6 ok home init
+provision: preflight
+provision: upload
+provision: install
+provision: verify
+provision: register
+Provisioned provn node_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+ok 1936 - B6 prov ok
+ok 1937 - B6 prov list
+ok 1938 - B6 sha256 -c
+ok 1939 - B6 installer
+ok 1940 - B6 sync/--no-sync
+provision: preflight
+provision: bootstrap
+provision: upload
+provision: install
+provision: verify
+provision: register
+ok 1941 - LIVE-P1 missing python3 provision succeeds
+ok 1942 - LIVE-P1 apt failure is zero install and zero register
+provision: upload
+provision: install
+provision: verify
+provision: register
+ok 1943 - LIVE-P1 root installer is env VCL_SERVER then bash
+ok 1944 - LIVE-P2 human progress and heartbeat go to stderr
+ok 1945 - LIVE-P2 popen drains 1MiB without timeout
+provision: upload
+provision: install
+provision: verify
+provision: register
+ok 1946 - LIVE-P2 installer 1MiB stdout completes (not timeout)
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/live-json-home/fleet.json
+ok 1947 - LIVE-P2 json home init
+ok 1948 - LIVE-P2 provision --json exits 0
+ok 1949 - LIVE-P2 --json stdout is pure JSON
+ok 1950 - LIVE-P2 --json stdout has no progress lines
+ok 1951 - LIVE-P2 progress on stderr
+ok 1952 - LIVE-P2 install failure redacts secrets
+Initialized fleet registry at /tmp/vincula-tests.5E8RNPvY/live-link-home/fleet.json
+ok 1953 - LIVE-P2 link fleet init
+Registered lax
+ok 1954 - LIVE-P2 link add lax
+Registered sg
+ok 1955 - LIVE-P2 link add sg
+user.add alice PLANNED nodes=lax
+user.add alice APPLYING lax
+WARNING: stdout contains authentication credentials.
+Store and distribute it securely.
+STATE SUCCESS
+user_id: e703360e-e550-4bde-976b-ff8230d76463
+ok 1956 - LIVE-P2 link add alice
+ok 1957 - LIVE-P2 user link success prints URI
+ok 1958 - LIVE-P2 user link URI is node-specific
+ok 1959 - LIVE-P2 user link does not log URI
+ok 1960 - LIVE-P2 user link requires --node
+ok 1961 - LIVE-P2 user link node unreachable fails
+ok 1962 - LIVE-P2 user link user not found fails
+ok 1963 - LIVE-P2 user link no active credential fails
+ok 1964 - P1 teardown: HOME still under TEST_TMP
+ok 1965 - P1 teardown: XDG_CONFIG_HOME still under TEST_TMP
+ok 1966 - P1 §5: real HOME known_hosts unchanged at fleet suite end
+ok 1967 - P1 §5: real HOME known_hosts fingerprint unchanged
+ok 1968 - P1 §5: suite HOME still under TEST_TMP
+
+All 1968 tests passed.
