@@ -23,6 +23,7 @@ def load_backup():
     return module
 
 
+@unittest.skipUnless(os.name == "posix", "requires POSIX/Bash")
 class CheckpointIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vcl-checkpoint-integrity-")
@@ -37,7 +38,7 @@ class CheckpointIntegrityTests(unittest.TestCase):
         # A staged helper uses its sibling lib/ exactly like a release payload.
         (self.app / "lib").symlink_to(ROOT / "lib")
         helper = self.bin / "vincula"
-        helper.write_text((ROOT / "bin/vincula").read_text().replace('main "$@"', 'cmd_upgrade "$@"'))
+        helper.write_text((ROOT / "bin/vincula").read_text(encoding="utf-8").replace('main "$@"', 'cmd_upgrade "$@"'))
         helper.chmod(0o755)
         self.env = dict(os.environ)
         self.env.update({
@@ -46,6 +47,7 @@ class CheckpointIntegrityTests(unittest.TestCase):
             "VCL_ACCOUNTING_DB_FILE": str(self.state / "accounting.db"),
             "VCL_LOCK_FILE": str(self.root / "vincula.lock"),
             "VCL_UPGRADE_SKIP_SERVICE": "1",
+            "VCL_CONFIG_FILE": str(self.root / "sing-box-config.json"),
         })
         (self.state / "VERSION").write_text("0.5.5\n")
         (self.state / "state.json").write_text(json.dumps({

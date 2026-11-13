@@ -157,6 +157,7 @@ class BackupVerificationTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         return archive
 
+    @unittest.skipUnless(__import__("os").name == "posix", "requires POSIX open flags")
     def test_fd_verify_accepts_intact_and_detects_truncation_and_tamper(self):
         import os
         with tempfile.TemporaryDirectory() as tmp:
