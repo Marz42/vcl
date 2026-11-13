@@ -128,6 +128,10 @@ class CheckpointIntegrityTests(unittest.TestCase):
         self.assertEqual((self.state / "VERSION").read_text().strip(), "0.5.6")
 
     def test_valid_checkpoint_rolls_back(self):
+        # The rollback target may run as root in CI, where installing an
+        # accounting.db would require the real ``sing-box`` service group.
+        # VERSION/state rollback is the compatibility contract under test.
+        self.db.unlink()
         ck = self.checkpoint()
         (self.state / "VERSION").write_text("0.5.6\n")
         proc = self.rollback(ck)
