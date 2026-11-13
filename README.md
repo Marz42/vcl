@@ -4,7 +4,7 @@
 
 **节点** `VINCULA_VERSION=0.5.5`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.5`（CLI：`vcl-fleet`）。
 
-**2026-11-13 当前收口入口（PR #15 / `review/0.5.5-upgrade-preparation`）：Node/Controller 0.5.5，尚未发布。** 已汇入 PR #13 最终离线冻结与 2h 模拟矩阵证据（`86f292b`，零运行时改动），当前运行时候选 `21aba22`（preparation 生命周期、WAL 快照、checkpoint 完整性与 review-4 修复，**未冻结**）。验收与证据入口见 [0.5.5 证据](docs/evidence/0.5.5/SUMMARY.md)、[H05 人工验收](docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md)、[实机执行序列](docs/evidence/0.5.5/LIVE_FOLLOWUP.md)、[Review-4 修复](docs/evidence/0.5.5/REVIEW4_FIXES.md) 和 [迁移/验收说明](docs/operations/0.5.5-closeout-runbook.md)。H05 前不合并；下列带日期的旧记录保留其原候选范围。
+**2026-11-13 当前收口入口（PR #15 / `review/0.5.5-upgrade-preparation`）：Node/Controller 0.5.5，尚未发布。** 已汇入 PR #13 最终离线冻结与 2h 模拟矩阵证据（`86f292b`，零运行时改动）并完成 `4651064..21aba22` 剩余代码审查；运行时 `21aba22` 已**冻结为验收 RC**（沿用固定 epoch `1794384920` 制品：Node `7b7a1b60…`、Controller `784ca4d0…`）。冻结与实机前清单见 [验收 RC 冻结](docs/evidence/0.5.5/RC_FREEZE_21ABA22.md)、[实机前只读清单](docs/evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md)、[0.5.5 证据](docs/evidence/0.5.5/SUMMARY.md)、[H05 人工验收](docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md)、[实机执行序列](docs/evidence/0.5.5/LIVE_FOLLOWUP.md)、[Review-4 修复](docs/evidence/0.5.5/REVIEW4_FIXES.md) 和 [迁移/验收说明](docs/operations/0.5.5-closeout-runbook.md)。H05 前不合并；下列带日期的旧记录保留其原候选范围。
 
 
 **0.5.x 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。

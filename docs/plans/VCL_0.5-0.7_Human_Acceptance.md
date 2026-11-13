@@ -1,7 +1,7 @@
 # VCL 0.5.x～0.7.x 大阶段人工验收
 
 
-**2026-11-13 当前 0.5.5 候选与验收入口（PR #15）：**`review/0.5.5-upgrade-preparation` 已汇入 PR #13 最终离线冻结与 2h 模拟矩阵证据（`86f292b`，未改动运行时代码）；当前运行时源 commit 为 `21aba22`（unfrozen review-4 候选：Node `7b7a1b60…`、Controller `784ca4d0…`，epoch `1794384920`）。H05 验收入口：[0.5.5 总结](../evidence/0.5.5/SUMMARY.md) · [H05 实录](../evidence/0.5.5/HUMAN_ACCEPTANCE.md) · [实机执行序列](../evidence/0.5.5/LIVE_FOLLOWUP.md) · [Review-4 修复](../evidence/0.5.5/REVIEW4_FIXES.md)。Live 与 H05 仍为 PENDING。
+**2026-11-13 当前 0.5.5 冻结验收 RC 与入口（PR #15）：**`review/0.5.5-upgrade-preparation` 已汇入 PR #13 最终离线冻结与 2h 模拟矩阵证据（`86f292b`，零运行时改动）并完成 `4651064..21aba22` 剩余代码审查；运行时 `21aba22` 已**冻结为验收 RC**（Node `7b7a1b60…`、Controller `784ca4d0…`，epoch `1794384920`）。入口：[RC 冻结](../evidence/0.5.5/RC_FREEZE_21ABA22.md) · [实机前清单](../evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md) · [0.5.5 总结](../evidence/0.5.5/SUMMARY.md) · [H05 实录](../evidence/0.5.5/HUMAN_ACCEPTANCE.md) · [实机执行序列](../evidence/0.5.5/LIVE_FOLLOWUP.md) · [Review-4 修复](../evidence/0.5.5/REVIEW4_FIXES.md)。Live 与 H05 仍为 PENDING。
 
 **2026-11-08 当前 H05 范围修订：**最低支持 Node 为 0.5.5；七台实机统一 0.5.5，保留 OS/角色差异。旧版本仅验证现场必要的一次性迁入与恢复，不再要求旧 Node 兼容矩阵或两个任意历史来源。H05-07 按此修订执行；其余权限、真实代理、Inspect/Drift、24h soak 和人工签署门禁保留。Traffic Policy v0.1 纳入 0.6.x。以下旧范围为历史记录。
 **2026-11-03 用户批准的 H05 规模修订：**当前候选为 0.5.5；采用七台混合版本实机 + 至少十个模拟节点持续两小时替代旧十台实机默认。所有结果分别标实机/模拟，最终签署记录该偏差；仍需新 RC 连续 24h、真实代理和 Inspect/Drift。见 [0.5.5 SPEC](../specs/V0.5.5_Closeout.md)。

@@ -1,18 +1,23 @@
-# 0.5.5 live acceptance — PR #15 consolidated entry (2026-11-13)
+# 0.5.5 live acceptance — PR #15 frozen acceptance RC (`21aba22`)
 
-Status: **OFFLINE GATES PASS (UNFROZEN REVIEW-4 CANDIDATE) / PREPARING LIVE / PENDING HUMAN**.
+Status: **FROZEN ACCEPTANCE RC / OFFLINE GATES PASS / PREFLIGHT READY / PENDING LIVE & HUMAN**.
 PR #13's final support-boundary offline freeze and ten-node 2h synthetic matrix
 evidence (`86f292b`) have been consolidated into **PR #15 (`review/0.5.5-upgrade-preparation`)**
-without changing runtime code (`21aba22..HEAD` is docs/evidence only). No current
-Node was contacted, upgraded, restarted or fault-injected. Live remains
-**BLOCKED / PENDING** and H05 remains unsigned.
+without changing runtime code (`21aba22..HEAD` is docs/evidence only). Remaining
+code diff review (`4651064..21aba22`) passed (`0` defects; no additional
+generalized stress tests added), and runtime commit `21aba22` is now frozen as
+the acceptance RC ([RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md)). Read-only live
+preflight inventory is in [LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md).
+No current Node was contacted, upgraded, restarted or fault-injected. Live
+remains **PENDING LIVE** and H05 remains unsigned.
 
-## Current PR #15 candidate (2026-11-13, unfrozen)
+## Current PR #15 candidate (2026-11-13, frozen acceptance RC)
 
 - Runtime source commit: `21aba22157994d70bfcf2c17c1ec4ff38b9e9880`
   (preparation lifecycle, WAL snapshot, checkpoint integrity, review-4 fixes;
+  [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md),
   [REVIEW4_FIXES.md](REVIEW4_FIXES.md), [UPGRADE_PREPARATION_LIFECYCLE_FIX.md](UPGRADE_PREPARATION_LIFECYCLE_FIX.md)).
-- Unfrozen review-4 artifacts (`SOURCE_DATE_EPOCH=1794384920`): Node
+- Frozen fixed-epoch artifacts (`SOURCE_DATE_EPOCH=1794384920`): Node
   `7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`, Controller
   `784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892`
   ([review-artifacts/](review-artifacts/README.md)).

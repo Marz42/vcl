@@ -1,19 +1,22 @@
 # H05 — 0.5.5 candidate
 
-**2026-11-13 current PR #15 candidate & entry:** draft PR #15
-(`review/0.5.5-upgrade-preparation`) now consolidates PR #13's final
-support-boundary evidence (`86f292b`) with zero runtime code changes
-(`21aba22..HEAD` is docs/evidence only). Current runtime commit:
-`21aba22157994d70bfcf2c17c1ec4ff38b9e9880` (**UNFROZEN** review-4 candidate:
-Node `7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`,
+**2026-11-13 current PR #15 candidate & entry:** PR #15
+(`review/0.5.5-upgrade-preparation`) consolidates PR #13's final
+support-boundary evidence (`86f292b`, zero runtime delta since `21aba22`),
+completes remaining `4651064..21aba22` code diff review (0 defects, no extra
+generalized stress tests), and freezes runtime commit
+`21aba22157994d70bfcf2c17c1ec4ff38b9e9880` as the **FROZEN acceptance RC**
+(Node `7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`,
 Controller `784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892`,
-`SOURCE_DATE_EPOCH=1794384920`; [REVIEW4_FIXES.md](REVIEW4_FIXES.md),
-[review-artifacts/](review-artifacts/README.md)). Support-boundary offline freeze
-(`4651064`, CI `42531836471`, [SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md))
+`SOURCE_DATE_EPOCH=1794384920`; [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md),
+[REVIEW4_FIXES.md](REVIEW4_FIXES.md), [review-artifacts/](review-artifacts/README.md)).
+Support-boundary offline freeze (`4651064`, CI `42531836471`,
+[SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md))
 and the 10-node 2h synthetic matrix ([SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md](SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md))
 are included; its 17 observation/fixture/runner inputs match `21aba22`/HEAD
-17/17 with 0 mismatches. Use [current operator sequence](LIVE_FOLLOWUP.md) and
-[SUMMARY.md](SUMMARY.md).
+17/17 with 0 mismatches. Read-only live inventory is in
+[LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md). Use
+[current operator sequence](LIVE_FOLLOWUP.md) and [SUMMARY.md](SUMMARY.md).
 
 2026-11-08 scope revision supersedes the earlier deferral/mixed-version and
 two-source requirements below: preparation resumed, minimum supported Node
@@ -47,8 +50,9 @@ This does not waive real proxy, inspect/drift, permissions or new RC 24h soak.
 | H05-07 upgrade compatibility | two supported sources, canary migration/rollback, identity/profile/accounting preservation, <=3s measured new-connection bound | PENDING LIVE |
 | H05-08 integrated closeout | fixed new RC >=24h, capacity/retention/corruption boundaries, manuals, risk/deferred-work review | PENDING LIVE / PENDING HUMAN |
 
-Current PR #15 candidate (unfrozen): runtime `21aba22`, Node `7b7a1b60…`,
-Controller `784ca4d0…`, epoch `1794384920` ([REVIEW4_FIXES.md](REVIEW4_FIXES.md)).
+Current PR #15 frozen acceptance RC: runtime `21aba22`, Node `7b7a1b60…`,
+Controller `784ca4d0…`, epoch `1794384920` ([RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md),
+[REVIEW4_FIXES.md](REVIEW4_FIXES.md)).
 Historical candidate records (do not substitute for `21aba22`):
 [support-boundary freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) (`4651064`, Node
 `38336240…`, Controller `e2daaaf…`, epoch `1793689859`) and
