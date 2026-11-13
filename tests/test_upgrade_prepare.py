@@ -249,6 +249,32 @@ class LinuxWorkerTests(unittest.TestCase):
                              backup.sha256_file(archive))
             fd2 = worker.lock(root); self.assertIsNotNone(fd2); os.close(fd2)
 
+    def test_archive_stability_rejects_in_place_growth(self):
+        import os
+        worker = load('prepare_archive_metadata', 'lib/upgrade_prepare.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'backup.tar'
+            archive.write_bytes(b'12345678')
+            before = archive.stat()
+            fd = os.open(archive, os.O_RDONLY)
+            try:
+                evidence = {'path': str(archive),
+                            'archive_dev': before.st_dev,
+                            'archive_ino': before.st_ino,
+                            'archive_size': before.st_size,
+                            'archive_mtime_ns': before.st_mtime_ns}
+                worker._check_archive_unchanged(fd, evidence)
+                # Same inode, grown in place.  fd and path agree with each
+                # other, so only the verification-time size/mtime catch this.
+                archive.write_bytes(b'1234567890123456789')
+                after = archive.stat()
+                self.assertEqual((after.st_dev, after.st_ino),
+                                 (before.st_dev, before.st_ino))
+                with self.assertRaisesRegex(ValueError, 'backup archive changed'):
+                    worker._check_archive_unchanged(fd, evidence)
+            finally:
+                os.close(fd)
+
     def test_start_refuses_without_pid_namespace(self):
         import uuid
         worker = load('prepare_start_refusal', 'lib/upgrade_prepare.py')
@@ -295,6 +321,86 @@ class LinuxWorkerTests(unittest.TestCase):
             self.assertIsNotNone(fd2)
             os.close(fd2)
 
+    def test_worker_deadline_guard_survives_status_write_failure(self):
+        import errno
+        import os
+        import signal
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            worker, root, op, fd, dest, archive = self._fixture(tmp)
+            pid_file = root / 'helper.pid'
+            helper = root / 'helper'
+            helper.write_text(
+                '#!/bin/bash\n'
+                'echo $$ > "$VCL_TEST_HELPER_PID"\n'
+                'sleep 30\n')
+            helper.chmod(0o755)
+            os.environ['VCL_TEST_HELPER_PID'] = str(pid_file)
+            deadline = time.monotonic() + 4.0
+            events = root / 'guard-events'
+            real_save = worker.save
+            guard_failed = {'value': False}
+
+            def save_or_fail(target, document):
+                # Fail the guard's diagnostic write once.  Later writes (the
+                # main thread's final CANCELLED record) succeed, proving the
+                # event was published before the failed save.
+                if document.get('deadline_owner') == 'worker_guard' and not guard_failed['value']:
+                    guard_failed['value'] = True
+                    with events.open('a') as out:
+                        out.write('save-enospc\n')
+                    raise OSError(errno.ENOSPC, 'No space left on device')
+                return real_save(target, document)
+
+            real_killpg = worker.os.killpg
+
+            def record_killpg(pgid, sig):
+                with events.open('a') as out:
+                    out.write(f'killpg {sig}\n')
+                return real_killpg(pgid, sig)
+
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    with patch.object(worker, 'save', side_effect=save_or_fail), \
+                         patch.object(worker.os, 'killpg', side_effect=record_killpg), \
+                         patch.object(worker, 'BACKUP_ROOT', root/'backups'), \
+                         patch.object(worker.os, 'nice'), \
+                         patch.object(worker.subprocess, 'run'):
+                        os.environ['VCL_PREPARE_DEADLINE_MONO'] = repr(deadline)
+                        worker.worker(root, op, fd, root/'state')
+                finally:
+                    os._exit(0)
+            os.close(fd)
+            began = time.monotonic()
+            child_status = None
+            while time.monotonic() - began < 8:
+                got, status = os.waitpid(pid, os.WNOHANG)
+                if got == pid:
+                    child_status = status
+                    break
+                time.sleep(0.05)
+            elapsed = time.monotonic() - began
+            if child_status is None:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            try:
+                helper_pid = int(pid_file.read_text())
+                try:
+                    os.killpg(helper_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            except (OSError, ValueError):
+                pass
+            self.assertIsNotNone(child_status, 'deadline guard did not exit after status write failure')
+            self.assertLess(elapsed, 8)
+            doc = json.loads((dest/'status.json').read_text())
+            self.assertEqual((doc.get('state'), doc.get('code')),
+                             ('CANCELLED', 'PREPARATION_DEADLINE'), doc)
+            recorded = events.read_text()
+            self.assertEqual(recorded.count('save-enospc'), 1)
+            self.assertIn('killpg 15', recorded)
+
     def test_worker_with_bad_helper_does_not_succeed(self):
         import os
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,6 +427,29 @@ class LinuxWorkerTests(unittest.TestCase):
             os.close(fd)
             doc=worker.read_status(dest/'status.json')
             self.assertEqual((doc['state'],doc['code']),('FAILED','WORKER_LOST'))
+
+    def test_read_status_keeps_terminal_state_published_before_lock(self):
+        import os
+        import uuid
+        worker = load('prepare_worker_terminal_race', 'lib/upgrade_prepare.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); root.chmod(0o700)
+            op = str(uuid.uuid4()); dest = root/op; dest.mkdir()
+            status = dest/'status.json'
+            worker.save(status, {'state':'RUNNING','operation_id':op,'binding':{}})
+            real_lock = worker.lock
+
+            def publish_success_then_lock(root_path):
+                # Simulate a worker that publishes SUCCEEDED and releases the
+                # lock after the query's first read but before it locks.
+                worker.save(status, {'state':'SUCCEEDED','operation_id':op,
+                                     'binding':{},'checkpoint':{'ok':True}})
+                return real_lock(root_path)
+
+            with patch.object(worker, 'lock', side_effect=publish_success_then_lock):
+                doc = worker.read_status(status)
+            self.assertEqual(doc['state'], 'SUCCEEDED', doc)
+            self.assertEqual(json.loads(status.read_text())['state'], 'SUCCEEDED')
 
 if __name__ == '__main__':
     unittest.main()

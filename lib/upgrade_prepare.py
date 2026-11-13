@@ -113,20 +113,29 @@ def lock(root):
 
 def read_status(path):
     doc = json.loads(path.read_text())
-    if doc['state'] == 'RUNNING':
-        fd = lock(path.parent.parent)
-        if fd is not None:
-            # Acquiring the operation lock proves that no worker, supervisor or
-            # helper (all inherit the lock fd) is still alive.  Converge the
-            # status instead of leaving RUNNING behind forever.
-            try:
-                doc = dict(doc, state='FAILED', code='WORKER_LOST',
-                           detail='operation lock is free and no lifecycle owner is alive',
-                           finished_at=time.time())
-                save(path, doc)
-            finally:
-                os.close(fd)
-    return doc
+    if doc.get('state') != 'RUNNING':
+        return doc
+    fd = lock(path.parent.parent)
+    if fd is None:
+        return doc
+    try:
+        # Re-read only after the operation lock is held.  A worker may have
+        # published SUCCEEDED between the unlocked read above and lock
+        # acquisition; its terminal record must win over the stale RUNNING
+        # snapshot.  Only a record that is still RUNNING is converged.
+        doc = json.loads(path.read_text())
+        if doc.get('state') != 'RUNNING':
+            return doc
+        # Acquiring the operation lock proves that no worker, supervisor or
+        # helper (all inherit the lock fd) is still alive.  Converge the
+        # status instead of leaving RUNNING behind forever.
+        doc = dict(doc, state='FAILED', code='WORKER_LOST',
+                   detail='operation lock is free and no lifecycle owner is alive',
+                   finished_at=time.time())
+        save(path, doc)
+        return doc
+    finally:
+        os.close(fd)
 
 
 def lifecycle_available():
@@ -426,13 +435,22 @@ def _verify_backup(path_doc, expected, evidence_dir):
 
 
 def _check_archive_unchanged(fd, evidence):
+    """Check the verified inode and the metadata saved at verification time.
+
+    Comparing the path and the pinned fd to each other is insufficient: an
+    in-place write updates both views of the same inode.  The size and mtime
+    recorded by ``verify_archive_fd`` are the reference values.  This is still
+    a handoff check, not content re-verification; the consumer must verify the
+    bytes it actually opens.
+    """
+    expected = (evidence.get('archive_dev'), evidence.get('archive_ino'),
+                evidence.get('archive_size'), evidence.get('archive_mtime_ns'))
     st = os.fstat(fd)
     current = os.stat(evidence['path'], follow_symlinks=False)
-    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != (
-            current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != expected:
         raise ValueError('backup archive changed during preparation')
-    if (st.st_dev, st.st_ino) != (evidence.get('archive_dev'), evidence.get('archive_ino')):
-        raise ValueError('backup archive inode changed during preparation')
+    if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != expected:
+        raise ValueError('backup archive changed during preparation')
 
 
 def worker(root, op, fd, state_dir=None):
@@ -470,23 +488,38 @@ def worker(root, op, fd, state_dir=None):
         left = deadline - time.monotonic()
         if left > 0:
             time.sleep(left)
+        helper = None
         with status_lock:
             try:
                 current = json.loads(path.read_text())
             except (OSError, ValueError):
+                current = None
+            if current is not None and current.get('state') != 'RUNNING':
                 return
-            if current.get('state') != 'RUNNING':
-                return
+            # Publish the expiry before attempting the diagnostic write.  If
+            # the filesystem is full, save() can raise; teardown below must
+            # still run, and later main-thread save_status() calls must see
+            # the event and remain CANCELLED.
+            deadline_fired.set()
+            helper = proc_holder.get('proc')
+            current = dict(current or doc)
             current.update(state='CANCELLED', code='PREPARATION_DEADLINE',
                            detail='absolute preparation deadline expired while supervisor was not scheduling',
                            finished_at=time.time(), deadline_owner='worker_guard')
-            save(path, current)
-            deadline_fired.set()
-            helper = proc_holder.get('proc')
+            try:
+                save(path, current)
+            except BaseException as exc:
+                # Persistence is diagnostic.  Never let a disk-full or other
+                # write error suppress helper termination and namespace exit.
+                try:
+                    print(f'deadline guard: cannot persist status: {exc}',
+                          file=sys.stderr, flush=True)
+                except BaseException:
+                    pass
         if helper is not None:
             try:
                 os.killpg(helper.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except OSError:
                 pass
         # Same 5 s grace as the supervisor.  If the helper ignores TERM, the
         # worker (namespace PID 1) exits and the kernel clears the namespace.
