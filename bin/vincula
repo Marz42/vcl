@@ -3756,8 +3756,10 @@ PY
   if [[ -f "${dir}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
     rm -f -- "$ACCOUNTING_DB_FILE"
-    if (( EUID == 0 )); then
+    if (( EUID == 0 )) && getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
       install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
+    elif (( EUID == 0 )); then
+      install -m 0640 -o root -g root "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
     else
       install -m 0640 "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
     fi
