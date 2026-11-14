@@ -149,6 +149,7 @@ class AutoRollbackCompatibilityTests(unittest.TestCase):
         host = Mock()
         host.SSH_MUTATION_TIMEOUT_SECONDS = 60
         host.SSH_UPGRADE_APPLY_TIMEOUT_SECONDS = 900
+        host.SSH_UPGRADE_VERIFY_TIMEOUT_SECONDS = 300
         host.load_provision_module.return_value = prov
         host.ssh_run.return_value.returncode = 0
         upgrade.bind(host)
@@ -162,7 +163,7 @@ class AutoRollbackCompatibilityTests(unittest.TestCase):
                  ('OK', {'ok': True}, ''),
                  ('OK', {'schema': 'capabilities/v1', 'node_version': '0.5.5', 'capabilities': []}, ''),
                  ('OK', {'node_id': 'n', 'instance_id': 'i', 'vincula_version': '0.5.5'}, ''),
-             ]):
+             ]) as post_ssh:
             host.load_observation_capabilities_module = Mock(
                 return_value=Mock(CAPABILITIES_MAX_BYTES=4096, validate_capabilities_v1=lambda _: [])
             )
@@ -172,6 +173,11 @@ class AutoRollbackCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['state'], 'SUCCESS', result)
         install_call = host.ssh_run.call_args_list[-1]
         self.assertEqual(install_call.kwargs['timeout'], 900)
+        verify_call = post_ssh.call_args_list[0]
+        self.assertEqual(verify_call.args[1], ['vcl', 'verify', '--json'])
+        self.assertEqual(verify_call.kwargs['timeout'], 300)
+        self.assertEqual(post_ssh.call_args_list[1].kwargs['timeout'], 60)
+        self.assertEqual(post_ssh.call_args_list[2].kwargs['timeout'], 60)
 
 class BackupVerificationTests(unittest.TestCase):
     def make_archive(self, root):

@@ -3687,22 +3687,52 @@ PY
     return 0
   fi
 
-  # Stop first; never overwrite live DB/config while services are still active.
+  # Stop accounting first, stage heavy accounting.db while sing-box keeps
+  # serving, and stop sing-box only for the fast config/unit/rename swap.
+  local staged_db=""
   if (( skip_service == 0 )); then
     "$ctl" disable --now vincula-accountd.service >/dev/null 2>&1 || true
+    if "$ctl" is-active --quiet vincula-accountd.service 2>/dev/null; then
+      "$ctl" stop vincula-accountd.service >/dev/null 2>&1 || true
+    fi
+    if "$ctl" is-active --quiet vincula-accountd.service 2>/dev/null; then
+      upgrade_rollback_fail \
+        "vincula-accountd.service still active after stop; refusing to overwrite live state" \
+        "service_still_active"
+    fi
+  fi
+
+  if [[ -f "${dir}/accounting.db" && -d "$(dirname -- "$ACCOUNTING_DB_FILE")" ]]; then
+    rm -f -- "${ACCOUNTING_DB_FILE}.rollback."*
+    if staged_db=$(mktemp "${ACCOUNTING_DB_FILE}.rollback.XXXXXX" 2>/dev/null); then
+      local stage_rc=0
+      if (( EUID == 0 )) && getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+        install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$staged_db" >/dev/null 2>&1 || stage_rc=$?
+      elif (( EUID == 0 )); then
+        install -m 0640 -o root -g root "${dir}/accounting.db" "$staged_db" >/dev/null 2>&1 || stage_rc=$?
+      else
+        install -m 0640 "${dir}/accounting.db" "$staged_db" >/dev/null 2>&1 || stage_rc=$?
+      fi
+      if (( stage_rc != 0 )); then
+        rm -f -- "$staged_db"
+        staged_db=""
+      fi
+    else
+      staged_db=""
+    fi
+  fi
+
+  if (( skip_service == 0 )); then
     "$ctl" disable --now sing-box.service >/dev/null 2>&1 || true
-    for unit in vincula-accountd.service sing-box.service; do
-      if "$ctl" is-active --quiet "$unit" 2>/dev/null; then
-        "$ctl" stop "$unit" >/dev/null 2>&1 || true
-      fi
-    done
-    for unit in vincula-accountd.service sing-box.service; do
-      if "$ctl" is-active --quiet "$unit" 2>/dev/null; then
-        upgrade_rollback_fail \
-          "${unit} still active after stop; refusing to overwrite live state" \
-          "service_still_active"
-      fi
-    done
+    if "$ctl" is-active --quiet sing-box.service 2>/dev/null; then
+      "$ctl" stop sing-box.service >/dev/null 2>&1 || true
+    fi
+    if "$ctl" is-active --quiet sing-box.service 2>/dev/null; then
+      [[ -n "$staged_db" ]] && rm -f -- "$staged_db"
+      upgrade_rollback_fail \
+        "sing-box.service still active after stop; refusing to overwrite live state" \
+        "service_still_active"
+    fi
   fi
 
   # Restore state/config/libs/units first — keep installed 0.5 vincula/vcl until
@@ -3753,7 +3783,10 @@ PY
     done
   fi
 
-  if [[ -f "${dir}/accounting.db" ]]; then
+  if [[ -n "$staged_db" && -f "$staged_db" ]]; then
+    mkdir -p -- "$VAR_LIB_VINCULA"
+    mv -f -- "$staged_db" "$ACCOUNTING_DB_FILE"
+  elif [[ -f "${dir}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
     rm -f -- "$ACCOUNTING_DB_FILE"
     if (( EUID == 0 )) && getent group "$SERVICE_GROUP" >/dev/null 2>&1; then

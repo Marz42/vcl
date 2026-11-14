@@ -207,6 +207,7 @@ class CheckpointIntegrityTests(unittest.TestCase):
         self.assertFalse(lock_file.exists())
         self.assertFalse(zero_backup.exists())
         self.assertFalse(journal_file.exists())
+        self.assertEqual(list(self.state.glob("accounting.db.rollback.*")), [])
         self.assertTrue(valid_backup.is_file())
 
 

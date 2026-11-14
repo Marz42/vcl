@@ -300,6 +300,13 @@ def run_upgrade_apply(
             raise ValueError()
     except ValueError:
         host.die("VCL_UPGRADE_APPLY_SECONDS must be 60..7200")
+    try:
+        default_verify = _timeout_int(getattr(host, "SSH_UPGRADE_VERIFY_TIMEOUT_SECONDS", 300), 300)
+        verify_seconds = int(os.environ.get("VCL_UPGRADE_VERIFY_SECONDS", str(default_verify)))
+        if not 60 <= verify_seconds <= 7200:
+            raise ValueError()
+    except ValueError:
+        host.die("VCL_UPGRADE_VERIFY_SECONDS must be 60..7200")
     backup_path: Optional[str] = None
     resolved = prov.resolve_node_payload()
     manifest = prov.verify_local_payload(resolved)
@@ -447,10 +454,12 @@ def run_upgrade_apply(
             restore_detail="upgrade rollback failed or refused (see node stderr)",
         )
 
+    post_fast_timeout = max(20, _timeout_int(getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60), 60))
     ssh_state, verify_doc, verify_detail = _ssh_json(
         node,
         ["vcl", "verify", "--json"],
         credential_class="admin",
+        timeout=verify_seconds,
         require_exit_0=False,
     )
     if ssh_state != "OK" or not isinstance(verify_doc, dict) or not verify_doc.get("ok"):
@@ -467,6 +476,7 @@ def run_upgrade_apply(
         node,
         ["vcl", "capabilities", "--json"],
         credential_class="admin",
+        timeout=post_fast_timeout,
         unsupported_on_missing_command=True,
         max_stdout_bytes=max_cap,
     )
@@ -484,6 +494,7 @@ def run_upgrade_apply(
         node,
         ["vcl", "identity", "--json"],
         credential_class="admin",
+        timeout=post_fast_timeout,
     )
     if ssh_state != "OK" or not isinstance(ident, dict):
         return _rollback_or_partial(
