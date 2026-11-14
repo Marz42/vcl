@@ -4,7 +4,18 @@
 
 # shellcheck shell=bash
 
-readonly VINCULA_COMMON_VERSION="0.5.0"
+readonly VINCULA_COMMON_VERSION="0.5.5"
+
+# Preserve the old Python stdin-script calling convention while sending its
+# arguments through a pipe. Credential UUIDs/URIs must not appear in child argv.
+python_private() {
+  python3 -c 'import os,sys
+with os.fdopen(9,"rb") as stream:
+    data=stream.read()
+sys.argv=["-"]+[part.decode("utf-8") for part in data.split(b"\0")[:-1]]
+exec(compile(sys.stdin.read(),"<private-stdin>","exec"))' \
+    9< <(if (( $# )); then printf '%s\0' "$@"; fi)
+}
 
 json_quoted_field() {
   local file=$1 field=$2
@@ -348,9 +359,17 @@ clash_api_reachable_with_secret() {
   local url="http://127.0.0.1:${port}/connections"
   local args=(-fsS --max-time 5)
   if [[ -n "$secret" ]]; then
-    args+=(-H "Authorization: Bearer ${secret}")
+    args+=(-H @/dev/fd/3)
   fi
-  curl "${args[@]}" "$url" >/dev/null 2>&1
+  curl "${args[@]}" "$url" 3<<<"Authorization: Bearer ${secret}" >/dev/null 2>&1
+}
+
+# Positive and negative authentication checks share the same transport.
+clash_api_authenticated() {
+  local port=$1 secret=${2:-}
+  [[ -n "$secret" ]] && clash_api_reachable_with_secret "$port" "$secret" \
+    && ! clash_api_reachable_with_secret "$port" "" \
+    && ! clash_api_reachable_with_secret "$port" "wrong-${secret}"
 }
 
 # Print fresh|stale|missing|unreadable for meta.last_success_at. Exit 0 iff fresh.
@@ -362,7 +381,7 @@ accounting_last_success_status() {
     printf 'unreadable\n'
     return 1
   fi
-  python3 - "$db" "$max_age" <<'PY'
+  python_private "$db" "$max_age" <<'PY'
 import sqlite3, sys
 from datetime import datetime, timezone
 
@@ -437,14 +456,16 @@ render_sing_box_config_accounting() {
   local clash_secret=${9:-}
   local sniff=${10:-true}
   require_python3 || return 1
-  python3 - "$output" "$users_file" "$private_key" "$short_id" "$port" "$reality_host" \
-    "$listen" "$clash_port" "$clash_secret" "$sniff" <<'PY'
-import json, sys
+  python_private "$output" "$users_file" "$short_id" "$port" "$reality_host" \
+    "$listen" "$clash_port" "$sniff" 3<<<"$private_key" 4<<<"$clash_secret" <<'PY'
+import json, sys, os
 
 (
-    output, users_file, private_key, short_id, port, reality_host,
-    listen, clash_port, clash_secret, sniff,
+    output, users_file, short_id, port, reality_host,
+    listen, clash_port, sniff,
 ) = sys.argv[1:]
+private_key = os.fdopen(3).read().removesuffix("\n")
+clash_secret = os.fdopen(4).read().removesuffix("\n")
 
 with open(users_file, encoding="utf-8") as f:
     data = json.load(f)
@@ -536,7 +557,7 @@ PY
 inbound_users_json_from_registry() {
   local users_file=$1
   require_python3 || return 1
-  python3 - "$users_file" <<'PY'
+  python_private "$users_file" <<'PY'
 import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
@@ -568,7 +589,7 @@ PY
 owner_active_uuid_from_registry() {
   local users_file=$1
   require_python3 || return 1
-  python3 - "$users_file" <<'PY'
+  python_private "$users_file" <<'PY'
 import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
@@ -589,7 +610,7 @@ PY
 registry_enabled_active_pairs() {
   local users_file=$1
   require_python3 || return 1
-  python3 - "$users_file" <<'PY'
+  python_private "$users_file" <<'PY'
 import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
@@ -624,7 +645,7 @@ verify_users_in_config() {
 migrate_users_to_schema2() {
   local input=$1 output=$2 node_id=${3:-local}
   require_python3 || return 1
-  python3 - "$input" "$output" "$node_id" <<'PY'
+  python_private "$input" "$output" "$node_id" <<'PY'
 import json, sys, uuid
 from datetime import datetime, timezone
 
@@ -697,7 +718,7 @@ users_registry_mutate() {
   require_python3 || return 1
   acquire_vincula_op_lock || return $?
   local rc=0
-  python3 - "$users_file" "$action" "$@" <<'PY' || rc=$?
+  python_private "$users_file" "$action" "$@" <<'PY' || rc=$?
 import json, os, re, sys, time, uuid
 from datetime import datetime, timezone
 
@@ -836,7 +857,7 @@ users_registry_show() {
 users_registry_show_json() {
   local users_file=$1 tag=$2
   require_python3 || return 1
-  python3 - "$users_file" "$tag" <<'PY'
+  python_private "$users_file" "$tag" <<'PY'
 import json, sys
 
 path, tag = sys.argv[1], sys.argv[2]
@@ -872,7 +893,7 @@ PY
 users_registry_show_human() {
   local users_file=$1 tag=$2
   require_python3 || return 1
-  python3 - "$users_file" "$tag" <<'PY'
+  python_private "$users_file" "$tag" <<'PY'
 import json, sys
 
 path, tag = sys.argv[1], sys.argv[2]
@@ -904,7 +925,7 @@ PY
 users_registry_list() {
   local users_file=$1
   require_python3 || return 1
-  python3 - "$users_file" <<'PY'
+  python_private "$users_file" <<'PY'
 import json, sys
 
 path = sys.argv[1]
@@ -924,7 +945,7 @@ PY
 users_registry_list_json() {
   local users_file=$1
   require_python3 || return 1
-  python3 - "$users_file" <<'PY'
+  python_private "$users_file" <<'PY'
 import json, sys
 
 path = sys.argv[1]
@@ -960,7 +981,7 @@ PY
 users_registry_field() {
   local users_file=$1 tag=$2 field=$3
   require_python3 || return 1
-  python3 - "$users_file" "$tag" "$field" <<'PY'
+  python_private "$users_file" "$tag" "$field" <<'PY'
 import json, sys
 
 path, tag, field = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -987,7 +1008,7 @@ PY
 users_registry_verify() {
   local users_file=$1 config_file=$2
   require_python3 || return 1
-  python3 - "$users_file" "$config_file" <<'PY'
+  python_private "$users_file" "$config_file" <<'PY'
 import json, sys
 from collections import Counter
 
@@ -1162,7 +1183,7 @@ users_import_prepare() {
     acquire_vincula_op_lock || return $?
     locked=1
   fi
-  python3 - "$csv_path" "$users_file" "$node_id" "$out_users_json" "$out_cred_csv" \
+  python_private "$csv_path" "$users_file" "$node_id" "$out_users_json" "$out_cred_csv" \
     "$include_uuid" "$dry_run" "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY' || rc=$?
 import csv, json, re, sys, uuid
 from datetime import datetime, timezone
@@ -1345,7 +1366,7 @@ users_export_csv() {
   local public_key=${8:-}
   local short_id=${9:-}
   require_python3 || return 1
-  python3 - "$users_file" "$output" "$credentials" "$include_uuid" \
+  python_private "$users_file" "$output" "$credentials" "$include_uuid" \
     "$server" "$port" "$reality_host" "$public_key" "$short_id" <<'PY'
 import csv, json, sys
 
@@ -1429,7 +1450,7 @@ PY
 active_uuid_for_tag() {
   local users_file=$1 tag=$2
   require_python3 || return 1
-  python3 - "$users_file" "$tag" <<'PY'
+  python_private "$users_file" "$tag" <<'PY'
 import json, sys
 path, tag = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as f:
@@ -1456,22 +1477,22 @@ write_sing_box_server_config() {
   local clash_secret=${9:-}
   local sniff=${10:-true}
   require_python3 || return 1
-  python3 - "$output" "$users_json" "$private_key" "$short_id" "$port" "$reality_host" \
-    "$listen" "$clash_api_port" "$clash_secret" "$sniff" <<'PY'
-import json, sys
+  python_private "$output" "$short_id" "$port" "$reality_host" \
+    "$listen" "$clash_api_port" "$sniff" 3<<<"$private_key" 4<<<"$clash_secret" 5<<<"$users_json" <<'PY'
+import json, sys, os
 
 (
     output,
-    users_json,
-    private_key,
     short_id,
     port,
     reality_host,
     listen,
     clash_api_port,
-    clash_secret,
     sniff,
-) = sys.argv[1:11]
+) = sys.argv[1:]
+private_key = os.fdopen(3).read().removesuffix("\n")
+clash_secret = os.fdopen(4).read().removesuffix("\n")
+users_json = os.fdopen(5).read()
 
 users = json.loads(users_json)
 if not isinstance(users, list) or not users:

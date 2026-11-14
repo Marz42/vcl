@@ -2460,6 +2460,23 @@ class FleetUIHandler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 self._send_json(200, api_overview())
                 return
+            if path == "/api/monitor":
+                self._send_json(200, fleet().monitor_cached_health())
+                return
+            if path == "/api/inspect":
+                self._send_json(200, fleet().cached_inspection(one("node") or None))
+                return
+            if path in ("/api/findings", "/api/timeline"):
+                try:
+                    limit = int(one("limit") or "100")
+                except ValueError as exc:
+                    raise ValueError("limit must be an integer") from exc
+                if not 1 <= limit <= 1000:
+                    raise ValueError("limit must be 1..1000")
+                name = one("node") or None
+                doc = fleet().cached_findings(name, state=one("state") or None, limit=limit) if path == "/api/findings" else fleet().cached_timeline(name, limit=limit)
+                self._send_json(200, doc)
+                return
             if path in ("/api/health", "/api/nodes"):
                 self._send_json(200, api_nodes())
                 return
@@ -2541,6 +2558,9 @@ class FleetUIHandler(BaseHTTPRequestHandler):
                             "traffic",
                             "audit",
                             "operations",
+                            "findings",
+                            "timeline",
+                            "inspect",
                         ],
                         "identity_mutations": False,
                         "cache_writes": ["refresh", "sync_full"],

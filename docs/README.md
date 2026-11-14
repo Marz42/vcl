@@ -1,6 +1,14 @@
 # Vincula 文档导航
 
-当前稳定基线：**Controller 0.4.5** · **Node 0.3.2** · 最低兼容 Node **0.3.1**。
+主线 `main`：**Controller/Node 0.5.0**；当前 0.5.5 收口分支 `review/0.5.5-upgrade-preparation`（**PR #15**）：**Controller/Node 0.5.5**；最低支持 Node **0.5.5**（当前配套版本）。前序 `21aba22` 冻结制品已于 2026-11-14 `fresh050` Canary checkpoint 阶段安全中止并作废（零节点变更；Controller `fleet.db` 已升至 `schema 5`）；PR #15 现已合入 `bin/vincula` staged 库加载顺序与 `upgrade-rollback-common.sh` 修复，待 Linux 构建验证与 CI 全绿后重冻新 RC 并继续实机。入口见[旧 RC 中止记录](evidence/0.5.5/RC_FREEZE_21ABA22.md)、[实机清单](evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md)、[执行清单](plans/0.5.5_Closeout_Execution.md)、[0.5.5 总结](evidence/0.5.5/SUMMARY.md)、[H05 人工验收](evidence/0.5.5/HUMAN_ACCEPTANCE.md)、[实机执行序列](evidence/0.5.5/LIVE_FOLLOWUP.md)，迁移/容量/恢复见[操作手册](operations/0.5.5-closeout-runbook.md)。实机 / 24h soak / H05 仍待验收，H05 PASS 后才合并 main；停在 0.6.x 实现之前。以下日期段落保留其历史候选和当时状态。旧分支见[清理记录](plans/BRANCH_CLEANUP_2026-09-28.md)。
+
+2026-10-08：现场混合版本Fleet已恢复七台管理面与审计观测，见[恢复记录](operations/fleet-recovery-status.md)和[脱敏汇总](operations/fleet-recovery-20261008.json)。恢复暴露的凭据引用P1（FR-01）已在本地修复并回归，见[FR-01记录](evidence/0.5.3/FR01_CREDENTIAL_ISOLATION.md)；认证分类与错误摘要P2（FR-03/04）也已在本地修复并回归，见[FR-03/04记录](evidence/0.5.3/FR03_FR04_ERROR_MODEL.md)；有界审计同步P1（FR-02）同样已本地修复并回归，见[FR-02记录](evidence/0.5.3/FR02_BOUNDED_SYNC.md)。本轮四项现场缺陷的本地修复已全部落地，统一跟踪于[0.5.x可靠性待办](plans/Fleet_Recovery_Reliability_Backlog.md)。临时工具恢复成功不关闭产品缺陷；FR-01 的远端 required CI 已在 `7836b14` 全绿（[#88](https://github.com/Marz42/vcl/actions/runs/37731099502)），但现场混合 Fleet 复验、soak 与 H05 仍 PENDING。四项修复的评审补修已回归并推送（[FR-02 记录](evidence/0.5.3/FR02_BOUNDED_SYNC.md)）；新候选已冻结：Node `8abe989c` / Controller `65dbcc7b`，188 个固定输入，[远端 CI #100](https://github.com/Marz42/vcl/actions/runs/37874931681) 七项全绿，见[冻结候选](evidence/0.5.3/CANDIDATE_FREEZE.md)；「先只验 Controller、保留混合版本 Node」的现场方案与人工步骤见[验证方案](plans/RC_0.5.3_VERIFICATION_PLAN.md)（方案 PREPARED，现场 **NOT EXECUTED**）。
+
+2026-11-02：MPTCP 单元加固（`GODEBUG=multipathtcp=0`）已进入源码并重建安装包，原冻结产物 SHA 仅对应旧构建，见[MPTCP 记录](evidence/0.5.3/MPTCP_UNIT_HARDENING.md)。2026-10-26 的七台巡检、hot-beam-1/urgentfury 取证和独立代码审查已归档：见[巡检](operations/2026-10-26-fleet-inspection.md)、[断连取证](operations/2026-10-26-urgentfury-disconnect.md)与[代码审查](plans/CODE_REVIEW_2026-10-26.md)（R-01/R-02 为未修 P1，尚未排期）。
+
+2026-10-04 实现 **0.5.2 Findings / Audit / Anomalies**，M1～M3离线验证通过，M4正式合同/版本/打包收口见[当前记录](evidence/0.5.2/M4.md)。**Human Gate H05/H06/H07 = PENDING HUMAN；实机与 soak = PENDING LIVE。**按[最新用户指令](plans/MANUAL_VALIDATION_DEFERRED.md)跳过等待并记录，正式验收状态保留。
+
+0.5.3 的 Node Inspect、Controller 缓存/显式 baseline/Drift 与增强 Verify 已完成（Node stamp 0.5.3）。Controller 0.5.4 新增 SSH 凭据管理 v2（Agent 指纹 / Identity File、v1 迁移、严格身份选择），见 [SPEC](specs/V0.5.4_SSH_Credential_Management.md)；Human Gate/实机与 24h soak 仍 PENDING。
 
 ## 按受众阅读
 
@@ -10,7 +18,15 @@
 | 日常用终端管 VPS 的管理员 | [`user-guide.md`](user-guide.md) |
 | 维护者 / 要对齐实现与合同 | [`technical-guide.md`](technical-guide.md) |
 | 做换机等高风险操作 | [`operations/node-replace-runbook.md`](operations/node-replace-runbook.md) |
+| 使用 0.5.1 监控、专用 probe 与 observer | [`operations/monitoring-runbook.md`](operations/monitoring-runbook.md) |
+| 使用首批 Findings 与本地时间轴 | [`operations/findings-runbook.md`](operations/findings-runbook.md) |
+| 使用 Inspect、显式基线、Drift 与增强 Verify | [`operations/inspect-runbook.md`](operations/inspect-runbook.md) |
+| 核对七台Fleet恢复及下一批0.5.x补修 | [`恢复记录`](operations/fleet-recovery-status.md) · [`可靠性待办`](plans/Fleet_Recovery_Reliability_Backlog.md) |
+| 查 2026-10-26 巡检/断连取证与独立代码审查 | [`巡检`](operations/2026-10-26-fleet-inspection.md) · [`断连`](operations/2026-10-26-urgentfury-disconnect.md) · [`代码审查`](plans/CODE_REVIEW_2026-10-26.md) |
 | 核对规格或验收 | [`specs/`](specs/README.md) · [`evidence/`](evidence/README.md) |
+| 推进 0.5.x～0.7.x 开发与阶段验收 | [`实施方案`](plans/VCL_0.5-0.7_Implementation_Plan.md) · [`人工验收清单`](plans/VCL_0.5-0.7_Human_Acceptance.md) |
+| 迁移 SSH 凭据 / 解决多密钥 AUTH_LIMIT | [`0.5.4 SPEC`](specs/V0.5.4_SSH_Credential_Management.md) · [`0.5.4 证据`](evidence/0.5.4/CREDENTIALS.md) |
+| 冻结新候选并做 Controller 优先现场验证 | [`冻结候选`](evidence/0.5.3/CANDIDATE_FREEZE.md) · [`验证方案与手工步骤`](plans/RC_0.5.3_VERIFICATION_PLAN.md) |
 | 查历史冻结 / 旧 known-issues | [`legacy/`](legacy/README.md)（只读，非当前操作依据） |
 
 ## 目录结构
@@ -24,6 +40,7 @@ docs/
   release-readiness-0.3.1.md
   known-issues-0.3.1.md
   specs/                    # 设计规格
+  plans/                    # 实施步骤、阶段验收与人工关卡
   evidence/                 # 验收证据（勿改写失真）
   legacy/                   # 历史材料
 ```

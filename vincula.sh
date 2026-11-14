@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vincula v0.5.0
+# vincula v0.5.5
 # Minimal, pinned sing-box bootstrap for Debian/Ubuntu VPS hosts.
 #
 # Supported environment overrides:
@@ -11,7 +11,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly VINCULA_VERSION="0.5.0"
+readonly VINCULA_VERSION="0.5.5"
 _VINCULA_ROOT=""
 _vincula_self="${BASH_SOURCE[0]:-}"
 if [[ -n "$_vincula_self" && -f "$_vincula_self" ]]; then
@@ -45,10 +45,17 @@ readonly LIB_DIR="/usr/local/lib/vincula"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
 readonly ACCOUNTD_PY="${LIB_DIR}/vincula-accountd.py"
+readonly ACCOUNTD_RUNTIME_PY="${LIB_DIR}/accountd_runtime.py"
+readonly STORAGE_PY="${LIB_DIR}/storage_v5.py"
+readonly OBSERVER_PY="${LIB_DIR}/observer.py"
+readonly OBSERVER_SOCKET="/etc/systemd/system/vincula-observer.socket"
+readonly OBSERVER_UNIT="/etc/systemd/system/vincula-observer@.service"
 readonly STATS_PY="${LIB_DIR}/vincula-stats.py"
 readonly AUDIT_PY="${LIB_DIR}/vincula-audit.py"
 readonly BACKUP_PY="${LIB_DIR}/vincula-backup.py"
 readonly TELEMETRY_PY="${LIB_DIR}/telemetry_snapshot.py"
+readonly INSPECT_PY="${LIB_DIR}/inspect_snapshot.py"
+readonly VERIFY_PY="${LIB_DIR}/verify_snapshot.py"
 readonly EVENT_SCHEMA_FILE="${LIB_DIR}/vincula-event.schema.json"
 readonly VAR_LIB_VINCULA="/var/lib/vincula"
 readonly ACCOUNTING_DB_FILE="${VAR_LIB_VINCULA}/accounting.db"
@@ -210,6 +217,7 @@ rollback_install() {
   log_warn "Installation failed; removing files created by this transaction."
   systemctl disable --now sing-box.service >/dev/null 2>&1 || true
   systemctl disable --now vincula-accountd.service >/dev/null 2>&1 || true
+  systemctl disable --now vincula-observer.socket >/dev/null 2>&1 || true
 
   local path
   for path in \
@@ -229,10 +237,17 @@ rollback_install() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$ACCOUNTING_DB_FILE" \
@@ -247,6 +262,8 @@ rollback_install() {
 
   remove_product_pycache "$LIB_DIR"
   rmdir -- "$STATE_DIR" "$SING_BOX_DIR" "$LIB_DIR" >/dev/null 2>&1 || true
+  rm -f -- /etc/vincula-accountd/runtime.json
+  rmdir -- /etc/vincula-accountd >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_SING_BOX" >/dev/null 2>&1 || true
   rmdir -- "$VAR_LIB_VINCULA" >/dev/null 2>&1 || true
   systemctl daemon-reload >/dev/null 2>&1 || true
@@ -259,6 +276,27 @@ rollback_install() {
   fi
 }
 
+cleanup_accounting_migration_temps() {
+  local include_sidecars=${1:-0}
+  local db_dir db_base f
+  db_dir=$(dirname -- "$ACCOUNTING_DB_FILE")
+  [[ -d "$db_dir" ]] || return 0
+  db_base=$(basename -- "$ACCOUNTING_DB_FILE")
+  if (( include_sidecars == 1 )); then
+    rm -f -- \
+      "${ACCOUNTING_DB_FILE}-wal" \
+      "${ACCOUNTING_DB_FILE}-shm" \
+      "${ACCOUNTING_DB_FILE}-journal" \
+      "${db_dir}/.${db_base}.v5-migration.lock"
+  fi
+  rm -f -- "${db_dir}/.${db_base}.v5-"*.db
+  for f in "${db_dir}/${db_base}.pre-v5-"*.db; do
+    if [[ -f "$f" && ! -L "$f" && ! -s "$f" ]]; then
+      rm -f -- "$f"
+    fi
+  done
+}
+
 rollback_migration() {
   log_warn "Migration failed; restoring the previous installation from backup."
   if [[ -z "${MIGRATION_BACKUP:-}" || ! -d "$MIGRATION_BACKUP" ]]; then
@@ -266,8 +304,9 @@ rollback_migration() {
     return
   fi
 
+  # Stop only accounting before restoring heavy artifacts/DB so sing-box stays
+  # up through the copy and only drops briefly for config/unit swap below.
   systemctl disable --now vincula-accountd.service >/dev/null 2>&1 || true
-  systemctl disable --now sing-box.service >/dev/null 2>&1 || true
 
   local path name
   local backup_complete=0
@@ -275,10 +314,8 @@ rollback_migration() {
     backup_complete=1
   fi
   for path in \
-    "$SYSTEMD_UNIT" \
     "$HELPER_ALIAS_PATH" \
     "$HELPER_PATH" \
-    "$CONFIG_FILE" \
     "$VERSION_FILE" \
     "$STATE_FILE" \
     "$USERS_FILE" \
@@ -289,10 +326,17 @@ rollback_migration() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -301,18 +345,43 @@ rollback_migration() {
       mkdir -p -- "$(dirname -- "$path")"
       rm -f -- "$path"
       cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
-    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
+    elif (( backup_complete == 1 )) && [[ "$path" == "$INSTALL_MANIFEST_FILE" || "$path" == "$ACCOUNTD_UNIT" || "$path" == "$OBSERVER_PY" || "$path" == "$OBSERVER_SOCKET" || "$path" == "$OBSERVER_UNIT" || "$path" == "$ACCOUNTD_RUNTIME_PY" || "$path" == "$STORAGE_PY" || "$path" == "$ACCOUNTD_PY" || "$path" == "$STATS_PY" || "$path" == "$AUDIT_PY" || "$path" == "$BACKUP_PY" || "$path" == "$TELEMETRY_PY" || "$path" == "$INSPECT_PY" || "$path" == "$VERIFY_PY" || "$path" == "$EVENT_SCHEMA_FILE" ]]; then
       rm -f -- "$path"
     fi
   done
 
   if [[ -f "${MIGRATION_BACKUP}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
-    rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
+    cleanup_accounting_migration_temps 1
+    rm -f -- "$ACCOUNTING_DB_FILE"
     cp -a -- "${MIGRATION_BACKUP}/accounting.db" "$ACCOUNTING_DB_FILE"
+  else
+    cleanup_accounting_migration_temps 1
+    if (( backup_complete == 1 )) && [[ -f "$ACCOUNTING_DB_FILE" && ! -s "$ACCOUNTING_DB_FILE" ]]; then
+      rm -f -- "$ACCOUNTING_DB_FILE"
+    fi
+  fi
+
+  if [[ -d "$VAR_LIB_VINCULA" ]] && (( EUID == 0 )); then
+    chown root:root -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+    chmod 0700 -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+  fi
+  if (( backup_complete == 1 )) && { [[ ! -f "$ACCOUNTD_UNIT" ]] || ! grep -q '/etc/vincula-accountd/runtime.json' "$ACCOUNTD_UNIT" 2>/dev/null; }; then
+    rm -f -- /etc/vincula-accountd/runtime.json
+    rmdir -- /etc/vincula-accountd >/dev/null 2>&1 || true
   fi
 
   remove_product_pycache "$LIB_DIR"
+
+  systemctl disable --now sing-box.service >/dev/null 2>&1 || true
+  for path in "$SYSTEMD_UNIT" "$CONFIG_FILE"; do
+    name=$(basename -- "$path")
+    if [[ -e "${MIGRATION_BACKUP}/${name}" || -L "${MIGRATION_BACKUP}/${name}" ]]; then
+      mkdir -p -- "$(dirname -- "$path")"
+      rm -f -- "$path"
+      cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
+    fi
+  done
 
   systemctl daemon-reload >/dev/null 2>&1 || true
 
@@ -512,7 +581,7 @@ is_supported_upgrade_from() {
   local from=$1
   [[ "$from" != "$VINCULA_VERSION" ]] || return 1
   case "$from" in
-    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2) return 0 ;;
+    0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.3.0|0.3.1-dev|0.3.1-rc1|0.3.1-rc2|0.3.1|0.3.2|0.5.0|0.5.1|0.5.2|0.5.3) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1143,10 +1212,18 @@ file=${MANIFEST_FILE}
 file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
+file=${ACCOUNTD_RUNTIME_PY}
+file=${STORAGE_PY}
+file=${OBSERVER_PY}
+file=${OBSERVER_SOCKET}
+file=${OBSERVER_UNIT}
+file=/etc/vincula-accountd/runtime.json
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
 file=${TELEMETRY_PY}
+file=${INSPECT_PY}
+file=${VERIFY_PY}
 file=${ACCOUNTD_UNIT}
 file=${ACCOUNTING_DB_FILE}
 
@@ -1178,10 +1255,18 @@ file=${MANIFEST_FILE}
 file=${SYSTEMD_UNIT}
 file=${LIB_DIR}/vincula-common.sh
 file=${ACCOUNTD_PY}
+file=${ACCOUNTD_RUNTIME_PY}
+file=${STORAGE_PY}
+file=${OBSERVER_PY}
+file=${OBSERVER_SOCKET}
+file=${OBSERVER_UNIT}
+file=/etc/vincula-accountd/runtime.json
 file=${STATS_PY}
 file=${AUDIT_PY}
 file=${BACKUP_PY}
 file=${TELEMETRY_PY}
+file=${INSPECT_PY}
+file=${VERIFY_PY}
 file=${ACCOUNTD_UNIT}
 
 directory=${STATE_DIR}
@@ -1371,6 +1456,8 @@ Wants=network-online.target
 Type=simple
 User=sing-box
 Group=sing-box
+# Go 1.24+ enables MPTCP by default for listeners; keep it off (CVE-2026-98432).
+Environment=GODEBUG=multipathtcp=0
 ExecStartPre=/usr/local/bin/sing-box check -c /etc/sing-box/config.json
 ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
 ExecReload=/bin/kill -HUP $MAINPID
@@ -1491,10 +1578,18 @@ preflight_clean_install() {
     "$INSTALL_MANIFEST_FILE" \
     "$MANIFEST_FILE" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
+    /etc/vincula-accountd \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$VAR_LIB_VINCULA" \
     "$ACCOUNTING_DB_FILE" \
@@ -1646,10 +1741,17 @@ backup_existing_install() {
     "$MANIFEST_FILE" \
     "${LIB_DIR}/vincula-common.sh" \
     "$ACCOUNTD_PY" \
+    "$ACCOUNTD_RUNTIME_PY" \
+    "$STORAGE_PY" \
+    "$OBSERVER_PY" \
+    "$OBSERVER_SOCKET" \
+    "$OBSERVER_UNIT" \
     "$STATS_PY" \
     "$AUDIT_PY" \
     "$BACKUP_PY" \
     "$TELEMETRY_PY" \
+    "$INSPECT_PY" \
+    "$VERIFY_PY" \
     "$EVENT_SCHEMA_FILE" \
     "$ACCOUNTD_UNIT" \
     "$EVENTS_JSONL_FILE"; do
@@ -1691,7 +1793,7 @@ migrate_existing_install() {
   [[ -n "$uuid" ]] || uuid=$(json_quoted_field "$STATE_FILE" uuid)
   private_key=$(json_quoted_field "$STATE_FILE" reality_private_key)
   public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
-  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id || true)
   installed_at=$(json_quoted_field "$STATE_FILE" installed_at)
   server=$(toml_get "$SETTINGS_FILE" server)
   port=$(toml_get "$SETTINGS_FILE" port)
@@ -1721,7 +1823,8 @@ migrate_existing_install() {
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Canonical owner UUID is invalid."
   [[ "$private_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Canonical REALITY private key is invalid."
   [[ "$public_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Canonical REALITY public key is invalid."
-  [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Canonical REALITY short ID is invalid."
+  # Legacy-seeded nodes may omit reality_short_id or use shorter even-length hex.
+  [[ "$short_id" =~ ^([0-9a-f]{2}){0,8}$ ]] || die "Canonical REALITY short ID is invalid."
   validate_port "$port" || die "Canonical port is invalid."
   [[ -n "$server" ]] || die "Canonical server address is missing."
   is_dns_name "$reality_host" || die "Canonical REALITY host is invalid."
@@ -1909,6 +2012,12 @@ verify_existing_install() {
 
   require_canonical_files
   [[ -e "$HELPER_PATH" ]] || die "Existing vincula installation is incomplete: missing ${HELPER_PATH}."
+  if verify_identity_consistency "$STATE_FILE" "$SETTINGS_FILE" "$CONFIG_FILE" "$URI_FILE" "$USERS_FILE" >/dev/null; then
+    log_ok "identity and credentials consistent"
+  else
+    log_warn "identity and credentials inconsistent; run vcl verify"
+    fail=1
+  fi
 
   printf '[Proxy Plane]\n'
   if sha256sum --check --status "$BINARY_CHECKSUM_FILE"; then
@@ -1967,7 +2076,7 @@ verify_existing_install() {
   clash_port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$clash_port" ]] || clash_port=$DEFAULT_CLASH_API_PORT
   clash_secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
-  if validate_port "$clash_port" && clash_api_reachable_with_secret "$clash_port" "$clash_secret"; then
+  if validate_port "$clash_port" && clash_api_authenticated "$clash_port" "$clash_secret"; then
     log_ok "Clash API reachable"
     log_ok "Clash API authentication"
   else
@@ -1978,7 +2087,7 @@ verify_existing_install() {
 
   if [[ -r "$ACCOUNTING_DB_FILE" ]]; then
     log_ok "SQLite database readable"
-    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+    schema=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
 row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -1986,7 +2095,7 @@ print(row[0] if row else "")
 conn.close()
 PY
 )
-    if [[ "$schema" == "4" ]]; then
+    if [[ "$schema" == "5" ]]; then
       log_ok "expected DB schema"
     else
       log_warn "expected DB schema"
@@ -2057,6 +2166,8 @@ install_accountd_artifacts() {
   [[ -f "${root}/lib/vincula-audit.py" ]] || die "Missing ${root}/lib/vincula-audit.py"
   [[ -f "${root}/lib/vincula-backup.py" ]] || die "Missing ${root}/lib/vincula-backup.py"
   [[ -f "${root}/lib/telemetry_snapshot.py" ]] || die "Missing ${root}/lib/telemetry_snapshot.py"
+  [[ -f "${root}/lib/inspect_snapshot.py" ]] || die "Missing ${root}/lib/inspect_snapshot.py"
+  [[ -f "${root}/lib/verify_snapshot.py" ]] || die "Missing ${root}/lib/verify_snapshot.py"
   [[ -f "${root}/lib/vincula-accountd.service" ]] || die "Missing ${root}/lib/vincula-accountd.service"
   install -m 0644 "${root}/lib/vincula-accountd.py" "$staged_py"
   install -m 0644 "${root}/lib/vincula-stats.py" "$staged_stats"
@@ -2064,17 +2175,42 @@ install_accountd_artifacts() {
   install -m 0644 "${root}/lib/vincula-backup.py" "$staged_backup"
   install -m 0644 "${root}/lib/telemetry_snapshot.py" "$staged_telemetry"
   install -m 0644 "${root}/lib/vincula-accountd.service" "$staged_unit"
+  create_accountd_account
   install -d -o root -g root -m 0700 "$VAR_LIB_VINCULA"
   atomic_install "$staged_py" "$ACCOUNTD_PY" 0644 root root
+  atomic_install "${root}/lib/accountd_runtime.py" "$ACCOUNTD_RUNTIME_PY" 0644 root root
+  atomic_install "${root}/lib/storage_v5.py" "$STORAGE_PY" 0644 root root
+  atomic_install "${root}/lib/observer.py" "${LIB_DIR}/observer.py" 0644 root root
+  atomic_install "${root}/lib/vincula-observer.socket" /etc/systemd/system/vincula-observer.socket 0644 root root
+  atomic_install "${root}/lib/vincula-observer@.service" /etc/systemd/system/vincula-observer@.service 0644 root root
   atomic_install "$staged_stats" "$STATS_PY" 0644 root root
   atomic_install "$staged_audit" "$AUDIT_PY" 0644 root root
   atomic_install "$staged_backup" "$BACKUP_PY" 0644 root root
   atomic_install "$staged_telemetry" "$TELEMETRY_PY" 0644 root root
+  atomic_install "${root}/lib/inspect_snapshot.py" "$INSPECT_PY" 0644 root root
+  atomic_install "${root}/lib/verify_snapshot.py" "$VERIFY_PY" 0644 root root
   atomic_install "$staged_unit" "$ACCOUNTD_UNIT" 0644 root root
   # Create empty DB file ownership marker (daemon initializes schema).
   if [[ ! -f "$ACCOUNTING_DB_FILE" ]]; then
     : > "$ACCOUNTING_DB_FILE"
     chmod 0600 "$ACCOUNTING_DB_FILE"
+  fi
+}
+
+create_accountd_account() {
+  local entry uid shell gid group_entry
+  if entry=$(getent passwd vincula-accountd); then
+    uid=$(cut -d: -f3 <<< "$entry")
+    shell=$(cut -d: -f7 <<< "$entry")
+    (( uid > 0 && uid < 1000 )) || die "Existing accountd account is not a system account."
+    case "$shell" in */nologin|*/false) ;; *) die "Existing accountd account has an interactive shell." ;; esac
+    group_entry=$(getent group vincula-accountd) || die "Existing accountd account has no matching group."
+    gid=$(cut -d: -f4 <<< "$entry")
+    [[ "$gid" == "$(cut -d: -f3 <<< "$group_entry")" ]] || die "Existing accountd account has an unexpected primary group."
+  elif getent group vincula-accountd >/dev/null; then
+    useradd --system --gid vincula-accountd --home-dir "$VAR_LIB_VINCULA" --no-create-home --shell /usr/sbin/nologin vincula-accountd
+  else
+    useradd --system --user-group --home-dir "$VAR_LIB_VINCULA" --no-create-home --shell /usr/sbin/nologin vincula-accountd
   fi
 }
 
@@ -2090,12 +2226,18 @@ validate_accounting_artifacts() {
   [[ -f "$AUDIT_PY" ]] || die "Missing audit helper ${AUDIT_PY}"
   [[ -f "$BACKUP_PY" ]] || die "Missing backup helper ${BACKUP_PY}"
   [[ -f "$TELEMETRY_PY" ]] || die "Missing telemetry helper ${TELEMETRY_PY}"
+  [[ -f "$INSPECT_PY" ]] || die "Missing inspect helper ${INSPECT_PY}"
+  [[ -f "$VERIFY_PY" ]] || die "Missing verify helper ${VERIFY_PY}"
+  [[ -f "$STORAGE_PY" ]] || die "Missing storage helper ${STORAGE_PY}"
   [[ -f "$ACCOUNTD_UNIT" ]] || die "Missing accounting unit ${ACCOUNTD_UNIT}"
   python_syntax_check "$ACCOUNTD_PY" || die "vincula-accountd.py failed syntax check"
   python_syntax_check "$STATS_PY" || die "vincula-stats.py failed syntax check"
   python_syntax_check "$AUDIT_PY" || die "vincula-audit.py failed syntax check"
   python_syntax_check "$BACKUP_PY" || die "vincula-backup.py failed syntax check"
   python_syntax_check "$TELEMETRY_PY" || die "telemetry_snapshot.py failed syntax check"
+  python_syntax_check "$INSPECT_PY" || die "inspect_snapshot.py failed syntax check"
+  python_syntax_check "$VERIFY_PY" || die "verify_snapshot.py failed syntax check"
+  python_syntax_check "$STORAGE_PY" || die "storage_v5.py failed syntax check"
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify "$ACCOUNTD_UNIT" || die "vincula-accountd.service failed systemd-analyze verify"
   fi
@@ -2118,6 +2260,8 @@ localhost_port_free_or_ours() {
 
 wait_for_accountd_healthy() {
   local remaining port secret schema
+  local health_timeout=${VCL_ACCOUNTD_HEALTH_TIMEOUT:-180}
+  local clash_timeout=${VCL_CLASH_HEALTH_TIMEOUT:-60}
   for (( remaining = 0; remaining < 15; remaining++ )); do
     if systemctl is-active --quiet vincula-accountd.service; then
       break
@@ -2128,8 +2272,8 @@ wait_for_accountd_healthy() {
 
   [[ -r "$ACCOUNTING_DB_FILE" ]] || return 1
   schema=""
-  for (( remaining = 0; remaining < 15; remaining++ )); do
-    schema=$(python3 - "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+  for (( remaining = 0; remaining < health_timeout; remaining++ )); do
+    schema=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 try:
     conn = sqlite3.connect(sys.argv[1])
@@ -2140,16 +2284,16 @@ except Exception:
     pass
 PY
 )
-    [[ "$schema" == "4" ]] && break
+    [[ "$schema" == "5" ]] && break
     sleep 1
   done
-  [[ "$schema" == "4" ]] || return 1
+  [[ "$schema" == "5" ]] || return 1
 
   port=$(toml_get "$SETTINGS_FILE" clash_api_port || true)
   [[ -n "$port" ]] || port=$DEFAULT_CLASH_API_PORT
   secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
   validate_port "$port" || return 1
-  for (( remaining = 0; remaining < 15; remaining++ )); do
+  for (( remaining = 0; remaining < clash_timeout; remaining++ )); do
     if clash_api_reachable_with_secret "$port" "$secret"; then
       # Secret must be required: bare / wrong Bearer must fail when secret is set.
       if [[ -n "$secret" ]]; then
@@ -2163,7 +2307,19 @@ PY
   return 1
 }
 
+migrate_accounting_db_to_v5() {
+  cleanup_accounting_migration_temps 0
+  if [[ -s "$ACCOUNTING_DB_FILE" ]]; then
+    log_info "Migrating accounting database to schema 5 (if needed)"
+    VCL_STATE_FILE="$STATE_FILE" \
+    VCL_USERS_FILE="$USERS_FILE" \
+      python3 -I "$ACCOUNTD_PY" --migrate-only --state "$STATE_FILE" --users "$USERS_FILE" --db "$ACCOUNTING_DB_FILE" \
+      || die "accounting database migration to schema 5 failed"
+  fi
+}
+
 enable_accountd_service() {
+  migrate_accounting_db_to_v5
   systemctl daemon-reload
   systemctl enable --now vincula-accountd.service || die "vincula-accountd.service failed to enable/start"
   wait_for_accountd_healthy || die "vincula-accountd health check failed; refusing to commit install"
@@ -2371,7 +2527,7 @@ render_users_owner_and_legacy() {
     printf '%s\n' "$installed_at"
     printf '%s\n' "$node_id"
   } >"$params"
-  python3 - "$params" "$output" <<'PY'
+  python_private "$params" "$output" <<'PY'
 import json, sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 if len(lines) != 9:

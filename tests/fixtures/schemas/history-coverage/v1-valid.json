@@ -1,0 +1,11 @@
+{
+  "schema": "history-coverage/v1", "schema_version": 1,
+  "status": "RAW_RECONSTRUCTED", "day_basis": "UTC_CONNECTION_START",
+  "completeness": "NOT_PROVEN", "snapshot_at": "2026-11-03T00:00:00.000000Z",
+  "intervals_are_envelopes": true,
+  "raw_at_snapshot": {"rows": 2, "from": "2026-10-01T00:00:00.000000Z", "through": "2026-10-02T01:00:00.000000Z"},
+  "legacy_at_snapshot": {"rows": 3, "from_date": "2026-09-01", "through_date": "2026-10-02"},
+  "legacy_unverified": true, "missing_history_recovered": false,
+  "raw_pruned_max_export_seq": 4, "daily_retention_cutoff": "2025-11-03",
+  "gaps": [{"kind": "LEGACY_DAILY_UNVERIFIED", "from_date": "2026-09-01", "through_date": "2026-10-02"}, {"kind": "RAW_EVENTS_PRUNED", "through_export_seq": 4}]
+}

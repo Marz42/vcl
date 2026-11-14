@@ -44,10 +44,12 @@ import re
 import secrets as secrets_mod
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -295,15 +297,49 @@ def snapshot_sqlite(src: Path, dest: Path) -> None:
         dest_path.unlink()
     abs_src = str(src_path.resolve())
     uri = "file:" + quote(abs_src, safe="/") + "?mode=ro"
-    src_conn = sqlite3.connect(uri, uri=True)
-    try:
-        dest_conn = sqlite3.connect(str(dest_path))
+    src_conn = sqlite3.connect(uri, uri=True, isolation_level=None)
+    dest_conn = None
+    deadline = None
+    raw_deadline = os.environ.get("VCL_PREPARE_DEADLINE_MONO", "").strip()
+    if raw_deadline:
         try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
+            deadline = float(raw_deadline)
+        except ValueError:
+            raise ValueError("invalid VCL_PREPARE_DEADLINE_MONO") from None
+    try:
+        # A rollback-journal source turns the pinned read transaction into a
+        # long SHARED lock: writers block or fail for the whole copy.  The
+        # accounting DB is WAL by construction; refuse anything else instead of
+        # silently exporting that failure mode.
+        mode = str(src_conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            raise sqlite3.OperationalError(
+                f"unsupported journal_mode {mode!r}; accounting snapshot requires WAL")
+        # Pin one WAL snapshot for the whole copy.  Without this, a writer that
+        # commits between backup steps makes sqlite3_backup restart from page 1;
+        # the old per-progress sleep made that restart loop effectively
+        # unbounded.  The read transaction also makes the archive represent one
+        # point in time instead of a mixture of writer states.
+        src_conn.execute("BEGIN")
+        src_conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        dest_conn = sqlite3.connect(str(dest_path))
+        def progress(status, remaining, total):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise sqlite3.OperationalError("snapshot deadline exceeded")
+        src_conn.backup(dest_conn, pages=256, progress=progress, sleep=0.05)
+        src_conn.execute("COMMIT")
+    except BaseException:
+        try:
+            src_conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
     finally:
+        if dest_conn is not None:
+            dest_conn.close()
         src_conn.close()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise sqlite3.OperationalError("snapshot deadline exceeded")
 
 
 def db_snapshot(src_db: Path, dst_path: Path) -> None:
@@ -708,7 +744,8 @@ def _load_members(
 
 
 def _verify_members(
-    members: Mapping[str, MemberSource], outer_path: Path
+    members: Mapping[str, MemberSource], outer_path: Path, *,
+    verified_hashes: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Steps 2–6: manifest, schema, flag/suffix consistency, sha256, members."""
     if "manifest.json" not in members:
@@ -749,14 +786,26 @@ def _verify_members(
         return _fail("invalid_archive")
 
     actual = {name for name in members if name != "manifest.json"}
+    if not set(REQUIRED_COMPONENTS) <= actual or len(included_names) != len(set(included_names)) or len(files) != len(hash_by_path):
+        return _fail("invalid_archive")
     if set(included_names) != actual:
         return _fail("invalid_archive")
 
     for name in included_names:
-        digest = _digest_member(members[name])
+        digest = verified_hashes[name] if verified_hashes is not None else _digest_member(members[name])
         expected = hash_by_path[name]
         if digest != expected:
             return _fail("checksum_mismatch")
+
+    # Apply consumes both JSON roots as objects and config.toml as strict UTF-8.
+    # A valid manifest/hash alone must not admit structurally unreadable input.
+    try:
+        for name in ('state.json', 'users.json'):
+            if not isinstance(json.loads(_as_bytes(members[name]).decode('utf-8')), dict):
+                return _fail('invalid_archive')
+        _as_bytes(members['config.toml']).decode('utf-8')
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError):
+        return _fail('invalid_archive')
 
     out = dict(manifest)
     out["ok"] = True
@@ -872,6 +921,163 @@ def verify_archive(
     return result
 
 
+class _HashingReader:
+    def __init__(self, fileobj):
+        self.fileobj = fileobj
+        self.digest = hashlib.sha256()
+        self.count = 0
+
+    def read(self, size=-1):
+        chunk = self.fileobj.read(size)
+        if chunk:
+            self.digest.update(chunk)
+            self.count += len(chunk)
+        return chunk
+
+
+def _verify_archive_stream(fd: int, archive: Path) -> Dict[str, Any]:
+    """Verify a plaintext backup tar without extracting the accounting DB.
+
+    The archive is read once through a descriptor, so no temporary copy (and no
+    extra writes) is needed.  Per-member hashes are checked against the
+    manifest; the outer digest is computed from the exact bytes consumed.
+    """
+    members = _LoadedMembers()
+    hashes: Dict[str, str] = {}
+    total = 0
+    reader = None
+    try:
+        dup = os.dup(fd)
+        os.lseek(dup, 0, os.SEEK_SET)
+        reader = _HashingReader(os.fdopen(dup, "rb"))
+        with tarfile.open(fileobj=reader, mode="r|") as tf:
+            for info in tf:
+                name = _safe_member_name(info.name)
+                if name in members or not info.isreg():
+                    return _fail("invalid_archive")
+                if info.size < 0 or info.size > _member_size_cap(name):
+                    return _fail("invalid_archive")
+                total += info.size
+                if total > MAX_ARCHIVE_BYTES:
+                    return _fail("invalid_archive")
+                stream = tf.extractfile(info)
+                if stream is None:
+                    return _fail("invalid_archive")
+                digest = hashlib.sha256()
+                chunks = []
+                count = 0
+                while True:
+                    chunk = stream.read(IO_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    count += len(chunk)
+                    if count > _member_size_cap(name):
+                        return _fail("invalid_archive")
+                    digest.update(chunk)
+                    if name in IN_MEMORY_MEMBERS:
+                        chunks.append(chunk)
+                if count != info.size:
+                    return _fail("invalid_archive")
+                hashes[name] = digest.hexdigest()
+                members[name] = b"".join(chunks) if name in IN_MEMORY_MEMBERS else b""
+    except (tarfile.TarError, OSError, ValueError):
+        return _fail("invalid_archive")
+    finally:
+        if reader is not None:
+            try:
+                reader.fileobj.close()
+            except OSError:
+                pass
+    result = _verify_members(members, archive, verified_hashes=hashes)
+    if not result.get("ok"):
+        return result
+    if result.get("secret_bearing"):
+        bad = _assert_secret_bearing_members(members)
+    else:
+        bad = _assert_secretless_members(members)
+    if bad:
+        return _fail(bad)
+    result = dict(result)
+    result.update(archive_sha256=reader.digest.hexdigest(), archive_size=reader.count)
+    return result
+
+
+def verify_archive_fd(fd: int) -> Dict[str, Any]:
+    """Verify an already-open archive and fingerprint the same inode.
+
+    The caller opens with O_NOFOLLOW/O_CLOEXEC.  Verification reads from the
+    descriptor itself, so replacing the pathname after the open cannot swap
+    the bytes being inspected.  The returned dev/ino/size/mtime and sha256 let
+    the caller re-check that the path it publishes still names the verified
+    inode.  This is a point-in-time check; it does not prevent a later writer
+    from replacing the pathname after the caller drops the descriptor.
+    """
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        return _fail("invalid_archive")
+    result = _verify_archive_stream(fd, Path(f"/proc/self/fd/{fd}"))
+    after = os.fstat(fd)
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        return _fail("archive_changed")
+    if not result.get("ok"):
+        return result
+    if result.get("archive_size") != before.st_size:
+        return _fail("archive_changed")
+    out = dict(result)
+    out.update(archive_dev=before.st_dev, archive_ino=before.st_ino,
+               archive_mtime_ns=before.st_mtime_ns)
+    return out
+
+def _publish_created_archive(src: Path, dest: Path) -> None:
+    """Creation staging is on the destination filesystem; no second full copy."""
+    os.chmod(src, 0o600)
+    with src.open("r+b") as fh:
+        os.fsync(fh.fileno())
+    os.replace(src, dest)
+    if os.name == "posix":
+        fd = os.open(dest.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _stream_created_tar(path: Path, components: Mapping[str, Path]):
+    """Self-check bytes from the actual archive without extracting its large DB.
+
+    Private creation snapshots remain alive for the entire verification. This
+    is deliberately not used by restore, which needs extracted member files.
+    """
+    members, hashes = {}, {}
+    total = 0
+    with tarfile.open(path, "r|") as tf:
+        for info in tf:
+            name = _safe_member_name(info.name)
+            if name in members or not info.isreg():
+                raise tarfile.TarError("duplicate or non-regular member")
+            if name != "manifest.json" and name not in components:
+                raise tarfile.TarError("unexpected member")
+            total += info.size
+            if info.size < 0 or info.size > _member_size_cap(name) or total > MAX_ARCHIVE_BYTES:
+                raise tarfile.TarError("archive size cap exceeded")
+            stream = tf.extractfile(info)
+            digest, count, chunks = hashlib.sha256(), 0, []
+            while True:
+                chunk = stream.read(IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                count += len(chunk)
+                digest.update(chunk)
+                if name in IN_MEMORY_MEMBERS:
+                    chunks.append(chunk)
+            if count != info.size:
+                raise tarfile.TarError("short archive member")
+            hashes[name] = digest.hexdigest()
+            members[name] = b"".join(chunks) if name in IN_MEMORY_MEMBERS else components[name]
+    return members, hashes
+
+
 def create_backup(
     state_dir: Path,
     accounting_db: Optional[Path],
@@ -896,7 +1102,10 @@ def create_backup(
     state_dir = Path(state_dir)
     output = resolve_backup_output(Path(output), include_secrets)
     when = created_at or utc_now_iso()
-    with tempfile.TemporaryDirectory(prefix="vincula-backup-") as tmp:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    timings = {}
+    began = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix=".vincula-backup-", dir=output.parent) as tmp:
         tmp_path = Path(tmp)
         parts = tmp_path / "parts"
         components = assemble_components(
@@ -905,6 +1114,8 @@ def create_backup(
             accounting_db=accounting_db,
             include_secrets=include_secrets,
         )
+        timings["snapshot_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         included = [name for name in COMPONENT_NAMES if name in components]
         hashes = {name: sha256_file(components[name]) for name in included}
         state_doc = json.loads(components["state.json"].read_text(encoding="utf-8"))
@@ -933,18 +1144,20 @@ def create_backup(
             encryption=encryption,
             hashes=hashes,
         )
+        timings["manifest_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         staged = tmp_path / "archive.tar"
         try:
             write_tar(staged, components, manifest)
         except ValueError as exc:
             _die(str(exc))
-        extract_dir = tmp_path / "verify-extract"
-        extract_dir.mkdir()
+        timings["archive_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         try:
-            inner = _read_tar_members(staged, extract_dir=extract_dir)
+            inner, streamed_hashes = _stream_created_tar(staged, components)
         except (tarfile.TarError, OSError, ValueError) as exc:
             _die(str(exc) or "invalid_archive")
-        checked = _verify_members(inner, output)
+        checked = _verify_members(inner, output, verified_hashes=streamed_hashes)
         if not checked.get("ok"):
             _die(str(checked.get("error") or "failed"))
         if secret_bearing:
@@ -953,6 +1166,8 @@ def create_backup(
             bad = _assert_secretless_members(inner)
         if bad:
             _die(bad)
+        timings["verify_seconds"] = time.monotonic() - began
+        began = time.monotonic()
         if include_secrets:
             encrypted = tmp_path / "archive.tar.age"
             assert age_recipient is not None
@@ -960,12 +1175,15 @@ def create_backup(
                 age_encrypt(staged, encrypted, Path(age_recipient))
             except AgeError:
                 _die("age encryption failed")
-            atomic_replace(encrypted, output, 0o600)
+            _publish_created_archive(encrypted, output)
         else:
-            atomic_replace(staged, output, 0o600)
+            _publish_created_archive(staged, output)
 
+    timings["publish_seconds"] = time.monotonic() - began
+    began = time.monotonic()
     archive_hash = sha256_file(output)
-    return {
+    timings["archive_hash_seconds"] = time.monotonic() - began
+    return {"timings": timings,
         "schema_version": 1,
         "ok": True,
         "path": str(output),
@@ -1963,10 +2181,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore_plan.add_argument("--listen", default="")
     restore_plan.add_argument("--port", default="")
     restore_plan.add_argument("--new-instance-id", default="")
-    restore_plan.add_argument("--new-reality-private", default="")
+    restore_plan.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--new-reality-public", default="")
     restore_plan.add_argument("--new-reality-short-id", default="")
-    restore_plan.add_argument("--new-clash-secret", default="")
+    restore_plan.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore_plan.add_argument("--project-version", default="")
     restore_plan.add_argument("--json", dest="json_flag", action="store_true")
     restore = sub.add_parser("restore", help="restore a backup onto a fresh node")
@@ -1984,10 +2202,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     restore.add_argument("--generated-config", default="")
     restore.add_argument("--safety-dir", default="")
     restore.add_argument("--new-instance-id", default="")
-    restore.add_argument("--new-reality-private", default="")
+    restore.add_argument("--new-reality-private", default="", help=argparse.SUPPRESS)
     restore.add_argument("--new-reality-public", default="")
     restore.add_argument("--new-reality-short-id", default="")
-    restore.add_argument("--new-clash-secret", default="")
+    restore.add_argument("--new-clash-secret", default="", help=argparse.SUPPRESS)
     restore.add_argument("--project-version", default="")
     restore.add_argument("--defer-version", action="store_true")
     restore.add_argument("--manage-services", action="store_true")
@@ -2004,7 +2222,40 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     commit_ver.add_argument("--target-state-dir", required=True)
     commit_ver.add_argument("--safety-dir", default="")
     commit_ver.add_argument("--project-version", default="")
-    return parser.parse_args(argv)
+    actual = list(sys.argv[1:] if argv is None else argv)
+    if any(a.split("=", 1)[0] in ("--new-reality-private", "--new-clash-secret") for a in actual):
+        parser.error("plaintext secret options are disabled; use --new-reality-private-file/-fd and --new-clash-secret-file/-fd")
+    for target in (restore_plan, restore):
+        for field in ("new-reality-private", "new-clash-secret"):
+            group = target.add_mutually_exclusive_group()
+            group.add_argument("--" + field + "-file", default="")
+            group.add_argument("--" + field + "-fd", type=int)
+    args = parser.parse_args(actual)
+    for field in ("new_reality_private", "new_clash_secret"):
+        if hasattr(args, field):
+            try:
+                secret_file = getattr(args, field + "_file", "")
+                secret_fd = getattr(args, field + "_fd", None)
+                if secret_file:
+                    path = Path(secret_file)
+                    info = path.stat()
+                    if path.is_symlink() or not path.is_file() or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid())):
+                        raise ValueError()
+                    with path.open(encoding="utf-8") as stream:
+                        value = stream.read(16385)
+                elif secret_fd is not None:
+                    if secret_fd < 3:
+                        raise ValueError()
+                    with os.fdopen(os.dup(secret_fd), encoding="utf-8") as stream:
+                        value = stream.read(16385)
+                else:
+                    value = ""
+                if len(value) > 16384 or "\0" in value:
+                    raise ValueError()
+                setattr(args, field, value.removesuffix("\n"))
+            except (OSError, ValueError, UnicodeError):
+                parser.error("cannot read private secret input; require an owned private regular file or inherited fd >= 3")
+    return args
 
 
 def _print_restore_failure(exc: RestoreError, json_flag: bool) -> int:

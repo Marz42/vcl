@@ -1,0 +1,286 @@
+diff --git a/lib/upgrade_prepare.py b/lib/upgrade_prepare.py
+index 9da53e7..7dad877 100644
+--- a/lib/upgrade_prepare.py
++++ b/lib/upgrade_prepare.py
+@@ -113,20 +113,29 @@ def lock(root):
+ 
+ def read_status(path):
+     doc = json.loads(path.read_text())
+-    if doc['state'] == 'RUNNING':
+-        fd = lock(path.parent.parent)
+-        if fd is not None:
+-            # Acquiring the operation lock proves that no worker, supervisor or
+-            # helper (all inherit the lock fd) is still alive.  Converge the
+-            # status instead of leaving RUNNING behind forever.
+-            try:
+-                doc = dict(doc, state='FAILED', code='WORKER_LOST',
+-                           detail='operation lock is free and no lifecycle owner is alive',
+-                           finished_at=time.time())
+-                save(path, doc)
+-            finally:
+-                os.close(fd)
+-    return doc
++    if doc.get('state') != 'RUNNING':
++        return doc
++    fd = lock(path.parent.parent)
++    if fd is None:
++        return doc
++    try:
++        # Re-read only after the operation lock is held.  A worker may have
++        # published SUCCEEDED between the unlocked read above and lock
++        # acquisition; its terminal record must win over the stale RUNNING
++        # snapshot.  Only a record that is still RUNNING is converged.
++        doc = json.loads(path.read_text())
++        if doc.get('state') != 'RUNNING':
++            return doc
++        # Acquiring the operation lock proves that no worker, supervisor or
++        # helper (all inherit the lock fd) is still alive.  Converge the
++        # status instead of leaving RUNNING behind forever.
++        doc = dict(doc, state='FAILED', code='WORKER_LOST',
++                   detail='operation lock is free and no lifecycle owner is alive',
++                   finished_at=time.time())
++        save(path, doc)
++        return doc
++    finally:
++        os.close(fd)
+ 
+ 
+ def lifecycle_available():
+@@ -426,13 +435,22 @@ def _verify_backup(path_doc, expected, evidence_dir):
+ 
+ 
+ def _check_archive_unchanged(fd, evidence):
++    """Check the verified inode and the metadata saved at verification time.
++
++    Comparing the path and the pinned fd to each other is insufficient: an
++    in-place write updates both views of the same inode.  The size and mtime
++    recorded by ``verify_archive_fd`` are the reference values.  This is still
++    a handoff check, not content re-verification; the consumer must verify the
++    bytes it actually opens.
++    """
++    expected = (evidence.get('archive_dev'), evidence.get('archive_ino'),
++                evidence.get('archive_size'), evidence.get('archive_mtime_ns'))
+     st = os.fstat(fd)
+     current = os.stat(evidence['path'], follow_symlinks=False)
+-    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != (
+-            current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
++    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != expected:
++        raise ValueError('backup archive changed during preparation')
++    if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != expected:
+         raise ValueError('backup archive changed during preparation')
+-    if (st.st_dev, st.st_ino) != (evidence.get('archive_dev'), evidence.get('archive_ino')):
+-        raise ValueError('backup archive inode changed during preparation')
+ 
+ 
+ def worker(root, op, fd, state_dir=None):
+@@ -470,23 +488,38 @@ def worker(root, op, fd, state_dir=None):
+         left = deadline - time.monotonic()
+         if left > 0:
+             time.sleep(left)
++        helper = None
+         with status_lock:
+             try:
+                 current = json.loads(path.read_text())
+             except (OSError, ValueError):
++                current = None
++            if current is not None and current.get('state') != 'RUNNING':
+                 return
+-            if current.get('state') != 'RUNNING':
+-                return
++            # Publish the expiry before attempting the diagnostic write.  If
++            # the filesystem is full, save() can raise; teardown below must
++            # still run, and later main-thread save_status() calls must see
++            # the event and remain CANCELLED.
++            deadline_fired.set()
++            helper = proc_holder.get('proc')
++            current = dict(current or doc)
+             current.update(state='CANCELLED', code='PREPARATION_DEADLINE',
+                            detail='absolute preparation deadline expired while supervisor was not scheduling',
+                            finished_at=time.time(), deadline_owner='worker_guard')
+-            save(path, current)
+-            deadline_fired.set()
+-            helper = proc_holder.get('proc')
++            try:
++                save(path, current)
++            except BaseException as exc:
++                # Persistence is diagnostic.  Never let a disk-full or other
++                # write error suppress helper termination and namespace exit.
++                try:
++                    print(f'deadline guard: cannot persist status: {exc}',
++                          file=sys.stderr, flush=True)
++                except BaseException:
++                    pass
+         if helper is not None:
+             try:
+                 os.killpg(helper.pid, signal.SIGTERM)
+-            except ProcessLookupError:
++            except OSError:
+                 pass
+         # Same 5 s grace as the supervisor.  If the helper ignores TERM, the
+         # worker (namespace PID 1) exits and the kernel clears the namespace.
+diff --git a/release.lock b/release.lock
+index ec27551..1552491 100644
+--- a/release.lock
++++ b/release.lock
+@@ -12,7 +12,7 @@ ad3c91e355c4a88c8c94c4167b90b13cdc982a96ddfa961f907299bbd96cc48d  lib/vincula-ob
+ e2524cf53656183a459a9aa06733bc95e668cb77902a29909404bf49e31d70f1  lib/vincula-stats.py
+ e004d6aeb33bae4a829eb8120afd5469863cb79fa77d9f0c74c9dec91685ce31  lib/vincula-audit.py
+ 5f5392097c3db138d43e8f59a27c0ddae7b9681642f30e0277097421d703aca5  lib/vincula-backup.py
+-5fb7077f75bbe8e33e7949f3674fc8b9f9683ee65f30b513d655fad617079d41  lib/upgrade_prepare.py
++46c7fca93b14f431ed5cefb9895017a6afb6ebe5c279d424ed644cce74e590c9  lib/upgrade_prepare.py
+ a96089520544fff001d877ccfd2c252c2e2c5937159ee557d0ebe66761a032b2  lib/telemetry_snapshot.py
+ fa9e61dbf3d1e26853961b653270f88570e52eb1704c92b23748a49da9a13a94  lib/inspect_snapshot.py
+ 250c4748ce912c3efca9b4ff85cacd46edfe5719e17c37490d70d05ba320dd9b  lib/storage_v5.py
+diff --git a/tests/test_upgrade_prepare.py b/tests/test_upgrade_prepare.py
+index 8d37f27..49f4a5a 100644
+--- a/tests/test_upgrade_prepare.py
++++ b/tests/test_upgrade_prepare.py
+@@ -249,6 +249,32 @@ class LinuxWorkerTests(unittest.TestCase):
+                              backup.sha256_file(archive))
+             fd2 = worker.lock(root); self.assertIsNotNone(fd2); os.close(fd2)
+ 
++    def test_archive_stability_rejects_in_place_growth(self):
++        import os
++        worker = load('prepare_archive_metadata', 'lib/upgrade_prepare.py')
++        with tempfile.TemporaryDirectory() as tmp:
++            archive = Path(tmp) / 'backup.tar'
++            archive.write_bytes(b'12345678')
++            before = archive.stat()
++            fd = os.open(archive, os.O_RDONLY)
++            try:
++                evidence = {'path': str(archive),
++                            'archive_dev': before.st_dev,
++                            'archive_ino': before.st_ino,
++                            'archive_size': before.st_size,
++                            'archive_mtime_ns': before.st_mtime_ns}
++                worker._check_archive_unchanged(fd, evidence)
++                # Same inode, grown in place.  fd and path agree with each
++                # other, so only the verification-time size/mtime catch this.
++                archive.write_bytes(b'1234567890123456789')
++                after = archive.stat()
++                self.assertEqual((after.st_dev, after.st_ino),
++                                 (before.st_dev, before.st_ino))
++                with self.assertRaisesRegex(ValueError, 'backup archive changed'):
++                    worker._check_archive_unchanged(fd, evidence)
++            finally:
++                os.close(fd)
++
+     def test_start_refuses_without_pid_namespace(self):
+         import uuid
+         worker = load('prepare_start_refusal', 'lib/upgrade_prepare.py')
+@@ -295,6 +321,86 @@ class LinuxWorkerTests(unittest.TestCase):
+             self.assertIsNotNone(fd2)
+             os.close(fd2)
+ 
++    def test_worker_deadline_guard_survives_status_write_failure(self):
++        import errno
++        import os
++        import signal
++        import time
++        with tempfile.TemporaryDirectory() as tmp:
++            worker, root, op, fd, dest, archive = self._fixture(tmp)
++            pid_file = root / 'helper.pid'
++            helper = root / 'helper'
++            helper.write_text(
++                '#!/bin/bash\n'
++                'echo $$ > "$VCL_TEST_HELPER_PID"\n'
++                'sleep 30\n')
++            helper.chmod(0o755)
++            os.environ['VCL_TEST_HELPER_PID'] = str(pid_file)
++            deadline = time.monotonic() + 4.0
++            events = root / 'guard-events'
++            real_save = worker.save
++            guard_failed = {'value': False}
++
++            def save_or_fail(target, document):
++                # Fail the guard's diagnostic write once.  Later writes (the
++                # main thread's final CANCELLED record) succeed, proving the
++                # event was published before the failed save.
++                if document.get('deadline_owner') == 'worker_guard' and not guard_failed['value']:
++                    guard_failed['value'] = True
++                    with events.open('a') as out:
++                        out.write('save-enospc\n')
++                    raise OSError(errno.ENOSPC, 'No space left on device')
++                return real_save(target, document)
++
++            real_killpg = worker.os.killpg
++
++            def record_killpg(pgid, sig):
++                with events.open('a') as out:
++                    out.write(f'killpg {sig}\n')
++                return real_killpg(pgid, sig)
++
++            pid = os.fork()
++            if pid == 0:
++                try:
++                    with patch.object(worker, 'save', side_effect=save_or_fail), \
++                         patch.object(worker.os, 'killpg', side_effect=record_killpg), \
++                         patch.object(worker, 'BACKUP_ROOT', root/'backups'), \
++                         patch.object(worker.os, 'nice'), \
++                         patch.object(worker.subprocess, 'run'):
++                        os.environ['VCL_PREPARE_DEADLINE_MONO'] = repr(deadline)
++                        worker.worker(root, op, fd, root/'state')
++                finally:
++                    os._exit(0)
++            os.close(fd)
++            began = time.monotonic()
++            child_status = None
++            while time.monotonic() - began < 8:
++                got, status = os.waitpid(pid, os.WNOHANG)
++                if got == pid:
++                    child_status = status
++                    break
++                time.sleep(0.05)
++            elapsed = time.monotonic() - began
++            if child_status is None:
++                os.kill(pid, signal.SIGKILL)
++                os.waitpid(pid, 0)
++            try:
++                helper_pid = int(pid_file.read_text())
++                try:
++                    os.killpg(helper_pid, signal.SIGKILL)
++                except ProcessLookupError:
++                    pass
++            except (OSError, ValueError):
++                pass
++            self.assertIsNotNone(child_status, 'deadline guard did not exit after status write failure')
++            self.assertLess(elapsed, 8)
++            doc = json.loads((dest/'status.json').read_text())
++            self.assertEqual((doc.get('state'), doc.get('code')),
++                             ('CANCELLED', 'PREPARATION_DEADLINE'), doc)
++            recorded = events.read_text()
++            self.assertEqual(recorded.count('save-enospc'), 1)
++            self.assertIn('killpg 15', recorded)
++
+     def test_worker_with_bad_helper_does_not_succeed(self):
+         import os
+         with tempfile.TemporaryDirectory() as tmp:
+@@ -322,5 +428,28 @@ class LinuxWorkerTests(unittest.TestCase):
+             doc=worker.read_status(dest/'status.json')
+             self.assertEqual((doc['state'],doc['code']),('FAILED','WORKER_LOST'))
+ 
++    def test_read_status_keeps_terminal_state_published_before_lock(self):
++        import os
++        import uuid
++        worker = load('prepare_worker_terminal_race', 'lib/upgrade_prepare.py')
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp); root.chmod(0o700)
++            op = str(uuid.uuid4()); dest = root/op; dest.mkdir()
++            status = dest/'status.json'
++            worker.save(status, {'state':'RUNNING','operation_id':op,'binding':{}})
++            real_lock = worker.lock
++
++            def publish_success_then_lock(root_path):
++                # Simulate a worker that publishes SUCCEEDED and releases the
++                # lock after the query's first read but before it locks.
++                worker.save(status, {'state':'SUCCEEDED','operation_id':op,
++                                     'binding':{},'checkpoint':{'ok':True}})
++                return real_lock(root_path)
++
++            with patch.object(worker, 'lock', side_effect=publish_success_then_lock):
++                doc = worker.read_status(status)
++            self.assertEqual(doc['state'], 'SUCCEEDED', doc)
++            self.assertEqual(json.loads(status.read_text())['state'], 'SUCCEEDED')
++
+ if __name__ == '__main__':
+     unittest.main()

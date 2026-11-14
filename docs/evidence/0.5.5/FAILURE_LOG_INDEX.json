@@ -1,0 +1,184 @@
+{
+  "note": "Original failed logs remain machine-local and are never overwritten by passing rechecks. Early Bash runs included version/schema/contract fixture updates; remote #124 exposed Python 3.10 error classification, #125 exposed optional legacy coverage columns. See VERIFICATION.md.",
+  "logs": [
+    {
+      "path": "tmp/merge-audit-20261103/bash-first.log",
+      "sha256": "384eb40d24ef2129be4dd637c8077d3477af7335833f8dc559b832c0bb69d57e",
+      "failed_bash_assertions": 65,
+      "failed_bash_labels": [
+        "not ok - runs when read from standard input (expected 'vincula 0.5.3', got 'vincula 0.5.5')",
+        "not ok - does not migrate the current version (unexpected success)",
+        "not ok - keeps management state private by design",
+        "not ok - identity-sample.json vincula_version matches tree (0.5.3)",
+        "not ok - release.lock has 18 first-party files (expected '18', got '19')",
+        "not ok - dist node release.lock has 18 first-party files (expected '18', got '19')",
+        "not ok - meta.schema_version is 4",
+        "not ok - event parse + rollup + stale close + poll baseline + restart bytes preserved",
+        "not ok - upsert_connection UPDATE-first keeps sqlite_sequence stable across 100 polls",
+        "not ok - schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only",
+        "not ok - schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT",
+        "not ok - open_db empty database is schema 4",
+        "not ok - D5 historical instance_id stays NULL after migrate",
+        "not ok - rollup failure does not empty daily_usage",
+        "not ok - retention x rollup keeps recent daily rows at 90/90",
+        "not ok - retention deletes at most 2000 rows per call",
+        "not ok - retention batches daily_usage at most 2000 rows per call",
+        "not ok - retention backlog drains across calls",
+        "not ok - retention does not hold collection commit",
+        "not ok - retention leaves open rows and recent closed rows",
+        "not ok - vincula-audit interval-overlap RFC3339 filters and json",
+        "not ok - vincula-audit export --after jsonl Protocol v2 CURSOR_EXPIRED CURSOR_AHEAD and --limit",
+        "not ok - installer health checks expect accounting schema 4",
+        "not ok - cmd_verify rejects wrong Clash secret",
+        "not ok - restart empty known_open preserves generation bytes",
+        "not ok - open_db fail-closed on unknown schema_version",
+        "not ok - secretless backup strips reality_private_key",
+        "not ok - secretless users keep credential_id history without uuid",
+        "not ok - secretless config.toml drops clash_api_secret",
+        "not ok - include-secrets rendering keeps secrets verbatim",
+        "not ok - sqlite backup API snapshot is consistent under WAL",
+        "not ok - backup tar manifest schema 1 with per-file sha256",
+        "not ok - verify_manifest checks sha256 and secret-bearing flag",
+        "not ok - secretless archive is 0600 and not age-encrypted",
+        "not ok - fake-age encrypt/decrypt round-trip",
+        "not ok - verify missing_manifest and unsupported_schema",
+        "not ok - D17 missing age dies with exact ERROR line",
+        "not ok - include-secrets fake-age archive verifies after decrypt",
+        "not ok - restore preflight refuses existing install and secretless --include-secrets",
+        "not ok - safe restore keeps node_id and mints new instance_id",
+        "not ok - safe restore rotates Reality keys and credential UUIDs",
+        "not ok - safe restore preserves user_id metadata and accounting event_id=5",
+        "not ok - safe restore writes 0600 reissue CSV with five columns",
+        "not ok - restore to existing VERSION is refused without mutation",
+        "not ok - corrupt backup is refused before dest mutation",
+        "not ok - secrets restore reuses UUIDs and Reality private key",
+        "not ok - mid-restore failure restores safety backup (AC-3.0-12)",
+        "not ok - backup verify --json success/failure contracts",
+        "not ok - vcl restore --json fresh-node contract (rc=1, parse=1, out='')",
+        "not ok - vcl restore reissue CSV is 0600",
+        "not ok - vcl restore refuses existing install without mutation (rc=1, err='ERROR: backup file not found: /tmp/vincula-tests.jVfrU4Xv/backup030/restore-src.tar')",
+        "not ok - runtime-only dest restore writes VERSION last and clears marker (rc=1 out=)",
+        "not ok - vcl restore --json emits a single success document after VERSION (rc=1 count=0)",
+        "not ok - vcl backup verify --json failure contract (rc=1, parse=1)",
+        "not ok - bit-flip backup verify is checksum_mismatch before mutation",
+        "not ok - restore refuses missing_manifest unsupported_schema secret_bearing_unencrypted",
+        "not ok - mid-restore stage inject leaves target and source unchanged; retry succeeds",
+        "not ok - AC-3.0-01 fixture PASS: default backup includes identity and accounting",
+        "not ok - AC-3.0-02 fixture PASS: default backup is secretless without encryption",
+        "not ok - AC-3.0-04 fixture PASS: verify detects bit-flip checksum mismatch",
+        "not ok - AC-3.0-08 fixture PASS: restore keeps user_id",
+        "not ok - AC-3.0-09 fixture PASS: restore keeps accounting event_id history",
+        "not ok - AC-3.0-11 fixture PARTIAL (LIVE-ONLY): old uuid absent from inbound set",
+        "not ok - AC-3.0-12 fixture PASS: failed restore does not mutate source or target",
+        "not ok - suite stopped unexpectedly (exit=1)"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/bash-second.log",
+      "sha256": "1788569d5525b6f07fb3d3add53cc5d37702e8898fe467e7f6d9bb9d9beea837",
+      "failed_bash_assertions": 24,
+      "failed_bash_labels": [
+        "not ok - schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only",
+        "not ok - schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT",
+        "not ok - open_db empty database is schema 4",
+        "not ok - D5 historical instance_id stays NULL after migrate",
+        "not ok - vincula-audit interval-overlap RFC3339 filters and json",
+        "not ok - restart empty known_open preserves generation bytes",
+        "not ok - open_db fail-closed on unknown schema_version",
+        "not ok - fleet-cache/v4 constant",
+        "not ok - B2 bindings file schema v2",
+        "not ok - B2 agent public key selector stored machine-locally",
+        "not ok - B2 credential resolve / agent / migration state / strict argv",
+        "not ok - CTRL 0.5.4 (expected '0.5.4', got '0.5.5')",
+        "not ok - NODE 0.5.3 (expected '0.5.3', got '0.5.5')",
+        "not ok - open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600",
+        "not ok - fleet.db schema 1→2→3→4 preserves data and records instance history",
+        "not ok - B3 v3→v4 stamp+mismatch",
+        "not ok - B4 RO query / RW sync / delete journal",
+        "not ok - B7 create report",
+        "not ok - B7 inspect",
+        "not ok - B3 digest mismatch refuses install",
+        "not ok - B3 unsupported_arch refuses install",
+        "not ok - B3 controller zip embeds payload/",
+        "not ok - B3 build-controller installs payload triple to dist for source provisioning",
+        "not ok - suite stopped unexpectedly (exit=1)"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/bash-third.log",
+      "sha256": "935bc31323f6e1e73613bceddaf48c13ad17dd0ed322faf56a5db57c07c89f3d",
+      "failed_bash_assertions": 13,
+      "failed_bash_labels": [
+        "not ok - schema 2 to 4 preserves accounted bytes and assigns export_seq to closed only",
+        "not ok - schema 4 UNIQUE(connection_id, generation) and AUTOINCREMENT",
+        "not ok - open_db empty database is schema 4",
+        "not ok - D5 historical instance_id stays NULL after migrate",
+        "not ok - vincula-audit interval-overlap RFC3339 filters and json",
+        "not ok - open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600",
+        "not ok - fleet.db schema 1→2→3→4 preserves data and records instance history",
+        "not ok - B3 v3→v4 stamp+mismatch",
+        "not ok - B4 RO query / RW sync / delete journal",
+        "not ok - B7 create report",
+        "not ok - B7 inspect",
+        "not ok - FR-02 database errors fail one node, not the run",
+        "not ok - suite stopped unexpectedly (exit=1)"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/bash-fourth.log",
+      "sha256": "d1edf9561fefa3f41c37e92261efef18a2f46a6658ce0f5607456c62d1302acd",
+      "failed_bash_assertions": 3,
+      "failed_bash_labels": [
+        "not ok - vincula-audit interval-overlap RFC3339 filters and json",
+        "not ok - open_fleet_db twice keeps fleet-cache/v4 DELETE journal fleet.db mode 0600",
+        "not ok - fleet.db schema 1→2→3→4 preserves data and records instance history"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/bash-final.log",
+      "sha256": "d0deb9c0878cd8537a072fb2862758af12aff4dd75299a90ebe87aa03c4b94e0",
+      "failed_bash_assertions": 1,
+      "failed_bash_labels": [
+        "not ok - fleet.db schema 1→2→3→4 preserves data and records instance history"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/ci-124-ubuntu.log",
+      "sha256": "1f3bc6aadb04493bd8de015ac79e21bbe3cc8d27661bae4f9e0985b2a6f79bdc",
+      "failed_bash_assertions": 0,
+      "failed_bash_labels": []
+    },
+    {
+      "path": "tmp/merge-audit-20261103/ci-125-debian13.log",
+      "sha256": "2f73ece299b9a6f54fc9b9167a48a6f2465766602718d8dab7a03e6d8bd23c3e",
+      "failed_bash_assertions": 1,
+      "failed_bash_labels": [
+        "Z not ok - B3 v3→v4 stamp+mismatch"
+      ]
+    },
+    {
+      "path": "tmp/merge-audit-20261103/qualified-dafc81a/bash-qualified.log",
+      "sha256": "81879a82049546df293b044dd676033507c4413b81cfeab8adf98e621071d068",
+      "source_commit": "dafc81ae46eab1de97e1e51eec95c078162dfcba",
+      "failed_bash_assertions": 1,
+      "failed_bash_labels": [
+        "B3 v3→v4 stamp+mismatch"
+      ],
+      "fixed_by": "c86376f43d89ad9de8400b2ddeaa598451f892b7"
+    },
+    {
+      "path": "tmp/merge-audit-20261103/ci-128-ubuntu.log",
+      "sha256": "ea91de18ff118f3e160515f65717092f6735a5822ab4445adf6803649d66c2f3",
+      "source_commit": "7bef780011b2e53db1989e6fb1db17b0173be53c",
+      "failed_bash_assertions": 4,
+      "failed_bash_labels": [
+        "python3 can compile vincula-stats",
+        "python3 can compile vincula-audit",
+        "python3 can compile vincula-accountd",
+        "python3 can compile vincula-backup"
+      ],
+      "cause": "root-owned source bytecode from privileged child interpreters",
+      "fixed_by": "653f7ddb28b8ff4ea199dce6c4187842cca9190e"
+    }
+  ]
+}

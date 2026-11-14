@@ -1,0 +1,1 @@
+{"schema_version":1,"state":"ABSENT","error_code":null,"import_allowed":true,"database_bytes":0,"auxiliary_bytes":0,"free_bytes":1073741824,"history_coverage":{"status":"UNAVAILABLE"},"policy":{"schema_version":1,"max_bytes":8589934592,"warning_fraction":0.8,"min_free_bytes":536870912}}

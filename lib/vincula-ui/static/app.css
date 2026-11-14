@@ -145,6 +145,9 @@ tr.clickable:hover { background: var(--panel2); }
   display: inline-block;
 }
 .state.OK { background: #153528; color: var(--ok); }
+.state.HEALTHY { background: #153528; color: var(--ok); }
+.state.SUSPECT, .state.RECOVERING { background: #3a2e12; color: var(--amber); }
+.state.DEGRADED, .state.UNREACHABLE { background: #3a181c; color: var(--red); }
 .state.STALE { background: #3a2e12; color: var(--amber); }
 .state.FAIL { background: #3a181c; color: var(--red); }
 .state.UNKNOWN, .state.- { background: #2a3140; color: var(--muted); }
