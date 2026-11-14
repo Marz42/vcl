@@ -117,6 +117,60 @@ class NodeTests(unittest.TestCase):
             self.assertTrue(daemon_module.meta_get(conn, "heartbeat_at"))
             self.assertFalse(conn.in_transaction)
 
+    def test_large_db_audit_avoids_full_scan_and_preserves_indexed_bounds(self):
+        self.create_db()
+        now_ts = time.time()
+        t_old = findings.utc(now_ts - 120)
+        t_mid = findings.utc(now_ts - 30)
+        t_new = findings.utc(now_ts - 5)
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.executemany(
+                "INSERT INTO connections(connection_id,generation,user_id,node_id,user_tag,"
+                "started_at,last_seen_at,closed_at,upload_bytes,download_bytes,export_seq) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (f"c-{n}", 0, "11111111-1111-4111-8111-111111111111", BASE["node_id"], "alice",
+                     t_old, t_mid if n == 499 else t_old, t_old, 10, 20, n + 10)
+                    for n in range(500)
+                ],
+            )
+            conn.execute(
+                "INSERT INTO connections(connection_id,generation,user_id,node_id,user_tag,"
+                "started_at,last_seen_at,closed_at,upload_bytes,download_bytes,export_seq) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                ("open-live", 0, "11111111-1111-4111-8111-111111111111", BASE["node_id"], "alice",
+                 t_mid, t_new, None, 10, 20, None),
+            )
+            conn.commit()
+        real_connect = node_module.sqlite3.connect
+        executed_sql = []
+
+        class TracingConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                executed_sql.append(sql)
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        with mock.patch.object(node_module, "_AUDIT_QUICK_CHECK_MAX_BYTES", 1024), \
+             mock.patch.object(node_module.sqlite3, "connect", side_effect=lambda *a, **kw: TracingConn(real_connect(*a, **kw))):
+            doc = self.snapshot(budget_seconds=0.25)
+        self.assertEqual(doc["db_state"], "OK")
+        self.assertEqual(doc["min_retained_export_seq"], 10)
+        self.assertIsNotNone(doc["last_event_age_seconds"])
+        self.assertFalse(any("quick_check" in s.lower() for s in executed_sql), executed_sql)
+        with closing(sqlite3.connect(self.db)) as conn:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN SELECT MIN(export_seq) FROM connections WHERE export_seq IS NOT NULL")]
+            self.assertTrue(any("idx_connections_export_seq" in step for step in plan), plan)
+            metrics = node_module._accounting_metrics(self.db)
+            self.assertEqual(metrics["export_seq"], 100)
+            self.assertIsNotNone(metrics["last_event_age_seconds"])
+
+
 
 class PipelineTests(unittest.TestCase):
     def test_export_progression_idle_replay_regression_failure_and_instance_reset(self):
