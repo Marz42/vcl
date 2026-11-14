@@ -291,7 +291,9 @@ cleanup_accounting_migration_temps() {
   fi
   rm -f -- "${db_dir}/.${db_base}.v5-"*.db
   for f in "${db_dir}/${db_base}.pre-v5-"*.db; do
-    [[ -f "$f" && ! -L "$f" && ! -s "$f" ]] && rm -f -- "$f"
+    if [[ -f "$f" && ! -L "$f" && ! -s "$f" ]]; then
+      rm -f -- "$f"
+    fi
   done
 }
 
