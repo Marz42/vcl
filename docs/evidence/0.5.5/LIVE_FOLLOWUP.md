@@ -1,26 +1,27 @@
-# 0.5.5 live acceptance — PR #15 frozen acceptance RC (`21aba22`)
+# 0.5.5 live acceptance — PR #15 staged-helper fix / pending new RC build
 
-Status: **FROZEN ACCEPTANCE RC / OFFLINE GATES PASS / PREFLIGHT READY / PENDING LIVE & HUMAN**.
-PR #13's final support-boundary offline freeze and ten-node 2h synthetic matrix
-evidence (`86f292b`) have been consolidated into **PR #15 (`review/0.5.5-upgrade-preparation`)**
-without changing runtime code (`21aba22..HEAD` is docs/evidence only). Remaining
-code diff review (`4651064..21aba22`) passed (`0` defects; no additional
-generalized stress tests added), and runtime commit `21aba22` is now frozen as
-the acceptance RC ([RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md)). Read-only live
-preflight inventory is in [LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md).
-No current Node was contacted, upgraded, restarted or fault-injected. Live
-remains **PENDING LIVE** and H05 remains unsigned.
+Status: **CODE FIX APPLIED / PENDING LINUX RC REBUILD & CI / PENDING LIVE & HUMAN**.
+The prior `21aba22` frozen RC (`Node 7b7a1b60…`, `Controller 784ca4d0…`) stopped
+cleanly on Batch 0 `fresh050` canary (`phase=checkpoint`, `PREPARATION_FAILED`,
+`migrate_started=false`: `bin/vincula` `load_vincula_common()` loaded installed
+`0.5.0` common ahead of staged `0.5.5`, missing `python_private`; zero node
+mutation, [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md)). Controller `fleet.db`
+completed schema-4 -> schema-5 migration cleanly (`quick_check=ok`, `3.80 GB`).
 
-## Current PR #15 candidate (2026-11-13, frozen acceptance RC)
+## Current PR #15 candidate (2026-11-14, awaiting Linux build + CI)
 
-- Runtime source commit: `21aba22157994d70bfcf2c17c1ec4ff38b9e9880`
-  (preparation lifecycle, WAL snapshot, checkpoint integrity, review-4 fixes;
-  [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md),
-  [REVIEW4_FIXES.md](REVIEW4_FIXES.md), [UPGRADE_PREPARATION_LIFECYCLE_FIX.md](UPGRADE_PREPARATION_LIFECYCLE_FIX.md)).
-- Frozen fixed-epoch artifacts (`SOURCE_DATE_EPOCH=1794384920`): Node
+- Fix scope: `bin/vincula` (`load_vincula_common()` staged-first order,
+  `upgrade-rollback-common.sh` embedded in checkpoint, unified `_resolve_lib_py()`),
+  updated `release.lock`, and 2 regression tests in
+  `tests/test_checkpoint_integrity.py`.
+- Reproducible build rule: on-site Linux `bash scripts/build-release.sh` and
+  `bash scripts/build-controller.sh` must pin `SOURCE_DATE_EPOCH` to the fix
+  commit's `%ct` timestamp so `dist/` digests match GitHub Actions `artifact`
+  CI (`vincula-dist`) bit-for-bit regardless of any later docs commits.
+- Prior retired artifacts (`21aba22`, `SOURCE_DATE_EPOCH=1794384920`): Node
   `7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`, Controller
   `784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892`
-  ([review-artifacts/](review-artifacts/README.md)).
+  ([review-artifacts/](review-artifacts/README.md) — **do not use for upgrades**).
 - Consolidated offline gates from PR #13: support-boundary CI
   [42531836471](https://github.com/Marz42/vcl/actions/runs/42531836471) and
   ten-node 2h synthetic matrix ([SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md](SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md);

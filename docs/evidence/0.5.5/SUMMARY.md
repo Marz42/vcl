@@ -1,20 +1,19 @@
-# 0.5.5 closeout — PR #15 frozen acceptance RC (`21aba22`) / offline gates pass
+# 0.5.5 closeout — PR #15 staged-helper fix / pending Linux RC rebuild & CI
 
-**2026-11-13 current entry (PR #15):** `review/0.5.5-upgrade-preparation` has
-consolidated PR #13's final support-boundary evidence (`86f292b`) and completed
-remaining runtime/build code diff review (`4651064..21aba22`: 13 non-docs files,
-0 defects, no additional generalized stress tests). Runtime commit
-`21aba22157994d70bfcf2c17c1ec4ff38b9e9880` is now the **FROZEN acceptance RC**,
-reusing the verified fixed-epoch artifacts (`SOURCE_DATE_EPOCH=1794384920`:
-Node `7b7a1b60…`, Controller `784ca4d0…`; [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md),
-[review-4](REVIEW4_FIXES.md), [lifecycle fix](UPGRADE_PREPARATION_LIFECYCLE_FIX.md),
-[artifacts](review-artifacts/README.md)). The 17 observation inputs in the
-2026-11-09 [two-hour synthetic report](SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.md)
-still match `21aba22`/HEAD 17/17 with 0 mismatches. Read-only live inventory is in
-[LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md) (no production changes
-executed). **Live remains PENDING USER CONFIRMATION / PENDING LIVE; H05 remains
-PENDING HUMAN / NOT SIGNED.** Acceptance entry:
-[HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md).
+**2026-11-14 current entry (PR #15):** Prior frozen RC `21aba22` aborted cleanly at
+Batch 0 `fresh050` canary (`phase=checkpoint`, `PREPARATION_FAILED`,
+`migrate_started=false`: staged `bin/vincula` `load_vincula_common()` sourced old
+installed `/usr/local/lib/vincula/vincula-common.sh` ahead of staged `0.5.5`
+`lib/vincula-common.sh`, missing `python_private`). PR #15 now includes the
+minimal `bin/vincula` staged-library & embedded `upgrade-rollback-common.sh` fix,
+unified `_resolve_lib_py()`, updated `release.lock`, and 2 regression tests in
+`tests/test_checkpoint_integrity.py` (no generalized stress tests). Controller
+`fleet.db` is already cleanly at `schema 5`; **new RC artifacts (`build-release.sh`
+/ `build-controller.sh` with `SOURCE_DATE_EPOCH` pinned to the fix commit) await
+Linux build + CI verification before re-running Batch 0.** Prior `21aba22` record:
+[RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md). Acceptance entry:
+[HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) ·
+[LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md).
 
 **2026-11-09 support-boundary freeze (consolidated from PR #13):** support-boundary
 revision frozen at source commit `4651064…`; Linux local tests/build, CI run
@@ -42,7 +41,8 @@ is unchanged. Historical evidence remains tied to its original inputs.
 | RC fixed inputs and digests | FROZEN: 201 inputs; Node `38336240…`, Controller `14312b21…`, epoch 1793689859; reproducible rebuild PASS |
 | Support-boundary revision (2026-11-09) | OFFLINE GATES PASS: Linux local 203/203 Python user+root, 1,969 Bash user / 1,967 Bash root; Node `38336240…`, Controller `e2daaaf…`; CI #42531836471 seven jobs; ten-node 2h synthetic PASS; Live/H05 PENDING; [freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) |
 | Upgrade-preparation & review-4 (2026-11-13, PR #15) | OFFLINE GATES PASS (historical unfrozen record): runtime `21aba22`; Python 228/10/0, Bash 1,970 user / 1,968 root; Node `7b7a1b60…`, Controller `784ca4d0…` (epoch `1794384920`); CI [#43353200757](https://github.com/Marz42/vcl/actions/runs/43353200757) (`04dd901`) seven jobs; [review-4](REVIEW4_FIXES.md) |
-| Acceptance RC freeze (`21aba22`, 2026-11-13, PR #15) | FROZEN ACCEPTANCE RC: `4651064..21aba22` code diff review 0 defects; consolidated with PR #13 `86f292b`; Node `7b7a1b60…`, Controller `784ca4d0…` (`SOURCE_DATE_EPOCH=1794384920`); CI [#139](https://github.com/Marz42/vcl/actions/runs/43357668445) (`62975f9`) 7/7 jobs; [RC freeze](RC_FREEZE_21ABA22.md) · [live preflight](LIVE_PREFLIGHT_CHECKLIST.md) |
+| Acceptance RC freeze (`21aba22`, 2026-11-13, PR #15) | SUPERSEDED AT BATCH 0 (`2026-11-14`): `fresh050` canary stopped at `phase=checkpoint` (`PREPARATION_FAILED`, `migrate_started=false`) due to `load_vincula_common()` preferring installed `0.5.0` lib over staged `0.5.5`; Node `7b7a1b60…` / Controller `784ca4d0…` retired; [RC freeze / abort](RC_FREEZE_21ABA22.md) |
+| Staged-helper fix candidate (2026-11-14, PR #15) | PREPARING NEW RC: `bin/vincula` `load_vincula_common()` + `_resolve_lib_py()` + `upgrade-rollback-common.sh` + `release.lock` (`e9c7a1a9…`) + regression tests; Controller `fleet.db` already migrated to `schema 5`; awaiting Linux `build-release.sh` / `build-controller.sh` verification + CI before re-running Batch 0; [live preflight](LIVE_PREFLIGHT_CHECKLIST.md) |
 | Seven-node Live + ten-node simulated two-hour matrix | DEFERRED USER / PENDING LIVE; synthetic dimension PASS OFFLINE: ten nodes, 7,200.016s, 2,400 samples, zero errors |
 | New RC continuous 24h integrated soak | DEFERRED USER / PENDING LIVE |
 | H05-01..08 human judgment/signature | PENDING HUMAN / NOT SIGNED |

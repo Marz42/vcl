@@ -18,7 +18,7 @@ readonly SING_BOX_DIR="/etc/sing-box"
 readonly BINARY_PATH="${VCL_SING_BOX_BIN:-/usr/local/bin/sing-box}"
 readonly HELPER_PATH="/usr/local/bin/vincula"
 readonly HELPER_ALIAS_PATH="/usr/local/bin/vcl"
-readonly LIB_DIR="/usr/local/lib/vincula"
+readonly LIB_DIR="${VCL_LIB_DIR:-/usr/local/lib/vincula}"
 readonly LOCK_FILE="${LIB_DIR}/sing-box.lock"
 readonly SYSTEMD_UNIT="/etc/systemd/system/sing-box.service"
 readonly ACCOUNTD_UNIT="/etc/systemd/system/vincula-accountd.service"
@@ -58,15 +58,24 @@ refuse_uninstall() {
 }
 
 load_vincula_common() {
-  local candidates=("$COMMON_FILE")
+  # Prefer the library belonging to this helper (staged release or embedded
+  # checkpoint rollback companion), falling back to the installed library.
+  local candidates=()
   local src=${BASH_SOURCE[0]-}
   if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    local root
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" ]]; then
-      candidates+=("${root}/lib/vincula-common.sh")
+    local src_dir root
+    src_dir=$(cd -- "$(dirname -- "$src")" && pwd 2>/dev/null || true)
+    if [[ -n "$src_dir" ]]; then
+      root=$(cd -- "${src_dir}/.." && pwd 2>/dev/null || true)
+      if [[ -n "$root" ]]; then
+        candidates+=("${root}/lib/vincula-common.sh")
+      fi
+      if [[ "$(basename -- "$src")" == "upgrade-rollback-helper" ]]; then
+        candidates+=("${src_dir}/upgrade-rollback-common.sh")
+      fi
     fi
   fi
+  candidates+=("$COMMON_FILE")
   local c
   for c in "${candidates[@]}"; do
     if [[ -f "$c" ]]; then
@@ -75,6 +84,25 @@ load_vincula_common() {
       return 0
     fi
   done
+  return 1
+}
+
+_resolve_lib_py() {
+  # Prefer the Python library belonging to this helper, including a staged release.
+  local name=$1 installed=$2
+  local src root
+  src=${BASH_SOURCE[0]-}
+  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
+    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$root" && -f "${root}/lib/${name}" ]]; then
+      printf '%s\n' "${root}/lib/${name}"
+      return 0
+    fi
+  fi
+  if [[ -f "$installed" ]]; then
+    printf '%s\n' "$installed"
+    return 0
+  fi
   return 1
 }
 
@@ -983,20 +1011,7 @@ PY
 }
 
 resolve_telemetry_py() {
-  if [[ -f "$TELEMETRY_PY" ]]; then
-    printf '%s\n' "$TELEMETRY_PY"
-    return 0
-  fi
-  local src=${BASH_SOURCE[0]-}
-  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    local root
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" && -f "${root}/lib/telemetry_snapshot.py" ]]; then
-      printf '%s\n' "${root}/lib/telemetry_snapshot.py"
-      return 0
-    fi
-  fi
-  return 1
+  _resolve_lib_py "telemetry_snapshot.py" "$TELEMETRY_PY"
 }
 
 cmd_telemetry_snapshot_json() {
@@ -1008,12 +1023,8 @@ cmd_telemetry_snapshot_json() {
 cmd_inspect() {
   cli_require_json_flag inspect "$@"
   [[ "${1:-}" == --json ]] || die "inspect requires --json."
-  local inspect_py="$INSPECT_PY" src=${BASH_SOURCE[0]-} root
-  if [[ ! -f "$inspect_py" && -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    inspect_py="${root}/lib/inspect_snapshot.py"
-  fi
-  [[ -f "$inspect_py" ]] || die "inspect helper is missing."
+  local inspect_py
+  inspect_py=$(_resolve_lib_py "inspect_snapshot.py" "$INSPECT_PY") || die "inspect helper is missing."
   python3 -B "$inspect_py" "$STATE_DIR" "$CONFIG_FILE" "$BINARY_PATH" "$LIB_DIR" "$VINCULA_VERSION"
 }
 
@@ -1171,12 +1182,8 @@ cmd_check() {
 
 cmd_verify() {
   if [[ "${1:-}" == --extended && "${2:-}" == --json && $# == 2 ]]; then
-    local verify_py="$VERIFY_PY" src=${BASH_SOURCE[0]-} root
-    if [[ ! -f "$verify_py" && -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-      root=$(cd -- "$(dirname -- "$src")/.." && pwd)
-      verify_py="${root}/lib/verify_snapshot.py"
-    fi
-    [[ -f "$verify_py" ]] || die "verify helper is missing."
+    local verify_py
+    verify_py=$(_resolve_lib_py "verify_snapshot.py" "$VERIFY_PY") || die "verify helper is missing."
     python3 -B "$verify_py" "$STATE_DIR" "$CONFIG_FILE" "$BINARY_PATH" "$LIB_DIR" "$VINCULA_VERSION" "$ACCOUNTING_DB_FILE"
     return
   fi
@@ -2392,37 +2399,11 @@ PY
 }
 
 resolve_stats_py() {
-  if [[ -f "$STATS_PY" ]]; then
-    printf '%s\n' "$STATS_PY"
-    return 0
-  fi
-  local src root
-  src=${BASH_SOURCE[0]-}
-  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" && -f "${root}/lib/vincula-stats.py" ]]; then
-      printf '%s\n' "${root}/lib/vincula-stats.py"
-      return 0
-    fi
-  fi
-  return 1
+  _resolve_lib_py "vincula-stats.py" "$STATS_PY"
 }
 
 resolve_accountd_py() {
-  if [[ -f "$ACCOUNTD_PY" ]]; then
-    printf '%s\n' "$ACCOUNTD_PY"
-    return 0
-  fi
-  local src root
-  src=${BASH_SOURCE[0]-}
-  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" && -f "${root}/lib/vincula-accountd.py" ]]; then
-      printf '%s\n' "${root}/lib/vincula-accountd.py"
-      return 0
-    fi
-  fi
-  return 1
+  _resolve_lib_py "vincula-accountd.py" "$ACCOUNTD_PY"
 }
 
 accounting_collector_state() {
@@ -2713,20 +2694,7 @@ HELP
 }
 
 resolve_audit_py() {
-  if [[ -f "$AUDIT_PY" ]]; then
-    printf '%s\n' "$AUDIT_PY"
-    return 0
-  fi
-  local src root
-  src=${BASH_SOURCE[0]-}
-  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" && -f "${root}/lib/vincula-audit.py" ]]; then
-      printf '%s\n' "${root}/lib/vincula-audit.py"
-      return 0
-    fi
-  fi
-  return 1
+  _resolve_lib_py "vincula-audit.py" "$AUDIT_PY"
 }
 
 cmd_audit_export() {
@@ -2894,21 +2862,7 @@ HELP
 }
 
 resolve_backup_py() {
-  # Prefer the library belonging to this helper, including a staged release.
-  local src root
-  src=${BASH_SOURCE[0]-}
-  if [[ -n "$src" && "$src" != "-" && "$src" != /dev/fd/* ]]; then
-    root=$(cd -- "$(dirname -- "$src")/.." && pwd 2>/dev/null || true)
-    if [[ -n "$root" && -f "${root}/lib/vincula-backup.py" ]]; then
-      printf '%s\n' "${root}/lib/vincula-backup.py"
-      return 0
-    fi
-  fi
-  if [[ -f "$BACKUP_PY" ]]; then
-    printf '%s\n' "$BACKUP_PY"
-    return 0
-  fi
-  return 1
+  _resolve_lib_py "vincula-backup.py" "$BACKUP_PY"
 }
 
 cmd_backup_usage() {
@@ -3486,12 +3440,23 @@ PY
   fi
 
   # Marker last so incomplete dirs are never treated as valid checkpoints.
-  # Embed the running 0.5 helper so operators can re-run rollback even if the
-  # installed vincula/vcl was reverted mid-failure (0.3.x has no upgrade CLI).
-  local self=${BASH_SOURCE[0]-}
+  # Embed the running 0.5 helper and its common shell library so operators can
+  # re-run rollback even if installed vincula/vcl or vincula-common.sh was
+  # reverted mid-failure (0.3.x has no upgrade CLI; old common lacks helpers).
+  local self=${BASH_SOURCE[0]-} self_root="" common_src=""
   if [[ -n "$self" && -f "$self" ]]; then
     cp -a -- "$self" "${dest}/upgrade-rollback-helper"
     chmod 0755 "${dest}/upgrade-rollback-helper"
+    self_root=$(cd -- "$(dirname -- "$self")/.." && pwd 2>/dev/null || true)
+    if [[ -n "$self_root" && -f "${self_root}/lib/vincula-common.sh" ]]; then
+      common_src="${self_root}/lib/vincula-common.sh"
+    elif [[ -f "$COMMON_FILE" ]]; then
+      common_src="$COMMON_FILE"
+    fi
+    if [[ -n "$common_src" ]]; then
+      cp -L -- "$common_src" "${dest}/upgrade-rollback-common.sh"
+      chmod 0644 "${dest}/upgrade-rollback-common.sh"
+    fi
   fi
 
   cat > "${dest}/${UPGRADE_CHECKPOINT_MARKER}" <<EOF

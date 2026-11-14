@@ -140,6 +140,51 @@ class CheckpointIntegrityTests(unittest.TestCase):
         self.assertTrue(doc["ok"])
         self.assertEqual((self.state / "VERSION").read_text().strip(), "0.5.5")
 
+    def _install_stale_common(self):
+        old_lib = self.root / "old_lib"
+        old_lib.mkdir(exist_ok=True)
+        (old_lib / "vincula-common.sh").write_text(
+            'readonly VINCULA_COMMON_VERSION="0.5.0"\n'
+            'acquire_vincula_op_lock() { return 0; }\n'
+            'json_quoted_field() { return 1; }\n',
+            encoding="utf-8",
+        )
+        (old_lib / "vincula-backup.py").write_text(
+            'raise RuntimeError("stale installed vincula-backup.py must not run")\n',
+            encoding="utf-8",
+        )
+        self.env["VCL_LIB_DIR"] = str(old_lib)
+        return old_lib
+
+    def test_staged_checkpoint_prefers_staged_common_over_installed_old_common(self):
+        self._install_stale_common()
+        ck = self.checkpoint()
+        manifest = json.loads((ck / MANIFEST).read_text(encoding="utf-8"))
+        self.assertIn("accounting.db", manifest["files"])
+        self.assertIn("upgrade-rollback-helper", manifest["files"])
+        self.assertIn("upgrade-rollback-common.sh", manifest["files"])
+
+    def test_embedded_rollback_helper_survives_reverted_installed_common(self):
+        old_lib = self._install_stale_common()
+        self.db.unlink()
+        ck = self.checkpoint()
+        (self.state / "VERSION").write_text("0.5.6\n")
+        rb_helper = str(ck / "upgrade-rollback-helper")
+        verify_proc = subprocess.run(
+            [rb_helper, "rollback", str(ck), "--verify-only", "--json"],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(verify_proc.returncode, 0, verify_proc.stderr)
+        self.assertTrue(json.loads(verify_proc.stdout)["verified"])
+        rb_proc = subprocess.run(
+            [rb_helper, "rollback", str(ck), "--json"],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(rb_proc.returncode, 0, rb_proc.stderr)
+        self.assertTrue(json.loads(rb_proc.stdout)["ok"])
+        self.assertEqual((self.state / "VERSION").read_text().strip(), "0.5.5")
+        self.assertTrue((old_lib / "vincula-common.sh").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

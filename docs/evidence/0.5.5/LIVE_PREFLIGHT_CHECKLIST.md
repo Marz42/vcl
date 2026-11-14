@@ -1,9 +1,8 @@
 # 0.5.5 Live Preflight & Inventory Checklist (Read-Only Preparation)
 
-- **Target Acceptance RC:** Runtime `21aba22157994d70bfcf2c17c1ec4ff38b9e9880` (frozen in [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md))
-- **Controller Package:** [vincula-controller-0.5.5.zip](review-artifacts/vincula-controller-0.5.5.zip) (`784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892`)
-- **Embedded Node Payload:** `vincula-node-0.5.5.tar.gz` (`7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b`)
-- **Phase Policy:** **NO PRODUCTION MUTATIONS IN THIS PHASE.** All live endpoints, current node versions, credentials, and maintenance windows marked `[TO VERIFY IN T01]` or `[PENDING USER CONFIRMATION]` must be confirmed read-only before running any upgrade or service restart.
+- **Target Acceptance RC:** PR #15 `bin/vincula` staged-library fix commit (replaces aborted `21aba22` RC; see [21aba22 abort record](RC_FREEZE_21ABA22.md))
+- **Controller / Node Artifacts:** Rebuilt on Linux from PR #15 fix HEAD via `bash scripts/build-release.sh && bash scripts/build-controller.sh` with `SOURCE_DATE_EPOCH` pinned to the fix commit's `%ct` timestamp (matching CI `artifact` / `vincula-dist` digests; prior `21aba22` artifacts in `review-artifacts/` must **not** be used for upgrades).
+- **Phase Policy:** T01/T02 completed on 2026-11-13 (Kali WSL `marz`), Controller `fleet.db` migrated cleanly to `schema 5` (`3.80 GB`, `quick_check=ok`), and `21aba22` Batch 0 (`fresh050`) aborted cleanly before any node mutation (`migrate_started=false`). Re-running Batch 0 and subsequent batches requires Linux rebuild + CI green + operator window confirmation.
 
 ---
 
@@ -52,12 +51,13 @@ Historical records (`fleet-recovery-status.md`, `fleet-recovery-20261008.json`, 
 ## 3. Canary Selection & Rollout Batching (`[PENDING USER CONFIRMATION]`)
 
 - **Proposed Canary Node:** **`fresh050`** (`0.5.0`, `+08:00`) — already supported by `UPGRADE_ALLOWLIST`, represents the `0.5.0 -> 0.5.5` production upgrade + schema v5 + `vincula-accountd` de-root path, and was designated as canary in [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md).
-- **Proposed Rollout Sequence (only after T01/T02 & canary pass):**
-  1. **Batch 0 (Canary + Rollback Drill):** `fresh050` — preflight backup, `node upgrade plan`, `node upgrade apply` (timed `<=3s` new-connection unavailability probe), checkpoint rollback verification (`--verify-only` + controlled rollback rehearsal / restore-forward as approved by user), observer least-privilege & revocation check.
-  2. **Batch 1 (Standard `0.5.0` nodes):** `eagleclaw`, `neptunespear`.
-  3. **Batch 2 (Legacy release nodes `0.3.1` / `0.3.2`):** `hot-beam-1`, `urgentfury` (only after confirming `urgentfury` SSH transport reachability without relying on `~/.ssh/config`).
+- **Proposed Rollout Sequence (after Linux RC build & CI verification pass):**
+  1. **Batch 0 (Canary + Rollback Drill):** `fresh050` — preflight backup, `node upgrade plan`, `node upgrade apply` (timed `<=3s` new-connection unavailability probe), checkpoint rollback verification (`--verify-only` + controlled rollback rehearsal / restore-forward as approved by user), observer least-privilege & revocation check, real proxy probe.
+  2. **Batch 1 (Legacy release nodes `0.3.1` / `0.3.2`):** `hot-beam-1`, `urgentfury` (direct SSH `-F /dev/null` verified in T01).
+  3. **Batch 2 (First `0.5.0` wave):** `eagleclaw`.
   4. **Batch 3 (Non-allowlisted prerelease `0.3.1-rc2` one-time ingress):** `epicfury`, `upperhand` via user-approved explicit ingress/restore path (never by forging `/etc/vincula/VERSION`).
-  5. **Continuous 24h Soak + H05:** All 7 real `0.5.5` nodes + `>=10` simulated nodes (2h matrix deviation already verified at `17/17`), dedicated real proxy probes, fault/recovery drills, H05-01..08 human signoff.
+  5. **Batch 4 (Final node after all 6 above pass):** `neptunespear` (`1.30 GiB` `accounting.db`, tightest disk margin `12.8 GiB`).
+  6. **Continuous 24h Soak + H05:** All 7 real `0.5.5` nodes + `>=10` simulated nodes (2h matrix deviation already verified at `17/17`), dedicated real proxy probes, fault/recovery drills, H05-01..08 human signoff.
 
 ---
 

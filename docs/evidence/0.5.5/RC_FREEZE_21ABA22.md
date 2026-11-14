@@ -1,10 +1,23 @@
-# 0.5.5 Acceptance RC Freeze (`21aba22`)
+# 0.5.5 Acceptance RC Freeze (`21aba22`) — SUPERSEDED (2026-11-14 Batch 0 Abort)
 
-- **Frozen At:** 2026-11-13
-- **Status:** `FROZEN ACCEPTANCE RC / OFFLINE GATES PASS / PENDING LIVE / PENDING HUMAN`
+> [!WARNING]
+> **SUPERSEDED BY `bin/vincula` STAGED-LIBRARY FIX (2026-11-14):**
+> During Batch 0 Canary (`fresh050`), the `21aba22` node payload (`7b7a1b60…`) aborted
+> cleanly in `phase=checkpoint` (`PREPARATION_FAILED`, `migrate_started=false`,
+> `retry_allowed=false`): staged `bin/vincula` `load_vincula_common()` checked
+> `/usr/local/lib/vincula/vincula-common.sh` (installed `0.5.0`) ahead of
+> `<staged>/lib/vincula-common.sh` (`0.5.5`), causing `python_private: command not found`
+> at `cmd_upgrade_checkpoint` line 3474. Zero node state was mutated (`fresh050`
+> remained cleanly on `0.5.0`); Controller `fleet.db` completed schema-4 -> schema-5
+> migration cleanly (`quick_check=ok`, `3.80 GB`). Fixed in PR #15 with sibling
+> `upgrade-rollback-common.sh` embedding, unified `_resolve_lib_py()`, updated
+> `release.lock`, and regression tests in `tests/test_checkpoint_integrity.py`.
+
+- **Frozen At:** 2026-11-13 (Superseded 2026-11-14)
+- **Status:** `HISTORICAL / SUPERSEDED AT CANARY CHECKPOINT`
 - **PR / Branch:** PR #15 (`review/0.5.5-upgrade-preparation`)
 - **Runtime Source Commit:** `21aba22157994d70bfcf2c17c1ec4ff38b9e9880` (`21aba22`)
-- **Evidence / Freeze Policy:** Historical candidate freeze records (`653f7dd` in [CANDIDATE_FREEZE.md](CANDIDATE_FREEZE.md), `4651064` in [SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md)) remain unmodified. No generalized stress tests were added for this freeze.
+- **Evidence / Freeze Policy:** Historical freeze & failure records are preserved verbatim; new RC builds from PR #15 HEAD with `SOURCE_DATE_EPOCH` pinned to the fix commit timestamp (`git log -1 --pretty=%ct`) and must be verified on Linux (`build-release.sh` / `build-controller.sh`) + CI before re-running Batch 0.
 
 ## 1. Remaining Code Diff Review (`4651064..21aba22`)
 
