@@ -8059,17 +8059,72 @@ en_j = src.index("install_runtime_only()")
 en = src[en_i:en_j]
 assert "migrate_accounting_db_to_v5" in en
 assert "VCL_ACCOUNTD_HEALTH_TIMEOUT:-180" in src
+assert '[[ "$short_id" =~ ^([0-9a-f]{2}){0,8}$ ]]' in body
 PY
 then
   pass "migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop"
   pass "migrate_existing_install runs disk/schema/file preflight before service mutation"
   pass "migrate_existing_install happy path still backups, atomic_installs, and commits"
   pass "rollback_migration restores exact enabled/active and does not restart missing-active units"
+  pass "migrate_existing_install accepts empty and even-length hex short_id"
 else
   fail "migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop"
   fail "migrate_existing_install runs disk/schema/file preflight before service mutation"
   fail "migrate_existing_install happy path still backups, atomic_installs, and commits"
   fail "rollback_migration restores exact enabled/active and does not restart missing-active units"
+  fail "migrate_existing_install accepts empty and even-length hex short_id"
+fi
+
+if bash -c '
+  set -euo pipefail
+  source "$1"
+  mkdir -p "$2"
+  cat > "$2/state.json" <<JSON
+{
+  "node": {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "reality_public_key": "pub1",
+    "reality_private_key": "priv1",
+    "reality_server_name": "www.cloudflare.com",
+    "port": 443
+  }
+}
+JSON
+  cat > "$2/config.toml" <<TOML
+reality_server_name = "www.cloudflare.com"
+port = 443
+TOML
+  cat > "$2/config.json" <<JSON
+{
+  "inbounds": [
+    {
+      "listen_port": 443,
+      "users": [
+        {
+          "uuid": "11111111-1111-4111-8111-111111111111",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "server_name": "www.cloudflare.com",
+        "reality": {
+          "handshake": {
+            "server": "www.cloudflare.com"
+          },
+          "private_key": "priv1",
+          "short_id": ""
+        }
+      }
+    }
+  ]
+}
+JSON
+  render_vless_uri "11111111-1111-4111-8111-111111111111" "198.51.100.10" "443" "www.cloudflare.com" "pub1" "" "owner" > "$2/owner.uri"
+  verify_identity_consistency "$2/state.json" "$2/config.toml" "$2/config.json" "$2/owner.uri" >/dev/null
+' _ "${PROJECT_DIR}/lib/vincula-common.sh" "${TEST_TMP}/empty-sid-consistency"; then
+  pass "verify_identity_consistency accepts missing/empty reality_short_id"
+else
+  fail "verify_identity_consistency accepts missing/empty reality_short_id"
 fi
 
 if [[ "$(usage)" == *VCL_MIGRATE_FAIL_AFTER* ]]; then

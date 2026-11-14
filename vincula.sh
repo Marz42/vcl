@@ -1793,7 +1793,7 @@ migrate_existing_install() {
   [[ -n "$uuid" ]] || uuid=$(json_quoted_field "$STATE_FILE" uuid)
   private_key=$(json_quoted_field "$STATE_FILE" reality_private_key)
   public_key=$(json_quoted_field "$STATE_FILE" reality_public_key)
-  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id)
+  short_id=$(json_quoted_field "$STATE_FILE" reality_short_id || true)
   installed_at=$(json_quoted_field "$STATE_FILE" installed_at)
   server=$(toml_get "$SETTINGS_FILE" server)
   port=$(toml_get "$SETTINGS_FILE" port)
@@ -1823,7 +1823,8 @@ migrate_existing_install() {
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Canonical owner UUID is invalid."
   [[ "$private_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Canonical REALITY private key is invalid."
   [[ "$public_key" =~ ^[A-Za-z0-9_-]{43,44}$ ]] || die "Canonical REALITY public key is invalid."
-  [[ "$short_id" =~ ^[0-9a-f]{16}$ ]] || die "Canonical REALITY short ID is invalid."
+  # Legacy-seeded nodes may omit reality_short_id or use shorter even-length hex.
+  [[ "$short_id" =~ ^([0-9a-f]{2}){0,8}$ ]] || die "Canonical REALITY short ID is invalid."
   validate_port "$port" || die "Canonical port is invalid."
   [[ -n "$server" ]] || die "Canonical server address is missing."
   is_dns_name "$reality_host" || die "Canonical REALITY host is invalid."

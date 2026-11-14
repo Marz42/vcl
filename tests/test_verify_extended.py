@@ -84,6 +84,17 @@ class VerifyTests(unittest.TestCase):
         self.options["config_path"].unlink()
         self.assertEqual(self.build()["checks"]["configuration"]["state"], "UNKNOWN")
 
+    def test_empty_reality_short_id_remains_valid_for_configuration(self):
+        state = copy.deepcopy(self.state)
+        state["node"]["reality_short_id"] = ""
+        (self.options["state_dir"] / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        cfg = support.config()
+        cfg["inbounds"][0]["tls"]["reality"]["short_id"] = ""
+        self.options["config_path"].write_text(json.dumps(cfg), encoding="utf-8")
+        result = self.build()
+        self.assertEqual(result["checks"]["identity"]["state"], "PASS")
+        self.assertEqual(result["checks"]["configuration"]["state"], "PASS")
+
     def test_binary_drift_does_not_execute_replacement(self):
         self.options["binary_path"].write_text("#!/bin/sh\nexit 86\n", encoding="utf-8")
         doc = self.build()
