@@ -3736,14 +3736,38 @@ PY
     upgrade_rollback_install_member "$name"
   done
 
+  local db_dir db_base temp_file
+  db_dir=$(dirname -- "$ACCOUNTING_DB_FILE")
+  db_base=$(basename -- "$ACCOUNTING_DB_FILE")
+  if [[ -d "$db_dir" ]]; then
+    rm -f -- \
+      "${ACCOUNTING_DB_FILE}-wal" \
+      "${ACCOUNTING_DB_FILE}-shm" \
+      "${ACCOUNTING_DB_FILE}-journal" \
+      "${db_dir}/.${db_base}.v5-migration.lock" \
+      "${db_dir}/.${db_base}.v5-"*.db
+    for temp_file in "${db_dir}/${db_base}.pre-v5-"*.db; do
+      [[ -f "$temp_file" && ! -L "$temp_file" && ! -s "$temp_file" ]] && rm -f -- "$temp_file"
+    done
+  fi
+
   if [[ -f "${dir}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
-    rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
+    rm -f -- "$ACCOUNTING_DB_FILE"
     if (( EUID == 0 )); then
       install -m 0640 -o root -g "$SERVICE_GROUP" "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
     else
       install -m 0640 "${dir}/accounting.db" "$ACCOUNTING_DB_FILE"
     fi
+  fi
+
+  if [[ -d "$VAR_LIB_VINCULA" ]] && (( EUID == 0 )); then
+    chown root:root -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+    chmod 0700 -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+  fi
+  if [[ ! -f "$ACCOUNTD_UNIT" ]] || ! grep -q '/etc/vincula-accountd/runtime.json' "$ACCOUNTD_UNIT" 2>/dev/null; then
+    rm -f -- /etc/vincula-accountd/runtime.json
+    rmdir -- /etc/vincula-accountd >/dev/null 2>&1 || true
   fi
 
   [[ -f "$VERSION_FILE" ]] || upgrade_rollback_fail "VERSION missing after rollback" "version_missing"

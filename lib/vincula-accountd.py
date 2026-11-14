@@ -2058,6 +2058,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="run a single poll/rollup cycle and exit",
     )
     parser.add_argument(
+        "--migrate-only",
+        action="store_true",
+        help="run accounting DB schema migration/verification and exit (no daemon)",
+    )
+    parser.add_argument(
         "--db",
         default=None,
         help="override accounting SQLite path",
@@ -2102,6 +2107,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         sys.stdout.write(report)
         return 0 if all_ok else 1
+    if args.migrate_only:
+        os.environ.setdefault("VCL_USERS_FILE", args.users)
+        os.environ.setdefault("VCL_STATE_FILE", args.state)
+        db_path = args.db or DEFAULT_DB_PATH
+        db_file = Path(db_path)
+        if not db_file.is_file() or db_file.stat().st_size == 0:
+            return 0
+        conn = open_db(db_path)
+        conn.close()
+        return 0
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

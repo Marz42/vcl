@@ -1,17 +1,9 @@
 # 0.5.5 Acceptance RC Freeze (`21aba22`) — SUPERSEDED (2026-11-14 Batch 0 Abort)
 
 > [!WARNING]
-> **SUPERSEDED BY `bin/vincula` STAGED-LIBRARY FIX (2026-11-14):**
-> During Batch 0 Canary (`fresh050`), the `21aba22` node payload (`7b7a1b60…`) aborted
-> cleanly in `phase=checkpoint` (`PREPARATION_FAILED`, `migrate_started=false`,
-> `retry_allowed=false`): staged `bin/vincula` `load_vincula_common()` checked
-> `/usr/local/lib/vincula/vincula-common.sh` (installed `0.5.0`) ahead of
-> `<staged>/lib/vincula-common.sh` (`0.5.5`), causing `python_private: command not found`
-> at `cmd_upgrade_checkpoint` line 3474. Zero node state was mutated (`fresh050`
-> remained cleanly on `0.5.0`); Controller `fleet.db` completed schema-4 -> schema-5
-> migration cleanly (`quick_check=ok`, `3.80 GB`). Fixed in PR #15 with sibling
-> `upgrade-rollback-common.sh` embedding, unified `_resolve_lib_py()`, updated
-> `release.lock`, and regression tests in `tests/test_checkpoint_integrity.py`.
+> **SUPERSEDED BY PR #15 BATCH 0 FIXES (2026-11-14):**
+> - **Attempt 1 (`21aba22` / `7b7a1b60…`):** Aborted cleanly in `phase=checkpoint` (`PREPARATION_FAILED`, `migrate_started=false`, `retry_allowed=false`): staged `bin/vincula` `load_vincula_common()` preferred installed `0.5.0` `/usr/local/lib/vincula/vincula-common.sh` ahead of `<staged>/lib/vincula-common.sh`, causing `python_private: command not found`. Fixed in `7627f45` (sibling library preference, embedded `upgrade-rollback-common.sh`, unified `_resolve_lib_py()`, updated `release.lock` & `tests/test_checkpoint_integrity.py`); Controller `fleet.db` remained cleanly migrated at schema 5 (`quick_check=ok`, `3.80 GB`).
+> - **Attempt 2 (`7627f45`):** Checkpoint succeeded cleanly, then `install` failed after `75.7s` at `wait_for_accountd_healthy()` (`15s` cap too short for `609 MB` `accounting.db` schema-4→5 `staged_migrate`), and `rollback_migration()` left `/var/lib/vincula` owned by `vincula-accountd:vincula-accountd 0700` while holding `sing-box` down during the `609 MB` DB copy (`4.06s` probe outage). Fixed in follow-up commit (`vincula.sh`, `bin/vincula`, `lib/vincula-accountd.py`, `lib/storage_v5.py`, `lib/node_upgrade.py`, `lib/vincula-fleet.py`, `release.lock`, and regression tests).
 
 - **Frozen At:** 2026-11-13 (Superseded 2026-11-14)
 - **Status:** `HISTORICAL / SUPERSEDED AT CANARY CHECKPOINT`

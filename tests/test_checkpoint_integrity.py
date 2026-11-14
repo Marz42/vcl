@@ -185,6 +185,30 @@ class CheckpointIntegrityTests(unittest.TestCase):
         self.assertEqual((self.state / "VERSION").read_text().strip(), "0.5.5")
         self.assertTrue((old_lib / "vincula-common.sh").is_file())
 
+    def test_rollback_cleans_v5_migration_stubs_and_preserves_valid_backups(self):
+        ck = self.checkpoint()
+        (self.state / "VERSION").write_text("0.5.6\n")
+        stage_stub = self.state / ".accounting.db.v5-aborted.db"
+        lock_file = self.state / ".accounting.db.v5-migration.lock"
+        zero_backup = self.state / "accounting.db.pre-v5-zero.db"
+        valid_backup = self.state / "accounting.db.pre-v5-valid.db"
+        journal_file = self.state / "accounting.db-journal"
+        for p, data in (
+            (stage_stub, b""),
+            (lock_file, b"0"),
+            (zero_backup, b""),
+            (valid_backup, b"kept"),
+            (journal_file, b"j"),
+        ):
+            p.write_bytes(data)
+        proc = self.rollback(ck)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(stage_stub.exists())
+        self.assertFalse(lock_file.exists())
+        self.assertFalse(zero_backup.exists())
+        self.assertFalse(journal_file.exists())
+        self.assertTrue(valid_backup.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

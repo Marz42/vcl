@@ -95,8 +95,30 @@ def _migration_gate(path, deadline):
                 fcntl.flock(lock.fileno(),fcntl.LOCK_UN)
 
 
+def _cleanup_orphaned_migration_temps(path):
+    """Remove abandoned staging temps or 0-byte pre-v5 stubs while holding the gate."""
+    target = Path(path)
+    parent = target.parent
+    if not parent.is_dir():
+        return
+    stage_prefix = f".{target.name}.v5-"
+    backup_prefix = f"{target.name}.pre-v5-"
+    for candidate in parent.iterdir():
+        name = candidate.name
+        if not name.endswith(".db") or candidate.is_symlink() or not candidate.is_file():
+            continue
+        try:
+            if name.startswith(stage_prefix):
+                candidate.unlink()
+            elif name.startswith(backup_prefix) and candidate.stat().st_size == 0:
+                candidate.unlink()
+        except OSError:
+            pass
+
+
 def staged_migrate(path, converter, *, minimum_free=MIN_FREE, deadline=None):
     with _migration_gate(path,deadline):
+        _cleanup_orphaned_migration_temps(path)
         with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=0)) as probe:
             row=probe.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() if probe.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone() else None
             if row and str(row[0])=='5':

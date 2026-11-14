@@ -276,6 +276,25 @@ rollback_install() {
   fi
 }
 
+cleanup_accounting_migration_temps() {
+  local include_sidecars=${1:-0}
+  local db_dir db_base f
+  db_dir=$(dirname -- "$ACCOUNTING_DB_FILE")
+  [[ -d "$db_dir" ]] || return 0
+  db_base=$(basename -- "$ACCOUNTING_DB_FILE")
+  if (( include_sidecars == 1 )); then
+    rm -f -- \
+      "${ACCOUNTING_DB_FILE}-wal" \
+      "${ACCOUNTING_DB_FILE}-shm" \
+      "${ACCOUNTING_DB_FILE}-journal" \
+      "${db_dir}/.${db_base}.v5-migration.lock"
+  fi
+  rm -f -- "${db_dir}/.${db_base}.v5-"*.db
+  for f in "${db_dir}/${db_base}.pre-v5-"*.db; do
+    [[ -f "$f" && ! -L "$f" && ! -s "$f" ]] && rm -f -- "$f"
+  done
+}
+
 rollback_migration() {
   log_warn "Migration failed; restoring the previous installation from backup."
   if [[ -z "${MIGRATION_BACKUP:-}" || ! -d "$MIGRATION_BACKUP" ]]; then
@@ -283,8 +302,9 @@ rollback_migration() {
     return
   fi
 
+  # Stop only accounting before restoring heavy artifacts/DB so sing-box stays
+  # up through the copy and only drops briefly for config/unit swap below.
   systemctl disable --now vincula-accountd.service >/dev/null 2>&1 || true
-  systemctl disable --now sing-box.service >/dev/null 2>&1 || true
 
   local path name
   local backup_complete=0
@@ -292,10 +312,8 @@ rollback_migration() {
     backup_complete=1
   fi
   for path in \
-    "$SYSTEMD_UNIT" \
     "$HELPER_ALIAS_PATH" \
     "$HELPER_PATH" \
-    "$CONFIG_FILE" \
     "$VERSION_FILE" \
     "$STATE_FILE" \
     "$USERS_FILE" \
@@ -332,11 +350,36 @@ rollback_migration() {
 
   if [[ -f "${MIGRATION_BACKUP}/accounting.db" ]]; then
     mkdir -p -- "$VAR_LIB_VINCULA"
-    rm -f -- "$ACCOUNTING_DB_FILE" "${ACCOUNTING_DB_FILE}-wal" "${ACCOUNTING_DB_FILE}-shm"
+    cleanup_accounting_migration_temps 1
+    rm -f -- "$ACCOUNTING_DB_FILE"
     cp -a -- "${MIGRATION_BACKUP}/accounting.db" "$ACCOUNTING_DB_FILE"
+  else
+    cleanup_accounting_migration_temps 1
+    if (( backup_complete == 1 )) && [[ -f "$ACCOUNTING_DB_FILE" && ! -s "$ACCOUNTING_DB_FILE" ]]; then
+      rm -f -- "$ACCOUNTING_DB_FILE"
+    fi
+  fi
+
+  if [[ -d "$VAR_LIB_VINCULA" ]] && (( EUID == 0 )); then
+    chown root:root -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+    chmod 0700 -- "$VAR_LIB_VINCULA" 2>/dev/null || true
+  fi
+  if (( backup_complete == 1 )) && { [[ ! -f "$ACCOUNTD_UNIT" ]] || ! grep -q '/etc/vincula-accountd/runtime.json' "$ACCOUNTD_UNIT" 2>/dev/null; }; then
+    rm -f -- /etc/vincula-accountd/runtime.json
+    rmdir -- /etc/vincula-accountd >/dev/null 2>&1 || true
   fi
 
   remove_product_pycache "$LIB_DIR"
+
+  systemctl disable --now sing-box.service >/dev/null 2>&1 || true
+  for path in "$SYSTEMD_UNIT" "$CONFIG_FILE"; do
+    name=$(basename -- "$path")
+    if [[ -e "${MIGRATION_BACKUP}/${name}" || -L "${MIGRATION_BACKUP}/${name}" ]]; then
+      mkdir -p -- "$(dirname -- "$path")"
+      rm -f -- "$path"
+      cp -a -- "${MIGRATION_BACKUP}/${name}" "$path"
+    fi
+  done
 
   systemctl daemon-reload >/dev/null 2>&1 || true
 
@@ -2214,6 +2257,8 @@ localhost_port_free_or_ours() {
 
 wait_for_accountd_healthy() {
   local remaining port secret schema
+  local health_timeout=${VCL_ACCOUNTD_HEALTH_TIMEOUT:-180}
+  local clash_timeout=${VCL_CLASH_HEALTH_TIMEOUT:-60}
   for (( remaining = 0; remaining < 15; remaining++ )); do
     if systemctl is-active --quiet vincula-accountd.service; then
       break
@@ -2224,7 +2269,7 @@ wait_for_accountd_healthy() {
 
   [[ -r "$ACCOUNTING_DB_FILE" ]] || return 1
   schema=""
-  for (( remaining = 0; remaining < 15; remaining++ )); do
+  for (( remaining = 0; remaining < health_timeout; remaining++ )); do
     schema=$(python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
 import sqlite3, sys
 try:
@@ -2245,7 +2290,7 @@ PY
   [[ -n "$port" ]] || port=$DEFAULT_CLASH_API_PORT
   secret=$(toml_get "$SETTINGS_FILE" clash_api_secret || true)
   validate_port "$port" || return 1
-  for (( remaining = 0; remaining < 15; remaining++ )); do
+  for (( remaining = 0; remaining < clash_timeout; remaining++ )); do
     if clash_api_reachable_with_secret "$port" "$secret"; then
       # Secret must be required: bare / wrong Bearer must fail when secret is set.
       if [[ -n "$secret" ]]; then
@@ -2259,7 +2304,19 @@ PY
   return 1
 }
 
+migrate_accounting_db_to_v5() {
+  cleanup_accounting_migration_temps 0
+  if [[ -s "$ACCOUNTING_DB_FILE" ]]; then
+    log_info "Migrating accounting database to schema 5 (if needed)"
+    VCL_STATE_FILE="$STATE_FILE" \
+    VCL_USERS_FILE="$USERS_FILE" \
+      python3 -I "$ACCOUNTD_PY" --migrate-only --state "$STATE_FILE" --users "$USERS_FILE" --db "$ACCOUNTING_DB_FILE" \
+      || die "accounting database migration to schema 5 failed"
+  fi
+}
+
 enable_accountd_service() {
+  migrate_accounting_db_to_v5
   systemctl daemon-reload
   systemctl enable --now vincula-accountd.service || die "vincula-accountd.service failed to enable/start"
   wait_for_accountd_healthy || die "vincula-accountd health check failed; refusing to commit install"

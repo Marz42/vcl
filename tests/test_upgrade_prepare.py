@@ -138,6 +138,40 @@ class AutoRollbackCompatibilityTests(unittest.TestCase):
         self.assertEqual(ssh.call_count, 2)
         self.assertIn('--verify-only', ssh.call_args_list[0].args[1])
         self.assertNotIn('--verify-only', ssh.call_args_list[1].args[1])
+        self.assertGreaterEqual(ssh.call_args_list[1].kwargs['timeout'], 900)
+
+    def test_apply_uses_extended_install_timeout_not_60s(self):
+        prov = Mock(); prov.NODE_PAYLOAD_VERSION = '0.5.5'
+        prov.verify_local_payload.return_value = {'sha256': 'a' * 64}
+        prov._create_remote_stage.return_value = '/stage'
+        prov._remote_stage_paths.return_value = {'unpack': '/stage/pkg', 'tar': '/stage/payload.tar'}
+        prov.installer_remote_argv.return_value = ['bash', '/stage/pkg/vincula.sh']
+        host = Mock()
+        host.SSH_MUTATION_TIMEOUT_SECONDS = 60
+        host.SSH_UPGRADE_APPLY_TIMEOUT_SECONDS = 900
+        host.load_provision_module.return_value = prov
+        host.ssh_run.return_value.returncode = 0
+        upgrade.bind(host)
+        plan = {'state': 'PLANNED', 'allowlist_ok': True,
+                'identity': {'node_id': 'n', 'instance_id': 'i'}, 'current_version': '0.5.0'}
+        prepared = {'state': 'SUCCEEDED', 'operation_id': 'op',
+                    'backup': {'path': '/b.tar'}, 'checkpoint': {'path': '/ck'}}
+        with patch.object(upgrade, 'run_upgrade_plan', return_value=plan), \
+             patch.object(upgrade, '_prepare_remote', return_value=prepared), \
+             patch.object(upgrade, '_ssh_json', side_effect=[
+                 ('OK', {'ok': True}, ''),
+                 ('OK', {'schema': 'capabilities/v1', 'node_version': '0.5.5', 'capabilities': []}, ''),
+                 ('OK', {'node_id': 'n', 'instance_id': 'i', 'vincula_version': '0.5.5'}, ''),
+             ]):
+            host.load_observation_capabilities_module = Mock(
+                return_value=Mock(CAPABILITIES_MAX_BYTES=4096, validate_capabilities_v1=lambda _: [])
+            )
+            result = upgrade.run_upgrade_apply(
+                {'name': 'n', 'node_id': 'n', 'ssh_host': 'h', 'ssh_user': 'root'}, confirmed=True
+            )
+        self.assertEqual(result['state'], 'SUCCESS', result)
+        install_call = host.ssh_run.call_args_list[-1]
+        self.assertEqual(install_call.kwargs['timeout'], 900)
 
 class BackupVerificationTests(unittest.TestCase):
     def make_archive(self, root):

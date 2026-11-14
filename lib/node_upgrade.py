@@ -230,6 +230,10 @@ def _prepare_remote(node, runner, operation_id, binding, helper, seconds):
         time.sleep(2)
 
 
+def _timeout_int(value: Any, fallback: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
 def run_upgrade_apply(
     node: dict[str, Any],
     *,
@@ -289,6 +293,13 @@ def run_upgrade_apply(
             raise ValueError()
     except ValueError:
         host.die("VCL_UPGRADE_PREPARE_SECONDS must be 30..7200")
+    try:
+        default_apply = _timeout_int(getattr(host, "SSH_UPGRADE_APPLY_TIMEOUT_SECONDS", 900), 900)
+        apply_seconds = int(os.environ.get("VCL_UPGRADE_APPLY_SECONDS", str(default_apply)))
+        if not 60 <= apply_seconds <= 7200:
+            raise ValueError()
+    except ValueError:
+        host.die("VCL_UPGRADE_APPLY_SECONDS must be 60..7200")
     backup_path: Optional[str] = None
     resolved = prov.resolve_node_payload()
     manifest = prov.verify_local_payload(resolved)
@@ -359,7 +370,7 @@ def run_upgrade_apply(
             batch=True,
             extra=extra,
             identity_file=identity_file,
-            timeout=host.SSH_MUTATION_TIMEOUT_SECONDS,
+            timeout=apply_seconds,
         )
         if install_proc.returncode != 0:
             # migrate EXIT trap should have rolled back on node.
@@ -531,13 +542,17 @@ def _attempt_post_upgrade_rollback(
         "vcl", "upgrade", "rollback", checkpoint_path,
         "--verify-only", "--json",
     ]
-    timeout = getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60)
+    timeout = _timeout_int(getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60), 60)
     ssh_state, verify_doc, verify_detail = _ssh_json(
         node, verify_argv, credential_class="admin",
         timeout=timeout, require_exit_0=False,
     )
     if ssh_state != "OK" or not isinstance(verify_doc, dict) or verify_doc.get("ok") is not True:
         return None
+    rollback_timeout = max(
+        timeout,
+        _timeout_int(getattr(host, "SSH_UPGRADE_APPLY_TIMEOUT_SECONDS", 900), 900),
+    )
     rollback_argv = [
         "vcl",
         "upgrade",
@@ -549,7 +564,7 @@ def _attempt_post_upgrade_rollback(
         node,
         rollback_argv,
         credential_class="admin",
-        timeout=timeout,
+        timeout=rollback_timeout,
         require_exit_0=False,
     )
     if ssh_state != "OK" or not isinstance(doc, dict) or doc.get("ok") is not True:

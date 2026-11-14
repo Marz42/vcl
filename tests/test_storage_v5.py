@@ -251,3 +251,45 @@ class DurableStorage(unittest.TestCase):
                 store.staged_migrate(path,accountd.migrate_schema)
             self.assertEqual(path.read_bytes(),b'not a database')
             self.assertEqual(list(path.parent.glob('*.pre-v5-*.db')),[])
+
+    def test_staged_migration_cleans_orphaned_zero_byte_stubs_and_stage_temps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            path = d / 'accounting.db'
+            conn = database(path, '4'); insert(conn, '2026-10-27T00:00:00Z'); conn.close()
+            stage_zero = d / '.accounting.db.v5-orphan0.db'
+            stage_partial = d / '.accounting.db.v5-orphan1.db'
+            backup_zero = d / 'accounting.db.pre-v5-orphan0.db'
+            backup_valid = d / 'accounting.db.pre-v5-valid.db'
+            stage_zero.write_bytes(b'')
+            stage_partial.write_bytes(b'partial')
+            backup_zero.write_bytes(b'')
+            backup_valid.write_bytes(b'prior-backup')
+            created_backup = store.staged_migrate(path, accountd.migrate_schema)
+            self.assertIsNotNone(created_backup)
+            self.assertFalse(stage_zero.exists())
+            self.assertFalse(stage_partial.exists())
+            self.assertFalse(backup_zero.exists())
+            self.assertTrue(backup_valid.exists())
+            self.assertTrue(Path(created_backup).is_file())
+
+    def test_accountd_migrate_only_upgrades_schema_and_handles_missing_db(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            missing = d / 'missing.db'
+            proc_missing = subprocess.run(
+                [sys.executable, '-I', str(ROOT / 'lib/vincula-accountd.py'), '--migrate-only', '--db', str(missing)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc_missing.returncode, 0, proc_missing.stderr)
+            self.assertFalse(missing.exists())
+            path = d / 'accounting.db'
+            conn = database(path, '4'); insert(conn, '2026-10-27T00:00:00Z'); conn.close()
+            proc = subprocess.run(
+                [sys.executable, '-I', str(ROOT / 'lib/vincula-accountd.py'), '--migrate-only', '--db', str(path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with closing(sqlite3.connect(path)) as upgraded:
+                self.assertEqual(upgraded.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], '5')

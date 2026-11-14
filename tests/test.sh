@@ -8048,8 +8048,17 @@ assert "apply_installer_service_state" in rb
 assert "restart vincula-accountd" not in rb
 assert "restart sing-box" not in rb
 assert "backup_complete" in rb
+assert "cleanup_accounting_migration_temps" in rb
+assert 'chown root:root -- "$VAR_LIB_VINCULA"' in rb
+assert 'chmod 0700 -- "$VAR_LIB_VINCULA"' in rb
+assert pos(rb, 'MIGRATION_BACKUP}/accounting.db') < pos(rb, 'systemctl disable --now sing-box.service')
 for point in ("preflight", "armed", "backup", "health-wait", "accountd-stop", "health", "accountd"):
     assert f"migrate_fail_after {point}" in body, point
+en_i = src.index("enable_accountd_service()")
+en_j = src.index("install_runtime_only()")
+en = src[en_i:en_j]
+assert "migrate_accounting_db_to_v5" in en
+assert "VCL_ACCOUNTD_HEALTH_TIMEOUT:-180" in src
 PY
 then
   pass "migrate_existing_install captures SERVICE_STATE and arms rollback before any service stop"
