@@ -26,10 +26,20 @@ observer = load("observer_test", "lib/observer.py")
 class ObserverTests(unittest.TestCase):
     def test_only_exact_readonly_commands_are_accepted(self):
         unit = (ROOT / "lib/vincula-observer@.service").read_text(encoding="utf-8")
+        sock = (ROOT / "lib/vincula-observer.socket").read_text(encoding="utf-8")
         families = next(line.partition("=")[2].split() for line in unit.splitlines() if line.startswith("RestrictAddressFamilies="))
+        caps = next(line.partition("=")[2].split() for line in unit.splitlines() if line.startswith("CapabilityBoundingSet="))
         self.assertIn("AF_NETLINK", families)
-        self.assertIn("CapabilityBoundingSet=CAP_DAC_READ_SEARCH\n", unit)
+        self.assertIn("CAP_DAC_READ_SEARCH", caps)
+        self.assertIn("CAP_SYS_PTRACE", caps)
         self.assertNotIn("CAP_NET_ADMIN", unit)
+        self.assertIn("ReadWritePaths=-/var/lib/vincula\n", unit)
+        self.assertIn("RuntimeMaxSec=180s\n", unit)
+        self.assertIn("MemoryMax=256M\n", unit)
+        self.assertIn("CPUQuota=100%\n", unit)
+        self.assertIn("MaxConnections=16\n", sock)
+        self.assertGreaterEqual(observer.command_timeout_seconds(["inspect", "--json"]), 30)
+        self.assertGreaterEqual(observer.command_timeout_seconds(["verify", "--json"]), 150)
         for args in observer.ALLOWED:
             self.assertEqual(observer.parse_command("vcl " + " ".join(args)), list(args))
         for command in ("", "sh", "vcl link", "vcl user list --json", "vcl restart", "vcl telemetry snapshot --json; id",

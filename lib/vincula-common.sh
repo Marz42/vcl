@@ -392,7 +392,10 @@ except ValueError:
     print("unreadable")
     raise SystemExit(1)
 try:
-    conn = sqlite3.connect(db)
+    from pathlib import Path
+    uri = Path(db).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5)
+    conn.execute("PRAGMA query_only=ON")
     row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
     conn.close()
 except Exception:

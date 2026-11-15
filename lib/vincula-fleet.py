@@ -4368,7 +4368,7 @@ def probe_node(
 
     if want_verify:
         v_ssh, verify_doc, v_detail = ssh_remote_json(
-            node, ["vcl", "verify", "--json"], credential_class="observe"
+            node, ["vcl", "verify", "--json"], credential_class="observe", timeout=300
         )
         if v_ssh != "OK":
             row["ssh"] = "AUTH_FAILED" if v_ssh == "AUTH_FAILED" else "FAIL"

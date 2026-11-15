@@ -948,9 +948,12 @@ accounting_schema_version() {
     return 0
   fi
   python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+from pathlib import Path
 import sqlite3, sys
 try:
-    conn = sqlite3.connect(sys.argv[1])
+    uri = Path(sys.argv[1]).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5)
+    conn.execute("PRAGMA query_only=ON")
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     conn.close()
     print(row[0] if row else "")
@@ -965,10 +968,13 @@ accounting_heartbeat_age_seconds() {
     return 0
   fi
   python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || true
+from pathlib import Path
 import sqlite3, sys
 from datetime import datetime, timezone
 try:
-    conn = sqlite3.connect(sys.argv[1])
+    uri = Path(sys.argv[1]).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5)
+    conn.execute("PRAGMA query_only=ON")
     row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
     conn.close()
 except Exception:

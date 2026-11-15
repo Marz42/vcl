@@ -24,6 +24,16 @@ ALLOWED = frozenset({("identity", "--json"), ("capabilities", "--json"),
                      ("telemetry", "snapshot", "--json"), ("telemetry", "audit", "--json"), ("telemetry", "users", "--json"),
                      ("inspect", "--json"), ("status", "--json"), ("verify", "--json"), ("verify", "--extended", "--json")})
 MAX_RESPONSE = 65536
+DEFAULT_COMMAND_TIMEOUT = 30
+VERIFY_COMMAND_TIMEOUT = 150
+REQUEST_FRAME_TIMEOUT = 15
+RESPONSE_FRAME_SLACK = 15
+
+
+def command_timeout_seconds(args) -> int:
+    if tuple(args) == ("verify", "--json"):
+        return VERIFY_COMMAND_TIMEOUT
+    return DEFAULT_COMMAND_TIMEOUT
 
 
 def parse_command(command: str) -> list[str]:
@@ -38,9 +48,9 @@ def parse_command(command: str) -> list[str]:
     return args[1:]
 
 
-def read_frame(channel, maximum):
+def read_frame(channel, maximum, *, timeout=12):
     data = bytearray()
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -59,13 +69,15 @@ def read_frame(channel, maximum):
             return json.loads(line)
 
 
-def run_readonly(args):
+def run_readonly(args, *, timeout=None):
     if tuple(args) not in ALLOWED:
         raise ValueError("observer command denied")
+    if timeout is None:
+        timeout = command_timeout_seconds(args)
     process = subprocess.Popen(["/usr/local/bin/vcl", *args], stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                env={"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C.UTF-8"})
-    raw, deadline = bytearray(), time.monotonic() + 10
+    raw, deadline = bytearray(), time.monotonic() + timeout
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -99,7 +111,7 @@ def broker(channel, *, execute=run_readonly, expected_uid=None):
     _, uid, _ = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     if uid not in (0, expected_uid):
         raise ValueError("observer peer denied")
-    request = read_frame(channel, 1024)
+    request = read_frame(channel, 1024, timeout=REQUEST_FRAME_TIMEOUT)
     if not isinstance(request, dict) or set(request) != {"args"} or not isinstance(request["args"], list):
         raise ValueError("invalid observer request")
     if any(not isinstance(arg, str) for arg in request["args"]) or tuple(request["args"]) not in ALLOWED:
@@ -113,11 +125,12 @@ def broker(channel, *, execute=run_readonly, expected_uid=None):
 
 def client(command):
     args = parse_command(command)
+    frame_timeout = command_timeout_seconds(args) + RESPONSE_FRAME_SLACK
     with socket.socket(socket.AF_UNIX) as channel:
-        channel.settimeout(12)
+        channel.settimeout(frame_timeout)
         channel.connect(SOCKET)
         channel.sendall(json.dumps({"args": args}).encode() + b"\n")
-        doc = read_frame(channel, MAX_RESPONSE + 1024)
+        doc = read_frame(channel, MAX_RESPONSE + 1024, timeout=frame_timeout)
     if not isinstance(doc, dict) or set(doc) != {"exit_code", "payload"} or type(doc["exit_code"]) is not int or doc["exit_code"] not in (0, 1) or not isinstance(doc["payload"], dict):
         raise ValueError("invalid observer response")
     sys.stdout.write(json.dumps(doc["payload"], allow_nan=False) + "\n")

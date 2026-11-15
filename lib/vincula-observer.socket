@@ -9,7 +9,7 @@ SocketUser=root
 SocketGroup=vincula-observer
 SocketMode=0660
 Accept=yes
-MaxConnections=2
+MaxConnections=16
 RemoveOnStop=true
 
 [Install]

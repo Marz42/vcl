@@ -11,23 +11,26 @@ ExecStart=/usr/bin/python3 -I /usr/local/lib/vincula/observer.py broker
 StandardInput=socket
 StandardOutput=socket
 StandardError=null
-RuntimeMaxSec=15s
-TimeoutStopSec=1s
+RuntimeMaxSec=180s
+TimeoutStopSec=5s
 KillMode=control-group
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
+# SQLite WAL readers (?mode=ro + PRAGMA query_only=ON) still need -shm access when accountd is active.
+ReadWritePaths=-/var/lib/vincula
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+# Read-only /proc/<pid>/fd lookup for ss -p (sing-box ownership) and root-owned files; no network admin capability.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
 # Read-only ss/tc inventory uses Netlink; no network administration capability.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictSUIDSGID=true
 LockPersonality=true
-TasksMax=16
-MemoryMax=64M
-CPUQuota=10%
+TasksMax=32
+MemoryMax=256M
+CPUQuota=100%
