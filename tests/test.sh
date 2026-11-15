@@ -5739,10 +5739,10 @@ assert_success "backup module uses sqlite3 Connection.backup" \
   grep -q 'src_conn.backup(dest_conn, pages=256' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_failure "backup snapshot does not shutil.copyfile the live db" \
   grep -q 'shutil.copyfile' "${PROJECT_DIR}/lib/vincula-backup.py"
-assert_success "backup module pins MAX_MEMBER_BYTES 1 GiB" \
-  grep -q 'MAX_MEMBER_BYTES = 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
-assert_success "backup module pins MAX_ARCHIVE_BYTES 2 GiB" \
-  grep -q 'MAX_ARCHIVE_BYTES = 2 \* 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins MAX_MEMBER_BYTES 4 GiB" \
+  grep -q 'MAX_MEMBER_BYTES = 4 \* 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
+assert_success "backup module pins MAX_ARCHIVE_BYTES 8 GiB" \
+  grep -q 'MAX_ARCHIVE_BYTES = 8 \* 1024 \* 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module pins IO_CHUNK_BYTES 1 MiB" \
   grep -q 'IO_CHUNK_BYTES = 1024 \* 1024' "${PROJECT_DIR}/lib/vincula-backup.py"
 assert_success "backup module documents MAX_TEXT_MEMBER_BYTES" \
@@ -6312,8 +6312,8 @@ spec = importlib.util.spec_from_file_location("vbackup_p202", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.MAX_MEMBER_BYTES == 1024 * 1024 * 1024, mod.MAX_MEMBER_BYTES
-assert mod.MAX_ARCHIVE_BYTES == 2 * 1024 * 1024 * 1024, mod.MAX_ARCHIVE_BYTES
+assert mod.MAX_MEMBER_BYTES == 4 * 1024 * 1024 * 1024, mod.MAX_MEMBER_BYTES
+assert mod.MAX_ARCHIVE_BYTES == 8 * 1024 * 1024 * 1024, mod.MAX_ARCHIVE_BYTES
 assert mod.IO_CHUNK_BYTES == 1024 * 1024, mod.IO_CHUNK_BYTES
 assert mod.MAX_TEXT_MEMBER_BYTES == 16 * 1024 * 1024, mod.MAX_TEXT_MEMBER_BYTES
 

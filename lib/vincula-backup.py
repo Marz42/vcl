@@ -87,8 +87,10 @@ REQUIRED_COMPONENTS = ("state.json", "users.json", "config.toml")
 # member; JSON/text stay in memory under MAX_TEXT_MEMBER_BYTES.
 IO_CHUNK_BYTES = 1024 * 1024
 MAX_TEXT_MEMBER_BYTES = 16 * 1024 * 1024
-MAX_MEMBER_BYTES = 1024 * 1024 * 1024
-MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+# POSIX ustar supports members up to 8 GiB - 1; 4 GiB keeps ustar compatibility
+# while accommodating production accounting.db growth past 1 GiB.
+MAX_MEMBER_BYTES = 4 * 1024 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 IN_MEMORY_MEMBERS = frozenset(
     ("manifest.json", "state.json", "users.json", "config.toml", "VERSION")
 )

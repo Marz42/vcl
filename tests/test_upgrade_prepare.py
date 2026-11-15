@@ -46,6 +46,45 @@ class BackupTests(unittest.TestCase):
                 f.seek(offset + 100); f.write(b'BROKEN')
             self.assertFalse(backup.verify_manifest(archive)['ok'])
 
+    def test_large_member_ustar_caps_allow_over_1gib_and_reject_over_4gib(self):
+        import tarfile
+        self.assertEqual(backup.MAX_MEMBER_BYTES, 4 * 1024 * 1024 * 1024)
+        self.assertEqual(backup.MAX_ARCHIVE_BYTES, 8 * 1024 * 1024 * 1024)
+        self.assertEqual(backup._member_size_cap('accounting.db'), 4 * 1024 * 1024 * 1024)
+        self.assertEqual(backup._member_size_cap('state.json'), backup.MAX_TEXT_MEMBER_BYTES)
+        for valid_size in (1_500_000_000, backup.MAX_MEMBER_BYTES):
+            info = tarfile.TarInfo('accounting.db')
+            info.size = valid_size
+            header = info.tobuf(tarfile.USTAR_FORMAT)
+            self.assertEqual(len(header), 512)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            over_4g = root / 'over-4g.tar'
+            over_8g = root / 'over-8g.tar'
+            over_1g = root / 'over-1g.tar'
+            manifest_db = {'created_at': '2026-11-15T00:00:00Z', 'included_components': ['accounting.db']}
+            manifest_total = {
+                'created_at': '2026-11-15T00:00:00Z',
+                'included_components': ['accounting.db', 'extra.db', 'tail.db'],
+            }
+            with patch.object(backup, '_source_size', return_value=backup.MAX_MEMBER_BYTES + 1):
+                with self.assertRaisesRegex(ValueError, 'exceeds'):
+                    backup.write_tar(over_4g, {'accounting.db': root / 'missing.db'}, manifest_db)
+            self.assertFalse(over_4g.exists())
+            with patch.object(backup, '_source_size', return_value=3 * 1024 * 1024 * 1024):
+                with self.assertRaisesRegex(ValueError, 'archive exceeds'):
+                    backup.write_tar(
+                        over_8g,
+                        {'accounting.db': root / 'a', 'extra.db': root / 'b', 'tail.db': root / 'c'},
+                        manifest_total,
+                    )
+            self.assertFalse(over_8g.exists())
+            with patch.object(backup, '_source_size', return_value=1_500_000_000):
+                with patch.object(backup, '_add_member') as add_member:
+                    backup.write_tar(over_1g, {'accounting.db': root / 'db'}, manifest_db)
+                    add_member.assert_called_once()
+            self.assertTrue(over_1g.exists())
+
     def test_snapshot_preserves_database(self):
         with tempfile.TemporaryDirectory() as tmp:
             src, dest = Path(tmp)/'src', Path(tmp)/'dest'

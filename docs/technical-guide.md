@@ -252,8 +252,8 @@ vcl restore FILE --reissue-output FILE --server HOST --json
 
 | Constant | Default | Applies to |
 | --- | --- | --- |
-| `MAX_MEMBER_BYTES` | 1 GiB | Each tar member (`accounting.db` is the large one) |
-| `MAX_ARCHIVE_BYTES` | 2 GiB | Sum of uncompressed member sizes |
+| `MAX_MEMBER_BYTES` | 4 GiB | Each tar member (`accounting.db` is the large one; POSIX `ustar` supports up to 8 GiB - 1) |
+| `MAX_ARCHIVE_BYTES` | 8 GiB | Sum of uncompressed member sizes |
 | `MAX_TEXT_MEMBER_BYTES` | 16 MiB | JSON/text members kept in memory |
 
 `BACKUP_SCHEMA_VERSIONS_READ = (1,)`。超限 → `invalid_archive`。
