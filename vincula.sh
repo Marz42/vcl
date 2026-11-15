@@ -2318,11 +2318,42 @@ migrate_accounting_db_to_v5() {
   fi
 }
 
+accounting_last_success_value() {
+  [[ -r "$ACCOUNTING_DB_FILE" ]] || return 1
+  python_private "$ACCOUNTING_DB_FILE" <<'PY' 2>/dev/null || return 1
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+row = conn.execute("SELECT value FROM meta WHERE key='last_success_at'").fetchone()
+conn.close()
+if row and row[0]:
+    print(str(row[0]).strip())
+PY
+}
+
+wait_for_accountd_fresh_poll() {
+  local prior=${1:-}
+  local poll_timeout=${VCL_ACCOUNTD_HEALTH_TIMEOUT:-180}
+  local elapsed=0 cur=""
+  while (( elapsed < poll_timeout )); do
+    systemctl is-active --quiet vincula-accountd.service || return 1
+    cur=$(accounting_last_success_value 2>/dev/null || true)
+    if [[ -n "$cur" && "$cur" != "$prior" ]] && accounting_last_success_fresh "$ACCOUNTING_DB_FILE"; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$(( elapsed + 2 ))
+  done
+  return 1
+}
+
 enable_accountd_service() {
+  local prior_last_success=""
   migrate_accounting_db_to_v5
+  prior_last_success=$(accounting_last_success_value 2>/dev/null || true)
   systemctl daemon-reload
   systemctl enable --now vincula-accountd.service || die "vincula-accountd.service failed to enable/start"
   wait_for_accountd_healthy || die "vincula-accountd health check failed; refusing to commit install"
+  wait_for_accountd_fresh_poll "$prior_last_success" || die "vincula-accountd collector poll check failed; refusing to commit install"
 }
 
 install_runtime_only() {

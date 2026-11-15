@@ -218,6 +218,98 @@ class AutoRollbackCompatibilityTests(unittest.TestCase):
         self.assertEqual(post_ssh.call_args_list[1].kwargs['timeout'], 60)
         self.assertEqual(post_ssh.call_args_list[2].kwargs['timeout'], 60)
 
+    def test_apply_retries_transient_stale_heartbeat_then_succeeds(self):
+        prov = Mock(); prov.NODE_PAYLOAD_VERSION = '0.5.5'
+        prov.verify_local_payload.return_value = {'sha256': 'a' * 64}
+        prov._create_remote_stage.return_value = '/stage'
+        prov._remote_stage_paths.return_value = {'unpack': '/stage/pkg', 'tar': '/stage/payload.tar'}
+        prov.installer_remote_argv.return_value = ['bash', '/stage/pkg/vincula.sh']
+        host = Mock()
+        host.SSH_MUTATION_TIMEOUT_SECONDS = 60
+        host.SSH_UPGRADE_APPLY_TIMEOUT_SECONDS = 900
+        host.SSH_UPGRADE_VERIFY_TIMEOUT_SECONDS = 300
+        host.load_provision_module.return_value = prov
+        host.ssh_run.return_value.returncode = 0
+        upgrade.bind(host)
+        plan = {'state': 'PLANNED', 'allowlist_ok': True,
+                'identity': {'node_id': 'n', 'instance_id': 'i'}, 'current_version': '0.5.0'}
+        prepared = {'state': 'SUCCEEDED', 'operation_id': 'op',
+                    'backup': {'path': '/b.tar'}, 'checkpoint': {'path': '/ck'}}
+        stale_verify = {
+            'ok': False,
+            'identity': {'ok': True},
+            'proxy': {'ok': True},
+            'accounting': {
+                'ok': False,
+                'checks': [
+                    {'name': 'accountd service', 'ok': True, 'detail': 'active'},
+                    {'name': 'database readable', 'ok': True, 'detail': 'ok'},
+                    {'name': 'schema expected', 'ok': True, 'detail': 'schema_version=5'},
+                    {'name': 'heartbeat', 'ok': False, 'detail': 'last_success_at stale (age 450s > 300s)'},
+                ],
+            },
+        }
+        with patch.object(upgrade, 'run_upgrade_plan', return_value=plan), \
+             patch.object(upgrade, '_prepare_remote', return_value=prepared), \
+             patch.object(upgrade.time, 'sleep') as sleep_mock, \
+             patch.object(upgrade, '_ssh_json', side_effect=[
+                 ('OK', stale_verify, 'exit 1'),
+                 ('OK', {'ok': True}, ''),
+                 ('OK', {'schema': 'capabilities/v1', 'node_version': '0.5.5', 'capabilities': []}, ''),
+                 ('OK', {'node_id': 'n', 'instance_id': 'i', 'vincula_version': '0.5.5'}, ''),
+             ]) as post_ssh:
+            host.load_observation_capabilities_module = Mock(
+                return_value=Mock(CAPABILITIES_MAX_BYTES=4096, validate_capabilities_v1=lambda _: [])
+            )
+            result = upgrade.run_upgrade_apply(
+                {'name': 'n', 'node_id': 'n', 'ssh_host': 'h', 'ssh_user': 'root'}, confirmed=True
+            )
+        self.assertEqual(result['state'], 'SUCCESS', result)
+        sleep_mock.assert_called_once()
+        self.assertEqual(sum(1 for c in post_ssh.call_args_list if c.args[1] == ['vcl', 'verify', '--json']), 2)
+
+    def test_apply_does_not_retry_non_heartbeat_verify_failure(self):
+        prov = Mock(); prov.NODE_PAYLOAD_VERSION = '0.5.5'
+        prov.verify_local_payload.return_value = {'sha256': 'a' * 64}
+        prov._create_remote_stage.return_value = '/stage'
+        prov._remote_stage_paths.return_value = {'unpack': '/stage/pkg', 'tar': '/stage/payload.tar'}
+        prov.installer_remote_argv.return_value = ['bash', '/stage/pkg/vincula.sh']
+        host = Mock()
+        host.SSH_MUTATION_TIMEOUT_SECONDS = 60
+        host.SSH_UPGRADE_APPLY_TIMEOUT_SECONDS = 900
+        host.SSH_UPGRADE_VERIFY_TIMEOUT_SECONDS = 300
+        host.load_provision_module.return_value = prov
+        host.ssh_run.return_value.returncode = 0
+        upgrade.bind(host)
+        plan = {'state': 'PLANNED', 'allowlist_ok': True,
+                'identity': {'node_id': 'n', 'instance_id': 'i'}, 'current_version': '0.5.0'}
+        prepared = {'state': 'SUCCEEDED', 'operation_id': 'op',
+                    'backup': {'path': '/b.tar'}, 'checkpoint': {'path': '/ck'}}
+        schema_fail = {
+            'ok': False,
+            'identity': {'ok': True},
+            'proxy': {'ok': True},
+            'accounting': {
+                'ok': False,
+                'checks': [
+                    {'name': 'accountd service', 'ok': True, 'detail': 'active'},
+                    {'name': 'schema expected', 'ok': False, 'detail': 'schema_version=4'},
+                    {'name': 'heartbeat', 'ok': False, 'detail': 'last_success_at stale (age 450s > 300s)'},
+                ],
+            },
+        }
+        with patch.object(upgrade, 'run_upgrade_plan', return_value=plan), \
+             patch.object(upgrade, '_prepare_remote', return_value=prepared), \
+             patch.object(upgrade, '_attempt_post_upgrade_rollback',
+                          return_value={'ok': False, 'state': 'ROLLED_BACK'}) as rb, \
+             patch.object(upgrade, '_ssh_json', return_value=('OK', schema_fail, 'exit 1')) as post_ssh:
+            result = upgrade.run_upgrade_apply(
+                {'name': 'n', 'node_id': 'n', 'ssh_host': 'h', 'ssh_user': 'root'}, confirmed=True
+            )
+        self.assertEqual(result['state'], 'ROLLED_BACK')
+        rb.assert_called_once()
+        self.assertEqual(post_ssh.call_count, 1)
+
 class BackupVerificationTests(unittest.TestCase):
     def make_archive(self, root):
         state = root / 'state'; state.mkdir()

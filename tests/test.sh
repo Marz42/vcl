@@ -8058,6 +8058,9 @@ en_i = src.index("enable_accountd_service()")
 en_j = src.index("install_runtime_only()")
 en = src[en_i:en_j]
 assert "migrate_accounting_db_to_v5" in en
+assert "wait_for_accountd_fresh_poll" in en
+assert "accounting_last_success_value" in en
+assert 'wait_for_accountd_fresh_poll "$prior_last_success" || die' in en
 assert "VCL_ACCOUNTD_HEALTH_TIMEOUT:-180" in src
 assert '[[ "$short_id" =~ ^([0-9a-f]{2}){0,8}$ ]]' in body
 PY

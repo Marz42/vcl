@@ -454,15 +454,60 @@ def run_upgrade_apply(
             restore_detail="upgrade rollback failed or refused (see node stderr)",
         )
 
+    def _is_transient_heartbeat_only_failure(doc: Any) -> bool:
+        if not isinstance(doc, dict) or doc.get("ok"):
+            return False
+        if not (doc.get("identity") or {}).get("ok") or not (doc.get("proxy") or {}).get("ok"):
+            return False
+        accounting = doc.get("accounting") or {}
+        checks = accounting.get("checks") or []
+        if not checks:
+            return False
+        service_ok = False
+        heartbeat_transient = False
+        for item in checks:
+            if not isinstance(item, dict):
+                return False
+            name = str(item.get("name") or "")
+            ok = bool(item.get("ok"))
+            detail = str(item.get("detail") or "").lower()
+            if name == "accountd service":
+                service_ok = ok
+            if name == "heartbeat":
+                if ok or ("stale" not in detail and "missing" not in detail):
+                    return False
+                heartbeat_transient = True
+            elif not ok:
+                return False
+        return service_ok and heartbeat_transient
+
     post_fast_timeout = max(20, _timeout_int(getattr(host, "SSH_MUTATION_TIMEOUT_SECONDS", 60), 60))
-    ssh_state, verify_doc, verify_detail = _ssh_json(
-        node,
-        ["vcl", "verify", "--json"],
-        credential_class="admin",
-        timeout=verify_seconds,
-        require_exit_0=False,
-    )
-    if ssh_state != "OK" or not isinstance(verify_doc, dict) or not verify_doc.get("ok"):
+    verify_deadline = time.monotonic() + verify_seconds
+    first_verify_attempt = True
+    while True:
+        if first_verify_attempt:
+            call_timeout: float = verify_seconds
+            first_verify_attempt = False
+        else:
+            remaining = verify_deadline - time.monotonic()
+            call_timeout = max(20.0, remaining) if remaining > 0 else 20.0
+        ssh_state, verify_doc, verify_detail = _ssh_json(
+            node,
+            ["vcl", "verify", "--json"],
+            credential_class="admin",
+            timeout=call_timeout,
+            require_exit_0=False,
+        )
+        if ssh_state == "OK" and isinstance(verify_doc, dict) and verify_doc.get("ok"):
+            break
+        remaining = verify_deadline - time.monotonic()
+        if (
+            ssh_state == "OK"
+            and _is_transient_heartbeat_only_failure(verify_doc)
+            and remaining > 5
+        ):
+            time.sleep(min(5.0, remaining))
+            continue
         fail_detail = f"post-upgrade verify failed: {verify_detail or 'verify failed'}"
         if migrate_committed:
             return _rollback_or_partial(fail_detail)
