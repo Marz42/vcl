@@ -306,6 +306,26 @@ class CacheTests(unittest.TestCase):
                     else:
                         schemas.validate(doc, kind, version)
 
+    def test_ephemeral_udp_outbound_sockets_do_not_cause_listener_drift(self):
+        base = sample()
+        base["listeners"]["items"].append({"protocol": "UDP", "family": "IPV4", "scope": "NON_LOOPBACK", "address": "0.0.0.0", "interface": None, "port": 34323})
+        self.record(base, NOW)
+        self.store.accept(NODE, cache.sha(base), NOW, INSTANCE)
+        rotated = sample(NOW + 1)
+        rotated["listeners"]["items"].append({"protocol": "UDP", "family": "IPV4", "scope": "NON_LOOPBACK", "address": "0.0.0.0", "interface": None, "port": 53563})
+        rotated["listeners"]["items"].append({"protocol": "UDP", "family": "IPV6", "scope": "NON_LOOPBACK", "address": "::", "interface": None, "port": 32768})
+        self.record(rotated, NOW + 1)
+        self.assertEqual(self.view(NOW + 1)["drift"]["checks"]["listeners"], {"state": "MATCH", "changed_count": 0})
+        self.assertEqual(self.view(NOW + 1)["drift"]["state"], "MATCH")
+        low_udp = sample(NOW + 2)
+        low_udp["listeners"]["items"].append({"protocol": "UDP", "family": "IPV4", "scope": "LOOPBACK", "address": "127.0.0.1", "interface": None, "port": 5353})
+        self.record(low_udp, NOW + 2)
+        self.assertEqual(self.view(NOW + 2)["drift"]["checks"]["listeners"], {"state": "DRIFT", "changed_count": 1})
+        high_tcp = sample(NOW + 3)
+        high_tcp["listeners"]["items"].append({"protocol": "TCP", "family": "IPV4", "scope": "NON_LOOPBACK", "address": "0.0.0.0", "interface": None, "port": 40000})
+        self.record(high_tcp, NOW + 3)
+        self.assertEqual(self.view(NOW + 3)["drift"]["checks"]["listeners"], {"state": "DRIFT", "changed_count": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

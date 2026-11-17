@@ -17,6 +17,7 @@ inspection = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inspection)
 contract = inspection.contract
 CAP, EVENT_CAP, TTL, FRESH = 1024, 10000, 7 * 86400, 600
+EPHEMERAL_UDP_PORT_MIN = 32768
 COMPONENTS = ("listeners", "services", "versions", "config", "units", "runtime", "binary")
 REASONS = ("NONE", "EMPTY", "ERROR", "AUTH_FAILED", "UNSUPPORTED", "TIMEOUT", "STALE", "CLOCK_SKEW",
            "REPLAYED", "IDENTITY", "ENDPOINT", "COVERAGE", "NO_BASELINE", "CACHE_CORRUPT", "CAPACITY")
@@ -58,6 +59,11 @@ def endpoint(node):
     return sha({k: node.get(k) for k in ("node_id", "ssh_host", "ssh_port", "ssh_user", "observe_ssh_user", "observe_credential_ref")})
 
 
+def _stable_listener(row):
+    """Exclude ephemeral outbound UDP sockets (`ss -lntu` reports UNCONN client sockets)."""
+    return not (row.get("protocol") == "UDP" and int(row.get("port") or 0) >= EPHEMERAL_UDP_PORT_MIN)
+
+
 def projection(snapshot):
     """Independent coverage; partial observation cannot prove equality."""
     out = dict.fromkeys(COMPONENTS)
@@ -74,7 +80,7 @@ def projection(snapshot):
                     r["state"] == "OK" and all(r[k] is not None for k in ("active", "enabled", "user", "group", "limit_nofile_soft", "limit_nofile_hard")) for r in rows):
                 out[name] = sorted(({k: r[k] for k in ("name", "active", "enabled", "user", "group", "limit_nofile_soft", "limit_nofile_hard")} for r in rows), key=lambda r: r["name"])
         else:
-            out[name] = sorted(section["items"], key=encoded)
+            out[name] = sorted((row for row in section["items"] if _stable_listener(row)), key=encoded)
     section = snapshot["fingerprints"]
     rows = section["items"]
     names = [r["name"] for r in rows]
