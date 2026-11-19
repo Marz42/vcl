@@ -1,12 +1,7 @@
-# 0.5.5 live acceptance — PR #15 staged-helper fix / pending new RC build
+# 0.5.5 live acceptance — PR #15 (`f05fab8`) T01–T09 complete / T10 review
 
-Status: **CODE FIX APPLIED / PENDING LINUX RC REBUILD & CI / PENDING LIVE & HUMAN**.
-The prior `21aba22` frozen RC (`Node 7b7a1b60…`, `Controller 784ca4d0…`) stopped
-cleanly on Batch 0 `fresh050` canary (`phase=checkpoint`, `PREPARATION_FAILED`,
-`migrate_started=false`: `bin/vincula` `load_vincula_common()` loaded installed
-`0.5.0` common ahead of staged `0.5.5`, missing `python_private`; zero node
-mutation, [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md)). Controller `fleet.db`
-completed schema-4 -> schema-5 migration cleanly (`quick_check=ok`, `3.80 GB`).
+Status: **LIVE T01–T09 EXECUTED ON PR #15 (`f05fab8`, `SOURCE_DATE_EPOCH=1794899643`, CI Run `#151` 7/7 `success`) / T10 AWAITING HUMAN PASS SIGN-OFF BY MARZ**.
+Following the prior `21aba22` Batch 0 abort and iterative live fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 with `<= 1.10s` `:443` cutover unavailability, restricted `vincula-observer` & T05–T08 passed, and RC `f05fab8` completed an unbroken `24h00m38s` live soak (`vcl-h05-t09p3-20261118T0829Z`, 6/7 reachable nodes with `urgentfury` excluded by operator decision due to ISP upstream IPv4 block) plus matching 10-node 2h synthetic matrix (`abf23566…`, `7,200.0118s`, `PASS OFFLINE`). See [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md) and [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md).
 
 ## Current PR #15 candidate (2026-11-14, awaiting Linux build + CI)
 
@@ -81,24 +76,22 @@ Failure evidence is retained; a repaired run is a separate recheck. After cutove
 has new writes, preserve the new database before reverting to an older snapshot;
 that revert cannot be called lossless.
 
-## Operator handoff — execute one item at a time
+## Operator handoff — T01–T09 complete / T10 pending explicit verdict
 
-All rows are PENDING. Return redacted output, actual time and outcome; retain
-failures separately from rechecks. Never return private keys, tokens, full client
-URIs, raw credential files or secret-bearing backups.
+T01–T09 have been executed and consolidated in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md); historical failures remain retained separately from rechecks. Final verdict and mainline merge remain explicitly gated on **Marz** (T10).
 
-| ID | Operator action | Return / pass criterion |
+| ID | Operator action | Status / Outcome |
 | --- | --- | --- |
-| T01 | Identify actual Controller host, executable/version, Workspace path, seven target aliases and recoverable canary | OS/runtime, exact paths, known Node versions/roles, admin/observe credential mode, recovery-console availability; unknown values may remain unknown until read-only discovery |
-| T02 | With supplied target-specific read-only commands, collect identity/capabilities, OS, services, storage and current proxy baseline | Actual versions and identities, service state, disk/DB sizes, redacted baseline; no installation or configuration changes |
-| T03 | After revised RC is frozen, verify packages and create/verify consistent backups; rehearse necessary schema migration on copies | Digests, backup paths and verification results, retained identities/cursors/totals, reserve space; original DB unchanged by rehearsal |
-| T04 | In the agreed canary window, install/migrate to 0.5.5 and rehearse recovery; then stage remaining nodes | Real client probes, identity/profile/accounting comparisons, downtime series and recovery evidence; stop rollout on failure |
-| T05 | Exercise admin/observe separation, Agent selectors, revocation and accountd identity | Allowed reads succeed; denied actions fail without fallback; restore access and verify proxy service |
-| T06 | Check sync, UTC/day totals, history coverage and cache capacity failure/recovery on isolated copies | Node/Fleet comparisons, refused-page cursor preservation, readable existing history; never deliberately fill production disks |
-| T07 | In the canary window, separately inject sing-box/accountd and SSH/Controller outages | Before/fault/recovery timelines, continuous real probes, Findings recovery; Controller outage at least five minutes |
-| T08 | Apply and revert controlled listener/unit/config drift, then verify observation-only behavior | Drift detected and restored to MATCH; effective Inspect evidence, hashes/mtime/restart counts, proxy continuity |
-| T09 | Keep seven 0.5.5 Nodes available for fixed-RC continuous 24h soak; run/revalidate separate ten-node 2h synthetic matrix | Start/end times, immutable inputs, proxy/Inspect/cache evidence and raw log hashes; no splicing runs |
-| T10 | Review H05-01..08 evidence, limits and remaining defects | Explicit human verdict and time; no automatic PASS, merge, tag or release |
+| T01 | Identify actual Controller host, executable/version, Workspace path, seven target aliases and recoverable canary | **DONE** (7 real nodes + `fresh050` canary + Controller schema-5) |
+| T02 | With supplied target-specific read-only commands, collect identity/capabilities, OS, services, storage and current proxy baseline | **DONE** (pre-cutover identities/versions/storage verified read-only) |
+| T03 | After revised RC is frozen, verify packages and create/verify consistent backups; rehearse necessary schema migration on copies | **DONE** (`4af12bc`/`330cdea`/`80e6f2d`/`f05fab8` verified deterministic builds & backups including `neptunespear` `1.42 GB` DB) |
+| T04 | In the agreed canary window, install/migrate to 0.5.5 and rehearse recovery; then stage remaining nodes | **DONE** (7/7 nodes at `0.5.5` / schema 5, `:443` cutover max gap `0.00s–1.10s <= 3s`, controlled & auto-rollbacks + re-upgrades verified) |
+| T05 | Exercise admin/observe separation, Agent selectors, revocation and accountd identity | **DONE** (re-verified on `80e6f2d` with `observe_ssh_user=vincula-observer`, `/root/.ssh/authorized_keys` cleaned, `AUTH_FAILED` w/o fallback, `vincula-accountd` unprivileged) |
+| T06 | Check sync, UTC/day totals, history coverage and cache capacity failure/recovery on isolated copies | **DONE** (`RAW_RECONSTRUCTED`, `UTC_CONNECTION_START`, isolated `/tmp` `CACHE_LIMIT_REACHED` & resume, bounded sync cursor advances) |
+| T07 | In the canary window, separately inject sing-box/accountd and SSH/Controller outages | **DONE** (`accountd` stop / `sing-box` stop / 75s SSH block / 320s Controller offline recovery & bounded sync backfill) |
+| T08 | Apply and revert controlled listener/unit/config drift, then verify observation-only behavior | **DONE** (baseline accept, 3 read-only rounds zero side-effects, unit drift detect & restore to `MATCH`, `f05fab8` `288/288` listener `MATCH`) |
+| T09 | Keep 0.5.5 Nodes available for fixed-RC continuous 24h soak; run/revalidate separate ten-node 2h synthetic matrix | **DONE (6/7 scope)** (`f05fab8` `vcl-h05-t09p3-20261118T0829Z` `24h00m38s`, 289 rounds, `1,734/1,734 HEALTHY`, `1,440/1,440 :443 ok`, `288/288 drift MATCH`, `295/295` hashed paths; `urgentfury` disabled due to ISP IPv4 block; same-RC 10-node 2h synthetic `PASS OFFLINE` `7,200.0118s`) |
+| T10 | Review H05-01..08 evidence, limits and remaining defects | **IN REVIEW — PENDING EXPLICIT PASS VERDICT BY MARZ** (no automatic PASS, merge, tag or release) |
 
 PR #13's offline freeze and 2h synthetic evidence are consolidated into PR #15.
 T01/T02 read-only discovery may proceed immediately; production cutover (T04)

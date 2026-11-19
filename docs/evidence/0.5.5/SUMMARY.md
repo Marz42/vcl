@@ -1,16 +1,6 @@
-# 0.5.5 closeout — PR #15 staged-helper fix / pending Linux RC rebuild & CI
+# 0.5.5 closeout — PR #15 (`f05fab8`) T01–T09 live execution complete / pending T10 verdict
 
-**2026-11-14 current entry (PR #15):** Prior frozen RC `21aba22` aborted cleanly at
-Batch 0 `fresh050` canary (`phase=checkpoint`, `PREPARATION_FAILED`,
-`migrate_started=false`: staged `bin/vincula` `load_vincula_common()` sourced old
-installed `/usr/local/lib/vincula/vincula-common.sh` ahead of staged `0.5.5`
-`lib/vincula-common.sh`, missing `python_private`). PR #15 now includes the
-minimal `bin/vincula` staged-library & embedded `upgrade-rollback-common.sh` fix,
-unified `_resolve_lib_py()`, updated `release.lock`, and 2 regression tests in
-`tests/test_checkpoint_integrity.py` (no generalized stress tests). Controller
-`fleet.db` is already cleanly at `schema 5`; **new RC artifacts (`build-release.sh`
-/ `build-controller.sh` with `SOURCE_DATE_EPOCH` pinned to the fix commit) await
-Linux build + CI verification before re-running Batch 0.** Prior `21aba22` record:
+**2026-11-19 current entry (PR #15):** Following the earlier `21aba22` Batch 0 abort and iterative fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 (`<= 1.10s` `:443` cutover unavailability), T05–T08 passed with restricted `vincula-observer` active, and RC `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`, CI Run [`#151`](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 `success`) completed an unbroken `24h00m38s` live soak across 6/7 reachable nodes (`urgentfury` disabled by operator decision due to ISP upstream IPv4 block) plus a matching 10-node 2h synthetic matrix (`PASS OFFLINE`, `7,200.0118s`). Consolidated `H05-01..08` evidence awaits explicit human `PASS` confirmation from **Marz** before `review/0.5.5-upgrade-preparation -> main` merge. Prior `21aba22` / Batch 0–4 record:
 [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md). Acceptance entry:
 [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) ·
 [LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md).
@@ -42,11 +32,12 @@ is unchanged. Historical evidence remains tied to its original inputs.
 | Support-boundary revision (2026-11-09) | OFFLINE GATES PASS: Linux local 203/203 Python user+root, 1,969 Bash user / 1,967 Bash root; Node `38336240…`, Controller `e2daaaf…`; CI #42531836471 seven jobs; ten-node 2h synthetic PASS; Live/H05 PENDING; [freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) |
 | Upgrade-preparation & review-4 (2026-11-13, PR #15) | OFFLINE GATES PASS (historical unfrozen record): runtime `21aba22`; Python 228/10/0, Bash 1,970 user / 1,968 root; Node `7b7a1b60…`, Controller `784ca4d0…` (epoch `1794384920`); CI [#43353200757](https://github.com/Marz42/vcl/actions/runs/43353200757) (`04dd901`) seven jobs; [review-4](REVIEW4_FIXES.md) |
 | Acceptance RC freeze (`21aba22`, 2026-11-13, PR #15) | SUPERSEDED AT BATCH 0 (`2026-11-14`): `fresh050` canary stopped at `phase=checkpoint` (`PREPARATION_FAILED`, `migrate_started=false`) due to `load_vincula_common()` preferring installed `0.5.0` lib over staged `0.5.5`; Node `7b7a1b60…` / Controller `784ca4d0…` retired; [RC freeze / abort](RC_FREEZE_21ABA22.md) |
-| Staged-helper fix candidate (2026-11-14, PR #15) | PREPARING NEW RC: `bin/vincula` `load_vincula_common()` + `_resolve_lib_py()` + `upgrade-rollback-common.sh` + `release.lock` (`e9c7a1a9…`) + regression tests; Controller `fleet.db` already migrated to `schema 5`; awaiting Linux `build-release.sh` / `build-controller.sh` verification + CI before re-running Batch 0; [live preflight](LIVE_PREFLIGHT_CHECKLIST.md) |
-| Seven-node Live + ten-node simulated two-hour matrix | DEFERRED USER / PENDING LIVE; synthetic dimension PASS OFFLINE: ten nodes, 7,200.016s, 2,400 samples, zero errors |
-| New RC continuous 24h integrated soak | DEFERRED USER / PENDING LIVE |
-| H05-01..08 human judgment/signature | PENDING HUMAN / NOT SIGNED |
-| Mainline merge | BLOCKED ON H05; not performed |
+| Live rollout, T01–T08 & observer hardening (`330cdea` -> `80e6f2d`, PR #15) | LIVE PASS: All 7 real nodes (`fresh050`, `eagleclaw`, `hot-beam-1`, `epicfury`, `upperhand`, `neptunespear`, `urgentfury`) cut over to `0.5.5` / schema 5 (`<= 1.10s` `:443` outage); `80e6f2d` (`EPOCH=1794736944`, CI #149/#150) hardened `vincula-observer` & verified T05–T08 + 12h `7/7` soak |
+| Final RC `f05fab8` & CI (`2026-11-17`, PR #15) | PASS: `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`EPOCH=1794899643`, Controller `df2b038a…`, Node `71b61c3d…` matching `80e6f2d` `release.lock` 20/20); CI [#44037742663](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 jobs `success`; excludes ephemeral UDP (`>= 32768`) sockets from listener drift projection |
+| Ten-node 2h synthetic matrix (`f05fab8`) | PASS OFFLINE: 10 simulated nodes, `7,200.0118s`, `PASS OFFLINE`, `two_hour_matrix=true`, `observation_errors=0`, bound to `f05fab8` (`abf23566…`) |
+| Continuous 24h integrated soak (`f05fab8`, 6/7 reachable nodes) | LIVE PASS (6/7 scope): `vcl-h05-t09p3-20261118T0829Z` (`2026-11-18T08:29:22Z -> 2026-11-19T08:30:00Z`, `24h00m38s`, 289 rounds, `1,734/1,734 HEALTHY`, `1,440/1,440 :443 ok`, `288/288 drift MATCH`, `144/144 DB quick_check=ok`, `295/295` hashed paths); `urgentfury` excluded (`enabled=false`) by operator decision due to ISP upstream IPv4 block |
+| H05-01..08 human judgment/signature | IN REVIEW BY **MARZ**: technical evidence consolidated in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md); awaits explicit human `PASS` verdict |
+| Mainline merge | BLOCKED ON H05 HUMAN SIGN-OFF; PR #15 ready to undraft/merge into `main` (closing PR #13) after **Marz** confirms `PASS` |
 
 Maintain a separate failure/recheck record. Never replace historical failure or
 unperformed live acceptance with an offline/CI PASS.

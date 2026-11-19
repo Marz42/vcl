@@ -1,62 +1,41 @@
-# H05 — 0.5.5 candidate
+# H05 — 0.5.5 candidate (`f05fab8`)
 
-**2026-11-14 current PR #15 status:** Prior `21aba22` frozen RC (`Node 7b7a1b60…`,
-`Controller 784ca4d0…`) stopped cleanly at Batch 0 `fresh050` canary checkpoint
-(`load_vincula_common()` loaded installed `0.5.0` common ahead of staged `0.5.5`,
-`migrate_started=false`; [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md)). PR #15
-now applies the `bin/vincula` staged-library & embedded `upgrade-rollback-common.sh`
-fix, updated `release.lock`, and regression tests in `tests/test_checkpoint_integrity.py`.
-New RC artifacts built from this fix commit (`SOURCE_DATE_EPOCH` pinned to commit
-timestamp) await Linux `build-release.sh` / `build-controller.sh` verification +
-CI before re-running Batch 0. Live preflight & weekend schedule:
-[LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) ·
-[SUMMARY.md](SUMMARY.md).
+**2026-11-19 current PR #15 status:** Live T01–T09 execution and continuous `24h` soak on RC `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`, CI Run [`#151`](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 `success`, `vincula-dist` `1,337,881 B` `sha256:da2f7cc03ca7aaa697330585756792a2eeedea09ddd2aea9dff4076c412a8d35`; Controller `df2b038a6a4eab231ee68592be563b3bf1f53aa51caab066e1b77bbbca04dfb8`, Node `71b61c3d819a0a8539db5dfff0417794ec3b99e09ef09721e6f27e4dcfbd6290`) are consolidated below for final T10 review by **Marz**.
+Earlier Batch 0–4 iteration records (`21aba22` -> `330cdea` -> `80e6f2d` -> `f05fab8`) and pre-window aborted attempts are preserved separately in [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md) · [LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) · [SUMMARY.md](SUMMARY.md).
 
 2026-11-08 scope revision supersedes the earlier deferral/mixed-version and
-two-source requirements below: preparation resumed, minimum supported Node
-0.5.5, seven real 0.5.5 Nodes, only actual required one-time ingress/recovery
-paths. H05-07 covers that cutover and unsupported-version handling rather than
-maintaining old Nodes. Traffic Policy is deferred to 0.6.x. All live results
-remain pending. The historical digests below identify earlier candidates, not
-the current PR #15 review-4 build.
+two-source requirements below: minimum supported Node is `0.5.5`, seven real `0.5.5`
+Nodes are supported (with explicit one-time ingress/recovery validation from
+actual source versions `0.3.1`, `0.3.1-rc2`, `0.3.2`, `0.5.0`), and Traffic
+Policy is deferred to `0.6.x`.
 
-**PENDING HUMAN / NOT SIGNED.** No Live actions have been executed for this
-candidate by this implementation run. Technical/CI results are separate in
-[SUMMARY](SUMMARY.md). Authority: [H05 checklist](../../plans/VCL_0.5-0.7_Human_Acceptance.md).
+**PENDING HUMAN / NOT SIGNED BY MARZ YET.** Technical/Live evidence H05-01..08 is consolidated from field execution; per [VCL_0.5-0.7_Human_Acceptance.md](../../plans/VCL_0.5-0.7_Human_Acceptance.md) and [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md), final `PASS` and `review/0.5.5-upgrade-preparation -> main` merge require explicit confirmation by **Marz**.
 
-2026-11-03 user decision: the formal Controller/Workspace is currently
-unavailable; skip field work for now and retain it as a follow-up. See
-[field follow-up](LIVE_FOLLOWUP.md). This defers execution, not the H05 PASS
-requirement before main merge.
-
-Approved scale deviation: seven real mixed-version nodes plus at least ten
-simulated nodes for two actual hours, replacing the old ten-real-node default.
-This does not waive real proxy, inspect/drift, permissions or new RC 24h soak.
+Approved scale & reachability deviations (for explicit signoff):
+1. Seven real upgraded `0.5.5` Nodes plus 10 simulated Nodes for two hours (`abf235668b9fe3f33ea0bc4908bf42ee301ec390c42367098d70864d3295c2dd`, `7,200.0118s`, `PASS OFFLINE`, same RC `f05fab8`), replacing the old ten-real-node default.
+2. During the final continuous `24h` window (`2026-11-18T08:29:22Z -> 2026-11-19T08:30:00Z`), `urgentfury` (`69.63.198.51`) remained healthy from external nodes (`fresh050` `:22/:443`) and over IPv6 `:22`, but was disabled (`enabled=false`) by operator decision due to an ISP upstream IPv4 block from the test host starting `2026-11-17T03:20Z`; the continuous `24h` soak therefore covered **6/7** reachable real Nodes (`fresh050`, `eagleclaw`, `hot-beam-1`, `epicfury`, `upperhand`, `neptunespear`), after `urgentfury` passed upgrade, `monitor HEALTHY`, T06–T08, and prior 12h observation.
 
 | Case | Required evidence | Actual result / operator / time |
 | --- | --- | --- |
-| H05-01 facts and scale | independent CLI/UI/inventory, real proxy, seven real nodes, ten-node simulated 2h | PENDING LIVE; support-boundary synthetic 10-node 7,200.0056s (2,401 samples, 0 errors) PASS OFFLINE, 17/17 input hashes match `4651064` & `21aba22` |
-| H05-02 credentials and permissions | actual Windows/Linux SSH/SCP, >10 Agent keys, migration/selector isolation, observer deny/revoke, accountd de-root | PENDING LIVE |
-| H05-03 proxy/accounting separation | selected sing-box/accountd fault and recovery with continuing real client traffic | PENDING LIVE |
-| H05-04 SSH/Controller outage | selected SSH block/restore, Controller off >=5m; state transitions and real traffic | PENDING LIVE |
-| H05-05 Findings/Timeline | real anomaly/normal comparison, service disruption, gap/corrupt evidence mapping | PENDING LIVE |
-| H05-06 Drift/read-only | inspect-capable Node, accepted baseline, listener/config/unit change and recovery; hashes/mtime/restarts and real proxy comparison | PENDING LIVE |
-| H05-07 upgrade compatibility | two supported sources, canary migration/rollback, identity/profile/accounting preservation, <=3s measured new-connection bound | PENDING LIVE |
-| H05-08 integrated closeout | fixed new RC >=24h, capacity/retention/corruption boundaries, manuals, risk/deferred-work review | PENDING LIVE / PENDING HUMAN |
+| H05-01 facts and scale | independent CLI/UI/inventory, real proxy, seven real nodes, ten-node simulated 2h | **EXECUTED (6/7 24h + 10-node 2h + 7/7 pre-block)**: `f05fab8` 24h continuous soak `vcl-h05-t09p3-20261118T0829Z` (`2026-11-18T08:29:22Z -> 2026-11-19T08:30:00Z`, `86,437.99s`, 289 rounds, `1,734/1,734 HEALTHY`, `1,440/1,440` `:443` probes ok `43.4–197.6 ms`, `END.json` / `END_INTEGRITY.json` `295/295` hashed paths); reused same-RC `f05fab8` 10-node 2h synthetic matrix (`abf23566…`, `7,200.0118s`, `PASS OFFLINE`, `two_hour_matrix=true`); prior `80e6f2d` 7/7 12h window `1,015/1,015 HEALTHY`, `840/840` `:443` ok. *Deviation*: `urgentfury` excluded (`enabled=false`) from final 24h due to ISP upstream IPv4 block. |
+| H05-02 credentials and permissions | actual Windows/Linux SSH/SCP, >10 Agent keys, migration/selector isolation, observer deny/revoke, accountd de-root | **EXECUTED PASS (T05 / recheck on `80e6f2d`)**: Controller `access verify` = `18 bindings / 14 rows OK` (3+ agent keys); `observe_ssh_user=vincula-observer` enabled on 7/7 nodes and observer key removed from `/root/.ssh/authorized_keys`; `identity`/`telemetry`/`inspect`/`status`/`verify` succeed while `user list`/`id`/`sudo`/`restart` return `rc=2` and PTY fails (`255`); `fresh050` observe key revoke -> controller `AUTH_FAILED` without admin fallback (`node HEALTHY`, `observation DEGRADED`, `:443` `255/255` ok), restore -> `HEALTHY`. All 7 nodes run `vincula-accountd` as `User=vincula-accountd` (supplementary group self only), DB dir `0700`, `accounting.db` `0600 vincula-accountd:vincula-accountd`, `config.json` `0640 root:sing-box`. Note: agent-bound admin bindings (`fresh050`) require `SSH_AUTH_SOCK` (`vcl-t09.agent.sock` verified `+47,000` sync in T09). |
+| H05-03 proxy/accounting separation | selected sing-box/accountd fault and recovery with continuing real client traffic | **EXECUTED PASS (T07)**: Stopping `vincula-accountd` -> `DEGRADED / SERVICE_INACTIVE`, proxy `OK`, external `:443` `599/599` ok, recovery -> `POLL_RECENT` (`1,055,346` rows). Stopping `sing-box` -> proxy `DEGRADED / SERVICE_INACTIVE`, accounting healthy, `:443` expected gap `30.92s`, self-healed on restart. |
+| H05-04 SSH/Controller outage | selected SSH block/restore, Controller off >=5m; state transitions and real traffic | **EXECUTED PASS (T07)**: 75s SSH block -> `node/observation SUSPECT`, `proxy UNKNOWN`, `:443` `763/763` ok (`0.00s` gap), auto-recovered; 320s Controller offline -> uninterrupted node traffic, post-restart bounded sync backfilled `6,000` rows (`cursor -> 206,605`), `HEALTHY`. |
+| H05-05 Findings/Timeline | real anomaly/normal comparison, service disruption, gap/corrupt evidence mapping | **EXECUTED PASS (T06/T07/T08/T09)**: `history_coverage=RAW_RECONSTRUCTED`, `day_basis=UTC_CONNECTION_START` verified (`neptunespear -08:00` UTC boundary rollover); isolated `/tmp` cache cap rehearsal (`8 MB` -> 500 rows -> tightened `401,408 B` -> `CACHE_LIMIT_REACHED`, cursor preserved, existing history readable -> raised `256 MB` -> resumed `+1,500` to `2,000`); Findings open/resolve verified across T07/T08 (`DRIFT_*`, `SYNC_LAG`). |
+| H05-06 Drift/read-only | inspect-capable Node, accepted baseline, listener/config/unit change and recovery; hashes/mtime/restarts and real proxy comparison | **EXECUTED PASS (T08 + `f05fab8` 24h)**: T08 baseline accept + 3 read-only rounds left file hashes/mtime unchanged, `NRestarts 0/0`; unit comment injection -> `drift=DRIFT` (`units changed_count=2`), restored -> `MATCH` (`520/520` `:443` ok); after `f05fab8` filtered ephemeral outbound UDP ports (`>= 32768`), 24h soak delivered **`288/288` `MATCH`** and `288/288` `NRestarts=0`. *Non-blocking limit*: restricted `vincula-observer` omits `CAP_NET_ADMIN`, so `firewall` reports `UNKNOWN` (`inspect.state=PARTIAL`) while all 7 Drift components are covered. |
+| H05-07 upgrade compatibility | two supported sources, canary migration/rollback, identity/profile/accounting preservation, <=3s measured new-connection bound | **EXECUTED PASS (T04, `330cdea` / `80e6f2d` hot-refresh)**: All 7 nodes migrated cleanly from actual fleet versions (`0.5.0`: `fresh050`, `eagleclaw`, `neptunespear`; `0.3.1`: `hot-beam-1`; `0.3.2`: `urgentfury`; `0.3.1-rc2`: `epicfury`, `upperhand`) to `0.5.5` / schema 5 with preserved identities, `short_id` (including empty `urgentfury`), client URIs, and accounting history (`neptunespear` `1.42 GB` DB, `2,288,807` connections); measured `:443` cutover max unavailability **`0.00s–1.10s`** (`<= 3s`); `fresh050` controlled rollback (`14.1s`) & re-upgrade plus `neptunespear` post-check auto-rollback (`4af12bc`) & clean re-upgrade (`330cdea`) verified. Note: semantic config projection ignores comment-only `config.toml` changes (tested via unit drift). |
+| H05-08 integrated closeout | fixed new RC >=24h, capacity/retention/corruption boundaries, manuals, risk/deferred-work review | **EXECUTED / READY FOR SIGN-OFF (`f05fab8`)**: Unbroken `24h00m38s` soak (`vcl-h05-t09p3-20261118T0829Z`, `144/144` DB `quick_check=ok`, `fleet.db` `4.01 -> 4.138 GB` = `48.2%` of `8 GiB` cap, `288/288` bounded sync `0` node errors, `audit_events=7,245,767`, `daily_usage=418,851`); prior pre-window aborted attempts (`p1` VM kill leaving `29 MB` `fleet.db-journal` repaired outside window via in-place rollback `integrity_check=ok`, `6,989,881` rows intact; proxy-hijack run) retained separately and not spliced; known limits & `0.6.x` items recorded in [0.6-0.7_Deferred_From_0.5.5.md](../../plans/0.6-0.7_Deferred_From_0.5.5.md). |
 
-Current PR #15 fix candidate: `bin/vincula` staged-library & rollback-common fix
-with updated `release.lock` (awaiting Linux rebuild verification & CI;
-`SOURCE_DATE_EPOCH` pinned to the fix commit timestamp).
-Historical / superseded records (do not substitute for the rebuilt RC):
-[21aba22 RC freeze / canary abort](RC_FREEZE_21ABA22.md) (`21aba22`, Node
-`7b7a1b60…`, Controller `784ca4d0…`, epoch `1794384920`),
-[support-boundary freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) (`4651064`, Node
-`38336240…`, Controller `e2daaaf…`, epoch `1793689859`) and
-[original candidate record](CANDIDATE_FREEZE.md) (`653f7dd`, Node `38336240…`,
-Controller `14312b21…`, epoch `1793689859`).
-Do not substitute the old 26h33m record for the new candidate's missing dimensions.
-Before mutation, prepare actual targets/window, backups, readback and recovery
-steps for user review. Stop on failure; retain raw failures and a separate recheck.
+## Sign-off Summary (VCL 0.5.5 / H05)
 
-Human acceptor: **not supplied**. UTC date: **not supplied**.
-Conclusion/signature: **not signed**. Main merge remains unperformed until PASS.
+| Field | Value |
+| --- | --- |
+| 关卡 | `H05` (`0.5.5` closeout / Observation Plane) |
+| 候选版本 | Controller/Node `0.5.5`; commit `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`); Controller `df2b038a6a4eab231ee68592be563b3bf1f53aa51caab066e1b77bbbca04dfb8`; Node `71b61c3d819a0a8539db5dfff0417794ec3b99e09ef09721e6f27e4dcfbd6290`; CI Run `#151` (`44037742663`, 7/7 `success`) |
+| 单项结果 | `8` 项核心现场验证全部执行完成（`H05-01..08`），待人工终审确认；P0/P1 遗留缺陷 = `0` |
+| 非阻塞限制 / 偏离 | (1) `urgentfury` 因控制机 ISP 上游 IPv4 阻断退出 24h 窗口（实测 6/7 真实节点 + 10 模拟节点 2h）；(2) 受限 `vincula-observer` 无 `CAP_NET_ADMIN` 致 `firewall` 为 `UNKNOWN`（7 个 Drift 投影组件完整）；(3) SSH `TIMEOUT` 折叠成 `ERROR`、只读 `hot_journal` 呈现及 SSH/observer 三层重构等记入 [0.6-0.7_Deferred_From_0.5.5.md](../../plans/0.6-0.7_Deferred_From_0.5.5.md) |
+| 人工结论 | **PENDING HUMAN**（已按实测整理完毕，等待 **Marz** 明确确认 `PASS`） |
+| 人工验收人 | **Marz** |
+| 签署时间 | **2026-11-19 (awaiting explicit PASS confirmation)** |
+
+*Historical superseded freezes:* [21aba22 RC freeze / canary abort](RC_FREEZE_21ABA22.md) (`21aba22`), [support-boundary freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) (`4651064`), and [original candidate record](CANDIDATE_FREEZE.md) (`653f7dd`). Retain failures and pre-window incidents separately; never splice soak durations. Main merge awaits explicit human `PASS` confirmation from **Marz** and green CI on PR #15.
