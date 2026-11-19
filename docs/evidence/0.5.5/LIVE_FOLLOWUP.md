@@ -1,7 +1,7 @@
-# 0.5.5 live acceptance — PR #15 (`f05fab8`) T01–T09 complete / T10 review
+# 0.5.5 live acceptance — PR #15 (`f05fab8`) H05 ACCEPTED / MERGING TO MAIN
 
-Status: **LIVE T01–T09 EXECUTED ON PR #15 (`f05fab8`, `SOURCE_DATE_EPOCH=1794899643`, CI Run `#151` 7/7 `success`) / T10 AWAITING HUMAN PASS SIGN-OFF BY MARZ**.
-Following the prior `21aba22` Batch 0 abort and iterative live fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 with `<= 1.10s` `:443` cutover unavailability, restricted `vincula-observer` & T05–T08 passed, and RC `f05fab8` completed an unbroken `24h00m38s` live soak (`vcl-h05-t09p3-20261118T0829Z`, 6/7 reachable nodes with `urgentfury` excluded by operator decision due to ISP upstream IPv4 block) plus matching 10-node 2h synthetic matrix (`abf23566…`, `7,200.0118s`, `PASS OFFLINE`). See [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md) and [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md).
+Status: **LIVE T01–T10 COMPLETE / H05 `ACCEPTED` (`PASS` BY MARZ, `2026-11-19T09:55Z`) / MERGING PR #15 -> `main`**.
+Following the prior `21aba22` Batch 0 abort and iterative live fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 with `<= 1.10s` `:443` cutover unavailability, restricted `vincula-observer` & T05–T08 passed, and RC `f05fab8` completed an unbroken `24h00m38s` live soak (`vcl-h05-t09p3-20261118T0829Z`, 6/7 reachable nodes with `urgentfury` excluded by operator decision due to ISP upstream IPv4 block) plus matching 10-node 2h synthetic matrix (`abf23566…`, `7,200.0118s`, `PASS OFFLINE`). Explicit `PASS` verdict was confirmed by **Marz** (`2026-11-19T09:55Z`). See [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md) and [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md).
 
 ## Current PR #15 candidate (2026-11-14, awaiting Linux build + CI)
 
@@ -76,9 +76,9 @@ Failure evidence is retained; a repaired run is a separate recheck. After cutove
 has new writes, preserve the new database before reverting to an older snapshot;
 that revert cannot be called lossless.
 
-## Operator handoff — T01–T09 complete / T10 pending explicit verdict
+## Operator handoff — T01–T10 complete (`PASS` by Marz)
 
-T01–T09 have been executed and consolidated in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md); historical failures remain retained separately from rechecks. Final verdict and mainline merge remain explicitly gated on **Marz** (T10).
+T01–T10 are complete and recorded in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md); historical failures remain retained separately from rechecks. Mainline merge proceeds without tag/release.
 
 | ID | Operator action | Status / Outcome |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ T01–T09 have been executed and consolidated in [HUMAN_ACCEPTANCE.md](HUMAN_ACC
 | T07 | In the canary window, separately inject sing-box/accountd and SSH/Controller outages | **DONE** (`accountd` stop / `sing-box` stop / 75s SSH block / 320s Controller offline recovery & bounded sync backfill) |
 | T08 | Apply and revert controlled listener/unit/config drift, then verify observation-only behavior | **DONE** (baseline accept, 3 read-only rounds zero side-effects, unit drift detect & restore to `MATCH`, `f05fab8` `288/288` listener `MATCH`) |
 | T09 | Keep 0.5.5 Nodes available for fixed-RC continuous 24h soak; run/revalidate separate ten-node 2h synthetic matrix | **DONE (6/7 scope)** (`f05fab8` `vcl-h05-t09p3-20261118T0829Z` `24h00m38s`, 289 rounds, `1,734/1,734 HEALTHY`, `1,440/1,440 :443 ok`, `288/288 drift MATCH`, `295/295` hashed paths; `urgentfury` disabled due to ISP IPv4 block; same-RC 10-node 2h synthetic `PASS OFFLINE` `7,200.0118s`) |
-| T10 | Review H05-01..08 evidence, limits and remaining defects | **IN REVIEW — PENDING EXPLICIT PASS VERDICT BY MARZ** (no automatic PASS, merge, tag or release) |
+| T10 | Review H05-01..08 evidence, limits and remaining defects | **DONE / PASS** (Explicit human verdict: **PASS** by **Marz** at `2026-11-19T09:55Z`; `6/7` 24h scope deviation, non-blocking limits & `0.6.x` deferred backlog accepted; approved to merge PR #15 into `main` without tag/release) |
 
 PR #13's offline freeze and 2h synthetic evidence are consolidated into PR #15.
 T01/T02 read-only discovery may proceed immediately; production cutover (T04)

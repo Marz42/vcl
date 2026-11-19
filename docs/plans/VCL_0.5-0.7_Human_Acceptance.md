@@ -1,7 +1,7 @@
 # VCL 0.5.x～0.7.x 大阶段人工验收
 
 
-**2026-11-14 当前 0.5.5 状态与验收入口（PR #15）：**前序 `21aba22` 制品已于 `fresh050` Canary `checkpoint` 阶段安全中止并作废（零节点变更；Controller `fleet.db` 已完成 schema-5 迁移）。PR #15 现已合入 `bin/vincula` staged 库解析顺序与 `upgrade-rollback-common.sh` 修复及回归测试，待现场 Linux（固定 `SOURCE_DATE_EPOCH`）验证构建与 CI 通过后重新固定新 RC。入口：[旧 RC 中止记录](../evidence/0.5.5/RC_FREEZE_21ABA22.md) · [实机前清单](../evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md) · [0.5.5 总结](../evidence/0.5.5/SUMMARY.md) · [H05 实录](../evidence/0.5.5/HUMAN_ACCEPTANCE.md) · [实机执行序列](../evidence/0.5.5/LIVE_FOLLOWUP.md)。Live 与 H05 仍为 PENDING。
+**2026-11-19 当前 0.5.5 状态（PR #15 / `f05fab8`）：**PR #15 已完成 T01–T09 实机与连续 24h 跑测，**Marz** 于 `2026-11-19T09:55Z` 正式签署 H05 `ACCEPTED (PASS)` 并准予合并入 `main`。入口：[旧 RC 中止与迭代记录](../evidence/0.5.5/RC_FREEZE_21ABA22.md) · [实机前清单](../evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md) · [0.5.5 总结](../evidence/0.5.5/SUMMARY.md) · [H05 实录](../evidence/0.5.5/HUMAN_ACCEPTANCE.md) · [实机执行序列](../evidence/0.5.5/LIVE_FOLLOWUP.md)。以下早期条目为历史记录，H06/H07 为后续阶段模板。
 
 **2026-11-08 当前 H05 范围修订：**最低支持 Node 为 0.5.5；七台实机统一 0.5.5，保留 OS/角色差异。旧版本仅验证现场必要的一次性迁入与恢复，不再要求旧 Node 兼容矩阵或两个任意历史来源。H05-07 按此修订执行；其余权限、真实代理、Inspect/Drift、24h soak 和人工签署门禁保留。Traffic Policy v0.1 纳入 0.6.x。以下旧范围为历史记录。
 **2026-11-03 用户批准的 H05 规模修订：**当前候选为 0.5.5；采用七台混合版本实机 + 至少十个模拟节点持续两小时替代旧十台实机默认。所有结果分别标实机/模拟，最终签署记录该偏差；仍需新 RC 连续 24h、真实代理和 Inspect/Drift。见 [0.5.5 SPEC](../specs/V0.5.5_Closeout.md)。
@@ -23,7 +23,7 @@
 
 | 关卡 | 候选版本 | 人工验收目标 | 实际记录落点（执行时建立） | 初始状态 |
 | --- | --- | --- | --- | --- |
-| H05 | 0.5.5 / 0.5.x RC | 可信 Observation，schema-5/凭据/容量收口 | `docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
+| H05 | 0.5.5 / 0.5.x RC | 可信 Observation，schema-5/凭据/容量收口 | `docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md` | ACCEPTED (PASS, Marz, 2026-11-19T09:55Z) |
 | H06 | 0.6.4 / 0.6.x RC | 声明→计划→执行→验证→回滚，策略/出口隔离 | `docs/evidence/0.6.4/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
 | H07 | 0.7.4 / 0.7.x RC | 静态两跳、人工切换、计量与容量 | `docs/evidence/0.7.4/HUMAN_ACCEPTANCE.md` | PENDING HUMAN |
 

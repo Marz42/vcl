@@ -1,6 +1,6 @@
-# 0.5.5 closeout — PR #15 (`f05fab8`) T01–T09 live execution complete / pending T10 verdict
+# 0.5.5 closeout — PR #15 (`f05fab8`) H05 ACCEPTED (`PASS` by Marz) / merging to `main`
 
-**2026-11-19 current entry (PR #15):** Following the earlier `21aba22` Batch 0 abort and iterative fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 (`<= 1.10s` `:443` cutover unavailability), T05–T08 passed with restricted `vincula-observer` active, and RC `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`, CI Run [`#151`](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 `success`) completed an unbroken `24h00m38s` live soak across 6/7 reachable nodes (`urgentfury` disabled by operator decision due to ISP upstream IPv4 block) plus a matching 10-node 2h synthetic matrix (`PASS OFFLINE`, `7,200.0118s`). Consolidated `H05-01..08` evidence awaits explicit human `PASS` confirmation from **Marz** before `review/0.5.5-upgrade-preparation -> main` merge. Prior `21aba22` / Batch 0–4 record:
+**2026-11-19 current entry (PR #15):** Following the earlier `21aba22` Batch 0 abort and iterative fixes (`7627f45` -> `330cdea` -> `80e6f2d` -> `f05fab8`), all 7 live nodes reached `0.5.5` / schema 5 (`<= 1.10s` `:443` cutover unavailability), T05–T08 passed with restricted `vincula-observer` active, and RC `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`, CI Run [`#151`](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 `success`) completed an unbroken `24h00m38s` live soak across 6/7 reachable nodes (`urgentfury` disabled by operator decision due to ISP upstream IPv4 block) plus a matching 10-node 2h synthetic matrix (`PASS OFFLINE`, `7,200.0118s`). **Marz** confirmed explicit human `PASS` (`2026-11-19T09:55Z`), authorizing `review/0.5.5-upgrade-preparation -> main` merge (without tag/release). Prior `21aba22` / Batch 0–4 record:
 [RC_FREEZE_21ABA22.md](RC_FREEZE_21ABA22.md). Acceptance entry:
 [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md) · [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md) ·
 [LIVE_PREFLIGHT_CHECKLIST.md](LIVE_PREFLIGHT_CHECKLIST.md).
@@ -36,8 +36,8 @@ is unchanged. Historical evidence remains tied to its original inputs.
 | Final RC `f05fab8` & CI (`2026-11-17`, PR #15) | PASS: `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`EPOCH=1794899643`, Controller `df2b038a…`, Node `71b61c3d…` matching `80e6f2d` `release.lock` 20/20); CI [#44037742663](https://github.com/Marz42/vcl/actions/runs/44037742663) 7/7 jobs `success`; excludes ephemeral UDP (`>= 32768`) sockets from listener drift projection |
 | Ten-node 2h synthetic matrix (`f05fab8`) | PASS OFFLINE: 10 simulated nodes, `7,200.0118s`, `PASS OFFLINE`, `two_hour_matrix=true`, `observation_errors=0`, bound to `f05fab8` (`abf23566…`) |
 | Continuous 24h integrated soak (`f05fab8`, 6/7 reachable nodes) | LIVE PASS (6/7 scope): `vcl-h05-t09p3-20261118T0829Z` (`2026-11-18T08:29:22Z -> 2026-11-19T08:30:00Z`, `24h00m38s`, 289 rounds, `1,734/1,734 HEALTHY`, `1,440/1,440 :443 ok`, `288/288 drift MATCH`, `144/144 DB quick_check=ok`, `295/295` hashed paths); `urgentfury` excluded (`enabled=false`) by operator decision due to ISP upstream IPv4 block |
-| H05-01..08 human judgment/signature | IN REVIEW BY **MARZ**: technical evidence consolidated in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md); awaits explicit human `PASS` verdict |
-| Mainline merge | BLOCKED ON H05 HUMAN SIGN-OFF; PR #15 ready to undraft/merge into `main` (closing PR #13) after **Marz** confirms `PASS` |
+| H05-01..08 human judgment/signature | **ACCEPTED (`PASS` by Marz, `2026-11-19T09:55Z`)**: recorded in [HUMAN_ACCEPTANCE.md](HUMAN_ACCEPTANCE.md) |
+| Mainline merge | **APPROVED / MERGING PR #15 -> `main`** (closing/superseding PR #13; no tag/release) |
 
 Maintain a separate failure/recheck record. Never replace historical failure or
 unperformed live acceptance with an offline/CI PASS.

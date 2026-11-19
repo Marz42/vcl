@@ -9,7 +9,7 @@ Nodes are supported (with explicit one-time ingress/recovery validation from
 actual source versions `0.3.1`, `0.3.1-rc2`, `0.3.2`, `0.5.0`), and Traffic
 Policy is deferred to `0.6.x`.
 
-**PENDING HUMAN / NOT SIGNED BY MARZ YET.** Technical/Live evidence H05-01..08 is consolidated from field execution; per [VCL_0.5-0.7_Human_Acceptance.md](../../plans/VCL_0.5-0.7_Human_Acceptance.md) and [LIVE_FOLLOWUP.md](LIVE_FOLLOWUP.md), final `PASS` and `review/0.5.5-upgrade-preparation -> main` merge require explicit confirmation by **Marz**.
+**ACCEPTED / PASS (Signed by **Marz** at `2026-11-19T09:55Z` / `17:55 +08:00`).** Live evidence H05-01..08 and approved scale/reachability deviations on `f05fab8` were reviewed and confirmed `PASS` by **Marz** ([VCL_0.5-0.7_Human_Acceptance.md](../../plans/VCL_0.5-0.7_Human_Acceptance.md)), authorizing PR #15 merge (`review/0.5.5-upgrade-preparation -> main`, no tag/release).
 
 Approved scale & reachability deviations (for explicit signoff):
 1. Seven real upgraded `0.5.5` Nodes plus 10 simulated Nodes for two hours (`abf235668b9fe3f33ea0bc4908bf42ee301ec390c42367098d70864d3295c2dd`, `7,200.0118s`, `PASS OFFLINE`, same RC `f05fab8`), replacing the old ten-real-node default.
@@ -32,10 +32,12 @@ Approved scale & reachability deviations (for explicit signoff):
 | --- | --- |
 | 关卡 | `H05` (`0.5.5` closeout / Observation Plane) |
 | 候选版本 | Controller/Node `0.5.5`; commit `f05fab8977039ba3e69b951ea059e1377f1e40b4` (`SOURCE_DATE_EPOCH=1794899643`); Controller `df2b038a6a4eab231ee68592be563b3bf1f53aa51caab066e1b77bbbca04dfb8`; Node `71b61c3d819a0a8539db5dfff0417794ec3b99e09ef09721e6f27e4dcfbd6290`; CI Run `#151` (`44037742663`, 7/7 `success`) |
-| 单项结果 | `8` 项核心现场验证全部执行完成（`H05-01..08`），待人工终审确认；P0/P1 遗留缺陷 = `0` |
+| 单项结果 | `8/8` **PASS** (`H05-01..08`); P0/P1 遗留缺陷 = `0` |
 | 非阻塞限制 / 偏离 | (1) `urgentfury` 因控制机 ISP 上游 IPv4 阻断退出 24h 窗口（实测 6/7 真实节点 + 10 模拟节点 2h）；(2) 受限 `vincula-observer` 无 `CAP_NET_ADMIN` 致 `firewall` 为 `UNKNOWN`（7 个 Drift 投影组件完整）；(3) SSH `TIMEOUT` 折叠成 `ERROR`、只读 `hot_journal` 呈现及 SSH/observer 三层重构等记入 [0.6-0.7_Deferred_From_0.5.5.md](../../plans/0.6-0.7_Deferred_From_0.5.5.md) |
-| 人工结论 | **PENDING HUMAN**（已按实测整理完毕，等待 **Marz** 明确确认 `PASS`） |
+| 人工结论 | **PASS (`ACCEPTED`)** |
 | 人工验收人 | **Marz** |
-| 签署时间 | **2026-11-19 (awaiting explicit PASS confirmation)** |
+| 签署时间 | **2026-11-19T09:55Z (2026-11-19 17:55 +08:00)** |
+| 放行范围 | `0.5.5` closeout ACCEPTED；准予合并 PR #15 (`review/0.5.5-upgrade-preparation -> main`，关闭/替代 PR #13，不打 tag/发 release)，开启 `0.6.0` Milestone 0 开发 |
+| 实际发布状态 | 合并 `review/0.5.5-upgrade-preparation -> main`（无 tag/release） |
 
-*Historical superseded freezes:* [21aba22 RC freeze / canary abort](RC_FREEZE_21ABA22.md) (`21aba22`), [support-boundary freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) (`4651064`), and [original candidate record](CANDIDATE_FREEZE.md) (`653f7dd`). Retain failures and pre-window incidents separately; never splice soak durations. Main merge awaits explicit human `PASS` confirmation from **Marz** and green CI on PR #15.
+*Historical superseded freezes:* [21aba22 RC freeze / canary abort](RC_FREEZE_21ABA22.md) (`21aba22`), [support-boundary freeze](SUPPORT_BOUNDARY_CANDIDATE_FREEZE.md) (`4651064`), and [original candidate record](CANDIDATE_FREEZE.md) (`653f7dd`). Retain failures and pre-window incidents separately; never splice soak durations.
