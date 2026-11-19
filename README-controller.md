@@ -1,6 +1,8 @@
 # Vincula controller (`vcl-fleet`)
 
-当前收口候选：Node/Controller **0.5.5**，accounting/fleet-cache **schema 5**；迁移、容量策略与验收状态见 [0.5.5 runbook](docs/operations/0.5.5-closeout-runbook.md)。 历史段落仍绑定原版本，不代表新候选已验收。
+The paired Node and Controller 0.5.5 passed H05 and merged into `main` in
+[PR #15](https://github.com/Marz42/vcl/pull/15). See the repository's
+[0.5.5 runbook](https://github.com/Marz42/vcl/blob/9cab4ac/docs/operations/0.5.5-closeout-runbook.md) for migration and recovery.
 Workstation Fleet Users & Audit CLI. **No root, no systemd, no `/etc/vincula`.**
 This zip is a user-local tool: it has no installer and no node `release.lock`.
 Integrity: `controller.lock` (per-member SHA-256) inside the zip, plus an
@@ -11,7 +13,7 @@ Runtime siblings next to `lib/vincula-fleet.py` include `vincula-audit.py`,
 `vincula-backup.py`, `vincula-audit-archive.py`, `workspace.py`, `access.py`,
 `trust.py`, `provision.py`, `legacy_seed.py`, and `vincula-ui/` (Local Audit UI).
 
-**Development candidate (0.5.5):** Controller and embedded Node payload
+**Compatibility (0.5.5):** Controller and embedded Node payload
 are both `0.5.5` (minimum supported Node `0.5.5`; paired runtime `0.5.5` only). Includes the SSH credential manager
 v2: deterministic Agent-fingerprint and Identity-File modes, machine-local public-key
 selectors, `CREDENTIAL_MIGRATION_REQUIRED`, and `access migrate`. Connections use
@@ -47,10 +49,9 @@ daily history survives raw pruning. `cache status --json` reports the local
 without deleting history. Node secrets use descriptors/private inputs, and Agent
 selector publication isolates refs and failed rebindings.
 
-The candidate is unreleased; Live, the new RC 24h soak and H05 remain pending.
-The approved scale is seven real 0.5.5 nodes with OS/role diversity plus ten simulated nodes for two
-hours. Current results and restrictions are in `docs/evidence/0.5.5/SUMMARY.md`.
-Development stops before 0.6.x until H05 is signed PASS.
+The merge did not create a version tag or GitHub Release. The
+[H05 record](https://github.com/Marz42/vcl/blob/9cab4ac/docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md) documents the real-node
+upgrade checks, continuous run, and support limitations.
 
 
 
@@ -71,11 +72,11 @@ Monitoring and dedicated probe setup: `docs/operations/monitoring-runbook.md`.
 4. From the unzipped folder:
 
 ```bat
-py -3 bin\vcl-fleet.cmd version
+bin\vcl-fleet.cmd version
 bin\vcl-fleet.cmd help
 bin\vcl-fleet.cmd init
 bin\vcl-fleet.cmd access bind admin --identity-file %USERPROFILE%\.ssh\id_ed25519
-bin\vcl-fleet.cmd node provision NAME --host HOST --host-key SHA256:… --server HOST
+bin\vcl-fleet.cmd node provision NAME --host HOST --host-key SHA256:… --identity-file "%USERPROFILE%\.ssh\id_ed25519" --server HOST
 bin\vcl-fleet.cmd sync --full
 bin\vcl-fleet.cmd status
 bin\vcl-fleet.cmd probe

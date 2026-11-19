@@ -71,20 +71,22 @@ Live 只在明确选择的节点和测试身份上进行；通知测试使用已
 
 ## H06：0.6.x Declarative Controller
 
-**前置环境：**H05 已签署；可恢复的 0.6.x Node、两个独立测试用户、desired Workspace/备份、direct 与 SOCKS5 出口、授权通知接收端、维护窗口；QoS Research Gate、A/B/C benchmark 与 fixed RC 24h soak 已完成。
+**前置环境：**H05 已签署。准备可恢复的 0.6.x Node、两个独立测试用户、desired Workspace 与备份、direct 和授权 SOCKS5 出口、可控目标、授权通知接收端及维护窗口。A/B/C benchmark 与固定 RC 24h soak 已完成。提交 [0.6.x SPEC](../specs/V0.6.x_SPEC.md) 的 QoS 研究结论和候选范围，纳入 QoS 时给出实测，延期时给出原因、关闭的 capability 与重开条件。
 
 | ID | 人工操作或见证步骤 | 通过标准 | 证据/AC |
 | --- | --- | --- | --- |
+| H06-00 SSH 闭环 | 检查 Agent 与 Identity File 的节点操作和 observer 接线，移除 observe 绑定后再次采样，审阅批采样与慢节点结果 | 受限 observer 正常采样，撤销后保留明确失败，无权限回退，慢节点与分项错误有界 | AC-6.0-00；F06-01、权限与采样记录 |
 | H06-01 声明与计划 | 声明缺失用户，查看 Desired/Observed Diff 与 plan；未批准先观察，再批准 apply/verify；随后重复 reconcile | 默认无 mutation；plan 清楚说明改动/风险/回退；批准后达成 desired；重复 NOOP，零重复写配置/重启 | AC-6.0-01～02、05～06；plan、journal、前后状态 |
 | H06-02 过期计划与未知 | 生成 plan 后人工改变测试 Node/Workspace；使用旧 plan；另检查观测缺失和旧 capability 节点 | PLAN_STALE 零 mutation；UNKNOWN 不猜测执行；缺能力节点不被强制升级/错误应用 | AC-6.0-03、06；兼容矩阵、拒绝日志 |
 | H06-03 配置事务与回滚 | 注入 staged invalid config；再制造 activation health fail；见证中途 crash、rollback fail 的恢复记录 | invalid 零 activation；LKG 成功恢复并可用；无法回滚明确 PARTIAL 与恢复指引；无半写配置假成功 | AC-6.0-04～05；故障注入、hash、真实代理结果 |
 | H06-04 告警生命周期 | 制造 outage/recovery/flapping；维护窗口 reboot；在窗口内制造无关故障；测试 silence 到期及渠道失败 | 聚合告警/恢复通知正确；只抑制相关事件；到期恢复；渠道失败不影响 monitor/代理，队列有界 | AC-6.1-01～05；接收端记录、Finding、journal、soak |
-| H06-05 逐用户 QoS | 审阅选型数据；并行跑 Alice/Bob；批准限速、移除、重启/rollback；见证异常 Finding→recommendation | 冻结的限速/隔离数值达标；Bob 不被误限；规则归属明确；未批准不执行；移除/回滚恢复 | AC-6.2-01～06；用户吞吐时间序列、规则 diff、资源记录 |
-| H06-06 逐用户出口 | Alice 走 SOCKS、Bob direct；比对实际出口 IP；破坏 SOCKS auth/可达性；核对 DNS/UDP/QUIC 和 A/B/C benchmark | Alice 按策略出口或显式失败，Bob 正常；零 silent direct fallback/串用户；协议行为明确；性能异常有解释 | AC-6.3-01～06；出口/协议结果、benchmark、Finding |
+| H06-05A Traffic Policy v0.1（必需） | 同节点 Alice 命中阻断，Bob 正常；将 Alice 绑定 SOCKS 后重试；查看命中记录并见证撤销/回滚 | 阻断优先于出口选择，规则版本与用户正确归属，命中证据经脱敏，Bob 正常 | AC-6.2-00、AC-6.3-01；实际请求结果、规则和 journal |
+| H06-05B 逐用户 QoS（按研究范围） | 审阅研究数据。纳入时并行跑 Alice/Bob，见证限速、重启和回滚；延期时核对理由、capability 已关闭和重开条件 | 纳入时隔离与回滚达标。延期时该项标 `DEFERRED`，H06 签署明确排除该能力 | AC-6.2-01；纳入时补 AC-6.2-02～06 吞吐、规则和资源记录 |
+| H06-06 逐用户出口 | Alice 走 SOCKS、Bob direct；比对实际出口 IP；破坏 SOCKS auth、可达性或 DNS；核对 A/B/C benchmark 及 UDP/QUIC/HTTP3 矩阵 | TCP/HTTPS 和 DNS 合同通过，Alice 按策略出口或显式失败，Bob 正常。未支持协议显式失败，无静默直连或串用户 | AC-6.3-01～06；出口/协议结果、benchmark、Finding |
 | H06-07 维护与受限管理 | 见证 minor upgrade、health-fail rollback、planned reboot、Controller 中断恢复；受限 operator 尝试任意 shell；检查 cleanup | canary 失败不扩散；回滚/恢复状态真实；身份/URI/accounting 保留；shell 越权拒绝；不删除非 VCL-owned 数据 | AC-6.4-01～05；维护计划、journal、备份/恢复核对 |
-| H06-08 综合安全与持续运行 | 运行已有 QoS/Egress 时停止 Controller；审阅 24h RC soak、secret scan、用户工作流与兼容表 | 现有数据面保留有效状态；无未批准策略变化、不可恢复损坏/泄漏/P0/P1；所有必要 gate 通过 | AC-6.0-06；AC-6.4-06；全阶段 evidence |
+| H06-08 综合安全与持续运行 | 运行已验收的 Traffic Policy 与 Egress 时停止 Controller，纳入 QoS 时加入对应流量；审阅 24h RC soak、secret scan、用户工作流与兼容表 | 数据面保留有效状态，未批准策略零变更，无不可恢复损坏、泄漏或 P0/P1，必需关卡通过 | AC-6.0-06；AC-6.4-06；全阶段 evidence |
 
-**通过后：**可进入 0.7.0 的 G0/实现。签署必须覆盖 QoS 与 Egress 的真实隔离、失败行为和维护恢复；“plan 能生成”不足以通过 H06。
+**通过后：**可正式集成 0.7.x。签署须覆盖 Traffic Policy 与 Egress 的真实隔离、失败行为和维护恢复，并注明 QoS 实测通过或延期。H06 前可使用隔离资源研究 0.7 两跳与会话切换。
 
 <a id="h07-07x-programmable-data-plane"></a>
 
@@ -99,7 +101,7 @@ Live 只在明确选择的节点和测试身份上进行；通知测试使用已
 | H07-03 协议与传输选择 | 审阅 transport ADR 和 0/1/3% loss 数据；见证 TCP/UDP/QUIC/HTTP3、DNS leak/CDN、MTU/MSS/PMTU/大文件 | 各协议与冻结范围一致；无静默降级/出口泄漏；核心要求无未解决缺口；性能/运维选型证据完整 | AC-7.1-01、04；benchmark/协议矩阵/ADR |
 | H07-04 故障与离线 | 重启 Entry/Egress；注入单侧 apply 失败；停止 Controller ≥5 分钟；检查新连接、既有静态路径与恢复 | 故障如实呈现；PARTIAL 有可执行恢复，零未知半配置/静默 direct；Controller 离线静态路径继续 | AC-7.1-03、05～06；代理时间序列、恢复/journal |
 | H07-05 链路观测 | 注入 link loss、停 Egress、恢复；停止 measurement；查看拓扑；审阅 100 节点调度和开销记录 | DEGRADED/UNAVAILABLE/HEALTHY 迁移正确，缺测 UNKNOWN；拓扑只读 cache；无 full mesh/gossip/probe storm，测量故障不改转发 | AC-7.2-01～05；调度计数、Health、CPU/网络对照 |
-| H07-06 人工主备切换 | primary 故障生成 recommendation，先不批准，再批准；恢复 primary；人工切回；另用健康双路做旧会话连续性测试 | 未批准零切换；新连接走 backup；健康旧会话不被主动迁移；恢复不自动切回；backup 不 ready 拒绝；多轮无 drift | AC-7.3-01～05；会话/路径标识、plan、journal |
+| H07-06 人工主备切换 | 见证主路故障建议与批准后立即切换。用健康双路测试活跃/未知时等待、确认空闲、到期/取消、Controller 恢复和人工切回。检查同 Entry 的无关用户 | 未批准、等待条件未满足和过期时零变更，符合条件时至多执行一次，新连接走指定路径。记录目标用户旧连接的中断范围，逐用户操作保持无关用户可用。备用未就绪拒绝，恢复后仍须批准切回 | AC-7.3-01～05；逐用户连接/路径证据、plan、journal |
 | H07-07 计量与容量 | 运行已知大小单用户两跳流量；核对 Entry/transit/egress/Fleet；中途切换后查旧/新 path；制造 capacity pressure | Fleet user-total 只计 Entry；transit 独立；switch 前后归属正确；近似计量差异有解释；压力仅 Finding/recommendation，不迁移用户 | AC-7.4-01～05；对账表、rollup、Finding |
 | H07-08 总体完成审阅 | 审阅固定 RC ≥24h 全链路 soak、三阶段 evidence、运行/回退手册、兼容表、限制和 secret scan | 无 P0/P1、双计、泄漏、未知断流、静默 fallback；User→Entry→Egress→Internet 可操作可解释；未实现自动路由如实说明 | AC-7.4-06；SUMMARY/SECURITY/COMPATIBILITY/SOAK |
 
@@ -146,6 +148,6 @@ Live 只在明确选择的节点和测试身份上进行；通知测试使用已
 
 - 所有必需单项 PASS、G0～G5 完整、P0/P1 为零，且人工明确签署，才可把大阶段状态改为 `ACCEPTED`。
 - 任何必需项 FAIL、PENDING LIVE、PENDING HUMAN、BLOCKED 均不能放行；不使用“有条件通过”掩盖未满足的 MUST。
-- H05/H06 未通过时，仅继续本阶段修复或下一阶段只读设计；不得进入下一大阶段实现。
+- H05 未通过时允许本阶段修复和下一阶段只读设计。H06 前允许隔离两跳选型与会话原型，0.7.x 正式集成须等待 H06 通过。
 - 修复后按影响范围复验并取得补充签署；更换候选或改变打包内容时，重新核对原签署是否仍适用。
 - 不要求验收人重新手工执行全部单元测试；要求其核对证据适用性，执行/见证关键业务、安全和故障恢复流程。

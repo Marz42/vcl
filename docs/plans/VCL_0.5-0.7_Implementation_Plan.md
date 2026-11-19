@@ -1,5 +1,14 @@
 # VCL 0.5.x～0.7.x 实施与验收方案
 
+**2026-11-19 开工入口：**0.5.5 已完成 H05 并合入 `main`。从 [0.6.x SPEC 与可行性研究](../specs/V0.6.x_SPEC.md) 开始。Tier 1 必须通过，QoS 隔离研究不通过时可记录延期。首个 SOCKS5 实验覆盖 TCP/HTTPS、DNS 和出口隔离。H06 前允许隔离两跳原型，正式集成在 H06 后。以下早期执行记录保留原日期与范围。
+
+**2026-11-17 0.6.x～0.7.x 路线图校准与执行约定：**结合 `0.5.5` 现场收口结果与用户确认，对 `0.6.x～0.7.x` 路线图作如下正式校准：
+1. **统一基线跃迁：** 进入 `0.6.0` 的最低支持 Node 基线已固定为 `0.5.5`（schema 5、非 root `vincula-accountd`、`vincula-observer` 已部署）；`0.3.x / 0.5.0` 的运行时兼容矩阵退役（仅保留旧版本作为历史证据记录）；`1.4 GB+` 节点 `accounting.db` 与 `3.8 GB+` 控制器 `fleet.db` 作为默认工程容量假设，禁止在高频路径跑全表扫描或 `PRAGMA integrity_check`。
+2. **内部测试版本定位与解耦推进：** `0.6.0～0.7.x` 均为内部测试阶段版本（正式生产环境不使用，直至对应大阶段门禁收口）。在保证模块间不产生数据模型或配置冲突的前提下，无强前后依赖关系的独立功能允许按灵活或并行顺序开发集成（见 §2.1）。
+3. **决策 1（0.6.0 Milestone 0）：** 将 **SSH 认证与连接三层闭环重构**（消除本机凭据层、Controller 路由层与 Node `vincula-observer` 层之间的 6 处断线，并引入单连接批量采样）置于 `0.6.0` 首位实施，在 Desired State Reconcile 之前一次性理顺 SSH 底座。
+4. **决策 2（0.6.2 Traffic Policy v0.1）：** 将 `2026-11-08` 决定的 **Traffic Policy v0.1（Policy Engine）** 正式锚定在 `0.6.2` 作为 Tier 1，并与 Tier 2 Per-User QoS 的后端 Research Gate 解耦，无依赖阻塞即可独立交付。
+5. **后续远景：** `0.7.x` 之后的演进规划（`0.8.x` 意图流量工程、`0.9.x` 护栏闭环自治、`1.0+` 零维护私有边缘网络家电）见 [0.7.x 之后展望白皮书](../specs/VCL_Post_0.7_Whitepaper.md)。
+
 **2026-11-03 当前执行入口：**按用户批准的 [0.5.5 收口合同](../specs/V0.5.5_Closeout.md) 完成现有分支，H05 PASS 后合并 main。日汇总改为独立保留；H05 规模采用七实机 + ≥10 模拟节点/2h，分别记录证据；仍需新 RC 24h 综合 soak。延期范围见 [0.6～0.7 待办](0.6-0.7_Deferred_From_0.5.5.md)。下列日期记录保留历史范围。
 
 
@@ -52,11 +61,11 @@
   → 0.5.2 Finding / Audit / Timeline
   → 0.5.3 Inspect / Drift / Verify
   → H05：0.5.x 人工验收
-  → 0.6.0 Desired / Reconcile / LKG
-  → 0.6.1 Alert / Incident
-  → 0.6.2 QoS / User Policy（先 Research Gate）
+  → 0.6.0 SSH 闭环底座 + Desired / Reconcile / LKG + R-03
+  → 0.6.1 Alert / Finding 噪声治理 / Incident
+  → 0.6.2 Traffic Policy v0.1 (Tier 1) + QoS (Tier 2，先 Research Gate)
   → 0.6.3 Egress / Per-user Binding
-  → 0.6.4 Controlled Maintenance
+  → 0.6.4 Controlled Maintenance / 归档清理 / R-14 / Doctor
   → H06：0.6.x 人工验收
   → 0.7.0 Roles / Transit Identity / ACL
   → 0.7.1 Static 2-Hop（先 benchmark + transport ADR）
@@ -69,10 +78,26 @@
 | 大阶段 | 子版本 | 交付目标 | 进入条件 | 收尾关卡 |
 | --- | --- | --- | --- | --- |
 | A：Observation Plane | 0.5.0～0.5.3 | 事实可信、问题可解释、观察不改变数据面 | 核对当前 0.5.0 基线 | 全链路 soak + H05 |
-| B：Declarative Controller | 0.6.0～0.6.4 | 声明、计划、人工批准、执行、验证、回滚可闭合 | H05 明确 PASS | 运维/QoS/Egress 综合回归 + H06 |
+| B：Declarative Controller | 0.6.0～0.6.4 | 声明、计划、人工批准、执行、验证、回滚可闭合 | H05 明确 PASS | 运维/Traffic Policy/Egress 综合回归 + H06，QoS 按研究结果纳入或延期 |
 | C：Programmable Data Plane | 0.7.0～0.7.4 | 静态两跳、观测、人工切换、计量不双计 | H06 明确 PASS | 两跳全链路 soak + H07 |
 
 时间安排以门禁和测试环境就绪为依据，不在尚未完成 QoS/transport 研究前承诺固定工期。各版本内部按“合同 → 服务与存储 → Node/CLI/UI 接入 → 自动化与安全 → Live/soak → 证据收口”推进。
+
+### 2.1 2026-11-17 校准：0.6.x～0.7.x 模块解耦与并行开发矩阵
+
+鉴于 `0.6.0～0.7.x` 定位为内部测试版本（不承担现网生产流量），工程实施上以**依赖边界**而非僵化版本号顺序为准；不冲突的独立模块可先行开发或在统一测试分支集成：
+
+| 模块 / 能力 | 归属里程碑 | 强前置依赖 | 可否解耦 / 并行推进 |
+| --- | --- | --- | --- |
+| SSH 认证三层闭环与 Observer 批量采样 | `0.6.0` (Milestone 0) | `0.5.5` Node 基线（H05 收口后） | **基础前置**：建议最先合入，消除后续所有功能测试的 SSH/凭据摩擦 |
+| Desired / Diff / Operation / LKG 事务 + R-03 重配置 | `0.6.0` | `0.6.0` M0（或并行合同冻结） | **配置底座**：后续变更类能力（0.6.2/0.6.3/0.6.4/0.7.x）复用其事务与 LKG |
+| Alerting / 维护窗口 / Finding 噪声治理 | `0.6.1` | `0.5.5` Finding/Timeline；Operation Journal | **高度正交**：可与 `0.6.0` Desired/LKG 或 `0.6.2` 并行开发，互不冲突 |
+| Traffic Policy v0.1（Rule Groups / 命中审计） | `0.6.2` (Tier 1) | `0.6.0` Desired/LKG | **可独立于 QoS Research Gate 推进**；仅与 `0.6.3` 在 sing-box 路由表优先级上对齐 |
+| Per-User QoS（带宽/连接保护） | `0.6.2` (Tier 2) | QoS Research Gate + `0.6.0` LKG | 研究通过才纳入候选。无法证明隔离时登记延期，Tier 1 和 H06 可按冻结范围推进 |
+| Per-User Egress（direct / socks5） | `0.6.3` | `0.6.0` Desired/LKG + secret-ref | 可与 `0.6.2` 并行设计编译，合入前锁定与 Policy 路由规则先后顺序 |
+| Fleet 升级 / 归档清理 / R-14 / 大库优化 / Doctor | `0.6.4` | `0.5.5` schema-5；`0.6.0` Operation | 其中 `fleet doctor`、R-14 清理、100k/1M 汇总优化与上游功能完全正交，可随时单列落地 |
+| Node Roles / Transit Identity / ACL (`0.7.0`) | `0.7.0` | `0.6.0` 事务/secret-ref；`0.6.4` 受限管理 SSH | 内部测试期可提前验证协议原型，正式集成需在 H06 收口后 |
+| Static 2-Hop / Link Probe / Failover / Path Accounting | `0.7.1`～`0.7.4` | `0.7.0` + Transport ADR + `0.5.5` 账本 | `0.7.1` 依赖 Transport ADR 并冻结会话的实际 Path 与配置代次来源；`0.7.2` 复用 M0 Observer 通道；`0.7.4` 复用 schema-5 `daily_contributions` 的差额贡献机制 |
 
 ## 3. 每个子版本统一执行流程
 
@@ -207,39 +232,47 @@
 
 ## 5. 阶段 B：0.6.x Declarative Controller
 
-### 5.1 0.6.0：Desired State、Reconciliation 与 LKG
+### 5.1 0.6.0：SSH 闭环底座、Desired State、Reconciliation 与 LKG
 
-**依据：** Master §8.1。**进入条件：**H05 PASS；已有 workspace/capability/inspect/finding/journal 可复用。
+**依据：** Master §8.1；`0.5.5` 延期清单（T05 SSH/Observer、R-03）。**进入条件：** H05 PASS；Node 基线统一为 `0.5.5+`。
 
-实施顺序：
+实施顺序（**Milestone 0 优先理顺 SSH 底座，随后落地声明式事务与 R-03**）：
 
-1. 冻结 authoritative desired schema（Node/User/Deployment，Policy/Egress 可先定义结构）、旧 Workspace 迁移、Observed 新鲜度和兼容矩阵；旧 Node 不强制升级。
+0. **Milestone 0 — SSH 认证与连接三层闭环重构（消除 6 处断线）：**
+   - **接线 1（生命周期入口接入 Ref / Agent）：** 为 `node provision` / `adopt` / `register` / `replace` / `set` 统一增加 `--admin-credential-ref`、`--observe-credential-ref` 与 `--agent [--fingerprint]`；在绑定 `observe` 凭据时本地前置校验 `ssh-ed25519` 算法；为 `identity_file` 绑定补齐统一公钥提取接口。
+   - **接线 2（受管 Observer 自动部署与禁回退）：** 在 `provision` / `adopt` / `upgrade apply` / `replace` / `node set` 中编排推送公钥并远端执行 `vcl observer install-key --file`，自动固化 `observe_ssh_user="vincula-observer"` 并立即用 `observe` 路由验证 `vcl identity --json`；提供独立修复入口 `vcl-fleet access sync-observer <node>`；彻底废除 `observe` 默认回退到 `root`（`ssh_user`）的隐式行为。
+   - **接线 3（合并双轨传输栈与错误保留）：** 统一 `observation_ssh_json` 与 `ssh_remote_json`，使用返回结构化 `facts` 的 `resolve_identity` 替代直接调 `_host.die()` 的 `node_identity_file_for_class`，确保 `--json` 命令与 `monitor` 完整保留 `CREDENTIAL_UNBOUND` / `AGENT_UNAVAILABLE` / `AGENT_KEY_MISSING` 错误码与提示；`sync --full` 只读探针同步收敛至 `observe` 路由。
+   - **接线 4（Observer 批量帧协议与连接复用）：** 扩展 `lib/observer.py` 支持单次 SSH/Unix-Socket 会话批量执行白名单命令集（`capabilities` + `telemetry snapshot/audit/users` + `inspect` + 单次 `identity`），将 `monitor` 单节点每轮 5～7 次短连接握手压缩为 1 次，并在 POSIX 启用受管目录的 `ControlMaster`/`ControlPersist`。
+1. 冻结 authoritative desired schema（Node/User/Deployment，Policy/Egress 可先定义结构）、旧 Workspace 迁移、Observed 新鲜度和兼容矩阵（Node 最低支持 `0.5.5`）。
 2. 提取共享 Operation/Journal 服务；定义 operation_id/type/target/precondition/changes/risk/postcondition/rollback/result，明确每节点锁、幂等键、失败状态与恢复入口。
 3. 实现 Desired/Observed Diff：MATCH/DRIFT/MISSING/EXTRA/DEGRADED/UNKNOWN；默认只生成 deterministic plan，敏感数据仅以引用表达。
 4. 实现显式 approve/apply；执行前重查 Workspace revision、Node/instance、capability、有效配置指纹等前置条件，不一致返回 PLAN_STALE 且零 mutation。
 5. 建立 staged/current/previous(LKG) 事务：generate → schema/sing-box check → stage → atomic activate → health gate → commit；失败恢复 LKG 并 verify。
-6. 实现 crash 恢复、rollback 失败后的 PARTIAL/恢复指引；接入 CLI/UI 共享 plan 结果，跑迁移、并发和 Live 矩阵。
+6. **R-03 Typed Reconfiguration：** 基于上述统一事务实现已装节点的受管重配置（修改 VLESS 监听端口、REALITY SNI、advertised server 等），保留 `node_id` / `instance_id` / 用户身份 / accounting，并生成匹配的客户端元数据刷新提示，拒绝/失败零部分激活。
+7. 实现 crash 恢复、rollback 失败后的 PARTIAL/恢复指引；接入 CLI/UI 共享 plan 结果，跑迁移、并发和 Live 矩阵。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
+| AC-6.0-00 (M0) | 纯 Agent 模式与 Identity File 均可完成 `provision`/`adopt`/`replace` 且按显式操作开通 `vincula-observer`；未配置 `observe_ssh_user` 时拒绝观测；凭据错误保留结构化结果；支持批协议时 `monitor` 单节点每轮最多发起 1 次 observer SSH 请求，连接复用单独量化 |
 | AC-6.0-01 | 旧 Workspace 迁移可验证/回退；六类 Diff 均有 fixture；缺测不推断需删除/修改；默认 reconcile 只生成 plan |
 | AC-6.0-02 | desired 已满足时连续 reconcile 为 NOOP，config hash/mtime/restart count 不变；相同输入产生相同 plan 内容 |
 | AC-6.0-03 | plan 后修改 Node 或 Workspace → PLAN_STALE，零远端 mutation；并发 apply 受锁/precondition 约束，不发生双写 |
 | AC-6.0-04 | invalid config 零 activation；写入/激活中途 kill 后 current 是完整旧/新版本之一；health fail 恢复可验证 LKG；rollback 失败明确 PARTIAL |
-| AC-6.0-05 | Live 完成 MISSING 用户的 plan→人工 approve→apply→verify、DRIFT、PLAN_STALE、invalid stage、health-fail rollback、Controller loss 全矩阵 |
-| AC-6.0-06 | 至少一个生产样本完成 desired migration + NOOP；identity/URI/accounting 无回归；plan/journal 无 secret，LKG owner/mode 合规；Node 0.5.x 不接受不支持的 0.6 mutation |
+| AC-6.0-05 | Live 完成 MISSING 用户的 plan→人工 approve→apply→verify、DRIFT、PLAN_STALE、invalid stage、health-fail rollback、Controller loss 及 R-03 端口/SNI 重配置与回滚矩阵 |
+| AC-6.0-06 | 至少一个生产/测试样本完成 desired migration + NOOP；identity/URI/accounting 无回归；plan/journal 无 secret，LKG owner/mode 合规；缺能力 Node 不接受不支持的 0.6 mutation |
 
-### 5.2 0.6.1：Alerting 与 Incident Operations
+### 5.2 0.6.1：Alerting、Finding 噪声治理与 Incident Operations
 
-**依据：** Master §8.2。**依赖：**Finding、Operation、持久化状态与可靠观测。
+**依据：** Master §8.2；`0.5.5` 延期清单（Finding noise）。**依赖：**Finding、Operation、持久化状态与可靠观测。
 
 实施顺序：
 
-1. 扩展 ACTIVE/ACKNOWLEDGED/SUPPRESSED/RESOLVED，定义去抖、聚合键、cooldown、恢复通知与时间窗口。
-2. 建 alert engine 和 bounded queue，持久化重试/去重状态，使 Controller restart 后不重发整批旧告警。
-3. 实现至少一个生产可用通知 adapter；执行默认先做 Webhook，Telegram/Email 作为后续可替换 adapter。token/password 使用 secret-ref，payload 不执行本地 shell。
-4. 实现 node/fleet maintenance window、acknowledge、按 node/type silence 和过期恢复，全部写 operation journal；只抑制相关通知，不丢原始 observation。
-5. 接入 CLI/UI 告警状态/事件记录，验证 flapping、渠道故障、Controller restart 与 24h soak。
+1. 分别记录 Finding 的 ACTIVE/RESOLVED、确认与静默、通知投递状态。冻结去抖、聚合键、cooldown、恢复通知与时间窗口。
+2. **Finding 噪声治理（0.5.5 延期项）：** 针对现场 26.5h soak 暴露的 `SYNC_LAG`（Controller 停止运行期间按预期陈旧）与 `NETWORK_RATE_ANOMALY`（TB 级正常突发业务流量）反复 `OPEN/RESOLVED` 抖动，为检测与状态机增加迟滞窗口（hysteresis）、持续时间阈值与“预期长期未同步”聚合态，同时保证对无关真实故障零抑制、保留完整原始观测事实。
+3. 建 alert engine 和 bounded queue，持久化重试/去重状态，使 Controller restart 后不重发整批旧告警。
+4. 实现至少一个生产可用通知 adapter；执行默认先做 Webhook，Telegram/Email 作为后续可替换 adapter。token/password 使用 secret-ref，payload 不执行本地 shell。
+5. 实现 node/fleet maintenance window、acknowledge、按 node/type silence 和过期恢复，全部写 operation journal；只抑制相关通知，不丢原始 observation。
+6. 接入 CLI/UI 告警状态/事件记录，验证 flapping、正常突发流量对照、渠道故障、Controller restart 与 24h soak。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
@@ -249,25 +282,32 @@
 | AC-6.1-04 | 通知渠道失败只影响投递状态，队列/重试次数有上限，不影响 monitor/data plane；ack/silence 有权限检查和 journal |
 | AC-6.1-05 | 真实测试接收端收发通过且无 credential 泄漏；24h soak 无 alert storm/无界队列；执行 Live 发消息前明确目标接收端与发送授权 |
 
-### 5.3 0.6.2：QoS 与 User Policy
+### 5.3 0.6.2：User Policy Engine — Traffic Policy v0.1 与逐用户 QoS
 
-**依据：** Master §8.3。**依赖：**Desired/Operation/LKG；先完成 Research Gate。
+**依据：** Master §8.3；`2026-11-08` 用户决策 & `2026-11-17` 路线校准（Traffic Policy v0.1）。**依赖：**Desired/Operation/LKG；Tier 1（Traffic Policy v0.1）可不依赖 Tier 2（QoS）的后端 Research Gate 独立推进。
 
-实施顺序：
+实施顺序（**分为互不阻塞的两个 Tier**）：
 
-1. 做有限范围 spike：比较 sing-box 原生、tc/nftables 等 backend，证明如何将已认证用户映射到 enforcement；测 TCP/UDP、规则恢复、CPU/RAM、accountd/路由耦合。
-2. 形成 QoS 决策记录：backend、支持/不支持项、VCL-owned rule 标记、权限、重启语义、回滚、性能与隔离结果；无法证明 per-user isolation 则停止 production 实现收口。
-3. 冻结 Policy/User binding schema、带宽单位、方向、burst、soft connection warning、可行时的 hard guard，以及有限时策略到期行为。
-4. 通过统一 plan/apply/verify/rollback 编译和应用规则；只操作 VCL-owned rules；NOOP 不重建规则，service/node restart 后有效策略符合声明。
-5. 将 Finding 转为 Recommendation/Operation Plan，支持 recommend/approve；无默认 automatic 执行入口。
-6. 执行 Alice/Bob 隔离、TCP/UDP、规则移除/重启/回滚、持续限速 soak 和人工 approve 链路。
+#### Tier 1 — Traffic Policy v0.1（Policy Engine，无 Research Gate 依赖）
+1. 冻结版本化 `RuleGroup` schema（如域名/后缀/规则集匹配，典型场景：阻断 Steam 下载域名）及逐用户 Policy 绑定模型；明确记录客户端侧预解析 IP / QUIC / DoH 绕过等域名可见性与覆盖边界。
+2. 实现确定性 `allow / reject` 路由编译，严格通过 `0.6.0` 的 `plan → stage → check → activate → verify → LKG rollback` 事务下发；验证同节点不同用户的规则隔离（Alice 被阻断、Bob 正常）。
+3. 接入可审计的规则命中（`rule-hit`）事件，打通至 `accountd`/审计导出或结构化本地诊断视图，禁止将未声明域名内容全量落入通用日志。
+
+#### Tier 2 — Per-User QoS（先完成 Research Gate）
+4. 做有限范围 spike：比较 sing-box 原生、tc/nftables 等 backend，证明如何将已认证用户映射到 enforcement；测 TCP/UDP、规则恢复、CPU/RAM、accountd/路由耦合。
+5. 形成 QoS 决策记录，包含 backend、支持项、VCL-owned rule 标记、权限、重启语义、回滚、性能和隔离。无法证明用户隔离时记录 `DEFERRED`、关闭 capability，并在候选冻结前记录延期原因与重开条件。AC-6.2-01 见证研究结果，AC-6.2-02～06 适用于纳入候选的 Tier 2。
+6. 冻结 QoS Policy/User binding schema、带宽单位、方向、burst、soft connection warning、可行时的 hard guard，以及有限时策略到期行为。
+7. 通过统一 plan/apply/verify/rollback 编译和应用规则；只操作 VCL-owned rules；NOOP 不重建规则，service/node restart 后有效策略符合声明。
+8. 将 Finding 转为 Recommendation/Operation Plan，支持 recommend/approve；无默认 automatic 执行入口。
+9. 执行 Alice/Bob 隔离、TCP/UDP、规则移除/重启/回滚、持续限速 soak 和人工 approve 链路。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
-| AC-6.2-01 | Research Gate 有实测报告和安全/回滚结论；用户身份到规则映射可证明；仅有全节点限速不能视为 per-user QoS |
+| AC-6.2-00 (Policy v0.1) | 版本化规则组与逐用户绑定正反例通过；确定性 `allow/reject` 编译并经过 `plan→stage→activate→verify→rollback`；Live 实测 Alice 命中 Steam 等目标域名阻断且产出可审计 `rule-hit` 事件，Bob 访问正常，域名可见性边界文档化 |
+| AC-6.2-01 | Research Gate 有实测报告及安全/回滚结论。纳入 Tier 2 须有用户身份到规则的映射与隔离证据。延期须有原因、关闭的 capability 和重开条件 |
 | AC-6.2-02 | Policy apply 幂等；删除后恢复 baseline；NOOP 不重建规则；重启符合 desired；非 VCL-owned 规则保持不变 |
 | AC-6.2-03 | 执行默认：在带宽余量充足、无竞争瓶颈的双用户测试中，Alice 设 20Mbps，预热后 3×60s 的吞吐均值在目标 ±15% 内；Bob 吞吐相对独立对照下降 ≤10%。环境不满足则重建测试条件，不直接归 PASS |
-| AC-6.2-04 | TCP/UDP 分别实测；soft threshold 命中能告警，hard guard 若不可行明确 unsupported、不得宣称已支持；异常用户不能耗尽整个 Node 的连接资源 |
+| AC-6.2-04 | TCP/UDP 分别实测。soft threshold 命中能告警；纳入 hard guard 时验证异常用户达到上限后同节点其他用户仍可建立连接。未实现的 hard guard 明确 `UNSUPPORTED` |
 | AC-6.2-05 | Finding→recommendation→人工 approve→apply 生效；拒绝/未批准时零 mutation；策略 rollback 恢复，持续限速无资源泄漏/全节点误限速 |
 | AC-6.2-06 | 无新增公网管理端口，规则权限和所有权可审计；有限时策略的到期恢复作为已批准操作的一部分验证，不成为无人值守策略决策 |
 
@@ -280,44 +320,46 @@
 实施顺序：
 
 1. 定义独立 Egress 资源（direct/socks5）及 credential_ref；User 引用 Egress，禁止把 SOCKS URL 硬编码进 user 字段。
-2. 编译 auth_user→outbound，分别支持 direct、SOCKS no-auth，以及实际认证场景需要的 username/password；secret 通过受限文件/通道注入，不进 argv/log。
-3. 冻结 DNS 本地/远端解析、域名匹配、SOCKS5h 等价语义、CDN locality、UDP/QUIC/HTTP3 支持和不支持时的显式失败方式。
+2. 编译 auth_user→outbound，分别支持 direct、SOCKS no-auth，以及实际认证场景需要的 username/password；secret 通过受限文件/通道注入，不进 argv/log。**路由优先级协同：** 与 `0.6.2` Traffic Policy v0.1 共用确定性 sing-box 路由规则编译器，保证用户级 `reject` 规则先于用户级 `Egress` 出站匹配，绑定外部 SOCKS5 绝不绕过阻断策略。
+3. 冻结 TCP/HTTPS、DNS 本地/远端解析、域名匹配、SOCKS5h 等价语义与 CDN locality。UDP/QUIC/HTTP3 逐项实测，记录支持范围与显式失败方式。用户名密码认证在可信私网或受加密保护的链路上验证。
 4. 实现 bounded Egress probe：TCP、auth、CONNECT、有效出口 IP、latency/TTFB；失败进入 Finding/Health；默认 fail-closed。
 5. 经共享服务完成 add/update/remove/bind 的 plan/apply/verify/rollback，CLI/UI 展示相同 effective egress；direct 用户保持隔离。
 6. 按固定 A/B/C 真实拓扑执行 benchmark 与故障矩阵，将数据和解释写入 evidence。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
-| AC-6.3-01 | Egress/secret-ref schema 正反例通过；增删改幂等、回滚可恢复；Alice/Bob binding 不串线，CLI/UI effective egress 一致 |
+| AC-6.3-01 | Egress/secret-ref schema 正反例通过；增删改幂等、回滚可恢复；Alice/Bob binding 不串线，CLI/UI effective egress 一致；与 `0.6.2` Policy v0.1 联合编译时阻断规则优先生效 |
 | AC-6.3-02 | Live Alice 出口 IP 为 SOCKS，Bob 为 VPS；错误密码、SOCKS 停机、超时均使 Alice 显式失败且 Bob 正常；出口观测证明零 silent direct fallback |
 | AC-6.3-03 | DNS leak/domain/CDN 行为符合冻结语义；UDP、QUIC/HTTP3 有逐项实测结果，不支持时明确失败，不静默降级/绕过出口 |
-| AC-6.3-04 | A=Client→LAX VLESS→direct；B=Client local dialer-proxy→LAX VLESS→SOCKS5；C=Client→LAX VLESS→VPS-side SOCKS5→target；固定目标/负载，保存每组 latency 10 次 min/median/max、cold TTFB 10 次 median、总请求时间、吞吐 3 次及两段 RTT |
+| AC-6.3-04 | A=Client→VPS→direct，B=客户端侧 dialer-proxy 配置，C=Client→VPS→VPS-side SOCKS5→target。先记录每组实际跳序、DNS 和真实出口，再以固定目标/负载保存 latency 10 次 min/median/max、cold TTFB 10 次 median、总请求时间、吞吐 3 次及可测的分段 RTT |
 | AC-6.3-05 | C 无无法解释的巨大 overhead；不要求与拓扑无关的固定提升比例。异常开销须复测定位并关闭原因后收口，不能只填“能访问” |
 | AC-6.3-06 | 错误/泄漏/故障注入及真实用户回归通过；密码不进 Workspace 明文、argv、log、journal；SOCKS 故障不影响 direct 用户 |
 
 **环境前置：**需 LAX VPS、US-West SOCKS 与可控客户端/目标；准备 no-auth/auth 和 UDP 支持矩阵。无法取得指定环境时标 `PENDING LIVE`，其他地区替代须先更新 G0 的拓扑与偏差说明。
 
-### 5.5 0.6.4：受控维护与 Fleet 升级编排
+### 5.5 0.6.4：受控维护、容量归档闭环、R-14 清理与 Fleet Doctor
 
-**依据：** Master §8.5、§16.2。**依赖：**0.5.0 单节点 upgrade、0.6.0 事务、0.6.1 maintenance window。
+**依据：** Master §8.5、§16.2；`0.5.5` 延期清单（归档/修剪/压缩、R-14、大历史优化与 Doctor、升级超时透传与重检分离）。**依赖：**0.5.0 单节点 upgrade、0.5.5 schema-5 账本、0.6.0 事务与 SSH 闭环、0.6.1 maintenance window。
 
 实施顺序：
 
-1. 统一单节点与 fleet upgrade plan 的模型，输出 current/target、compatibility、precondition、备份、预计停机、rollback；明确旧 CLI 的兼容入口。
+1. 统一单节点与 fleet upgrade plan 的模型，输出 current/target、compatibility、precondition、备份、预计停机、rollback；明确旧 CLI 的兼容入口。在 `node_upgrade.py` 远端升级编排中正式透传 `VCL_ACCOUNTD_HEALTH_TIMEOUT`，并将重度 `PRAGMA integrity_check` 与日常 30s 遥测/状态轮询彻底隔离（仅保留在 `vcl verify`、升级前检查及受管维护动作中）。
 2. 编排 preflight→backup→stage→apply→service health→proxy probe→commit；执行默认先 canary、再逐节点滚动，失败停止扩散。
 3. 实现中断恢复、previous runtime/config/service 恢复、verify 以及 ROLLED_BACK/PARTIAL；不宣称跨节点原子提交或分布式回滚。
-4. 加入 typed maintenance allowlist：restart sing-box、restart accountd、reboot、cleanup VCL-owned data；cleanup 有 ownership/边界检查。
-5. 完成 restricted management SSH：no-PTY/no-forwarding、forced-command/typed dispatcher、observer/operator/admin 分权与 capability；任意 shell 被拒。
-6. 在维护窗口做真实 minor upgrade、health-fail rollback、planned reboot，完成 0.6.x 综合 RC/soak 并提交 H06。
+4. 加入 typed maintenance allowlist：restart sing-box、restart accountd、reboot、cleanup VCL-owned data；**纳入 R-14 运行时废弃清理**：对中止的 `runtime-only` 替换残留执行显式所有权校验（install manifest / VCL-owned paths），安全卸载并坚决拒绝触碰非 VCL 文件或符号链接，覆盖中断与恢复测试。
+5. **实现有界存储归档、修剪与压缩闭环（0.5.5 延期项）：** 针对 GB 级 `fleet.db` / `accounting.db`，严格遵循“先 `archive verify` 与可恢复证明，再执行有界清理/压缩”的顺序；包含所有权校验、失败回滚、保留显式 `history_coverage` 覆盖区间说明。
+6. **大历史汇总优化与 `vcl-fleet doctor`（0.5.5 延期项）：** 基准包含 100k、1M 和接近 H05 实测的 7.24M 条 Fleet 审计事件。实现增量、幂等、原子汇总，与全量重算核对总量与游标。Doctor 默认零 SSH、只读、脱敏，显示 Workspace、凭据绑定、observer 最近已知状态、缓存容量与覆盖，并区分需要恢复的 SQLite journal 与经证实的损坏。
+7. 完成 restricted management SSH 收口：no-PTY/no-forwarding、forced-command/typed dispatcher、observer/operator/admin 分权与 capability；任意 shell 被拒。
+8. 在维护窗口做真实 minor upgrade、health-fail rollback、planned reboot、归档修剪与 R-14 清理演练，完成 0.6.x 综合 RC/soak 并提交 H06。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
 | AC-6.4-01 | 损坏/digest 不符/不兼容 artifact 零 apply；backup 不满足时拒绝；manifest/digest 必须校验，签名能力按 G0 声明，不虚称已签名 |
-| AC-6.4-02 | health gate 失败恢复旧 runtime/config/service 并 verify；Controller 中途退出后能恢复或明确 PARTIAL；journal 足够定位每节点已完成步骤 |
-| AC-6.4-03 | canary 失败不继续扩散；无 distributed rollback 假承诺；所有 maintenance 仅在 allowlist 内，cleanup 不触及非 VCL-owned 数据 |
+| AC-6.4-02 | health gate 失败恢复旧 runtime/config/service 并 verify；`VCL_ACCOUNTD_HEALTH_TIMEOUT` 正确透传；Controller 中途退出后能恢复或明确 PARTIAL；journal 足够定位每节点已完成步骤 |
+| AC-6.4-03 | canary 失败不继续扩散；无 distributed rollback 假承诺；所有 maintenance 仅在 allowlist 内；R-14 cleanup 经所有权校验且拒绝外部文件/软链 |
 | AC-6.4-04 | restricted operator 无法执行任意 shell/越权操作/转发；observer 不能 mutation；备份和凭据的 owner/mode/脱敏检查通过 |
-| AC-6.4-05 | Live 0.6.x minor upgrade、主动 health fail→rollback、maintenance reboot 全部通过；URI、identity、accounting 保留；真实 proxy 恢复与预期一致 |
-| AC-6.4-06 | 0.6.x 固定 RC 24h 综合 soak 覆盖 reconcile、alert、QoS、Egress、维护与恢复，无不可恢复损坏/P0/P1；H06 证据齐全 |
+| AC-6.4-05 | Live 0.6.x minor upgrade、主动 health fail→rollback、maintenance reboot、归档验证→修剪→压缩、100k/1M/约 7.24M 行基准对账与零 SSH `fleet doctor` 全部通过；URI、identity、accounting 保留 |
+| AC-6.4-06 | 0.6.x 固定 RC 24h 综合 soak 覆盖 reconcile、alert、Traffic Policy、Egress、维护与恢复。候选纳入 QoS 时覆盖其隔离与恢复。无不可恢复损坏/P0/P1，H06 证据齐全 |
 
 **人工关卡 H06：**验收人确认“要改什么、plan 是否仍有效、执行是否生效、失败能否回滚、用户策略/出口是否隔离”。按[专用清单](VCL_0.5-0.7_Human_Acceptance.md#h06-06x-declarative-controller)签署后才进入 0.7.x 实现。
 
@@ -353,7 +395,7 @@
 2. 形成 transport ADR 并冻结安全、端口/ACL、维护、MTU/DNS/UDP 能力与回退模型；SOCKS5 继续作为外部 Egress adapter，不默认选作内部长期 transport。
 3. 定义 Path/User binding schema，生产 `max_hops=2`；compiler 检查 role、capability、credential readiness、loop、重复节点/hop 上限，生成 deterministic Entry/Egress plan。
 4. 建跨节点有序 apply：先验证 Egress 就绪再激活 Entry 引用，定义移除顺序、单侧失败补偿和 PARTIAL 恢复；不把部分成功显示全成功。
-5. 冻结 Entry/Egress DNS resolve、domain routing、CDN/DNS leak、remote resolver failure、UDP/QUIC/HTTP3、MTU/MSS/PMTU 与 session 语义。
+5. 冻结 Entry/Egress DNS resolve、domain routing、CDN/DNS leak、remote resolver failure、UDP/QUIC/HTTP3、MTU/MSS/PMTU 与 session 语义。冻结逐连接的实际 Path 和配置代次来源，覆盖切换前后会话与观测缺口。
 6. 实现静态两跳、显式移除到 direct/指定出口、NOOP、失败隔离；执行全部 Live 协议/故障矩阵与 ≥24h soak。
 
 | AC | 通过标准与测试方法 |
@@ -362,7 +404,7 @@
 | AC-7.1-02 | 非法 role/capability/credential/loop/>2-hop 在 schema/compiler 阶段被拒；相同输入 plan 一致；不支持的 Node 不进入 Path |
 | AC-7.1-03 | Live 单用户 A→B 两跳生效，direct 用户仍单跳；remove 恢复显式声明出口；重复 reconcile 为 NOOP；单侧失败明确 PARTIAL 并恢复可验证旧态，禁止留下继续承载流量的未知半配置 |
 | AC-7.1-04 | TCP 网站、DNS UDP、generic UDP、QUIC/HTTP3、DNS leak/CDN、fragmentation/PMTU/large TLS/QUIC packet size/TCP MSS 均有实际结果；不支持显式失败，不静默绕行 |
-| AC-7.1-05 | Path 变更仅对新连接生效；健康旧会话不主动迁移/终止；Entry/Egress 重启的真实影响单独记录；故障不 silent direct fallback |
+| AC-7.1-05 | 新连接按变更后的 Path 转发。记录旧会话可继续或中断的实际行为，测量无关用户影响和 Entry/Egress 重启影响。逐用户变更保持无关用户可用，整实例重载按维护处理；故障禁止 silent direct fallback |
 | AC-7.1-06 | Controller 离线已有静态 Path 继续转发；独立 Node credential/ACL/listener 安全检查通过；两跳 ≥24h soak 无未知断流、资源泄漏或错误 fallback |
 
 选型完成前允许研究原型，不对外宣称完整 Path 能力已交付。某协议若需排除，必须先明确修订 SPEC 范围，不能用 `UNSUPPORTED` 自动冲抵原有发布要求。
@@ -387,6 +429,8 @@
 | AC-7.2-04 | 拓扑 UI GET 零 SSH/node-to-node probe；probe failure 不改 data plane；不引入 peer control channel；无 admin/root credential |
 | AC-7.2-05 | 同负载 A/B 对照记录 CPU/网络开销。执行默认：持续 30 分钟测量额外 CPU 平均 ≤单核 5%，低频吞吐样本单独核算；超预算调低频率并复测，无 probe storm |
 
+<a id="path-switch-073"></a>
+
 ### 6.4 0.7.3：Primary / Backup 与人工切换
 
 **依据：** Master §9.4。**依赖：**两个已编译静态 Path、Path Health、Operation precondition。
@@ -394,27 +438,27 @@
 实施顺序：
 
 1. 定义 primary/backup route policy 与 readiness：capability、credential、config compilable、path health、egress reachable。
-2. 实现 switch plan→approve→apply→verify，保存 source/target/revision/precondition；backup 不 ready 或 plan stale 直接拒绝。
+2. 实现 switch plan→approve→apply→verify。批准绑定用户、源与目标路径、revision、影响范围、执行方式及截止时间。故障恢复优先立即执行。计划内切换可等待目标用户空闲，继续采样直至观测到零连接，执行前复核新鲜度、目标 Entry、计划前置条件和 backup readiness。缺测继续等待，到期或取消结束等待。恢复后只续作仍有效的同一操作。
 3. primary DEGRADED/UNAVAILABLE 且 backup HEALTHY 时生成 Recommendation/Plan，不自动 apply。
 4. 只读计算 minimum improvement/duration、cooldown、stickiness 与 score explanation，为 0.8 预留；无无人值守 switch hook。
-5. 验证新旧 session 边界、重复切换 NOOP、故障建议、手动切换、主路恢复不自动回切和人工 switch-back。
+5. 实测目标用户旧会话及无关用户受影响范围、重复切换 NOOP、立即与等待执行、主路恢复和人工 switch-back。采样到执行之间的新连接仍可能中断。整实例重载使用显式维护计划。
 
 | AC | 通过标准与测试方法 |
 | --- | --- |
 | AC-7.3-01 | readiness 每个缺失条件均拒绝 switch；unavailable/untrusted path 不可选择；plan 失效返回 PLAN_STALE；重复目标切换 NOOP |
 | AC-7.3-02 | Live primary 故障只生成 recommendation，未 approve 时不变更；approve 后新连接走 backup，出口与 path 标识可证明 |
-| AC-7.3-03 | 在两条 Path 都健康的受控切换中，既有 TCP 会话继续原路直至自然结束，新连接使用新路；主路真实故障导致的旧会话断开单独记录，不宣称故障连接一定存活 |
+| AC-7.3-03 | 在双路健康时，证明已批准的等待计划在会话活跃或采样未知时保持等待，确认空闲后至多执行一次，新连接走目标路径。到期、取消、失效计划零写入，Controller 重启后按计划有效性恢复。允许目标用户旧会话中断，逐用户切换保持无关用户可用，并实测中断范围 |
 | AC-7.3-04 | primary 恢复后不自动切回；人工 switch-back 正常；score/cooldown 仅用于解释/建议，不触发自动路由 |
 | AC-7.3-05 | 执行默认至少 3 轮切换/切回，无配置漂移、credential 泄漏、silent direct fallback 或无人值守 flapping |
 
 ### 6.5 0.7.4：Path-aware Accounting 与容量可见性
 
-**依据：** Master §9.5、§16.3。**依赖：**Path 身份关系、transit 分类、可恢复 accounting、manual switch。
+**依据：** Master §9.5、§16.3；`0.5.5` Schema-5 独立日留存账本（`daily_contributions`）。**依赖：**Path 身份关系、transit 分类、事件实际路径与配置代次、差额贡献账本及人工切换。
 
 实施顺序：
 
-1. 冻结 accounting invariant：user_ingress 以 Entry 为权威，transit 单列且不进入 user fleet-total，egress 用于 network/path capacity；明确时间窗/重试/缺测/切换归属。
-2. 实现事件来源标记、去重聚合、schema 迁移、rollup/retention/gap 语义，保持 approximate accounting 定位。
+1. 复用 schema-5 `daily_contributions` 的差额记账机制，扩展 `traffic_class`（`user_ingress` / `transit` / `egress`）。Entry 是用户总量权威，中转独立列示，出口用于容量观测。事件按会话实际路径与配置代次归属。无法按 Path 区分的出口流量按 Link 统计，明确时间窗、重试和缺测。
+2. 实现事件来源标记、事务级差额去重聚合、schema 迁移（复用 `staged_migrate` 机制适配 GB 级大库）、与 `0.5.5` 独立日留存及 `history_coverage` 缺口语义的全面兼容，继续保持 approximate accounting 定位。
 3. 提供 per-path bytes/connections/active users/failure count；建立 Node/Path connections、network rate、CPU/RAM/path traffic 压力 Finding。
 4. 验证切换前后按事件所属 path/time 归属，不将已结束 Path 历史流量归入新路径；不要求 Egress 得到原始用户 credential。
 5. 用可控 1GB 数据集和真实大文件两跳核对 Entry/Egress/transit/Fleet；完成 capacity Finding、全链路 RC soak、H07 验收与文档收口。
@@ -454,7 +498,7 @@
 | Health/Finding 阈值、冷启动、缺测与资源 cap | 各自 0.5.1/0.5.2 G0 | 状态转移表、固定正反例、store 的 retention/size/corruption 规则 |
 | Desired migration、事务恢复、plan precondition | 0.6.0 G0 | schema 迁移样本、crash 状态表、恢复命令和 PLAN_STALE 判据 |
 | 通知渠道及测试接收端 | 0.6.1 G0 / Live 前 | 至少一个 adapter 合同、secret-ref、队列限制与实际发送授权 |
-| QoS backend 与用户隔离 | 0.6.2 Research Gate，生产实现冻结前 | benchmark/安全/回滚报告；失败即 BLOCKED，不顺延为“已支持” |
+| QoS backend 与用户隔离 | 0.6.2 Research Gate，Tier 2 纳入候选前 | benchmark/安全/回滚报告。无法证明隔离时按 SPEC 登记延期，Tier 1 独立验收 |
 | SOCKS DNS/UDP 与 benchmark 拓扑 | 0.6.3 G0 | 支持矩阵、fail-closed 判据、A/B/C runbook |
 | 内部 transport 与 DNS/UDP/MTU/session 语义 | 0.7.1 Transport Decision Gate | VLESS/WireGuard 对照数据及 ADR；未完成不得冻结 production baseline |
 | 双计防止与切换时计量归属 | 0.7.4 G0 | user/transit/egress invariant、1GB fixture、Live 对账表 |
@@ -503,13 +547,11 @@ git diff --check
 3. 必需项 FAIL/PENDING LIVE/PENDING HUMAN、P0/P1、未解释的数据损坏/secret 泄漏均阻止通过；MUST 不得以风险接受豁免。
 4. 失败项形成缺陷编号、修复范围和复验清单。修复后重跑直接影响项及共同不变量；变更影响全链路时重跑综合 soak，不无条件重复无关测试。
 5. 签署绑定 RC commit/artifact digest；验收后有代码或打包内容变更则重新判断影响并取得补充签署。纯证据文档变更保留原 source/digest 的可追溯关系。
-6. H05/H06 未通过时只允许本阶段修复与下一阶段只读设计，不进入下一大阶段实现；H07 未通过不宣布总体完成。非阻塞 SHOULD 偏差如需保留，必须明示原因、期限和人工确认。
+6. H05 未通过时允许本阶段修复和下一阶段只读设计。H06 通过前允许隔离两跳选型与会话原型，0.7.x 正式集成以 H06 通过为前置。H07 未通过时保持验收待定。非阻塞 SHOULD 偏差须有原因、期限和人工确认。
 
-### 7.6 执行起始清单
+### 7.6 0.6.x 执行起始清单
 
-- [ ] 核对 0.5.0 本地基线、当前文档状态和历史 evidence 的适用范围，建立 ≤3 秒升级补证任务。
-- [ ] 建立 0.5.1 版本 SPEC，冻结 Health、monitor/store/probe 与 accountd/observer hardening 方案。
-- [ ] 为 0.5.1 建立 AC→测试→Live 映射、隔离测试环境和 ≥10 节点受控混合矩阵。
-- [ ] G0 通过后进入 0.5.1 实现；按本文推进至 0.5.3，再提交 H05 的具体 RC 与证据。
-
-本清单初始均未勾选，表示后续执行任务；本方案的创建不构成这些任务已经执行。
+- [x] 0.5.5 H05 已签署，PR #15 已合入 `main`。参考 [H05 实录](../evidence/0.5.5/HUMAN_ACCEPTANCE.md)。
+- [ ] 从合入后的 `main` 建立开发基线，登记 SHA、兼容范围和隔离环境。
+- [ ] 执行 [0.6.x SPEC](../specs/V0.6.x_SPEC.md) 的 F06-01/F06-02，冻结 M0 和配置事务 G0。
+- [ ] 交付 M0 及一个完整的声明式变更/回滚场景，再开展 0.6.3 双用户出口实验。

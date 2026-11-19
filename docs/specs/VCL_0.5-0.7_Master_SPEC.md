@@ -160,10 +160,9 @@ Node 必须逐步成为一个 **boring appliance**：
 
 ### Controller 0.6.x
 
-- MAY 继续为旧 Node 提供 legacy management / upgrade path；
-- Desired State / Reconciliation mutation 的完整支持要求 Node 0.6.x；
-- Node 0.5.x 可作为 observation-only / limited-management Node；
-- 禁止为了使用 Controller 0.6 而自动强制升级全部 Node。
+- 最低受支持基线为 Node 0.5.5，按能力提供只读观测和受支持的升级路径。
+- Desired State / Reconciliation mutation 要求目标 Node 宣告对应 0.6 capability。
+- 更早 Node 通过单独的迁入或恢复流程处理。升级须经显式计划与批准。
 
 ### Controller 0.7.x
 
@@ -901,6 +900,8 @@ vcl verify --json
 
 # 8. VCL 0.6.x — Declarative Controller & Reliable Operations
 
+0.6.x 的基线、研究判据与子版本合同见 [0.6.x SPEC](V0.6.x_SPEC.md)。H06 前可用隔离环境研究 0.7.x 传输与切换原型。正式集成以 H06 通过为前置。
+
 ## 8.0 版本目标
 
 0.6.x 建立：
@@ -1090,14 +1091,7 @@ restore LKG
 
 ### 8.2.1 Finding Lifecycle
 
-扩展状态：
-
-```text
-ACTIVE
-ACKNOWLEDGED
-SUPPRESSED
-RESOLVED
-```
+Finding 保持 `ACTIVE` / `RESOLVED` 生命周期。`ACKNOWLEDGED` 和 `SUPPRESSED` 记录处置与通知状态，可与仍活跃的故障同时显示。投递状态独立跟踪。
 
 ### 8.2.2 Alert Engine
 
@@ -1137,7 +1131,7 @@ Notification credential 必须 secret-ref 化。
 - planned upgrade；
 - node / fleet scoped window。
 
-窗口内相关 Finding 可被 SUPPRESSED，但原始 observation 仍记录。
+窗口内相关通知可标为 `SUPPRESSED`，原始观测和 Finding 状态继续记录。
 
 ### 8.2.5 Acknowledge / Silence
 
@@ -1182,7 +1176,9 @@ Notification credential 必须 secret-ref 化。
 
 ---
 
-## 8.3 VCL 0.6.2 — QoS & User Policy
+## 8.3 VCL 0.6.2 — Traffic Policy & QoS
+
+Traffic Policy v0.1 为 H06 必需项，使用版本化规则组、逐用户绑定、确定性 allow/reject 编译和脱敏命中证据。拒绝规则优先于 Egress 选择。以下 QoS 要求适用于纳入候选的 Tier 2。研究无法证明用户隔离时，关闭该 capability，在候选冻结前记录延期和重开条件，H06 仍可验收 Tier 1 与其他必需范围。
 
 ### 8.3.1 Policy Resource
 
@@ -1380,6 +1376,8 @@ SOCKS failed → silently direct
 - CDN locality。
 
 ### 8.4.7 UDP / QUIC Semantics
+
+首版实机必需能力为 TCP/HTTPS、约定的 DNS 行为和出口隔离。其他协议逐项实测，支持范围按 capability 与提供方矩阵声明。
 
 必须明确：
 
@@ -1796,14 +1794,7 @@ SOCKS5 保持 `external Egress adapter`，不默认作为 VCL 内部 node-to-nod
 
 ### 9.2.8 Session Semantics
 
-Path mutation：
-
-```text
-existing sessions → 不主动迁移
-new sessions      → 使用新 path
-```
-
-禁止尝试 live TCP migration。
+Path 变更新建连接使用新路径。目标用户的已有会话可以继续原路径，也可能因激活中断。计划声明影响并实测，禁止尝试运行中会话迁移。逐用户切换须保持无关用户的代理可用。需要重载整个实例的动作按维护操作处理，单独声明受影响用户与中断预算。
 
 ### 9.2.9 0.7.1 门禁
 
@@ -1998,7 +1989,7 @@ plan switch
 → verify
 ```
 
-只影响新连接；现有 TCP 不迁移。
+审批固定用户、目标路径、执行方式、有效期及变更前置条件。故障恢复优先立即执行。计划内切换可选择限时等待用户空闲。等待期间持续观测目标 Entry，缺测或陈旧按 `UNKNOWN`。执行前复核新鲜零连接、计划有效性与备用路径就绪度。到期或取消后结束等待，不执行变更。依据采样观察到的空闲是尽力减少中断的条件，放行后仍可能出现新连接。
 
 ### 9.4.4 Recommended Failover
 
@@ -2035,7 +2026,8 @@ backup = HEALTHY
 - primary down / backup healthy；
 - backup not ready 时拒绝 switch；
 - plan stale；
-- repeated switch no-op。
+- repeated switch no-op；
+- 活跃或未知时等待，确认空闲才执行；取消、过期和恢复后不重复执行。
 
 **G3**
 - failover 不 silent direct；
@@ -2046,7 +2038,7 @@ backup = HEALTHY
 1. primary 正常；
 2. primary 故障 → recommendation；
 3. 人工 approve → 新连接走 backup；
-4. 旧连接自然结束；
+4. 用持续连接和无关用户验证批准的立即/等待模式、实际中断范围和原路径会话计量归属；
 5. primary 恢复不自动切回；
 6. manual switch-back 正常。
 
@@ -2457,7 +2449,7 @@ Can it roll back?
 Which user policy / egress should apply?
 ```
 
-并具备稳定 alerting、QoS policy、per-user Egress 和 typed maintenance。
+并具备稳定 alerting、Traffic Policy v0.1、per-user Egress 和 typed maintenance。逐用户 QoS 须有研究及范围记录，纳入时验证实际隔离与回滚。
 
 ## 16.3 0.7.x 完成时
 
@@ -2540,11 +2532,11 @@ No distributed authority.
 | 0.5.3 | inspect/verify read-only；listener/config/integrity drift 可识别 |
 | 0.6.0 | Desired/Observed/Reconcile；NOOP；PLAN_STALE；LKG rollback |
 | 0.6.1 | alert lifecycle；无 alert storm；maintenance window 正确 |
-| 0.6.2 | per-user QoS isolation；Finding→recommendation；无误伤其他用户 |
+| 0.6.2 | Traffic Policy 逐用户隔离与命中证据；QoS 通过研究并验证隔离或记录延期 |
 | 0.6.3 | per-user Egress；SOCKS fail-closed；DNS/UDP 明确；VPS-side SOCKS Live benchmark |
 | 0.6.4 | typed maintenance；upgrade health gate；rollback；restricted management path |
 | 0.7.0 | Node roles/credential/ACL；unauthorized transit 必须拒绝 |
-| 0.7.1 | static 2-hop；transport ADR；TCP/UDP/QUIC/MTU/DNS 通过；Controller offline 继续运行 |
+| 0.7.1 | static 2-hop；transport ADR；协议与 MTU/DNS 行为符合冻结范围；Controller offline 继续运行 |
 | 0.7.2 | Link/Path health；bounded probes；无 gossip/full-mesh storm |
 | 0.7.3 | primary/backup readiness；manual failover；existing session 语义正确 |
 | 0.7.4 | user/transit accounting 不双计；path usage/capacity 可观测 |

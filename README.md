@@ -1,190 +1,110 @@
 # Vincula（VCL）
 
-面向自有 Debian/Ubuntu VPS 的最小化 **sing-box** 部署与内部流量审计。
+Vincula 是一套面向自管 VPS 的代理部署与运维工具。它用 sing-box 提供代理服务，用工作站上的 Controller 集中管理节点和用户，并提供健康监测、故障诊断与近似流量审计。
 
-**节点** `VINCULA_VERSION=0.5.5`（CLI：`vcl` / `vincula`）· **控制器** `VCL_FLEET_VERSION=0.5.5`（CLI：`vcl-fleet`）。
+**当前基线为 0.5.5。** Node 与 Controller 的配套版本已通过 H05，并经 [PR #15](https://github.com/Marz42/vcl/pull/15) 合入 `main`（`9cab4ac`）。该次合并未创建版本标签或 GitHub Release。实机范围、连续跑测及已知限制见 [0.5.5 验收记录](docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md)。
 
-**2026-11-14 当前收口入口（PR #15 / `review/0.5.5-upgrade-preparation`）：Node/Controller 0.5.5，尚未发布。** 前序 `21aba22` 制品在 `fresh050` Canary `checkpoint` 阶段安全中止（`load_vincula_common()` 优先加载了已安装 `0.5.0` 库导致缺 `python_private`，零节点变更；Controller `fleet.db` 已升至 `schema 5`）。当前 PR #15 已合入 `bin/vincula` staged 库加载顺序与 `upgrade-rollback-common.sh` 修复、`release.lock` 更新及回归测试，待现场 Linux（固定 commit 时间戳 `SOURCE_DATE_EPOCH`）执行 `build-release.sh` / `build-controller.sh` 验证并过 CI 后重启 Batch 0。入口见 [中止/旧 RC 记录](docs/evidence/0.5.5/RC_FREEZE_21ABA22.md)、[实机只读清单](docs/evidence/0.5.5/LIVE_PREFLIGHT_CHECKLIST.md)、[0.5.5 证据](docs/evidence/0.5.5/SUMMARY.md)、[H05 人工验收](docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md)、[实机执行序列](docs/evidence/0.5.5/LIVE_FOLLOWUP.md) 和 [迁移/验收说明](docs/operations/0.5.5-closeout-runbook.md)。H05 前不合并；下列带日期的旧记录保留其原候选范围。
+## 功能概览
 
+- **节点管理**。部署空白 VPS、接管已有节点、做原地升级或更换实例。逻辑节点身份与 VPS 实例身份分别管理。
+- **用户管理**。在多节点上开通同一逻辑用户，按节点签发、轮换或撤销凭据。
+- **运行观测**。通过受限 SSH 采集节点状态，查看服务健康、代理探测结果、配置漂移和事件时间线。
+- **流量审计**。同步已结束的连接与流量摘要，按用户、节点和目标汇总。计量来自 sing-box 轮询，适用于运维分析。
+- **备份与恢复**。默认使用无密钥备份。需要恢复密钥时，可显式创建加密备份。
 
-**0.5.x 本地开发候选，尚未发布：**已实现只读 Node Inspect、Controller 缓存查询、显式基线/CAS、七类 Drift Finding 与 Timeline，以及八项增强 Verify。版本与验证见 [0.5.3 evidence](docs/evidence/0.5.3/SUMMARY.md)，操作见 [Inspect / Drift / Verify runbook](docs/operations/inspect-runbook.md)。0.5.2 的14类 Node/User Finding、审计诊断与统计异常继续保留。
-
-**2026-10-07 收口：**0.5.x 开发停在 0.5.3，未进入 0.6.x。已修复增强 Verify 的坏 heartbeat 容错、Clash 监听地址误判和 probe 后身份失效，并将独立 ZIP 的完整合同/缓存查询检查纳入制品 CI。远端 `a9655e2` 的 [CI #86](https://github.com/Marz42/vcl/actions/runs/37327307690) 七项通过；后续本地修复尚待新的远端 CI。当前交付和固定输入见[阶段收口记录](docs/evidence/0.5.3/PHASE_05_CLOSEOUT.md)。
-
-**2026-11-02 SSH 凭据管理（Controller 0.5.4）：**新增 Agent 指纹与 Identity File 两种确定性凭据模式；不再隐式遍历 OpenSSH 默认身份，连接统一 `-F <null config>` + 显式 `-i` + `IdentitiesOnly=yes`。旧节点用 `vcl-fleet access migrate` 显式迁移；`~/.ssh/config` 的 ProxyJump/ProxyCommand/别名不再适用于 VCL 连接。见 [SPEC](docs/specs/V0.5.4_SSH_Credential_Management.md)。
-
-**2026-11-02 MPTCP 加固重建：**`render_systemd_unit` 已加入 `Environment=GODEBUG=multipathtcp=0`，安装包与 Controller embedded payload 按新源码重建；旧[冻结候选](docs/evidence/0.5.3/CANDIDATE_FREEZE.md)的制品 SHA 只对应旧构建，正式 H05 前需重新冻结。见[MPTCP 记录](docs/evidence/0.5.3/MPTCP_UNIT_HARDENING.md)。
-
-**Human Gate H05：PENDING HUMAN；实机与连续24h soak：PENDING LIVE。**按[用户指令](docs/plans/MANUAL_VALIDATION_DEFERRED.md)跳过手工等待并记录。本地实现与离线回归不代替实机、人工签署或发布。
-
-协议固定：VLESS + REALITY + xtls-rprx-vision + TCP；sing-box **1.13.18**（不追 latest）。流量统计为 **approximate / Clash polling**，非计费级。
-
----
-
-## 解决什么问题
-
-在你自己的 VPS 上快速装好固定协议栈，用工作站上的 Fleet 控制器统一登记节点、开通同一逻辑用户、同步审计，并在本机只读 UI 里观察健康与流量。
-
-## 适用场景
-
-- 少量自管 VPS（Debian 12/13，Ubuntu 22.04/24.04/26.04；amd64/arm64）
-- 需要多用户 tag、轮换凭据、换机保留 `node_id`
-- 管理员工作站可为 Windows 11 或 Linux（Python 3.10+ + 系统 OpenSSH）
-
-## 核心能力
-
-- Fresh **provision** / 已装 **adopt** / 离线 **register**
-- Fleet 全局 `user_id`、按节点 credential、PARTIAL 语义
-- Local Audit UI（localhost 只读）+ Command Builder（只复制命令）
-- Secretless backup / restore / **node replace**（runtime-only 新机）
-- Legacy single-user seed（保留旧客户端 URI，严格受限）
-- 前台 Fleet monitor、分层 Health、只读监控缓存与专用真实代理 probe
-- Node/User Findings、审计可信度诊断、统计基线与本地 Timeline
-- 环境 Inspect、显式接受的比较基线与 Drift；八项只读 Verify 和可选专用代理探测
-- 独立 accountd 用户、最小运行时输入、受限 observer SSH/本机 Unix socket（0.5.1 候选，待现场验证）
-
-## 明确不做什么
-
-- 公网管理 API / 公网 Web 面板
-- UI 内执行高危变更
-- 多协议或通用 Xray 配置导入
-- 计费级精确流量
-- 多用户「整站」legacy 迁移
-
----
-
-## 架构（简图）
+## 架构
 
 ```mermaid
 flowchart LR
-  ws[Admin_Workstation]
-  fleet[vcl_fleet]
-  ui[UI_127.0.0.1]
-  vps1[VPS_Node_vcl]
-  vps2[VPS_Node_vcl]
-  ws --> fleet
-  fleet --> ui
-  fleet -->|SSH| vps1
-  fleet -->|SSH| vps2
+    Client["代理客户端"] -->|"VLESS + REALITY"| Node["自管 VPS · vcl / sing-box"]
+    Controller["工作站 · vcl-fleet"] -->|"SSH 管理与观测"| Node
+    Controller --> Cache["本地状态与审计缓存"]
+    Cache --> UI["本机只读 Web UI"]
 ```
 
-数据面：客户端直连各 Node（默认 TCP 443）。控制面：仅工作站 → Node 的 SSH。
+客户端直接连接 VPS。Controller 通过 SSH 管理节点和同步数据。Web UI 默认只监听 `127.0.0.1:8765`，从本地状态和缓存读取数据。Command Builder 生成可复制的命令，变更从 CLI 执行。
 
----
+## 兼容性
 
-## 当前版本与兼容性
-
-| 项目 | 值 |
+| 组件 | 0.5.5 支持范围 |
 | --- | --- |
-| Controller（开发候选） | **0.5.5** |
-| 新 provision Node（开发候选） | **0.5.5** |
-| 最低支持 Node | **0.5.5**（当前配套版本） |
-| OS | Debian 12/13；Ubuntu 22.04/24.04/26.04 |
-| Arch | amd64、arm64 |
-| Clash API | 仅 `127.0.0.1`（默认 9090 + secret） |
-| UI | 仅 loopback（默认 `127.0.0.1:8765`） |
+| Node（`vcl` / `vincula`） | Debian 12/13、Ubuntu 22.04/24.04/26.04，amd64 / arm64 |
+| Controller（`vcl-fleet`） | Windows 11 或 Linux 工作站，Python 3.10+、系统 OpenSSH |
+| 配套版本 | Controller 0.5.5 与 Node 0.5.5。旧节点的迁移路径见 [0.5.5 操作手册](docs/operations/0.5.5-closeout-runbook.md) |
+| 代理协议 | VLESS + REALITY + `xtls-rprx-vision` + TCP，默认 TCP 443 |
+| sing-box | 固定 `1.13.18`，见 [sing-box.lock](sing-box.lock) |
 
-完整兼容表与合同：[`docs/technical-guide.md`](docs/technical-guide.md)。Gate：[`docs/release-readiness-0.3.1.md`](docs/release-readiness-0.3.1.md) · [`docs/known-issues-0.3.1.md`](docs/known-issues-0.3.1.md) · [`docs/evidence/0.4.5/SUMMARY.md`](docs/evidence/0.4.5/SUMMARY.md)。
+## 快速开始
 
----
+### 1. 准备 Controller 制品
 
-## Quick Start（推荐：Controller 管 VPS）
+使用可信渠道提供的同版本 `vincula-controller-<version>.zip`，或按下方「开发与测试」从指定提交构建。先用独立可信的 SHA-256 核对 ZIP，再用包内 `controller.lock` 核对解压内容。在有 `sha256sum` 的环境中，可用配套的 `.zip.sha256` 校验文件运行 `sha256sum -c`。
 
-1. 获取并校验 `vincula-controller-*.zip`（`sha256sum -c` sidecar 与解压后的 `controller.lock`）。
-2. 安装 Python 3.10+ 与系统 OpenSSH。
-3. 初始化并绑定 SSH 身份：
+以下示例在解压目录中执行。Windows 使用 `bin\vcl-fleet.cmd`，路径与命令示例见[用户手册](docs/user-guide.md)。
+
+### 2. 部署一台空白 VPS
+
+从 VPS 控制台等可信渠道核对 SSH 主机指纹。将示例中的 SSH 地址、主机指纹、客户端连接地址和本地密钥路径换成自己的值。部署需要远端 root 或可用的非交互 sudo。
 
 ```bash
+python3 bin/vcl-fleet version
 python3 bin/vcl-fleet init
-python3 bin/vcl-fleet access bind admin --identity-file ~/.ssh/id_ed25519
-```
-
-4. 空 VPS 安装并登记：
-
-```bash
 python3 bin/vcl-fleet node provision myvps \
-  --host HOST \
-  --host-key 'SHA256:…' \
-  --server ADVERTISED_HOST
+  --host 203.0.113.10 \
+  --host-key 'SHA256:REPLACE_WITH_VERIFIED_FINGERPRINT' \
+  --identity-file "$HOME/.ssh/vincula-admin" \
+  --server proxy.example.com
 ```
 
-5. 开通用户并同步：
+已有 Vincula 节点用 `node adopt` 接管。仅预登记时用 `node register`，连接后验证身份与状态。
+
+### 3. 开通用户并查看状态
 
 ```bash
-python3 bin/vcl-fleet user add alice --nodes myvps
+python3 bin/vcl-fleet user add alice --node myvps
 python3 bin/vcl-fleet sync --full
 python3 bin/vcl-fleet status
-python3 bin/vcl-fleet ui
 ```
 
-6. 取链（敏感）：`python3 bin/vcl-fleet user link alice --node myvps`
+在私有终端用 `python3 bin/vcl-fleet user link alice --node myvps` 读取客户端连接 URI。该 URI 含访问凭据。运行 `python3 bin/vcl-fleet ui` 可查看本机仪表盘。启用定期监控前，按[观测手册](docs/operations/monitoring-runbook.md)配置专用 observer 身份。
 
-Windows 使用 `bin\vcl-fleet.cmd`。逐步说明：[`docs/user-guide.md`](docs/user-guide.md)。
+## 安全与计量
 
-> 从源码打 `vincula-node-*.tar.gz` / controller zip 属于维护者路径，见下方「开发与测试」，**不是**新用户第一条安装路径。
+- **身份**。首次接入固定 SSH 主机指纹，管理凭据与受限 observer 凭据分开配置。VCL 连接使用显式 SSH 参数和身份绑定，忽略个人 `~/.ssh/config` 中的跳板、代理命令与别名。
+- **访问范围**。Clash API 和管理 UI 默认仅本机可达。使用 bootstrap 时，从可信独立来源固定 `RELEASE_SHA256`。
+- **计量口径**。Node 轮询记录流量，Fleet 在连接结束并同步后入账。日汇总按连接开始的 UTC 日期归属，适合趋势与运维分析。分钟级判断使用 Node 遥测。
 
----
+## 路线图
 
-## provision / adopt / register
-
-| 方式 | 何时用 |
+| 阶段 | 目标 |
 | --- | --- |
-| `node provision` | 空 VPS：远端安装 + verify + 注册 |
-| `node adopt` | 已装 Vincula：SSH 读 identity 后注册 |
-| `node register` / `add --offline` | 无 SSH 先写 registry；之后仍须验证 |
+| **0.5.5 · 已验收** | 受限观测、健康与漂移诊断、schema-5 账本和节点升级恢复 |
+| **0.6.x · 开工规格** | 受控配置变更与回滚、告警、逐用户流量规则和 SOCKS5 出口 |
+| **0.7.x · 规划** | 自管静态两跳、链路观测、人工批准的主备切换、路径去重计量 |
+| **0.8.x 及以后 · 展望** | 按意图推荐路径、有限自动化、长期维护与恢复 |
 
----
-
-## 常用管理入口
-
-| 任务 | 命令入口 |
-| --- | --- |
-| 节点列表 / 健康 | `vcl-fleet node list` · `status` · `probe` · `verify` |
-| 用户 | `vcl-fleet user add\|link\|rotate\|disable`（后三者需 `--node`） |
-| 同步 | `vcl-fleet sync` / `sync --full` |
-| 换机 | `vcl-fleet node replace`（见 [`docs/operations/node-replace-runbook.md`](docs/operations/node-replace-runbook.md)） |
-| 节点本机 | `sudo vcl user\|stats\|audit\|backup\|verify` |
-
-参数以 `--help` 为准。
-
----
-
-## WebUI
-
-`vcl-fleet ui` 打开本机只读 Local Audit UI（Overview / Nodes / Users / Traffic / Operations / Audit 等）。Command Builder 只生成可复制命令，**不执行**变更。非 loopback 绑定会被拒绝。
-
----
-
-## 安全边界
-
-- 无公网管理端口；Clash API 与 UI 仅本机。
-- 打印 VLESS URI 的命令按密钥处理。
-- 生产 bootstrap 须固定 `RELEASE_SHA256`（仅校验「同 URL 旁路 digest」只能发现传输损坏，不能防来源双文件同时替换）。
-
----
+详见 [0.6.x SPEC](docs/specs/V0.6.x_SPEC.md)、[0.5.x～0.7.x 实施计划](docs/plans/VCL_0.5-0.7_Implementation_Plan.md)和[演进白皮书](docs/specs/VCL_Post_0.7_Whitepaper.md)。
 
 ## 文档
 
-| 文档 | 受众 |
+| 需求 | 入口 |
 | --- | --- |
-| [`docs/README.md`](docs/README.md) | 导航 |
-| [`docs/user-guide.md`](docs/user-guide.md) | 日常管理员 |
-| [`docs/technical-guide.md`](docs/technical-guide.md) | 维护者 / 实现合同 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 版本历史 |
-| [`docs/evidence/`](docs/evidence/README.md) | 验收证据 |
-| [`docs/specs/`](docs/specs/README.md) | 设计规格 |
-
-历史冻结材料：[`docs/legacy/`](docs/legacy/README.md)（不得当作当前操作手册）。
-
----
+| 安装、配置与日常使用 | [用户手册](docs/user-guide.md) |
+| 兼容性、身份、状态与技术合同 | [技术手册](docs/technical-guide.md) |
+| 0.5.5 升级、恢复与容量处理 | [0.5.5 操作手册](docs/operations/0.5.5-closeout-runbook.md) |
+| 监控、探针和 observer | [观测手册](docs/operations/monitoring-runbook.md) |
+| 配置检查与漂移 | [Inspect、Drift 与 Verify](docs/operations/inspect-runbook.md) |
+| 更换 VPS | [节点替换手册](docs/operations/node-replace-runbook.md) |
+| 规格、验收与历史 | [文档导航](docs/README.md) · [版本历史](CHANGELOG.md) |
 
 ## 开发与测试
 
+在 Linux 上运行仓库测试与构建脚本。制品和校验文件输出到 `dist/`。
+
 ```bash
 bash tests/test.sh
-bash scripts/gen-release-lock.sh
-bash scripts/build-release.sh      # → dist/vincula-node-<version>.tar.gz
-bash scripts/build-controller.sh   # → dist/vincula-controller-<version>.zip
+bash scripts/build-release.sh
+bash scripts/build-controller.sh
 ```
 
-Merge gate：[`.github/workflows/ci.yml`](.github/workflows/ci.yml)。源码以仓库根目录为准；不要手改 `dist/`。
+`build-release.sh` 会更新节点发布清单。Controller ZIP 可独立解压使用，包含配套 Node payload。构建与兼容性检查见 [CI 配置](.github/workflows/ci.yml)。

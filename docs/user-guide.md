@@ -1,12 +1,12 @@
-# Vincula 用户手册（Controller/Node 0.5.5 开发候选）
+# Vincula 用户手册（Controller/Node 0.5.5）
 
-当前收口候选：Node/Controller **0.5.5**，accounting/fleet-cache **schema 5**；迁移、容量策略与验收状态见 [0.5.5 runbook](operations/0.5.5-closeout-runbook.md)。 历史段落仍绑定原版本，不代表新候选已验收。
+Node 与 Controller 的 0.5.5 配套版本已通过 [H05](evidence/0.5.5/HUMAN_ACCEPTANCE.md) 并合入 `main`。会计库和 Fleet 审计缓存使用 schema 5。迁移与容量策略见 [0.5.5 操作手册](operations/0.5.5-closeout-runbook.md)。
 面向能使用终端、但不需要阅读源码的 VPS 管理者。
 架构与合同细节见 [`technical-guide.md`](technical-guide.md)。完整参数以 CLI `--help` 为准。
 
 **记账始终是 approximate（Clash 轮询），不能当发票。**
 
-0.5.5 为当前开发候选；真实 VPS、新 RC 连续 24h soak 和 H05 按实际完成情况分别记录，见 [0.5.5 evidence](evidence/0.5.5/SUMMARY.md)。监控、Findings、Inspect 的操作入口继续适用；`monitor --json` 为 monitor/v3，health/API 为 monitor/v1。新增 `cache status --json` 只读检查容量和历史覆盖，迁移前先阅读 [runbook](operations/0.5.5-closeout-runbook.md)。
+`monitor --json` 使用 monitor/v3，health/API 使用 monitor/v1。`cache status --json` 只读检查容量和历史覆盖。实机范围与跑测记录见 [0.5.5 验收总结](evidence/0.5.5/SUMMARY.md)。
 
 ---
 
@@ -23,7 +23,7 @@
 **Windows 11**
 
 ```bat
-py -3 bin\vcl-fleet.cmd version
+bin\vcl-fleet.cmd version
 bin\vcl-fleet.cmd help
 ```
 
@@ -115,7 +115,7 @@ ssh-keyscan -t ed25519,rsa HOST 2>/dev/null | ssh-keygen -lf -
 
 ## 4. Fresh VPS：`node provision`
 
-在**空** VPS 上安装 Node 0.3.2、校验并写入 registry。
+在**空** VPS 上安装 Controller 制品配套的 Node 0.5.5，验证后登记。
 
 | 项 | 说明 |
 | --- | --- |
@@ -129,6 +129,7 @@ ssh-keyscan -t ed25519,rsa HOST 2>/dev/null | ssh-keygen -lf -
 python3 bin/vcl-fleet node provision NAME \
   --host HOST \
   --host-key 'SHA256:…' \
+  --identity-file "$HOME/.ssh/vincula-admin" \
   --server ADVERTISED_HOST
 ```
 

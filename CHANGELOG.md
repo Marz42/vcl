@@ -2,6 +2,12 @@
 
 协议始终是 `VLESS + REALITY + xtls-rprx-vision + TCP`。sing-box 固定 `1.13.18`。不做后台自动更新。
 
+## 0.5.5（2026-11-19，已验收并合入 `main`）
+
+- Node 计量库与 Fleet 审计缓存升级为 schema 5。日汇总独立留存，原始连接清理后仍可查已保留的日数据。
+- 收口受限 observer、非 root `accountd`、SSH 凭据保护和大库升级恢复。缓存容量达到上限时停止导入并报告状态。
+- H05 已签署。实机升级、连续跑测及偏差见 [0.5.5 验收记录](docs/evidence/0.5.5/HUMAN_ACCEPTANCE.md)。[PR #15](https://github.com/Marz42/vcl/pull/15) 合并时未创建版本标签或 GitHub Release。
+
 ## 0.5.4 — Controller SSH credential management (2026-11-02, unreleased)
 
 - 2026-11-02 SSH 凭据管理 v2（Controller-only；Node 保持 0.5.3）：`credential-bindings.json` 升级到 schema 2，新增 `agent`（`fingerprint` + 机器本地 `keys/<ref>.pub` 公钥选择器）与 `identity_file` 两种确定性模式，删除 `openssh-default` 连接路径。所有 SSH/SCP 统一加 `-F <os.devnull>`、显式 `-i` 与 `IdentitiesOnly=yes`，不再隐式遍历用户 SSH config/默认身份；Host Key Trust 与 `StrictHostKeyChecking=yes` 保持不变。新增 `access agent list`、`access bind REF --agent [--fingerprint]`、`access migrate`（交互式/非交互式，禁止猜测），以及 `access verify --json`、`node set --admin-credential-ref`。旧 v1 `identity_file` 按 v2 语义读取；`openssh-default`/无身份节点标记 `CREDENTIAL_MIGRATION_REQUIRED`，连接前返回 `CREDENTIAL_UNBOUND`、`AGENT_UNAVAILABLE`、`AGENT_KEY_MISSING` 或 `IDENTITY_FILE_MISSING`。合同见[SPEC](docs/specs/V0.5.4_SSH_Credential_Management.md)。

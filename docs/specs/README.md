@@ -1,6 +1,6 @@
 # Specs index
 
-设计规格与路线图。**实现版本戳以代码为准**：当前开发候选 Controller `0.5.4` / Node `0.5.3`，位于 codex/0.5.1；真实 VPS 验收/soak 保持 PENDING LIVE、Human Gate 保持 PENDING HUMAN，本轮跳过等待，不表示已发布。
+设计规格与路线图。0.5.5 已通过 [H05](../evidence/0.5.5/HUMAN_ACCEPTANCE.md) 并经 PR #15 合入 `main`。0.6.x 目前处于规格与研究准备阶段。
 
 | 文件 | 角色 |
 | --- | --- |
@@ -9,8 +9,10 @@
 | [`V0.5.1_Spec.md`](V0.5.1_Spec.md) | Monitor/Health、accountd/observer权限基线；原证据保留 |
 | [`V0.5.2_Spec.md`](V0.5.2_Spec.md) | 14类Node/User Finding、Timeline、独立诊断与统计；正式合同/全量验证见M4，Human Gate / 实机待验收 |
 | [`V0.5.3_Spec.md`](V0.5.3_Spec.md) | Inspect/cache/显式baseline/Drift/增强Verify本地实现完成，stamp0.5.3；离线RC与Human Gate / 实机延期 |
-| [`V0.5.4_SSH_Credential_Management.md`](V0.5.4_SSH_Credential_Management.md) | **当前 Controller 规格（Draft）**：Agent 指纹选择 / Identity File 两种模式、v2 绑定、旧配置迁移；Node 仍为 0.5.3 |
+| [`V0.5.4_SSH_Credential_Management.md`](V0.5.4_SSH_Credential_Management.md) | 0.5.4 SSH 凭据合同：Agent 指纹、Identity File、v2 绑定、旧配置迁移 |
+| [`V0.6.x_SPEC.md`](V0.6.x_SPEC.md) | 0.6.0～0.6.4 行为合同、可行性研究、阶段依赖与 H06 范围 |
 | [`VCL_0.5-0.7_Master_SPEC.md`](VCL_0.5-0.7_Master_SPEC.md) | 0.5.x–0.7.x 总体规划（Observation → Declarative → Programmable） |
+| [`VCL_Post_0.7_Whitepaper.md`](VCL_Post_0.7_Whitepaper.md) | 0.7.x 之后演进白皮书（0.8 意图流量工程 → 0.9 受护栏自治 → 1.0+ 零维护边缘网络） |
 | [`V0.4.4_ui_v2.md`](V0.4.4_ui_v2.md) | Local Audit UI v2 合同 |
 | [`vcl-spec-v0.4-v0.5-rev1.md`](vcl-spec-v0.4-v0.5-rev1.md) | 0.4→0.5 历史路线图与决策记录（D45–D58）；部分版本戳可能落后 |
 | [`V0.2.7-V0.3.1_spec.md`](V0.2.7-V0.3.1_spec.md) | 节点线历史规格 |
