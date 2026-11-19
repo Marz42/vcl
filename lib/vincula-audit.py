@@ -20,7 +20,9 @@ Stdlib only. Targets Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -30,6 +32,10 @@ from urllib.parse import quote
 
 EXPORT_PROTOCOL_VERSION = 2
 CURSOR_KIND_EXPORT_SEQ = "export_seq"
+
+_store_spec = importlib.util.spec_from_file_location('vcl_audit_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 ROW_KEYS = (
     "event_id",
@@ -65,6 +71,8 @@ def parse_rfc3339(s: str) -> str:
         print(f"ERROR: invalid RFC3339 timestamp: {s}", file=sys.stderr)
         raise SystemExit(1)
     candidate = raw.replace("Z", "+00:00").replace("z", "+00:00")
+    # Python 3.10 accepts emitted ISO forms (.fff/.ffffff), not Go nanoseconds.
+    candidate = re.sub(r"\.(\d+)(?=[+-]\d{2}:\d{2}$)", lambda m: "."+(m[1]+"000000")[:6], candidate)
     try:
         when = datetime.fromisoformat(candidate)
     except ValueError:
@@ -73,7 +81,7 @@ def parse_rfc3339(s: str) -> str:
     if when.tzinfo is None:
         print(f"ERROR: RFC3339 timestamp must include a timezone: {s}", file=sys.stderr)
         raise SystemExit(1)
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return when.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def interval_overlap_sql() -> str:
@@ -83,7 +91,7 @@ def interval_overlap_sql() -> str:
     started_at == query_to is excluded (<).
     COALESCE(closed_at, last_seen_at) == query_from is included (>=).
     """
-    return "started_at < ? AND COALESCE(closed_at, last_seen_at) >= ?"
+    return "vcl_utc(started_at) < ? AND vcl_utc(COALESCE(closed_at, last_seen_at)) >= ?"
 
 
 def normalize_destination_host(host: Optional[str]) -> Optional[str]:
@@ -170,9 +178,9 @@ def _require_schema_4(conn: sqlite3.Connection) -> None:
     ver = None
     if row is not None:
         ver = row["value"] if isinstance(row, sqlite3.Row) else row[0]
-    if ver != "4":
+    if ver not in ("4", "5"):
         print(
-            f"ERROR: accounting database schema_version={ver!r} is not 4 "
+            f"ERROR: accounting database schema_version={ver!r} is not 4/5 "
             "(Export Protocol v2 requires schema 4)",
             file=sys.stderr,
         )
@@ -203,6 +211,7 @@ def query_audit(
         raise SystemExit(1)
 
     _require_schema_4(conn)
+    conn.create_function("vcl_utc", 1, parse_rfc3339, deterministic=True)
 
     uid = _optional(user_id)
     tag = _optional(user_tag)
@@ -243,7 +252,7 @@ def query_audit(
     sql = (
         f"SELECT {cols} FROM connections WHERE "
         + " AND ".join(where)
-        + " ORDER BY started_at ASC, event_id ASC"
+        + " ORDER BY vcl_utc(started_at) ASC, event_id ASC"
     )
     try:
         rows = conn.execute(sql, params).fetchall()
@@ -629,6 +638,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             node_id=args.node or None,
             users_path=args.users,
         )
+        coverage = _STORE.history_coverage(conn)
     finally:
         conn.close()
 
@@ -642,6 +652,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         node_id=args.node or None,
     )
     fmt = "json" if args.json_flag else args.format
+    query["history_coverage"] = coverage
     if fmt == "json":
         render_json(rows, query)
     else:

@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import hashlib
+import re
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -14,6 +18,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 SCHEMA = "telemetry/v1"
+
+_store_spec = importlib.util.spec_from_file_location('vcl_telemetry_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
 
 
 def _utc_now() -> str:
@@ -188,7 +196,10 @@ def _json_field(path: Path, field: str) -> str:
         return ""
 
 
-def _parse_iso_age_seconds(raw: str, now: datetime) -> Optional[int]:
+_AUDIT_QUICK_CHECK_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _parse_iso_utc(raw: str) -> Optional[datetime]:
     ts = raw.strip()
     if not ts:
         return None
@@ -200,7 +211,52 @@ def _parse_iso_age_seconds(raw: str, now: datetime) -> Optional[int]:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
+    return when
+
+
+def _parse_iso_age_seconds(raw: str, now: datetime) -> Optional[int]:
+    when = _parse_iso_utc(raw)
+    if when is None:
+        return None
     return int((now - when).total_seconds())
+
+
+def _latest_connection_seen_at(
+    conn: sqlite3.Connection,
+    cols: Optional[set[str]] = None,
+) -> Optional[str]:
+    """Return latest connections.last_seen_at using O(1)/indexed probes when available."""
+    if cols is None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(connections)")}
+    if "last_seen_at" not in cols:
+        return None
+    candidates: list[str] = []
+    if {"closed_at", "export_seq"} <= cols:
+        queries = (
+            "SELECT last_seen_at FROM connections WHERE last_seen_at IS NOT NULL ORDER BY rowid DESC LIMIT 1",
+            "SELECT last_seen_at FROM connections WHERE export_seq IS NOT NULL ORDER BY export_seq DESC LIMIT 1",
+            "SELECT MAX(last_seen_at) FROM connections WHERE closed_at IS NULL",
+        )
+        for sql in queries:
+            row = conn.execute(sql).fetchone()
+            if row and isinstance(row[0], str) and row[0]:
+                candidates.append(row[0])
+    else:
+        row = conn.execute(
+            "SELECT MAX(last_seen_at) FROM connections WHERE last_seen_at IS NOT NULL"
+        ).fetchone()
+        if row and isinstance(row[0], str) and row[0]:
+            candidates.append(row[0])
+    best_raw: Optional[str] = None
+    best_dt: Optional[datetime] = None
+    for raw in candidates:
+        parsed = _parse_iso_utc(raw)
+        if parsed is not None and (best_dt is None or parsed > best_dt):
+            best_dt = parsed
+            best_raw = raw
+    if best_raw is not None:
+        return best_raw
+    return max(candidates) if candidates else None
 
 
 def _accounting_metrics(db_path: Path) -> dict[str, Any]:
@@ -234,11 +290,9 @@ def _accounting_metrics(db_path: Path) -> dict[str, Any]:
         ).fetchone()
         if row and row[0] is not None and str(row[0]).strip() != "":
             export_seq = int(row[0])
-        row = conn.execute(
-            "SELECT MAX(last_seen_at) FROM connections WHERE last_seen_at IS NOT NULL"
-        ).fetchone()
-        if row and row[0]:
-            last_event_age = _parse_iso_age_seconds(str(row[0]), now)
+        last_event = _latest_connection_seen_at(conn)
+        if last_event:
+            last_event_age = _parse_iso_age_seconds(last_event, now)
         conn.close()
     except (sqlite3.Error, ValueError, OSError):
         pass
@@ -286,12 +340,173 @@ def build_snapshot(
     }
 
 
+def build_audit_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds: float = .25) -> dict[str, Any]:
+    """Bounded, read-only audit diagnostics. SQLite errors never become free text."""
+    now = datetime.now(timezone.utc)
+    out = {"schema": "audit-health/v1", "node_id": _read_toml(state_dir / "config.toml", "node_id"),
+           "instance_id": _json_field(state_dir / "state.json", "instance_id"), "observed_at": _utc_now(),
+           "accountd_active": _systemd_active("vincula-accountd.service"), "db_state": "UNKNOWN",
+           "db_schema": None, "heartbeat_age_seconds": None, "last_poll_age_seconds": None,
+           "last_event_age_seconds": None, "export_seq": None, "min_retained_export_seq": None,
+           "pruned_max_export_seq": None}
+    conn = None
+    deadline = time.monotonic() + max(.001, min(1, budget_seconds))
+    try:
+        db_size = accounting_db.stat().st_size
+        conn = sqlite3.connect(accounting_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=.1)
+        conn.execute("PRAGMA query_only=ON")
+        steps = 0
+        def bounded():
+            nonlocal steps
+            steps += 1
+            return steps > 2000 or time.monotonic() >= deadline
+        conn.set_progress_handler(bounded, 1000)
+        meta = dict(conn.execute("SELECT key,value FROM meta WHERE key IN "
+            "('schema_version','heartbeat_at','last_success_at','audit_export_seq','audit_pruned_max_export_seq') LIMIT 5"))
+        def integer(value):
+            if not isinstance(value, str) or len(value) > 19 or not value.isascii() or not value.isdigit():
+                return None
+            value = int(value)
+            return value if 0 <= value <= 2**63 - 1 else None
+        out["db_schema"] = integer(meta.get("schema_version"))
+        if out["db_schema"] not in (4, 5):
+            out["db_state"] = "SCHEMA_MISMATCH"
+            return out
+        required = {
+            "connections": {"event_id", "connection_id", "generation", "user_id", "node_id", "instance_id", "user_tag",
+                            "started_at", "last_seen_at", "closed_at", "destination_host", "destination_ip", "destination_port",
+                            "network", "upload_bytes", "download_bytes", "export_seq"},
+            "poll_baseline": {"connection_id", "generation", "last_upload_counter", "last_download_counter",
+                              "accounted_upload", "accounted_download", "last_seen_at"},
+            "daily_usage": {"date", "user_id", "user_tag", "destination_host", "upload_bytes", "download_bytes", "connection_count"},
+        }
+        connections_cols: Optional[set[str]] = None
+        for table, columns in required.items():
+            found = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not columns <= found:
+                out["db_state"] = "SCHEMA_MISMATCH"
+                return out
+            if table == "connections":
+                connections_cols = found
+        if db_size <= _AUDIT_QUICK_CHECK_MAX_BYTES:
+            checked = conn.execute("PRAGMA quick_check(1)").fetchone()
+            if checked is None or checked[0] != "ok":
+                out["db_state"] = "CORRUPT"
+                return out
+        else:
+            # Skip full-DB B-tree quick_check during frequent 0.25s monitor polls on large DBs;
+            # full PRAGMA integrity_check remains enforced by `vcl verify --json`.
+            conn.execute("PRAGMA schema_version").fetchone()
+            conn.execute("SELECT 1 FROM poll_baseline LIMIT 1").fetchone()
+            conn.execute("SELECT 1 FROM daily_usage LIMIT 1").fetchone()
+        for field, key in (("heartbeat_age_seconds", "heartbeat_at"), ("last_poll_age_seconds", "last_success_at")):
+            raw = meta.get(key)
+            if isinstance(raw, str) and len(raw) <= 40:
+                age = _parse_iso_age_seconds(raw, now)
+                out[field] = age if age is not None and age >= 0 else None
+        out["export_seq"] = integer(meta.get("audit_export_seq"))
+        out["pruned_max_export_seq"] = integer(meta.get("audit_pruned_max_export_seq"))
+        min_row = conn.execute("SELECT MIN(export_seq) FROM connections WHERE export_seq IS NOT NULL").fetchone()
+        minimum = min_row[0] if min_row else None
+        last_event = _latest_connection_seen_at(conn, connections_cols)
+        out["min_retained_export_seq"] = minimum if type(minimum) is int and 0 <= minimum <= 2**63 - 1 else None
+        if isinstance(last_event, str) and len(last_event) <= 40:
+            age = _parse_iso_age_seconds(last_event, now)
+            out["last_event_age_seconds"] = age if age is not None and age >= 0 else None
+        out["db_state"] = "OK"
+    except FileNotFoundError:
+        out["db_state"] = "MISSING"
+    except (PermissionError, OSError):
+        out["db_state"] = "UNREADABLE"
+    except sqlite3.Error as exc:
+        out["db_state"] = _STORE.sqlite_failure_state(exc)
+    except (ValueError, TypeError, OverflowError):
+        out["db_state"] = "UNKNOWN"
+    finally:
+        if conn is not None:
+            conn.close()
+    return out
+
+
+def build_user_snapshot(*, state_dir: Path, accounting_db: Path, budget_seconds: float = .25) -> dict[str, Any]:
+    """A transactionally consistent retained-byte sample, including open connections."""
+    now = datetime.now(timezone.utc)
+    out = {"schema": "user-traffic/v1", "node_id": _read_toml(state_dir / "config.toml", "node_id"),
+           "instance_id": _json_field(state_dir / "state.json", "instance_id"), "observed_at": _utc_now(),
+           "sampled_at": None, "heartbeat_age_seconds": None, "pruned_max_export_seq": None,
+           "state": "UNKNOWN", "truncated": False, "users": []}
+    conn = None
+    deadline = time.monotonic() + max(.001, min(1, budget_seconds))
+    try:
+        accounting_db.stat()
+        conn = sqlite3.connect(accounting_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=.1)
+        conn.execute("PRAGMA query_only=ON")
+        steps = 0
+        def bounded():
+            nonlocal steps
+            steps += 1
+            return steps > 2000 or time.monotonic() >= deadline
+        conn.set_progress_handler(bounded, 1000)
+        conn.execute("BEGIN")
+        if not {"key", "value"} <= {row[1] for row in conn.execute("PRAGMA table_info(meta)")}:
+            out["state"] = "SCHEMA_MISMATCH"
+            return out
+        meta = dict(conn.execute("SELECT key,value FROM meta WHERE key IN "
+            "('schema_version','heartbeat_at','last_success_at','audit_pruned_max_export_seq') LIMIT 4"))
+        required = {"user_id", "user_tag", "upload_bytes", "download_bytes", "closed_at"}
+        if meta.get("schema_version") not in ("4", "5") or not required <= {row[1] for row in conn.execute("PRAGMA table_info(connections)")}:
+            out["state"] = "SCHEMA_MISMATCH"
+            return out
+        polled, heartbeat, watermark = meta.get("last_success_at"), meta.get("heartbeat_at"), meta.get("audit_pruned_max_export_seq")
+        poll_age = _parse_iso_age_seconds(polled, now) if isinstance(polled, str) and len(polled) <= 40 else None
+        heartbeat_age = _parse_iso_age_seconds(heartbeat, now) if isinstance(heartbeat, str) and len(heartbeat) <= 40 else None
+        if (poll_age is None or poll_age < 0 or heartbeat_age is None or heartbeat_age < 0
+                or not isinstance(watermark, str) or not watermark.isascii() or not watermark.isdigit()
+                or len(watermark) > 19 or int(watermark) > 2**63 - 1):
+            return out
+        out.update(sampled_at=polled, heartbeat_age_seconds=heartbeat_age, pruned_max_export_seq=int(watermark))
+        rows = conn.execute("SELECT user_id,MAX(user_tag),SUM(upload_bytes),SUM(download_bytes),"
+            "SUM(CASE WHEN closed_at IS NULL THEN 1 ELSE 0 END),MIN(upload_bytes),MIN(download_bytes),"
+            "MIN(typeof(upload_bytes)='integer' AND typeof(download_bytes)='integer') "
+            "FROM connections GROUP BY user_id ORDER BY user_id LIMIT 65").fetchall()
+        out["truncated"] = len(rows) > 64
+        seen = set()
+        for uid, tag, up, down, count, min_up, min_down, integers in rows[:64]:
+            if (not isinstance(uid, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", uid)
+                    or tag is not None and (not isinstance(tag, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", tag))
+                    or integers != 1 or any(type(val) is not int or not 0 <= val <= 2**63 - 1 for val in (up, down, count, min_up, min_down))
+                    or up + down > 2**63 - 1):
+                out["truncated"] = True
+                continue
+            key = hashlib.sha256(uid.lower().encode()).hexdigest()
+            if key in seen:
+                out.update(state="UNKNOWN", users=[], truncated=True)
+                return out
+            seen.add(key)
+            out["users"].append({"user_key": key, "tag": tag, "retained_bytes": up + down, "connections": count})
+        out["state"] = "PARTIAL" if out["truncated"] else "OK"
+    except FileNotFoundError:
+        out["state"] = "MISSING"
+    except (PermissionError, OSError):
+        out["state"] = "UNREADABLE"
+    except sqlite3.Error as exc:
+        out["state"] = "CORRUPT" if _STORE.sqlite_failure_state(exc) == 'CORRUPT' else "UNKNOWN"
+        out["users"] = []
+    except (ValueError, TypeError, OverflowError):
+        out.update(state="UNKNOWN", users=[])
+    finally:
+        if conn is not None:
+            conn.close()
+    return out
+
+
 def main(argv: list[str]) -> int:
     state_dir = Path(argv[1] if len(argv) > 1 else "/etc/vincula")
     accounting_db = Path(
         argv[2] if len(argv) > 2 else "/var/lib/vincula/accounting.db"
     )
-    doc = build_snapshot(state_dir=state_dir, accounting_db=accounting_db)
+    builder = {"--audit": build_audit_snapshot, "--users": build_user_snapshot}.get(argv[3] if len(argv) > 3 else "", build_snapshot)
+    doc = builder(state_dir=state_dir, accounting_db=accounting_db)
     sys.stdout.write(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
     return 0
 

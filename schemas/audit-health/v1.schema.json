@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "audit-health/v1 bounded Node accounting diagnostics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "node_id",
+    "instance_id",
+    "observed_at",
+    "accountd_active",
+    "db_state",
+    "db_schema",
+    "heartbeat_age_seconds",
+    "last_poll_age_seconds",
+    "last_event_age_seconds",
+    "export_seq",
+    "min_retained_export_seq",
+    "pruned_max_export_seq"
+  ],
+  "properties": {
+    "schema": {
+      "const": "audit-health/v1"
+    },
+    "node_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "instance_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "accountd_active": {
+      "type": "boolean"
+    },
+    "db_state": {
+      "enum": [
+        "OK",
+        "MISSING",
+        "CORRUPT",
+        "UNREADABLE",
+        "SCHEMA_MISMATCH",
+        "UNKNOWN"
+      ]
+    },
+    "db_schema": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "heartbeat_age_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "last_poll_age_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "last_event_age_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "export_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "min_retained_export_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "pruned_max_export_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    }
+  },
+  "if": {
+    "properties": {
+      "db_state": {
+        "const": "OK"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "db_schema": {
+        "const": 4
+      }
+    }
+  }
+}

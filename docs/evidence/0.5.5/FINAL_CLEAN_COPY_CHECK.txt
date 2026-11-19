@@ -1,0 +1,7 @@
+vcl-review4 source manifest: files=393 missing_or_mismatch=0
+source_manifest_sha256=252cfc6c519356251a17871e48da14287ee427566e6ab22756ffa0b06a825161
+source_scope=f86dd5e supported-source path set refreshed at 21aba22; review-only docs/artifacts are outside the manifest
+two_clean_copies_byte_identical=yes (git archive final HEAD; diff -qr empty)
+python_full=228 passed, 10 skipped, 0 failed
+bash_user=1970 passed, 0 failed; bash_root_namespace=1968 passed, 0 failed
+live=BLOCKED; no production node/apply/migrate/rollback; candidate unfrozen

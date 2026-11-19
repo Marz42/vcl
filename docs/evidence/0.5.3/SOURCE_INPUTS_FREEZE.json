@@ -1,0 +1,848 @@
+{
+  "artifact_check": {
+    "cache_only_surfaces": 4,
+    "command": "python3 -B scripts/check-controller-artifact.py dist/vincula-controller-0.5.3.zip",
+    "node_cli": "NOT RUN (needs root; the CI artifact job runs it with sudo -n)",
+    "schemas": 16,
+    "state": "PASS OFFLINE"
+  },
+  "artifacts": {
+    "vincula-controller-0.5.3.zip": "65dbcc7b4ae19cfa480698ee2616ad67f43632460986ecae72ae89cfce0137a7",
+    "vincula-controller-0.5.3.zip.sha256": "116117f72a6c1529426d657439454add41f1287eef51ee575a9bb0714e02b1d9",
+    "vincula-node-0.5.3.tar.gz": "8abe989c125ba88caeeed6b929494e59f77caa3ef41f59710069ec7215ac049b",
+    "vincula-node-0.5.3.tar.gz.sha256": "da8d927c714842723caecb1dcb41da1fae274257da0f7e98351b67c029faa666"
+  },
+  "base_commit": "e024d12c8702ba1c659c2ec377715b1a91115998",
+  "branch": "codex/0.5.1",
+  "controller_version": "0.5.3",
+  "date": "2026-10-09",
+  "generator": "tmp/gen-source-inputs.py (uncommitted validation helper)",
+  "generator_sha256_lf": "c45e31ad87389ffee458acfc69bc28a97fd68a26c89edf4fb32a2a8a5ac87ff1",
+  "logs": [
+    {
+      "path": "tmp/freeze-fleet.log",
+      "sha256": "a0d0358b132c0a51637e841e732f8d2f3ca88ad996a93cbb24c867097d540f59"
+    },
+    {
+      "path": "tmp/freeze-gate.log",
+      "sha256": "622b6d6a55bb1cc7aa558f79d50828d9ca49839ef44c60dd1d4b3be795cc21df"
+    },
+    {
+      "path": "tmp/freeze-unit.log",
+      "sha256": "bbb750b3e740acab7d79a81d6f6608d35613c900ea6fb3a1565c339824e49bb4"
+    }
+  ],
+  "packaging_change_after_tests": "Only this manifest and the candidate evidence page were added after the regression run and the artifact build; no runtime, test or packaging byte changed (the staged zip's own check reran after the build).",
+  "payload_manifest": {
+    "path": "dist/vincula-controller-0.5.3/payload/payload-manifest.json",
+    "sha256": "3389e3d6094082440cc036f7e355ba134160c061d7006c0d5c56d8e6be99f42f"
+  },
+  "remote_ci": {
+    "conclusion": "success",
+    "head_sha": "e024d12c8702ba1c659c2ec377715b1a91115998",
+    "id": 37874931681,
+    "jobs": [
+      "artifact",
+      "concurrency",
+      "failure-injection",
+      "unit (debian:12)",
+      "unit (debian:13)",
+      "unit (ubuntu-latest)",
+      "unit (windows-latest)"
+    ],
+    "note": "Binds the freeze base tree; the evidence commit that adds this manifest is docs-only.",
+    "run": 100,
+    "url": "https://github.com/Marz42/vcl/actions/runs/37874931681"
+  },
+  "source_date_epoch": 1791513039,
+  "source_files": [
+    {
+      "path": ".github/dependabot.yml",
+      "sha256_lf": "146b9d2c345a7cd0f2069e37d0145c98e632fb01c9f68dfc37ff45d974113549"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256_lf": "37a61e0066790a2284e2311fb344ba2fb80c83e986549323853a8c39d7b87f55"
+    },
+    {
+      "path": "README-controller.md",
+      "sha256_lf": "995b93fd90a8e50123cb6c46c0ea52ffbf755e32e02e9f9f9036082ba369f175"
+    },
+    {
+      "path": "bin/vcl-fleet",
+      "sha256_lf": "c9c66af5304719ee07d81165ba4d8146f4860bb22206b766f4538d1a8935b2a8"
+    },
+    {
+      "path": "bin/vcl-fleet.cmd",
+      "sha256_lf": "c61673fdb44faacb48f728917570717d821ddc45eb29ed28f390c7c323e492fb"
+    },
+    {
+      "path": "bin/vincula",
+      "sha256_lf": "9af18867bbeef6a2c5bdb38e03905123c742cdb267be9234b423ddef0627b5e8"
+    },
+    {
+      "path": "lib/access.py",
+      "sha256_lf": "a153997a7aabead9db83756363ce7322b397dda19f5692c2081aac93a3eb08b8"
+    },
+    {
+      "path": "lib/accountd_runtime.py",
+      "sha256_lf": "5f8bb28271c6199434864c43086f151da517ff196f66d2d2111e59aa30e8072b"
+    },
+    {
+      "path": "lib/inspect_snapshot.py",
+      "sha256_lf": "fa9e61dbf3d1e26853961b653270f88570e52eb1704c92b23748a49da9a13a94"
+    },
+    {
+      "path": "lib/legacy.py",
+      "sha256_lf": "f4d6e8c8bb634778f7e27ea154b013d3d4ce331090f50c711fc48ee5d7dc0806"
+    },
+    {
+      "path": "lib/legacy_seed.py",
+      "sha256_lf": "fd7b1268f0e031c3e104eeea09723940a3c7c9839edab884785bbe20795f7a65"
+    },
+    {
+      "path": "lib/node_upgrade.py",
+      "sha256_lf": "deb0f10f65e2a5a3572294e7d91d5323dbe39411f73f798d01e0377c135c5112"
+    },
+    {
+      "path": "lib/observation/anomalies.py",
+      "sha256_lf": "04054961825fb8dbf22f26c7048a40682b44ea177a1a2cd46d448c6d53935976"
+    },
+    {
+      "path": "lib/observation/audit_health.py",
+      "sha256_lf": "9b3242b39ca1494fe4b3909b06dfe8430f8126de6247d476a7d2cdf5c579fb93"
+    },
+    {
+      "path": "lib/observation/capabilities.py",
+      "sha256_lf": "a9cefb53d8e05e0302094d5bd7c45295c182f1e8cf871fa8020fe6d1527a9f26"
+    },
+    {
+      "path": "lib/observation/findings.py",
+      "sha256_lf": "94bf32a836dd180240bd64116d2075baa403371f2b7147b338a078ed41e6820d"
+    },
+    {
+      "path": "lib/observation/health.py",
+      "sha256_lf": "d76f2a6162a41e758fa6b1ff642b3cbe665e63b56a891cb9ab93fe07c5b1ae1c"
+    },
+    {
+      "path": "lib/observation/inspection.py",
+      "sha256_lf": "1ade42f3080f19e228770ecad54772c0c63de30005569237c5b0b9e43df2a7d1"
+    },
+    {
+      "path": "lib/observation/inspection_cache.py",
+      "sha256_lf": "6d006f097ed6169f7fc2e7c53a78d7925cd2bd5eac19f98b8ff5a86b6b17fee8"
+    },
+    {
+      "path": "lib/observation/monitor.py",
+      "sha256_lf": "77e4e3318d4576a7cea8d7f6ce491b2d1a480ad83b6fbe86ce4809a05c46bea7"
+    },
+    {
+      "path": "lib/observation/probe.py",
+      "sha256_lf": "49d36ca54206b167d5a9d49e547abb341ee9cafe996eac9e155762140550f43d"
+    },
+    {
+      "path": "lib/observation/schema_validate.py",
+      "sha256_lf": "491869a6ba6dcd1177ef1fac3ebc570fad1f42dc998ead418ce813937f4db0db"
+    },
+    {
+      "path": "lib/observation/store.py",
+      "sha256_lf": "86a54053e449ef8b54b455e269b1c9ee973943cd759240d851a68e8a4c5fcba6"
+    },
+    {
+      "path": "lib/observation/telemetry.py",
+      "sha256_lf": "ff9e9c5f1fdefab66716b81d1473f3dea87fa0c549595361dd19ca665225d61d"
+    },
+    {
+      "path": "lib/observation/user_traffic.py",
+      "sha256_lf": "f58fe17cd8fa6e88bdb0a19419409cb2338100cbe232e60326060f0d9a5f34ca"
+    },
+    {
+      "path": "lib/observation/verification.py",
+      "sha256_lf": "33a1643624e674d8cbc090ffbc9c5a172b6636d3b3befef2f82684f80b64a78d"
+    },
+    {
+      "path": "lib/observer.py",
+      "sha256_lf": "32895d07959ec595d8dc5f3388922f5117cf63c50e76eeaac6c1d0a498442747"
+    },
+    {
+      "path": "lib/provision.py",
+      "sha256_lf": "6b04dbe5fd3a94eb69805dca379a60e3471b8f417f6fdc98f9f327434710eaf4"
+    },
+    {
+      "path": "lib/sing-box-release.sh",
+      "sha256_lf": "fa6642c0a06b0f87aca2a7a2d647631132b1053b58274227827c05bbbfd70565"
+    },
+    {
+      "path": "lib/sing_box_release.py",
+      "sha256_lf": "ee9b8274961eb2b681dbb5bf27d9d247a5e04284a3c162aa1f10e5aad18119e8"
+    },
+    {
+      "path": "lib/ssh_transport.py",
+      "sha256_lf": "700fcf23a22f9f26cd4263eab6c458007127812b893f64c9bfa740da11bcb37b"
+    },
+    {
+      "path": "lib/telemetry_snapshot.py",
+      "sha256_lf": "27700de4bd8866af11b3e9e556412b7ede71b086595ea878034e0cc8bf1d2e95"
+    },
+    {
+      "path": "lib/trust.py",
+      "sha256_lf": "904a1cc3dfc80a0385d153b31032640fe84744ae85d5053cb898d2a555366d57"
+    },
+    {
+      "path": "lib/verify_snapshot.py",
+      "sha256_lf": "7f80a5e1f10311cecc3be94cced7d00c2756f029898e6a62e8af5586157a9015"
+    },
+    {
+      "path": "lib/vincula-accountd.py",
+      "sha256_lf": "79f70a7d25242ea575134f4ff9dd5aeb9d19efe085d7a6cd80c1301472353a05"
+    },
+    {
+      "path": "lib/vincula-accountd.service",
+      "sha256_lf": "3aa1e3bc9a84f34579af78247dc4653369af6022c6e9fefebb46746d3ff3c59b"
+    },
+    {
+      "path": "lib/vincula-audit-archive.py",
+      "sha256_lf": "3e7eedf774cdb5607672c8fa28c78c7a37568d3ef2af2f7a8f080d4745bac255"
+    },
+    {
+      "path": "lib/vincula-audit.py",
+      "sha256_lf": "8b96e9be46abd81538c087d105656792068d53a9798c9c8d38e2831562c8e9e4"
+    },
+    {
+      "path": "lib/vincula-backup.py",
+      "sha256_lf": "54e9156fc7669a08714f5ab5759c930e91dec2ea179f9dd9eae21553ff024dee"
+    },
+    {
+      "path": "lib/vincula-common.sh",
+      "sha256_lf": "f524e3a97a94728293a5038d3e6158be4cc9ec4a7ddebdbb2b64f4517854604a"
+    },
+    {
+      "path": "lib/vincula-fleet.py",
+      "sha256_lf": "fbc6f62532ebd7387fe349ff1de8cdf1cd47232b59ef398962b6760c7b11aab5"
+    },
+    {
+      "path": "lib/vincula-observer.socket",
+      "sha256_lf": "ad3c91e355c4a88c8c94c4167b90b13cdc982a96ddfa961f907299bbd96cc48d"
+    },
+    {
+      "path": "lib/vincula-observer@.service",
+      "sha256_lf": "796bbb7976dceaf465df3549cc0138536741ffc3d6324311436c3b926bae6553"
+    },
+    {
+      "path": "lib/vincula-stats.py",
+      "sha256_lf": "98edfd9741fcb4aeae08e24db7c0295d91b68bab3bcbf03edbce20c460b27578"
+    },
+    {
+      "path": "lib/vincula-ui/server.py",
+      "sha256_lf": "15abfeb6e043a256dbc6dab98690e20d1270a109da666c1216f94a46673d68ed"
+    },
+    {
+      "path": "lib/vincula-ui/static/app.css",
+      "sha256_lf": "cd493fc9678965888965a4ca3abeef811684279c5eaa5ae1ef9a5371197c74ae"
+    },
+    {
+      "path": "lib/vincula-ui/static/app.js",
+      "sha256_lf": "fd00cc51f94340e5d760006c60fa3ecb5d7e75ebd9e8b1b27a7683d5f2b4e36d"
+    },
+    {
+      "path": "lib/vincula-ui/static/index.html",
+      "sha256_lf": "27dc79f63718346c6a73b2ec8cecd37a78a43ce437c2d74cdcf3160418e75400"
+    },
+    {
+      "path": "lib/workspace.py",
+      "sha256_lf": "c7e412c7e8fb4e5ecc8d7ab2c13fb2b43e2de2e925666dc1be2e4c71229a4616"
+    },
+    {
+      "path": "release.lock",
+      "sha256_lf": "807e4b5dac17b287f9534e66f0db75a0b23ca5a390010d7c786455c789dd2873"
+    },
+    {
+      "path": "schemas/README.md",
+      "sha256_lf": "b5f2eb958c2f7af999356634ef3f2ba388da0054b425ea8b0a1b45e42f80581d"
+    },
+    {
+      "path": "schemas/audit-health/v1.schema.json",
+      "sha256_lf": "1984456a6728f5066b7c3759fb4a788669cd3ad3f520898c85febfd3c8fb0c5d"
+    },
+    {
+      "path": "schemas/baseline/v1.schema.json",
+      "sha256_lf": "e1ad7da3be48ddbc88098a16f619b80843d922fdcf115f73db0525b5813eb166"
+    },
+    {
+      "path": "schemas/capabilities/v1.schema.json",
+      "sha256_lf": "8c5789f3aa1d3ad78f80d515b347518c188d98d565ab01d6d9fee0843bc6fab1"
+    },
+    {
+      "path": "schemas/findings/v1.schema.json",
+      "sha256_lf": "196582f90bb53629b976d80ed05681c3b1e90f3b52e84a927a3eba180387e552"
+    },
+    {
+      "path": "schemas/findings/v2.schema.json",
+      "sha256_lf": "1f4c38be3a478aac202d8a9d22d0e4c3b114efda2f6f1ad6b326b2c60398fc49"
+    },
+    {
+      "path": "schemas/fleet-verify/v2.schema.json",
+      "sha256_lf": "59d88ce1cc74979d477cb5e0ccf1c17c5bbd84723bf0e31fe83fe96b93a3144d"
+    },
+    {
+      "path": "schemas/inspect-cache/v1.schema.json",
+      "sha256_lf": "3e669b79871db7caa586d361bfabee8bdba44ac3ac97d83468cc5116f1811d03"
+    },
+    {
+      "path": "schemas/inspect/v1.schema.json",
+      "sha256_lf": "4d335f36bbeb82fb62f7ec832fd663bc19b4be02d92b381c4d589493751531d2"
+    },
+    {
+      "path": "schemas/monitor/v1.schema.json",
+      "sha256_lf": "494910b65191607d467273cde68e320087c9181ef5920e810f90b54f7d56de3d"
+    },
+    {
+      "path": "schemas/monitor/v2.schema.json",
+      "sha256_lf": "6a762b51714cf25308f1c1286a9f1708f4526d53a82ab3d6848c93a8eadb4af3"
+    },
+    {
+      "path": "schemas/monitor/v3.schema.json",
+      "sha256_lf": "1d61ac63a0766fa21a9e2ec484c84724144905a15678cc96e54cc6b49f84a421"
+    },
+    {
+      "path": "schemas/telemetry/v1.schema.json",
+      "sha256_lf": "b581980201feae3ee546f4d5aad6cbd99e72bab07d1f075edb65e476e2905b30"
+    },
+    {
+      "path": "schemas/timeline/v1.schema.json",
+      "sha256_lf": "08b64e52c37f3b61c679f65b9ac4168c9cff7145bdb230fdbfaabbe959d670fb"
+    },
+    {
+      "path": "schemas/timeline/v2.schema.json",
+      "sha256_lf": "6d69d1f50128c92eeeb6982d3a73158c0a9a535b4d1a4f7135f1e29509e5634f"
+    },
+    {
+      "path": "schemas/user-traffic/v1.schema.json",
+      "sha256_lf": "898cf7dc99ab897628b2546421ae3b0dd3388dde14d78e71e38f4ae82ce79c6e"
+    },
+    {
+      "path": "schemas/verify/v2.schema.json",
+      "sha256_lf": "7b4526d3faa8e5930892588b4fa311292bfc8dfb2a46e75ad8745cc465799bdf"
+    },
+    {
+      "path": "scripts/build-controller.sh",
+      "sha256_lf": "8a1414524c414ff900bc7b3d5a4d986662d9eb08977c45e13355bf4fbc360ab0"
+    },
+    {
+      "path": "scripts/build-reconstructed-0.2.3.sh",
+      "sha256_lf": "c3757047f693d2e012b5a946c104bbfa3a8d4af8208b6460a23c187398d29706"
+    },
+    {
+      "path": "scripts/build-release.sh",
+      "sha256_lf": "68aaf089d30bf770c5a1c4a241081e42d5e34f57bcc9363901976b2b3a8b78cc"
+    },
+    {
+      "path": "scripts/check-controller-artifact.py",
+      "sha256_lf": "190f52256731b4207dbdf22c26d927da603dae9ffefa698f3f581d3c129e18a2"
+    },
+    {
+      "path": "scripts/freeze-docker-entrypoint.sh",
+      "sha256_lf": "6f92fca4a669fe600158ddfbbce0793f27d2aec4ba08449a66a4a4af63da6900"
+    },
+    {
+      "path": "scripts/freeze-morph-to-0.2.3.sh",
+      "sha256_lf": "789c0890759f7ad98b1aaf7261cd675abb24d179a413639293ea5e70fd8289a6"
+    },
+    {
+      "path": "scripts/freeze-run-ubuntu2204.sh",
+      "sha256_lf": "06440ec70c4e93bad53c7847050ecc93cd7317457757c7b7037296b20e077876"
+    },
+    {
+      "path": "scripts/gen-053-contracts.py",
+      "sha256_lf": "f99ba2754aa9e87723bfeb0b7301e97a75c41a9ded85e462fb2b62b4f3f6620f"
+    },
+    {
+      "path": "scripts/gen-release-lock.sh",
+      "sha256_lf": "5c90d96c7200a9283f7c86f80a0c7855dc97492e39fd62410fe82c426de78aff"
+    },
+    {
+      "path": "scripts/rc-build-artifacts.sh",
+      "sha256_lf": "f4de420ff8244c0ffde3d933a78263a449bef9b6c4f7b8d106136c4d32743fb4"
+    },
+    {
+      "path": "scripts/rc-live-onhost.sh",
+      "sha256_lf": "110c4105c9872826d396f0528f98d006fb61c0ea028a11bac8d36d0a031b13c9"
+    },
+    {
+      "path": "scripts/rc-live-upgrade-driver.sh",
+      "sha256_lf": "4aef29b87751c935fc1834f39a8de5537eccc1adadb7ce5f07672a91389c5c9f"
+    },
+    {
+      "path": "scripts/rc-remote-phase2.sh",
+      "sha256_lf": "1994bd79dd3325a280adae07b1b7c5bfe167bb013fe543d913c394aafdd5a5db"
+    },
+    {
+      "path": "scripts/rc-remote-run.sh",
+      "sha256_lf": "063c92e5482770b13ce8669c34c2cd3c44241baf6b9e23b9014a9554f33c212f"
+    },
+    {
+      "path": "scripts/rc-vcl-cli-coverage.sh",
+      "sha256_lf": "50e27b722d35190e24cc7fa3ecefb8e6564b0e8ae939222c9db22561e1297c9d"
+    },
+    {
+      "path": "scripts/soak-0.2.7.sh",
+      "sha256_lf": "698967b7e597301a12a5d03394b6f1f42e6cc4a3fb5a4939bf28a720536efe12"
+    },
+    {
+      "path": "scripts/soak-0.5.0-telemetry.sh",
+      "sha256_lf": "2e6f78f1a89b61ad7369ca7f8dc84690e991dd83120a14fc0c9db28d177defa0"
+    },
+    {
+      "path": "sing-box.lock",
+      "sha256_lf": "c003dadf0d5cd461eec9fc17454be0c8dea4212768932a775d410535464f4e60"
+    },
+    {
+      "path": "tests/fixtures/fake-age",
+      "sha256_lf": "74e256b6334ce2120d3bf8235cd915b31f7ab3dd78513a470e1e1446b43050d0"
+    },
+    {
+      "path": "tests/fixtures/fake-scp",
+      "sha256_lf": "cb49c0c6a151442cceafebcc675e308034b8bbdb520729cdb05fecaefd06cafc"
+    },
+    {
+      "path": "tests/fixtures/fake-ssh",
+      "sha256_lf": "762763302f85e4b0ee99474717bb6d99b561c9ea1481b4aab1058b5fea3cd6dc"
+    },
+    {
+      "path": "tests/fixtures/fake-ssh-keyscan",
+      "sha256_lf": "dd42c9e0d98f5943aac76f604f150a3eab562ca39195c98de685ae335a608860"
+    },
+    {
+      "path": "tests/fixtures/identity-sample.json",
+      "sha256_lf": "ec9b0c15159f6ce21b6d0acce6659dff8dc097675c8b80db6fcdb0e3fa001122"
+    },
+    {
+      "path": "tests/fixtures/nodes/badkey/hostkey.pub",
+      "sha256_lf": "2ee2c219f4efa1640cf5374f227445bb7bd59dabbb7f93fa704fd48e90cc7a9d"
+    },
+    {
+      "path": "tests/fixtures/nodes/copied/identity.json",
+      "sha256_lf": "5d8c295993f6a6dd86e1cc68aa953958005a31b6da23df7edf70bff2c9e405f7"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax/hostkey.pub",
+      "sha256_lf": "78fa017c28a73d6a2910505a73e870d4d9303d2c03c215c67ead422b9c948fcd"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax/identity-reinstall.json",
+      "sha256_lf": "68415dc4bd8e7c841874e410f4fe3f8be4e57d1fc4e1e9058924ce2faeaa69ba"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax/identity.json",
+      "sha256_lf": "019ec928238c5f3408285a72ae0e775c71a6b3f8b00418fd716e2051d198cba9"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax/status.json",
+      "sha256_lf": "26ff8a37592f8c188f2140479218b2d8eba479393f3e87d843309f1919f78efa"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax/verify.json",
+      "sha256_lf": "b55fbe20063bdd67bb70872685098e4550494583435a22d4a15d7dc37b11d41a"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax2/hostkey.pub",
+      "sha256_lf": "a391ee1519bfc0b808dd1a35b45125985f906113fe812d8ebdfd94121a44aef6"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax2/identity.json",
+      "sha256_lf": "6a163f94ad369febf9bdc915175bb1ba53cb8c1016c773d5ea8e51a6cc4922e3"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax2/status.json",
+      "sha256_lf": "26ff8a37592f8c188f2140479218b2d8eba479393f3e87d843309f1919f78efa"
+    },
+    {
+      "path": "tests/fixtures/nodes/lax2/verify.json",
+      "sha256_lf": "178c4ae3dc6e295bcf811743c67ce1d36a13f2383e78b037e04a41512610c6d8"
+    },
+    {
+      "path": "tests/fixtures/nodes/obsnode/identity.json",
+      "sha256_lf": "617402fd039add66dffcc9e4539899d658ba0d37c92ec93ed46991cab433e139"
+    },
+    {
+      "path": "tests/fixtures/nodes/obsnode/status.json",
+      "sha256_lf": "26ff8a37592f8c188f2140479218b2d8eba479393f3e87d843309f1919f78efa"
+    },
+    {
+      "path": "tests/fixtures/nodes/obsnode/verify.json",
+      "sha256_lf": "e0468977fe03f5eeb7692442de0b0344dcf3c188e2da7b194b158baae69ac4ed"
+    },
+    {
+      "path": "tests/fixtures/nodes/tokyo/hostkey.pub",
+      "sha256_lf": "826cd412cee2987b9a61e4d801e8f26e175bbc44cac8c1393fedaf3fb37a7645"
+    },
+    {
+      "path": "tests/fixtures/nodes/tokyo/identity.json",
+      "sha256_lf": "4b5995ca4b9134d1afdba8f56af6dbf31dc06376236b2e0b2ce5ce4d63123559"
+    },
+    {
+      "path": "tests/fixtures/nodes/tokyo/status.json",
+      "sha256_lf": "e34223c0284c81f432ee564446fd2664d49b464fbfc5c80b2e2e090464990899"
+    },
+    {
+      "path": "tests/fixtures/nodes/tokyo/verify.json",
+      "sha256_lf": "7f8d4438cbd5d0538d4635ffe85cd7855573e5c869c391d5bc8a1ab165c834b0"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-corrupt-valid.json",
+      "sha256_lf": "b009bb1841c8318934cb282d74f156d3899a7ef6d8719c00b55cc300a62bf5ad"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-counter-invalid.json",
+      "sha256_lf": "2d0fea223937cc5b5f9c4bb120b1d4bc17f198a8158b5a35e90ee08cf3ae0079"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-schema-invalid.json",
+      "sha256_lf": "8959d41c9979d622b44018e1f31db7f5c3b7fc57643a0b9a3786bb7d1b1dd656"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-secret-invalid.json",
+      "sha256_lf": "d3c3f8d6f439d8d1c9610972dce15c70820c358a8fc8facd3ca8375339192c30"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-unknown-valid.json",
+      "sha256_lf": "ae650938ed68f0e7add0ed4c6c8d4a5ae1e3945e90c5d586b6b6c53df4a5b914"
+    },
+    {
+      "path": "tests/fixtures/schemas/audit-health/v1-valid.json",
+      "sha256_lf": "c6c2cd3aaec6f43850d63c4a7f5703cc8255a75508001e6d92a123894bdfab36"
+    },
+    {
+      "path": "tests/fixtures/schemas/baseline/v1-secret-invalid.json",
+      "sha256_lf": "b6dcc5b3389f8a84f783184c3e64f964360db6ca354a134d61c91a21023c4617"
+    },
+    {
+      "path": "tests/fixtures/schemas/baseline/v1-source-invalid.json",
+      "sha256_lf": "8e82ada7172c3f0de8a9665d7c1fedf953eaef268f56d2fc6f3db23e2f81a2ac"
+    },
+    {
+      "path": "tests/fixtures/schemas/baseline/v1-valid.json",
+      "sha256_lf": "c333d99d405ec1407e9fb999497d0eb9a83e38a6eeec7dd60b5c8e4859681a3b"
+    },
+    {
+      "path": "tests/fixtures/schemas/capabilities/v1-missing-schema.json",
+      "sha256_lf": "bc9cd86b7e0c23fc1cec3d4266ca3610057287092ef315b720f812bb16fab838"
+    },
+    {
+      "path": "tests/fixtures/schemas/capabilities/v1-unknown-capability.json",
+      "sha256_lf": "83cb2bb0d1e67ca395f9ed8868213119b6fa3d76bcbff58b554f777fea551a9a"
+    },
+    {
+      "path": "tests/fixtures/schemas/capabilities/v1-valid.json",
+      "sha256_lf": "8838e4a3287f318011333f5fa97e36eb16acd9536c3b8c2d44800d78ee4f9b4c"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-empty-valid.json",
+      "sha256_lf": "2e8896f3cef7464256866cb55dfb30c740b892221b62f074b36ee43a9e2a54d5"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-missing-invalid.json",
+      "sha256_lf": "9b015ad66be4615bc8ee30025ef6e6a2cee08afd5654b8f2652aedf1ac08d6df"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-secret-invalid.json",
+      "sha256_lf": "32123431a577e74a82b9fb3fef2d1e71a870c3c56f96f00e61d5d67110ff51a4"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-subject-invalid.json",
+      "sha256_lf": "e0a7626bfa28abeb444a8292d823076042ba479b8760a3be9e2435b7193e4871"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-truncation-invalid.json",
+      "sha256_lf": "adf65ff33659356e327186b88903082d6a30507c31f2d130a0ac95e969189d22"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-valid.json",
+      "sha256_lf": "251f8f380c4b6d98e7096701d83da558badd4daddf0ad33f6c1df22e0dd4a85c"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v1-version-invalid.json",
+      "sha256_lf": "d7fab22adbfdfa47b27d0f19b250411ea3651582100af8f3ae70487f8264ac6d"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v2-drift-valid.json",
+      "sha256_lf": "1dfa74123e8fc94df1a551aca94a5b5fad6be80c42d9777544002e76771da494"
+    },
+    {
+      "path": "tests/fixtures/schemas/findings/v2-secret-invalid.json",
+      "sha256_lf": "71d745599fb640c514037b3b87e71b9886f228fadccc72ae17b16f0a58a04036"
+    },
+    {
+      "path": "tests/fixtures/schemas/fleet-verify/v2-secret-invalid.json",
+      "sha256_lf": "c374110671ee731eb2eaa73e3e04a2f33f404567edd28742be123cde161b7a29"
+    },
+    {
+      "path": "tests/fixtures/schemas/fleet-verify/v2-valid.json",
+      "sha256_lf": "8b2a8e9668061331600ac2d1eea04a8d86fca0f26d80083bcf0f08d5a896a923"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect-cache/v1-no-baseline-valid.json",
+      "sha256_lf": "b47d7ba007054d9ef62b40b9b93dca960416ff73994cf9191676eaf268050cac"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect-cache/v1-secret-invalid.json",
+      "sha256_lf": "5f5d34b3b4dde3213e869b96564d82fc4bfa409f83baf9744ce3bab711f92170"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect-cache/v1-valid.json",
+      "sha256_lf": "5c7e23313e0c7157d9ca7bfd64f0978dea8db9dac0bdefa877727ca3af6dd2ec"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect-cache/v1-version-invalid.json",
+      "sha256_lf": "84f1e61494c23fb5fff7e95d85c7250ed2fec6f1a68f5e93d267fac5f54116bd"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-bool-counter-invalid.json",
+      "sha256_lf": "849d6aac457df7d949ad0533085a9fb21c3dc47318777cf7bb40dfa1b0a4b661"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-missing-invalid.json",
+      "sha256_lf": "ddade939cd31bc9c9acd39a5c33712626873b9b9dead7ae4a10d2b25fb829e94"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-missing-tool-valid.json",
+      "sha256_lf": "680ecd906bf6ea35101068666860f1c7012e4c4d5c09221f210e40a74faa0997"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-oversize-invalid.json",
+      "sha256_lf": "18c1e8a799f24d6d7ab68d056deef05923f03eafdebbbac1b54a9fe6eae2b5ca"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-range-invalid.json",
+      "sha256_lf": "852a4d430f2be3acee3a2045c60b85a235eee33a80b4055b029a38c396911cbd"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-secret-invalid.json",
+      "sha256_lf": "b79bdbe8d0254197d4ab4c350cc85917ae4ffed6b0c258694a9992265c350759"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-valid.json",
+      "sha256_lf": "8b669ece7b76ae4af0f475ccedcb93a611f8329faff327a4b7de4d953dbb6943"
+    },
+    {
+      "path": "tests/fixtures/schemas/inspect/v1-version-invalid.json",
+      "sha256_lf": "587e2a26e527550aba758794409c6f6d761f507e2c58af4773cdb0b537b2cdad"
+    },
+    {
+      "path": "tests/fixtures/schemas/monitor/v1-missing-cache-state.json",
+      "sha256_lf": "588a10f09b2a2c59aec9648775d02483555638b6b3ed9d72ba317507b1715628"
+    },
+    {
+      "path": "tests/fixtures/schemas/monitor/v1-valid.json",
+      "sha256_lf": "d8fd50cfae07ef149f9f3251dc0e26527115fdacd233cb4a843ff4787ce40951"
+    },
+    {
+      "path": "tests/fixtures/schemas/monitor/v3-secret-invalid.json",
+      "sha256_lf": "e5c89dd85ebfe091eb3ecbe52a3447d77a47977242f42afff9a28946c2d99c79"
+    },
+    {
+      "path": "tests/fixtures/schemas/monitor/v3-valid.json",
+      "sha256_lf": "5420e6501f9a80ee9ba026fde810c6bfd025a62195fcdb6215101857f7766a2f"
+    },
+    {
+      "path": "tests/fixtures/schemas/telemetry/v1-missing-node-id.json",
+      "sha256_lf": "67aee8ad2fcccaf7450e4f7ca5009a3f5f65b6a03d5d91e72d4cb693a9798f09"
+    },
+    {
+      "path": "tests/fixtures/schemas/telemetry/v1-valid.json",
+      "sha256_lf": "507a145398efd14b2fae9c1b464c6f56db59493bce68feb6a23bb08867cdc125"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-empty-valid.json",
+      "sha256_lf": "f753678eb8e9f14378bb242a9f5314edb6808e76b53132dda36f58585179eff9"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-missing-invalid.json",
+      "sha256_lf": "11727d84029bfc0d61b906d9339c77c115121d537a5e77af277b8866baec493d"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-secret-invalid.json",
+      "sha256_lf": "96e7a9bcd6a3ad337b1e813550d0c0efba87518dd0943ab5e14132a6fe67391a"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-subject-invalid.json",
+      "sha256_lf": "edf67d023c5e7868a512279a81df54cfe9f1bad63d5499d73c17a77a86230ffb"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-truncation-invalid.json",
+      "sha256_lf": "9d6ba3955561c21c85d1182a05e94047293df7e02ace7f622a1a11ebf757e768"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-valid.json",
+      "sha256_lf": "25205137d469f899826e8c096896ca66ae7f1bd801c567cc766a5081e26f18fe"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v1-version-invalid.json",
+      "sha256_lf": "a40444e7aee7a9bc423c6009aaf36716f1b6eb1b864e3ade950b463ad18f346d"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v2-baseline-valid.json",
+      "sha256_lf": "e983ce1c93ca9cc7a8736a3556d619a19744d2e1f2568e4a88167d1f50172824"
+    },
+    {
+      "path": "tests/fixtures/schemas/timeline/v2-secret-invalid.json",
+      "sha256_lf": "25d4dfc29cdd39eec448567d44c775f233b87eb9e49ad52c2200e79a6a958154"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-counter-invalid.json",
+      "sha256_lf": "1aea18ae9ef5174cf2beea6bfaf6badbf19c11d28812b27e449e41743adad122"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-incomplete-invalid.json",
+      "sha256_lf": "0b6337c44a1ec5162ff1b1b702e93ad7cb6693c766d76ca0b26815676aa7e597"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-partial-valid.json",
+      "sha256_lf": "d8528c5e257ad7fd05f26f404092380a1d2e75e3fae7a173b526aa4b74d09516"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-secret-invalid.json",
+      "sha256_lf": "50cabaf48cf9406bc5df7d1a7cd066dcd8afad10a29746fbe0f3b351a2a8db28"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-unavailable-rows-invalid.json",
+      "sha256_lf": "916bbedf8250042e1c69d93462f1f6b70961bec932544355a88e053a375af8c6"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-unavailable-valid.json",
+      "sha256_lf": "2c06da56a424428a80b1ff264c7b1bc15378d0655a16f5123df7e1ec9656f935"
+    },
+    {
+      "path": "tests/fixtures/schemas/user-traffic/v1-valid.json",
+      "sha256_lf": "3175ca3c935643e6cc1adf32091e68f33a6cb75aa1f02e1b7b134cade40b4891"
+    },
+    {
+      "path": "tests/fixtures/schemas/verify/v2-fake-pass-invalid.json",
+      "sha256_lf": "ef9ff1b91f39176952c783dc20c11e1d573980a2402f70a34b4c3c69aaebc8a5"
+    },
+    {
+      "path": "tests/fixtures/schemas/verify/v2-no-probe-invalid.json",
+      "sha256_lf": "b095a4a21c8165a8094ed0ee11fb67df2989ad4da983633030ca12647a7561fb"
+    },
+    {
+      "path": "tests/fixtures/schemas/verify/v2-pass-valid.json",
+      "sha256_lf": "a53c44de7bbe570d031784a2f553a138e0498811a78297d83a1f0cac52090881"
+    },
+    {
+      "path": "tests/fixtures/schemas/verify/v2-secret-invalid.json",
+      "sha256_lf": "6c2269a8820835ac1f84f7dfb12e17660401e5beb098e03b9658741ee99d68fb"
+    },
+    {
+      "path": "tests/fixtures/schemas/verify/v2-valid.json",
+      "sha256_lf": "48c281a54262f67a1cd79f221f9c5c6f4242430ce3e60cd951e103287c6a9f32"
+    },
+    {
+      "path": "tests/test-fleet.sh",
+      "sha256_lf": "75b39712b77e4e5726c97f7329b71c60d8c1f29e165581eeabe08065c80e2684"
+    },
+    {
+      "path": "tests/test.sh",
+      "sha256_lf": "2a63a4e98765fac2a8bdc076cb1f7a7144e592c9f5f6811aa870acbc993cdef5"
+    },
+    {
+      "path": "tests/test_accountd_privileges.py",
+      "sha256_lf": "5ac87361713eb0f2287d75c30af49917b75264a536fe75b206023fd4bd285add"
+    },
+    {
+      "path": "tests/test_accountd_runtime.py",
+      "sha256_lf": "839da6555083a593df388d052350e3799acc054b6198f0a786148d70a9e2dcba"
+    },
+    {
+      "path": "tests/test_anomalies.py",
+      "sha256_lf": "03ab19193346d789641b6f7337837bf14f1191106b1fcc120973e786f928fb1b"
+    },
+    {
+      "path": "tests/test_audit_health.py",
+      "sha256_lf": "d09ab2dc262bb6b4df3c0ed8679e3a6806d149a7a8d5214185af963e4ea8efc3"
+    },
+    {
+      "path": "tests/test_findings.py",
+      "sha256_lf": "240a74a54c0534b0e7d71831daf016c0630e2577711638306f46c15d1e285043"
+    },
+    {
+      "path": "tests/test_findings_schema.py",
+      "sha256_lf": "561b923185a792e0917c28de79112abc9e25d28a1074b270077e70255e24e3b5"
+    },
+    {
+      "path": "tests/test_inspect.py",
+      "sha256_lf": "4a93c394fa69056ea38234f2c11d49c666d696c4bad9cedd27a2898e66c95e14"
+    },
+    {
+      "path": "tests/test_inspection_cache.py",
+      "sha256_lf": "8b5dbf6b38d102231f8eed3b1b2e6e3ce1173e9d57e6cc9e9ab2ffb2f9c4645d"
+    },
+    {
+      "path": "tests/test_monitor.py",
+      "sha256_lf": "9bf93d8c61bafc4257e8af2b8a877ff6a6aaaa0840cbd0587f289d2c3ce2f926"
+    },
+    {
+      "path": "tests/test_monitor_schema.py",
+      "sha256_lf": "9553bb56b74e12b153a074f2fcb8329cd207c47360c68b86db6d7e6f84825325"
+    },
+    {
+      "path": "tests/test_observer.py",
+      "sha256_lf": "464831cecc79b1c4009ea097a2142d6193a9b5ea20ed9f203483bb46b389d606"
+    },
+    {
+      "path": "tests/test_user_traffic.py",
+      "sha256_lf": "25d12f9890b7b167c78a05cd416b6e5191a7fc39edff8ceb0fa6f5b5326443f0"
+    },
+    {
+      "path": "tests/test_verify_extended.py",
+      "sha256_lf": "81172b1cd4c284fbfea717c13dc788fd14acf7e1fd3fa486a9b54e2e82ca72cf"
+    },
+    {
+      "path": "vincula-bootstrap.sh",
+      "sha256_lf": "b3e9063287fe1b032972ed5830017a8e11cb4f3a4dead333b58d6f3d833bd89e"
+    },
+    {
+      "path": "vincula.sh",
+      "sha256_lf": "eda69c4e693f607c84c1c120bcaa7cfccc78e58edee07920ed677868bfc459c2"
+    },
+    {
+      "path": "vincula.sh.sha256",
+      "sha256_lf": "a966af868456393e7ee78413f524cc765c42b7e6fcbc8865c907d6e21f91a3ed"
+    }
+  ],
+  "status": "FROZEN CANDIDATE / UNRELEASED / PENDING LIVE / PENDING HUMAN",
+  "stop_before": "0.6.x implementation",
+  "test_runs": {
+    "bash_fleet": {
+      "command": "bash tests/test-fleet.sh",
+      "exit_code": 0,
+      "passed": 1132
+    },
+    "gate": {
+      "command": "SQLITE_TMPDIR=<workspace>/tmp/sqlite-tmp bash tests/test.sh",
+      "exit_code": 0,
+      "passed": 1950
+    },
+    "linux_python": {
+      "environment": "Debian 13.3 WSL2 / Python 3.13.5 / non-root",
+      "exit_code": 1,
+      "note": "test_verify_extended has two root-only cases that fail without root ('Run this command as root'); they are pre-existing and the CI ubuntu job runs the same suite through sudo -n. Not a candidate regression.",
+      "passed": 153,
+      "skipped": 8,
+      "total": 155
+    },
+    "windows_python": {
+      "environment": "Windows / Python 3.12 (local reproduction)",
+      "exit_code": 0,
+      "passed": 144,
+      "skipped": 11,
+      "total": 155
+    }
+  },
+  "validation_helpers": [
+    {
+      "path": "tmp/gen-source-inputs.py",
+      "sha256_lf": "c45e31ad87389ffee458acfc69bc28a97fd68a26c89edf4fb32a2a8a5ac87ff1"
+    }
+  ],
+  "version": "0.5.3"
+}

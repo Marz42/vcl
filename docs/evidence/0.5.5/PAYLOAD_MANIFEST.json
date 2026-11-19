@@ -1,0 +1,16 @@
+{
+  "controller_version": "0.5.5",
+  "node_payload_version": "0.5.5",
+  "sha256": "383362401f0574c44649e5071b81f31ab03f03f54588ee6456e62e4627524671",
+  "supported_os": [
+    "debian12",
+    "debian13",
+    "ubuntu22.04",
+    "ubuntu24.04",
+    "ubuntu26.04"
+  ],
+  "supported_arch": [
+    "amd64",
+    "arm64"
+  ]
+}

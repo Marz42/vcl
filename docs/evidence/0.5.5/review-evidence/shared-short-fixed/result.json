@@ -1,0 +1,29 @@
+{
+  "backup_seconds": 40.30855621499359,
+  "backup_verification": {
+    "archive_dev": 112,
+    "archive_ino": 140494,
+    "archive_mtime_ns": 1794384578792872951,
+    "archive_sha256": "38ee4225a875c49d891283d7f98fb83deac7b1f7097d823237513930fcac0f4f",
+    "archive_size": 21022720,
+    "encryption": "none",
+    "ok": true,
+    "path": "/var/backups/vincula/node-node-fix-20261111T080938Z.tar",
+    "schema_version": 1,
+    "seconds": 0.11956292201648466,
+    "secret_bearing": false,
+    "source_instance_id": "inst-node-fix",
+    "source_node_id": "node-fix",
+    "vincula_version": "0.5.5"
+  },
+  "checkpoint_started_at": 40.610659477999434,
+  "code": "PREPARATION_DEADLINE",
+  "detail": "absolute preparation deadline expired (worker guard)",
+  "elapsed": 60.25234860202181,
+  "op": "01d4b532-6d0d-4853-bcab-36a348700452",
+  "phase": "checkpoint",
+  "remaining_at_checkpoint": 19.389340522000566,
+  "same_absolute_deadline": true,
+  "state": "CANCELLED",
+  "worker_exit": null
+}

@@ -37,6 +37,8 @@ def fetch_telemetry(
             "schema": TELEMETRY_SCHEMA,
             "detail": capabilities.get("detail") or "capabilities not available",
             "credential_class": "observe",
+            "reason": capabilities.get("reason", "CAPABILITY_UNSUPPORTED"),
+            "support": capabilities.get("support"),
         }
     if cap_state == "AUTH_FAILED":
         return {

@@ -1,0 +1,121 @@
+{
+  "all_gone_seconds_after_resume": 1.1431984603404999e-05,
+  "deadline_guarantee_gap": false,
+  "deadline_seconds": 30,
+  "lifecycle": {
+    "created_at": 1794384394.2899516,
+    "deadline_mono": 172049.929924667,
+    "operation_id": "e25d36da-9f71-4f04-bf3a-d612ffdf6857",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3595139,
+    "worker_host_pid": 3595140
+  },
+  "lock_free_after_resume": true,
+  "lock_free_seconds_after_resume": 4.090499714948237e-05,
+  "lock_free_while_paused": true,
+  "note": "No gap: the worker deadline guard used the same absolute deadline while the supervisor was stopped.",
+  "op": "e25d36da-9f71-4f04-bf3a-d612ffdf6857",
+  "paused_seconds": 40.14758340700064,
+  "resume_cleanup_seconds": 0.0643910130020231,
+  "scenario": "stop-supervisor",
+  "sentinel_alive_at_end": true,
+  "status_after_resume": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "PREPARATION_DEADLINE",
+    "deadline_owner": "worker_guard",
+    "detail": "absolute preparation deadline expired while supervisor was not scheduling",
+    "finished_at": 1794384424.2278802,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "e25d36da-9f71-4f04-bf3a-d612ffdf6857",
+    "phase": "backup",
+    "seconds": 30,
+    "started_at": 1794384394.226111,
+    "state": "CANCELLED"
+  },
+  "status_while_paused": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "PREPARATION_DEADLINE",
+    "deadline_owner": "worker_guard",
+    "detail": "absolute preparation deadline expired while supervisor was not scheduling",
+    "finished_at": 1794384424.2278802,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "e25d36da-9f71-4f04-bf3a-d612ffdf6857",
+    "phase": "backup",
+    "seconds": 30,
+    "started_at": 1794384394.226111,
+    "state": "CANCELLED"
+  },
+  "supervisor_state_after_stop": "T",
+  "tree_after_alive": {
+    "3595143": false,
+    "3595146": false,
+    "3595147": false,
+    "3595148": false,
+    "3595149": false
+  },
+  "tree_alive_while_paused": {
+    "3595143": false,
+    "3595146": false,
+    "3595147": false,
+    "3595148": false,
+    "3595149": false
+  },
+  "tree_before": [
+    {
+      "host_pid": 3595143,
+      "nspid": [
+        3595143,
+        4
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595146,
+      "nspid": [
+        3595146,
+        7
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595147,
+      "nspid": [
+        3595147,
+        8
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595148,
+      "nspid": [
+        3595148,
+        9
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595149,
+      "nspid": [
+        3595149,
+        10
+      ],
+      "state": "S"
+    }
+  ],
+  "verdict": "PASS"
+}

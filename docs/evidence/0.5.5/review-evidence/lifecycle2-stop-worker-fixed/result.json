@@ -1,0 +1,99 @@
+{
+  "all_gone_seconds": 34.54313990200171,
+  "deadline_cleanup_independent_of_worker": true,
+  "deadline_seconds": 30,
+  "elapsed_seconds": 34.61224508701707,
+  "lifecycle": {
+    "created_at": 1794384465.4418886,
+    "deadline_mono": 172121.074549433,
+    "operation_id": "4c9d5209-160e-4915-adf7-5ae8bd27c639",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3595276,
+    "worker_host_pid": 3595277
+  },
+  "lock_free": true,
+  "lock_free_seconds": 34.54320153000299,
+  "op": "4c9d5209-160e-4915-adf7-5ae8bd27c639",
+  "phase": "backup",
+  "scenario": "stop-worker",
+  "sentinel_alive_at_end": true,
+  "status": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "PREPARATION_DEADLINE",
+    "detail": "deadline expired; worker namespace terminated",
+    "finished_at": 1794384500.3850775,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "4c9d5209-160e-4915-adf7-5ae8bd27c639",
+    "phase": "backup",
+    "seconds": 30,
+    "started_at": 1794384465.3707535,
+    "state": "CANCELLED",
+    "worker_exit": {
+      "exit_code": null,
+      "signal": 9
+    }
+  },
+  "supervisor_alive": false,
+  "tree_after_alive": {
+    "3595280": false,
+    "3595283": false,
+    "3595284": false,
+    "3595285": false,
+    "3595286": false
+  },
+  "tree_before": [
+    {
+      "host_pid": 3595280,
+      "nspid": [
+        3595280,
+        4
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595283,
+      "nspid": [
+        3595283,
+        7
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595284,
+      "nspid": [
+        3595284,
+        8
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595285,
+      "nspid": [
+        3595285,
+        9
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595286,
+      "nspid": [
+        3595286,
+        10
+      ],
+      "state": "S"
+    }
+  ],
+  "worker_exit": {
+    "exit_code": null,
+    "signal": 9
+  },
+  "worker_state_after_stop": "T"
+}

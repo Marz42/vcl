@@ -1,0 +1,35 @@
+{
+  "bash_root_namespace": {
+    "failed": 0,
+    "log": "test-sh-root.log",
+    "passed": 1968,
+    "reported": "All 1968 tests passed",
+    "seconds": 610
+  },
+  "bash_source_note": "Clean-copy Bash runs used b256a33; its runtime files are byte-identical to 21aba22. The only difference is the deadline margin in a Python regression test, which the Bash suites do not execute.",
+  "bash_user": {
+    "failed": 0,
+    "log": "test-sh-user.log",
+    "passed": 1970,
+    "reported": "All 1970 tests passed",
+    "seconds": 626
+  },
+  "original_worktree": {
+    "classification": "round-3 environment failure: root-owned 0600 frozen dist; not counted as pass",
+    "failed": 11,
+    "passed": 392
+  },
+  "python": {
+    "failed": 0,
+    "log": "python.log",
+    "passed": 228,
+    "skipped": 10
+  },
+  "review_round": 4,
+  "source_commit": "21aba22157994d70bfcf2c17c1ec4ff38b9e9880",
+  "targeted": {
+    "failed": 0,
+    "log": "review4-targeted.log",
+    "passed": 19
+  }
+}

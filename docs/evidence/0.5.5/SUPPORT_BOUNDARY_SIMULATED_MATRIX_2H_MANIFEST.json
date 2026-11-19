@@ -1,0 +1,97 @@
+{
+  "schema": "support-boundary-synthetic-2h-manifest/v1",
+  "source_commit": "465106440688ab73823cbe4871139c834488d4ae",
+  "source_date_epoch": "1793689859",
+  "run": {
+    "start_utc": "2026-11-08T23:28:44Z",
+    "end_utc": "2026-11-09T01:28:44Z",
+    "start_local": "2026-11-09 07:28:44 +08:00",
+    "end_local": "2026-11-09 09:28:44 +08:00",
+    "elapsed_seconds": 7200.005599575998,
+    "exit_code": 0,
+    "nodes": 10,
+    "samples": 2401,
+    "observation_errors": 0,
+    "maximum_concurrency": 8,
+    "two_hour_matrix": true,
+    "state": "PASS OFFLINE",
+    "database_bytes": 5410816,
+    "sleep_pause_interruption_observed": false
+  },
+  "original_files": [
+    {
+      "name": "SUMMARY.json",
+      "path": "/home/marz/vcl-055-synthetic.0VnIcTOq/SUMMARY.json",
+      "sha256": "309a4dfb8ee8ebbf4f70e495d8650eea8845fefa57e9b660ceaf8919030d5363",
+      "archived": true
+    },
+    {
+      "name": "runner.log",
+      "path": "/home/marz/vcl-055-synthetic.0VnIcTOq/runner.log",
+      "sha256": "65d0a0388d08b5ccf5062be6ff54850ee0681911c5af6d948c2b7b37094ad43b",
+      "archived": true
+    },
+    {
+      "name": "START.json",
+      "path": "/home/marz/vcl-055-synthetic.0VnIcTOq/START.json",
+      "sha256": "5c777f934ddd436302940270a7b0245846224f3a4afa02e07244053cc770bc4b",
+      "archived": true
+    },
+    {
+      "name": "PROGRESS.json",
+      "path": "/home/marz/vcl-055-synthetic.0VnIcTOq/PROGRESS.json",
+      "sha256": "9a495d3168e935c31446d82b9bb47e3315b10b27d1c0d92698ca272f6c4d7795",
+      "archived": true
+    },
+    {
+      "name": "observation.db",
+      "path": "/home/marz/vcl-055-synthetic.0VnIcTOq/observation.db",
+      "sha256": "dab500145799527857cd8ba79f78336432d8614dd4020ee1139a3b6ad9b43f8e",
+      "archived": false
+    }
+  ],
+  "archived_copies": [
+    {
+      "name": "SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.json",
+      "path": "docs/evidence/0.5.5/SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.json",
+      "sha256": "309a4dfb8ee8ebbf4f70e495d8650eea8845fefa57e9b660ceaf8919030d5363"
+    },
+    {
+      "name": "SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.runner.log.txt",
+      "path": "docs/evidence/0.5.5/SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.runner.log.txt",
+      "sha256": "65d0a0388d08b5ccf5062be6ff54850ee0681911c5af6d948c2b7b37094ad43b"
+    },
+    {
+      "name": "SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.start.json",
+      "path": "docs/evidence/0.5.5/SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.start.json",
+      "sha256": "5c777f934ddd436302940270a7b0245846224f3a4afa02e07244053cc770bc4b"
+    },
+    {
+      "name": "SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.progress.json",
+      "path": "docs/evidence/0.5.5/SUPPORT_BOUNDARY_SIMULATED_MATRIX_2H.progress.json",
+      "sha256": "9a495d3168e935c31446d82b9bb47e3315b10b27d1c0d92698ca272f6c4d7795"
+    }
+  ],
+  "input_verification": {
+    "count": 17,
+    "mismatches": [],
+    "source_commit": "465106440688ab73823cbe4871139c834488d4ae",
+    "note": "17 report inputs are a subset of SUPPORT_BOUNDARY_SOURCE_INPUTS.json and match the source commit."
+  },
+  "source_input_verification": {
+    "count": 202,
+    "mismatches": [],
+    "source_commit": "465106440688ab73823cbe4871139c834488d4ae"
+  },
+  "artifacts": {
+    "node_sha256": "383362401f0574c44649e5071b81f31ab03f03f54588ee6456e62e4627524671",
+    "controller_sha256": "e2daaafacd9732161a4eb02df9b681bed72e61f599db82e3d0f43957bb31cc60",
+    "ci_run": "42531836471",
+    "ci_head": "465106440688ab73823cbe4871139c834488d4ae"
+  },
+  "notes": [
+    "observation.db is not committed because it is binary; its SHA256 is recorded above.",
+    "COPY of SUMMARY.json and runner.log are byte-identical to the original evidence files.",
+    "No sleep, pause or interruption was observed: wall clock is exactly two hours and maximum gaps are about 33 seconds."
+  ]
+}

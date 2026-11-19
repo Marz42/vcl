@@ -1,0 +1,116 @@
+{
+  "all_gone_seconds": 1.5900994185358286e-05,
+  "elapsed_after_kill": 0.07669197602081113,
+  "failed_status_seconds": 0.06638202100293711,
+  "kill_order": [
+    "supervisor",
+    "worker"
+  ],
+  "kill_rc": {
+    "supervisor": 0,
+    "worker": "ProcessLookupError"
+  },
+  "lifecycle": {
+    "created_at": 1794384478.8589563,
+    "deadline_mono": 172164.497989922,
+    "operation_id": "88c277a6-e1b0-41f0-80de-4906a719d552",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3595575,
+    "worker_host_pid": 3595577
+  },
+  "lock_free": true,
+  "lock_free_seconds": 7.467297837138176e-05,
+  "no_false_success": true,
+  "op": "88c277a6-e1b0-41f0-80de-4906a719d552",
+  "pid_file_scope": "helper pid files are namespace PIDs; host/NSpid recorded above",
+  "scenario": "kill-both-supervisor-first",
+  "sentinel_alive_at_end": true,
+  "status_after_query": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "WORKER_LOST",
+    "detail": "supervisor died before the worker published a terminal status",
+    "finished_at": 1794384479.3859715,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "88c277a6-e1b0-41f0-80de-4906a719d552",
+    "phase": "backup",
+    "seconds": 60,
+    "started_at": 1794384478.794005,
+    "state": "FAILED"
+  },
+  "status_file_immediately_after_kill": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "WORKER_LOST",
+    "detail": "supervisor died before the worker published a terminal status",
+    "finished_at": 1794384479.3859715,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "88c277a6-e1b0-41f0-80de-4906a719d552",
+    "phase": "backup",
+    "seconds": 60,
+    "started_at": 1794384478.794005,
+    "state": "FAILED"
+  },
+  "tree_after_alive": {
+    "3595580": false,
+    "3595583": false,
+    "3595584": false,
+    "3595585": false,
+    "3595586": false
+  },
+  "tree_before": [
+    {
+      "host_pid": 3595580,
+      "nspid": [
+        3595580,
+        4
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595583,
+      "nspid": [
+        3595583,
+        7
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595584,
+      "nspid": [
+        3595584,
+        8
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595585,
+      "nspid": [
+        3595585,
+        9
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595586,
+      "nspid": [
+        3595586,
+        10
+      ],
+      "state": "S"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "evidence_kind": "SYNTHETIC_REAL_CLOCK",
+  "source_commit": "37f45dc897e92186402553b6decb3cdb1aca6a99",
+  "inputs": {
+    "lib\\observation\\anomalies.py": "04054961825fb8dbf22f26c7048a40682b44ea177a1a2cd46d448c6d53935976",
+    "lib\\observation\\audit_health.py": "9b3242b39ca1494fe4b3909b06dfe8430f8126de6247d476a7d2cdf5c579fb93",
+    "lib\\observation\\capabilities.py": "a9cefb53d8e05e0302094d5bd7c45295c182f1e8cf871fa8020fe6d1527a9f26",
+    "lib\\observation\\findings.py": "94bf32a836dd180240bd64116d2075baa403371f2b7147b338a078ed41e6820d",
+    "lib\\observation\\health.py": "d76f2a6162a41e758fa6b1ff642b3cbe665e63b56a891cb9ab93fe07c5b1ae1c",
+    "lib\\observation\\inspection.py": "1ade42f3080f19e228770ecad54772c0c63de30005569237c5b0b9e43df2a7d1",
+    "lib\\observation\\inspection_cache.py": "6d006f097ed6169f7fc2e7c53a78d7925cd2bd5eac19f98b8ff5a86b6b17fee8",
+    "lib\\observation\\monitor.py": "77e4e3318d4576a7cea8d7f6ce491b2d1a480ad83b6fbe86ce4809a05c46bea7",
+    "lib\\observation\\probe.py": "49d36ca54206b167d5a9d49e547abb341ee9cafe996eac9e155762140550f43d",
+    "lib\\observation\\schema_validate.py": "0a98cefefa6e56c60bab6c6e05dac40e9ff458248dc190f329be945cd3679c79",
+    "lib\\observation\\store.py": "86a54053e449ef8b54b455e269b1c9ee973943cd759240d851a68e8a4c5fcba6",
+    "lib\\observation\\telemetry.py": "ff9e9c5f1fdefab66716b81d1473f3dea87fa0c549595361dd19ca665225d61d",
+    "lib\\observation\\user_traffic.py": "f58fe17cd8fa6e88bdb0a19419409cb2338100cbe232e60326060f0d9a5f34ca",
+    "lib\\observation\\verification.py": "33a1643624e674d8cbc090ffbc9c5a172b6636d3b3befef2f82684f80b64a78d",
+    "tests/fixtures/schemas/telemetry/v1-valid.json": "507a145398efd14b2fae9c1b464c6f56db59493bce68feb6a23bb08867cdc125",
+    "tests/test_monitor.py": "9bf93d8c61bafc4257e8af2b8a877ff6a6aaaa0840cbd0587f289d2c3ce2f926",
+    "scripts/soak-0.5.5-simulated.py": "f6a10ce2099139e6edb564d226f7cf0c09ea383175ad095b9e714d412c4cabb1"
+  },
+  "requested_seconds": 7200,
+  "elapsed_seconds": 7200.016,
+  "nodes": [
+    {
+      "name": "synthetic-00",
+      "samples": 240,
+      "maximum_gap_seconds": 33.0
+    },
+    {
+      "name": "synthetic-01",
+      "samples": 240,
+      "maximum_gap_seconds": 33.01599999999962
+    },
+    {
+      "name": "synthetic-02",
+      "samples": 241,
+      "maximum_gap_seconds": 33.03099999999904
+    },
+    {
+      "name": "synthetic-03",
+      "samples": 239,
+      "maximum_gap_seconds": 33.03099999999904
+    },
+    {
+      "name": "synthetic-04",
+      "samples": 240,
+      "maximum_gap_seconds": 33.01599999999962
+    },
+    {
+      "name": "synthetic-05",
+      "samples": 241,
+      "maximum_gap_seconds": 33.01499999999942
+    },
+    {
+      "name": "synthetic-06",
+      "samples": 241,
+      "maximum_gap_seconds": 32.9220000000023
+    },
+    {
+      "name": "synthetic-07",
+      "samples": 240,
+      "maximum_gap_seconds": 33.01499999999942
+    },
+    {
+      "name": "synthetic-08",
+      "samples": 237,
+      "maximum_gap_seconds": 33.04599999999846
+    },
+    {
+      "name": "synthetic-09",
+      "samples": 241,
+      "maximum_gap_seconds": 33.0
+    }
+  ],
+  "maximum_concurrency": 8,
+  "scheduler": {
+    "sampled_nodes": 10,
+    "cache_write_errors": 0,
+    "finding_write_errors": 0
+  },
+  "observation_errors": 0,
+  "two_hour_matrix": true,
+  "state": "PASS OFFLINE",
+  "proxy_live": "NOT RUN",
+  "inspect_live": "NOT RUN",
+  "human_acceptance": "NOT SIGNED",
+  "database_bytes": 5423104,
+  "reuse_review": {
+    "candidate_source_commit": "653f7ddb28b8ff4ea199dce6c4187842cca9190e",
+    "every_recorded_input_matches": true,
+    "scope": "Observation scheduler/store and synthetic fixture factory only; no real SSH, proxy, Node migration or Inspect",
+    "raw_report_sha256": "7a8250d7ad6ec0eac22dbb3a46ad485238f089bba786547c8bc3dc31f9b86ef6",
+    "start_record_sha256": "7a74158dfd12dc3cb27ecffdbddc68788d7df0bda9caf924de341c0c0266addd",
+    "raw_database_sha256": "831ad4d97fad755d798b322ec8e9140a168c4c1374d8f40471a707b92a771a30",
+    "committed_sample_check": {
+      "rows": 2400,
+      "nodes": 10,
+      "minimum_samples_per_node": 237,
+      "maximum_samples_per_node": 241,
+      "rollup_samples": 2400,
+      "first_sample_utc": "2026-11-03T05:31:51.517401Z",
+      "last_sample_utc": "2026-11-03T07:31:47.045230Z",
+      "source": "Read-only telemetry_samples.at; monotonic duration is separate; scheduler jitter gives different per-node counts"
+    }
+  }
+}

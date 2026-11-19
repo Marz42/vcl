@@ -1,0 +1,236 @@
+{
+  "schema": "timeline/v2",
+  "cache_state": "OK",
+  "events": [
+    {
+      "id": "aca185100d31bcfe3c4d76ed59dfe02ff3c160ee4b1a5135b2f133fb255fc232",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "AUDIT_STALLED"
+      }
+    },
+    {
+      "id": "4c19c3a6dd72e9022cf82e06421499b3b8a35a506bb9a185250f09d0ec8192fb",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "EXPORT_GAP"
+      }
+    },
+    {
+      "id": "529c0c92b57e7692d32ac3d60813ef52063cd4f0a3ae88114be03d675f141f35",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SYNC_LAG"
+      }
+    },
+    {
+      "id": "23cd1fe16d61845e05816ef7917fabe6a8633524d5f1c0814c2f78eb09fd30fa",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "DISK_PRESSURE"
+      }
+    },
+    {
+      "id": "0e0fd73c8ae33a501748176f80e91d05f25f40c9a43878d0203a85f0ac1042ae",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "MEMORY_PRESSURE"
+      }
+    },
+    {
+      "id": "52bebdf229213fe578fbc77dc87791f47c04f0fecf91d4289399c82201fa725c",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "TELEMETRY_STALE"
+      }
+    },
+    {
+      "id": "2d6e2326c4e25015fb44aebde6ca9f7e051d1855ee80db18fe6849924a4a4c94",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SCHEMA_MISMATCH"
+      }
+    },
+    {
+      "id": "8d7fe6a31ba653336eafff91e1dc70303afb870e20e997931cb4da3b5633fd8d",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "ACCOUNTING_DB_CORRUPT"
+      }
+    },
+    {
+      "id": "cd557a51a2090b48c20a98bbd7c0982ab858887d912713ff5ef9c98220604338",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "EXPORT_SEQUENCE_REGRESSION"
+      }
+    },
+    {
+      "id": "56e11bf8c51f5d18bc15c90ad404a0d1db5f4cd875939011f0d0cdf0bdca204a",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SERVICE_RESTART_LOOP"
+      }
+    },
+    {
+      "id": "d5107acbce665c54966fc32c4d60a42d028af091a1c984ff8a33ff7c838ecd8b",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "NETWORK_RATE_ANOMALY"
+      }
+    },
+    {
+      "id": "5cf8423b3221f92664bc4d2cc7cac6df133c630dc96ed08e0fc02a6b4439edad",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "USER_TRAFFIC_SPIKE"
+      }
+    },
+    {
+      "id": "9ad25e8fbc80c3ad9923d36c583d3275966230e0c0999aff14d60840a0ffa428",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "USER_CONNECTION_SPIKE"
+      }
+    },
+    {
+      "id": "25013f4da586f2e459e752f1f98bf5a38f419b79dba71ab32a901f13501a88a9",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "SUSTAINED_TRAFFIC_ANOMALY"
+      }
+    },
+    {
+      "id": "27c4aa21ec726789b14de509e34ebb4cfe428bdb49f998ad11a352443ad6f2c0",
+      "at": 1790438400,
+      "kind": "OPERATION",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "operation": "verify",
+        "state": "SUCCESS",
+        "exit_code": 0
+      }
+    },
+    {
+      "id": "e0b9a72cf97145eecdc9ea80c0c79234df5129a98612e173f68ec81e471af8dc",
+      "at": 1790438400,
+      "kind": "OPERATION",
+      "subject": null,
+      "detail": {
+        "operation": "user_add",
+        "state": "SUCCESS"
+      }
+    },
+    {
+      "id": "58fd52ccac3f430f43213a7eb08c133506b4ba9ac07d61b8e7f7082660466dff",
+      "at": 1790438400,
+      "kind": "SERVICE_RESTART",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "restart_delta": 1
+      }
+    }
+  ],
+  "truncated": []
+}

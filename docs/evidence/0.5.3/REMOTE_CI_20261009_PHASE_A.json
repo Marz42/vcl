@@ -1,0 +1,58 @@
+{
+  "checked_date": "2026-10-09",
+  "repository": "Marz42/vcl",
+  "development": {
+    "branch": "codex/0.5.1",
+    "head_sha": "0e939010f3dc99b5bdf1000f5b190fcafc052f6e",
+    "scope": "phase A controller verification evidence page (isolated live run against the frozen 0.5.3 candidate) and the two follow-up backlog items",
+    "pull_request": "https://github.com/Marz42/vcl/pull/13",
+    "draft": true,
+    "merged": false
+  },
+  "workflow": {
+    "id": 37938802704,
+    "run_attempt": 1,
+    "head_sha": "0e939010f3dc99b5bdf1000f5b190fcafc052f6e",
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-10-09T13:42:47Z",
+    "updated_at": "2026-10-09T13:51:00Z",
+    "url": "https://github.com/Marz42/vcl/actions/runs/37938802704"
+  },
+  "check_runs": [
+    {
+      "name": "artifact",
+      "conclusion": "success"
+    },
+    {
+      "name": "concurrency",
+      "conclusion": "success"
+    },
+    {
+      "name": "failure-injection",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (debian:12)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (debian:13)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (ubuntu-latest)",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit (windows-latest)",
+      "conclusion": "success"
+    }
+  ],
+  "notes": [
+    "docs-only change (docs/evidence, docs/plans); no source or test input changed",
+    "all seven jobs green in the first attempt, including unit (windows-latest)",
+    "local non-root unittest still shows the two pre-existing test_verify_extended failures (they require root); CI ubuntu runs them with sudo"
+  ]
+}

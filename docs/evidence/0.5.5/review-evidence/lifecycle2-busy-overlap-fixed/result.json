@@ -1,0 +1,100 @@
+{
+  "lifecycle1": {
+    "created_at": 1794384485.9079514,
+    "deadline_mono": 172141.542502858,
+    "operation_id": "67269f23-36cc-4f89-be5a-d40b41e5d27a",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3595726,
+    "worker_host_pid": 3595727
+  },
+  "lock_free_after_op1": true,
+  "lock_free_at_second_start": false,
+  "no_overlap_accepted": true,
+  "old_tree_alive_at_second_start": [
+    {
+      "host_pid": 3595730,
+      "nspid": [
+        3595730,
+        4
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595734,
+      "nspid": [
+        3595734,
+        7
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595735,
+      "nspid": [
+        3595735,
+        8
+      ],
+      "state": "S"
+    }
+  ],
+  "op1": "67269f23-36cc-4f89-be5a-d40b41e5d27a",
+  "op1_all_gone_seconds": 4.008749733999139,
+  "op1_lock_free_seconds": 4.00881379499333,
+  "op1_terminal_status": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "PREPARATION_DEADLINE",
+    "detail": "deadline expired; worker namespace terminated",
+    "finished_at": 1794384520.854932,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "67269f23-36cc-4f89-be5a-d40b41e5d27a",
+    "phase": "backup",
+    "seconds": 30,
+    "started_at": 1794384485.8387718,
+    "state": "CANCELLED",
+    "worker_exit": {
+      "exit_code": null,
+      "signal": 9
+    }
+  },
+  "op2": "5f826e0e-d565-41c4-8e8f-0d7fe0c31b92",
+  "scenario": "busy-overlap",
+  "second_lifecycle": {
+    "created_at": 1794384521.1635916,
+    "deadline_mono": 172206.801688048,
+    "operation_id": "5f826e0e-d565-41c4-8e8f-0d7fe0c31b92",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3596315,
+    "worker_host_pid": 3596316
+  },
+  "second_operation_accepted_after_cleanup": true,
+  "second_operation_dir_created": false,
+  "second_start_after_cleanup": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "helper": "/tmp/payload/bin/vincula",
+    "migrate_started": false,
+    "operation_id": "5f826e0e-d565-41c4-8e8f-0d7fe0c31b92",
+    "phase": "backup",
+    "seconds": 60,
+    "started_at": 1794384521.0979836,
+    "state": "RUNNING"
+  },
+  "second_start_rejected_busy": true,
+  "second_start_response": {
+    "code": "PREPARATION_BUSY",
+    "operation_id": "5f826e0e-d565-41c4-8e8f-0d7fe0c31b92",
+    "state": "UNKNOWN"
+  },
+  "sentinel_alive_at_end": true
+}

@@ -1267,11 +1267,8 @@ def _open_staging_fleet_db(path: Path) -> Any:
             conn.commit()
         else:
             ver = _host.fleet_db_meta_get(conn, "schema_version")
-            if ver == "1":
-                _host._migrate_fleet_db_1_to_2(conn)
-                ver = "2"
-            if ver == "2":
-                _host._migrate_fleet_db_2_to_3(conn)
+            if ver in ("1", "2", "3", "4"):
+                _host._migrate_fleet_db_to_5(conn)
             elif ver != str(_host.FLEET_DB_SCHEMA_VERSION):
                 conn.close()
                 _host.die(f"unsupported fleet-cache schema: {ver}")
@@ -1318,7 +1315,7 @@ def _execute_migrate_locked() -> dict[str, Any]:
                     _host.die("fleet.db integrity_check failed")
                 if _host._has_meta_table(conn):
                     ver = _host.fleet_db_meta_get(conn, "schema_version")
-                    if ver not in ("1", "2", str(_host.FLEET_DB_SCHEMA_VERSION)):
+                    if ver not in ("1", "2", "3", "4", str(_host.FLEET_DB_SCHEMA_VERSION)):
                         _host.die(f"unsupported fleet-cache schema: {ver}")
                 for table in _COUNT_TABLES:
                     src_counts[table] = _table_count(conn, table)
@@ -1700,6 +1697,22 @@ def _import_staging_parent() -> Path:
         return Path(tempfile.gettempdir())
 
 
+def _import_staging_dir(prefix: str) -> Path:
+    """Create an import staging directory, degrading instead of crashing.
+
+    ``~/tmp`` is preferred (F7-2), but it can exist without being writable;
+    fall back to the system temp dir, and fail with one clear line if neither
+    works instead of a bare PermissionError traceback.
+    """
+    try:
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=str(_import_staging_parent())))
+    except OSError as exc:
+        try:
+            return Path(tempfile.mkdtemp(prefix=prefix))
+        except OSError:
+            _host.die(f"cannot create workspace import staging directory: {exc}")
+
+
 def _extract_workspace_archive_to_staging(src: Path, staging: Path) -> set[str]:
     """Extract allowlisted portable members into staging; no live writes."""
     extracted: set[str] = set()
@@ -1774,12 +1787,7 @@ def _commit_staged_workspace(staging: Path, home: Path) -> None:
         d.mkdir(parents=True, exist_ok=True)
         _chmod_private(d, 0o700)
 
-    backup_root = Path(
-        tempfile.mkdtemp(
-            prefix=".workspace-import-bak.",
-            dir=str(_import_staging_parent()),
-        )
-    )
+    backup_root = _import_staging_dir(".workspace-import-bak.")
     preexisting: set[str] = set()
     written: list[str] = []
     try:
@@ -1849,12 +1857,7 @@ def import_workspace(src: Path) -> dict[str, Any]:
 
     staging: Path | None = None
     try:
-        staging = Path(
-            tempfile.mkdtemp(
-                prefix=".workspace-import.",
-                dir=str(_import_staging_parent()),
-            )
-        )
+        staging = _import_staging_dir(".workspace-import.")
         _chmod_private(staging, 0o700)
         extracted = _extract_workspace_archive_to_staging(src, staging)
         _validate_staged_workspace(staging, extracted)

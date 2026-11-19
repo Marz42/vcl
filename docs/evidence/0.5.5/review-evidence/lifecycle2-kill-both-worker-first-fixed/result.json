@@ -1,0 +1,113 @@
+{
+  "all_gone_seconds": 1.4663004549220204e-05,
+  "elapsed_after_kill": 0.07223210300435312,
+  "failed_status_seconds": 0.061858285014750436,
+  "kill_order": [
+    "worker",
+    "supervisor"
+  ],
+  "kill_rc": {
+    "supervisor": 0,
+    "worker": 0
+  },
+  "lifecycle": {
+    "created_at": 1794384473.823104,
+    "deadline_mono": 172159.453885931,
+    "operation_id": "3a114fe8-85ca-46f2-9cee-6cfc893e0f19",
+    "pid_namespace": true,
+    "proc_isolated": true,
+    "supervisor_pid": 3595454,
+    "worker_host_pid": 3595456
+  },
+  "lock_free": true,
+  "lock_free_seconds": 4.4715998228639364e-05,
+  "no_false_success": true,
+  "op": "3a114fe8-85ca-46f2-9cee-6cfc893e0f19",
+  "pid_file_scope": "helper pid files are namespace PIDs; host/NSpid recorded above",
+  "scenario": "kill-both-worker-first",
+  "sentinel_alive_at_end": true,
+  "status_after_query": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "code": "WORKER_LOST",
+    "detail": "operation lock is free and no lifecycle owner is alive",
+    "finished_at": 1794384474.4358003,
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "3a114fe8-85ca-46f2-9cee-6cfc893e0f19",
+    "phase": "backup",
+    "seconds": 60,
+    "started_at": 1794384473.7501123,
+    "state": "FAILED"
+  },
+  "status_file_immediately_after_kill": {
+    "binding": {
+      "instance_id": "inst-node-fix",
+      "node_id": "node-fix",
+      "source_version": "0.5.5"
+    },
+    "helper": "/tmp/payload/bin/vincula",
+    "ionice_applied": true,
+    "migrate_started": false,
+    "nice": 15,
+    "operation_id": "3a114fe8-85ca-46f2-9cee-6cfc893e0f19",
+    "phase": "backup",
+    "seconds": 60,
+    "started_at": 1794384473.7501123,
+    "state": "RUNNING"
+  },
+  "tree_after_alive": {
+    "3595459": false,
+    "3595462": false,
+    "3595463": false,
+    "3595464": false,
+    "3595465": false
+  },
+  "tree_before": [
+    {
+      "host_pid": 3595459,
+      "nspid": [
+        3595459,
+        4
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595462,
+      "nspid": [
+        3595462,
+        7
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595463,
+      "nspid": [
+        3595463,
+        8
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595464,
+      "nspid": [
+        3595464,
+        9
+      ],
+      "state": "S"
+    },
+    {
+      "host_pid": 3595465,
+      "nspid": [
+        3595465,
+        10
+      ],
+      "state": "S"
+    }
+  ]
+}

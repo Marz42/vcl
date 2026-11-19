@@ -19,6 +19,22 @@ CAPABILITIES_SCHEMA = "capabilities/v1"
 CAPABILITIES_MAX_BYTES = 4096
 REMOTE_CMD = ["vcl", "capabilities", "--json"]
 
+# Support is tied to the current paired release, not merely protocol parsing.
+# Older versions can still be identified for explicit one-time migration.
+# Do not normalize prereleases or assume an untested future Node is supported.
+MINIMUM_NODE_VERSION = "0.5.5"
+SUPPORTED_NODE_VERSION = "0.5.5"
+
+
+def node_support(version: str) -> dict[str, Any]:
+    supported = version == SUPPORTED_NODE_VERSION
+    return {
+        "state": "SUPPORTED" if supported else "UNSUPPORTED",
+        "minimum_node_version": MINIMUM_NODE_VERSION,
+        "supported_node_version": SUPPORTED_NODE_VERSION,
+        "node_version": version,
+    }
+
 
 def fetch_capabilities(
     node: dict[str, Any],
@@ -26,11 +42,13 @@ def fetch_capabilities(
     ssh_json: Callable[..., tuple[str, Optional[dict[str, Any]], str]],
 ) -> dict[str, Any]:
     """Return a structured observation result for capabilities/v1."""
+    facts: dict[str, Any] = {}
     state, payload, detail = ssh_json(
         node=node,
         remote_cmd=REMOTE_CMD,
         unsupported_on_missing_command=True,
         max_stdout_bytes=CAPABILITIES_MAX_BYTES,
+        facts=facts,
     )
     if state == "UNSUPPORTED":
         return {
@@ -40,19 +58,35 @@ def fetch_capabilities(
             "credential_class": "observe",
         }
     if state == "AUTH_FAILED":
-        return {
+        # Top-level state stays AUTH_FAILED for every existing consumer; the
+        # specific cause rides alongside it as a machine code (FR-03).
+        result: dict[str, Any] = {
             "state": "AUTH_FAILED",
             "schema": CAPABILITIES_SCHEMA,
-            "detail": detail,
+            "detail": facts.get("summary") or detail,
             "credential_class": "observe",
         }
+        reason = facts.get("code")
+        if reason:
+            result["reason"] = reason
+        hint = facts.get("hint")
+        if hint:
+            result["hint"] = hint
+        return result
     if state != "OK" or payload is None:
-        return {
+        result = {
             "state": "ERROR",
             "schema": CAPABILITIES_SCHEMA,
-            "detail": detail or "capabilities fetch failed",
+            "detail": facts.get("summary") or detail or "capabilities fetch failed",
             "credential_class": "observe",
         }
+        reason = facts.get("code")
+        if reason:
+            result["reason"] = reason
+        hint = facts.get("hint")
+        if hint:
+            result["hint"] = hint
+        return result
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     if len(raw.encode("utf-8")) > CAPABILITIES_MAX_BYTES:
         return {
@@ -70,14 +104,24 @@ def fetch_capabilities(
             "detail": "; ".join(errors),
             "credential_class": "observe",
         }
-    return {
-        "state": "OK",
+    support = node_support(payload["node_version"])
+    result = {
+        "state": "OK" if support["state"] == "SUPPORTED" else "UNSUPPORTED",
         "schema": CAPABILITIES_SCHEMA,
         "credential_class": "observe",
         "node_version": payload.get("node_version"),
         "capabilities": list(payload.get("capabilities") or []),
         "raw": payload,
+        "support": support,
     }
+    if support["state"] != "SUPPORTED":
+        result["reason"] = "NODE_VERSION_UNSUPPORTED"
+        result["detail"] = (
+            "Node version is outside this Controller's supported runtime; "
+            "use node upgrade plan for an explicit migration to 0.5.5. "
+            "Unknown, prerelease and future upgrade sources may be refused."
+        )
+    return result
 
 
 def node_declares_capability(result: dict[str, Any], capability: str) -> bool:

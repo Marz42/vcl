@@ -1,0 +1,508 @@
+{
+  "schema": "findings/v2",
+  "cache_state": "OK",
+  "findings": [
+    {
+      "finding_id": "9c12fa6e7811fe1651a370c2ce5035229a2a9ff5076ca7c0662b2b9775dc4c75",
+      "type": "AUDIT_STALLED",
+      "category": "audit",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Accountd is inactive or its successful poll is older than 90 seconds."
+    },
+    {
+      "finding_id": "0d6dc5906c9df99735ffad80781e9f4a5fba5869256e385ca9dc602b2340b21c",
+      "type": "EXPORT_GAP",
+      "category": "audit",
+      "severity": "ERROR",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "The local sync cursor is expired; retained remote audit history may be missing."
+    },
+    {
+      "finding_id": "eaa8d62776c3431684632d532d9f36e839b7bde55db38c86f3ef853d7d1cfcbb",
+      "type": "SYNC_LAG",
+      "category": "audit",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Unreceived export records remain and the last successful sync is older than 300 seconds."
+    },
+    {
+      "finding_id": "ae30ce5374ac37f26a9f01f6306c921c681c0c86452e75fa81ed2f1d291181e1",
+      "type": "DISK_PRESSURE",
+      "category": "node",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Filesystem usage is at least 90%; recovery requires usage below 85%."
+    },
+    {
+      "finding_id": "99382c6396866996e75d518753de0155ee0905ef6d68d32154fe36b77d1a251c",
+      "type": "MEMORY_PRESSURE",
+      "category": "node",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Memory usage is at least 90%; recovery requires usage below 85%."
+    },
+    {
+      "finding_id": "07247c9b845401b908ea7fe5693e0b326dfcefd366d56ed4d7fc8e3cffb506cc",
+      "type": "TELEMETRY_STALE",
+      "category": "observation",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Telemetry is older than 90 seconds, replayed, or its clock is more than 30 seconds ahead."
+    },
+    {
+      "finding_id": "198941116b3990e4ece4e40bea47a1ef228628f8029665debfafa7aa6cc37d3d",
+      "type": "SCHEMA_MISMATCH",
+      "category": "audit",
+      "severity": "ERROR",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "The Node accounting database does not satisfy the required schema 4 contract."
+    },
+    {
+      "finding_id": "0462f0ea7b9eec301d46be9ec7835183843250b19f6fc1f35300bb5c54d6be0b",
+      "type": "ACCOUNTING_DB_CORRUPT",
+      "category": "audit",
+      "severity": "ERROR",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "SQLite reported accounting database corruption; audit data is not trustworthy."
+    },
+    {
+      "finding_id": "d0c6da747dbee3e7c9dc4ed093cfe4c3c15adb7cea68d5322cb02780c47e17cb",
+      "type": "EXPORT_SEQUENCE_REGRESSION",
+      "category": "audit",
+      "severity": "ERROR",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "The audit export counter decreased within the same Node installation."
+    },
+    {
+      "finding_id": "29cff390ed36419bf6f21c99966d767b06a65c19b3acb5728d994df2ece075ba",
+      "type": "SERVICE_RESTART_LOOP",
+      "category": "node",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "At least three automatic sing-box restarts occurred within 300 seconds."
+    },
+    {
+      "finding_id": "d409f39d0fc7cb95afca9437bf4b9594154b0234f665a7ed0668f90409dbf573",
+      "type": "NETWORK_RATE_ANOMALY",
+      "category": "node",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Network rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+    },
+    {
+      "finding_id": "4cd3e9e62be98b6e0b4cfda097190a71dd6419f6d50e131527f9c3844249140e",
+      "type": "USER_TRAFFIC_SPIKE",
+      "category": "user",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "User traffic rate exceeds the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+    },
+    {
+      "finding_id": "30d7250844274bee359897a10587e9c4d4c236f2784911e44eab4f1039e4a3f9",
+      "type": "USER_CONNECTION_SPIKE",
+      "category": "user",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "Open user connections exceed the rolling median/MAD threshold after at least 20 baseline samples spanning 540 seconds."
+    },
+    {
+      "finding_id": "4d671cd5202ea258c2f3647b7fff86b77986609a63c83a354741cd3fe8119eb7",
+      "type": "SUSTAINED_TRAFFIC_ANOMALY",
+      "category": "user",
+      "severity": "WARNING",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "state": "ACTIVE",
+      "first_seen": 1790438400,
+      "last_seen": 1790438400,
+      "evidence": {
+        "sample_count": 20
+      },
+      "explanation": "User traffic stayed above the rolling median/MAD threshold for at least 300 continuous seconds."
+    }
+  ],
+  "evaluations": [
+    {
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "evaluated_at": 1790438400,
+      "checks": {
+        "AUDIT_STALLED": "UNKNOWN",
+        "EXPORT_GAP": "UNKNOWN",
+        "SYNC_LAG": "UNKNOWN",
+        "DISK_PRESSURE": "UNKNOWN",
+        "MEMORY_PRESSURE": "UNKNOWN",
+        "TELEMETRY_STALE": "UNKNOWN",
+        "SCHEMA_MISMATCH": "UNKNOWN",
+        "ACCOUNTING_DB_CORRUPT": "UNKNOWN",
+        "EXPORT_SEQUENCE_REGRESSION": "UNKNOWN",
+        "SERVICE_RESTART_LOOP": "UNKNOWN",
+        "NETWORK_RATE_ANOMALY": "UNKNOWN"
+      },
+      "context": {},
+      "audit": {},
+      "user_coverage": {},
+      "baselines": {}
+    },
+    {
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "evaluated_at": 1790438400,
+      "checks": {
+        "USER_TRAFFIC_SPIKE": "UNKNOWN",
+        "USER_CONNECTION_SPIKE": "UNKNOWN",
+        "SUSTAINED_TRAFFIC_ANOMALY": "UNKNOWN"
+      },
+      "context": {},
+      "audit": {},
+      "user_coverage": {},
+      "baselines": {}
+    }
+  ],
+  "events": [
+    {
+      "id": "aca185100d31bcfe3c4d76ed59dfe02ff3c160ee4b1a5135b2f133fb255fc232",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "AUDIT_STALLED"
+      }
+    },
+    {
+      "id": "4c19c3a6dd72e9022cf82e06421499b3b8a35a506bb9a185250f09d0ec8192fb",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "EXPORT_GAP"
+      }
+    },
+    {
+      "id": "529c0c92b57e7692d32ac3d60813ef52063cd4f0a3ae88114be03d675f141f35",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SYNC_LAG"
+      }
+    },
+    {
+      "id": "23cd1fe16d61845e05816ef7917fabe6a8633524d5f1c0814c2f78eb09fd30fa",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "DISK_PRESSURE"
+      }
+    },
+    {
+      "id": "0e0fd73c8ae33a501748176f80e91d05f25f40c9a43878d0203a85f0ac1042ae",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "MEMORY_PRESSURE"
+      }
+    },
+    {
+      "id": "52bebdf229213fe578fbc77dc87791f47c04f0fecf91d4289399c82201fa725c",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "TELEMETRY_STALE"
+      }
+    },
+    {
+      "id": "2d6e2326c4e25015fb44aebde6ca9f7e051d1855ee80db18fe6849924a4a4c94",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SCHEMA_MISMATCH"
+      }
+    },
+    {
+      "id": "8d7fe6a31ba653336eafff91e1dc70303afb870e20e997931cb4da3b5633fd8d",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "ACCOUNTING_DB_CORRUPT"
+      }
+    },
+    {
+      "id": "cd557a51a2090b48c20a98bbd7c0982ab858887d912713ff5ef9c98220604338",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "EXPORT_SEQUENCE_REGRESSION"
+      }
+    },
+    {
+      "id": "56e11bf8c51f5d18bc15c90ad404a0d1db5f4cd875939011f0d0cdf0bdca204a",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "SERVICE_RESTART_LOOP"
+      }
+    },
+    {
+      "id": "d5107acbce665c54966fc32c4d60a42d028af091a1c984ff8a33ff7c838ecd8b",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "node",
+        "name": "example",
+        "key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6"
+      },
+      "detail": {
+        "type": "NETWORK_RATE_ANOMALY"
+      }
+    },
+    {
+      "id": "5cf8423b3221f92664bc4d2cc7cac6df133c630dc96ed08e0fc02a6b4439edad",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "USER_TRAFFIC_SPIKE"
+      }
+    },
+    {
+      "id": "9ad25e8fbc80c3ad9923d36c583d3275966230e0c0999aff14d60840a0ffa428",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "USER_CONNECTION_SPIKE"
+      }
+    },
+    {
+      "id": "25013f4da586f2e459e752f1f98bf5a38f419b79dba71ab32a901f13501a88a9",
+      "at": 1790438400,
+      "kind": "FINDING_OPEN",
+      "subject": {
+        "kind": "user",
+        "name": "example",
+        "key": "391e502581cc55b270139d1ec6a652de6e197a83ee4b55e3336438a2928f58f4",
+        "node_key": "c2e1405db2f9b352ad9c28f5337c92b9d471d2a0903e9eadb7057ecdec6081e6",
+        "user_key": "6666666666666666666666666666666666666666666666666666666666666666",
+        "user_tag": "alice"
+      },
+      "detail": {
+        "type": "SUSTAINED_TRAFFIC_ANOMALY"
+      }
+    }
+  ],
+  "truncated": []
+}

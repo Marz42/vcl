@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import ipaddress
 import json
 import os
@@ -23,6 +24,10 @@ ACCOUNTING_MODE = "approximate / Clash polling"
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 1000
 
+_store_spec = importlib.util.spec_from_file_location('vcl_stats_store', Path(__file__).with_name('storage_v5.py'))
+_STORE = importlib.util.module_from_spec(_store_spec)
+_store_spec.loader.exec_module(_STORE)
+
 
 @dataclass
 class Meta:
@@ -34,6 +39,7 @@ class Meta:
     ip_only_coverage_pct: Optional[float]
     period_start: str
     period_end: str
+    history_coverage: Dict[str, Any] = field(default_factory=lambda: {"status": "LEGACY_UNVERIFIED"})
 
 
 @dataclass
@@ -214,7 +220,7 @@ def freshness_label(last_success_at: str) -> str:
 
 
 def open_db(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -263,6 +269,7 @@ def build_meta(
     last_success_at: str,
 ) -> Meta:
     host_pct, ip_pct = coverage_from_daily(conn, start, end)
+    coverage = _STORE.history_coverage(conn)
     return Meta(
         accounting_mode=ACCOUNTING_MODE,
         collector_state=collector_state or "unknown",
@@ -272,6 +279,7 @@ def build_meta(
         ip_only_coverage_pct=ip_pct,
         period_start=start,
         period_end=end,
+        history_coverage=coverage,
     )
 
 
@@ -324,7 +332,7 @@ def query(
     if not table_exists(conn, "daily_usage"):
         conn.close()
         print("(daily_usage missing — run vincula-accountd once)", file=sys.stderr)
-        raise SystemExit(0)
+        raise SystemExit(1)
 
     meta = build_meta(conn, start, end, collector_state, last_success_at)
     warning = None

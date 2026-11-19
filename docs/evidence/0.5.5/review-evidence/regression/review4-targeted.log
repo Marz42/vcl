@@ -1,0 +1,35 @@
+test_new_helper_preflight_then_real_rollback (tests.test_upgrade_prepare.AutoRollbackCompatibilityTests.test_new_helper_preflight_then_real_rollback) ... ok
+test_old_or_unknown_installed_helper_is_not_used_for_mutation (tests.test_upgrade_prepare.AutoRollbackCompatibilityTests.test_old_or_unknown_installed_helper_is_not_used_for_mutation) ... ok
+test_create_streams_without_extracting_and_detects_tamper (tests.test_upgrade_prepare.BackupTests.test_create_streams_without_extracting_and_detects_tamper) ... /usr/lib/python3.13/tempfile.py:1131: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/vincula-members-zdh86che'>
+  _warnings.warn(warn_message, ResourceWarning)
+/usr/lib/python3.13/tempfile.py:1131: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/vincula-members-ze00npbz'>
+  _warnings.warn(warn_message, ResourceWarning)
+ok
+test_snapshot_preserves_database (tests.test_upgrade_prepare.BackupTests.test_snapshot_preserves_database) ... ok
+test_snapshot_rejects_non_wal (tests.test_upgrade_prepare.BackupTests.test_snapshot_rejects_non_wal) ... ok
+test_fd_verify_accepts_intact_and_detects_truncation_and_tamper (tests.test_upgrade_prepare.BackupVerificationTests.test_fd_verify_accepts_intact_and_detects_truncation_and_tamper) ... ok
+test_snapshot_deadline_is_explicit (tests.test_upgrade_prepare.BackupVerificationTests.test_snapshot_deadline_is_explicit) ... ok
+test_archive_stability_rejects_in_place_growth (tests.test_upgrade_prepare.LinuxWorkerTests.test_archive_stability_rejects_in_place_growth) ... ok
+test_read_status_converges_after_lock_release (tests.test_upgrade_prepare.LinuxWorkerTests.test_read_status_converges_after_lock_release) ... ok
+test_read_status_keeps_terminal_state_published_before_lock (tests.test_upgrade_prepare.LinuxWorkerTests.test_read_status_keeps_terminal_state_published_before_lock) ... /usr/lib/python3.13/unittest/mock.py:2247: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f64070f1a80>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/unittest/mock.py:2247: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f64062604f0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_start_refuses_without_pid_namespace (tests.test_upgrade_prepare.LinuxWorkerTests.test_start_refuses_without_pid_namespace) ... ok
+test_worker_deadline_guard_covers_blocked_verification (tests.test_upgrade_prepare.LinuxWorkerTests.test_worker_deadline_guard_covers_blocked_verification) ... ok
+test_worker_deadline_guard_survives_status_write_failure (tests.test_upgrade_prepare.LinuxWorkerTests.test_worker_deadline_guard_survives_status_write_failure) ... deadline guard: cannot persist status: [Errno 28] No space left on device
+ok
+test_worker_success_verifies_archive_and_runs_checkpoint (tests.test_upgrade_prepare.LinuxWorkerTests.test_worker_success_verifies_archive_and_runs_checkpoint) ... ok
+test_worker_with_bad_helper_does_not_succeed (tests.test_upgrade_prepare.LinuxWorkerTests.test_worker_with_bad_helper_does_not_succeed) ... ok
+test_apply_unknown_preserves_stage_and_never_installs (tests.test_upgrade_prepare.PrepareTests.test_apply_unknown_preserves_stage_and_never_installs) ... ok
+test_lost_start_reply_queries_same_operation (tests.test_upgrade_prepare.PrepareTests.test_lost_start_reply_queries_same_operation) ... ok
+test_unknown_status_does_not_mean_cancelled (tests.test_upgrade_prepare.PrepareTests.test_unknown_status_does_not_mean_cancelled) ... ok
+test_wrong_binding_refused (tests.test_upgrade_prepare.PrepareTests.test_wrong_binding_refused) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 10.127s
+
+OK

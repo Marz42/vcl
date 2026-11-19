@@ -1,0 +1,65 @@
+{
+  "artifacts": {
+    "vincula-controller-0.5.5.zip": {
+      "equal": true,
+      "sha256_A": "784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892",
+      "sha256_B": "784ca4d0ef6e8181d683ab6f8ee998e216038cbf789c257c7dd50936394c7892"
+    },
+    "vincula-node-0.5.5.tar.gz": {
+      "equal": true,
+      "sha256_A": "7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b",
+      "sha256_B": "7b7a1b60d5dfa228291b3b99ac2dd87afd97c22d22d86f9d7732c86157b63c4b"
+    }
+  },
+  "build_dirs": {
+    "A": "/tmp/vcl-review4b-cand-A",
+    "B": "/tmp/vcl-review4b-cand-B"
+  },
+  "candidate": true,
+  "code_sha256": {
+    "bin/vincula": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+    "lib/node_upgrade.py": "d98d10764682ecfcb3578ca60ec904d5002f03d671cc427a08e93b0dba182f54",
+    "lib/upgrade_prepare.py": "46c7fca93b14f431ed5cefb9895017a6afb6ebe5c279d424ed644cce74e590c9",
+    "lib/vincula-backup.py": "5f5392097c3db138d43e8f59a27c0ddae7b9681642f30e0277097421d703aca5",
+    "release.lock": "29dabae9586054f8f17a7834d311409229d4266d788359822e9a7b8a184d50cd",
+    "tests/test_upgrade_prepare.py": "ed130a184cf6209cdd7bbf65f221bc80da7ec4c4ec6d373d373a6bf7923c0f1d"
+  },
+  "commands": [
+    "SOURCE_DATE_EPOCH=1794384920 bash scripts/gen-release-lock.sh",
+    "SOURCE_DATE_EPOCH=1794384920 bash scripts/build-release.sh",
+    "SOURCE_DATE_EPOCH=1794384920 bash scripts/build-controller.sh"
+  ],
+  "commit": "21aba22157994d70bfcf2c17c1ec4ff38b9e9880",
+  "content_checks": {
+    "archive_stability_uses_saved_size_and_mtime": true,
+    "checkpoint_manifest_and_verify_only_present": true,
+    "deadline_guard_sets_event_before_save": true,
+    "node_upgrade_preflights_verify_only": true,
+    "read_status_rechecks_after_lock": true,
+    "upgrade_prepare_has_worker_deadline_guard": true,
+    "vincula_backup_rejects_non_wal": true
+  },
+  "controller_lock_verified": true,
+  "frozen": false,
+  "node_release_lock_verified": true,
+  "not_frozen_note": "Candidate only; not a release freeze and not published.",
+  "package_smoke": {
+    "controller_help_rc": 0,
+    "node_help_rc": 0
+  },
+  "review_round": 4,
+  "schema_version": 1,
+  "source_date_epoch": 1794384920,
+  "source_manifest": {
+    "path": "docs/evidence/0.5.5/FINAL_SOURCE_MANIFEST.txt",
+    "scope": "f86dd5e supported source path set refreshed at 21aba22; review-only docs/artifacts are outside this manifest",
+    "sha256": "252cfc6c519356251a17871e48da14287ee427566e6ab22756ffa0b06a825161",
+    "tracked_files": 393
+  },
+  "toolchain": {
+    "gcc": "gcc (Debian 14.2.0-19) 14.2.0",
+    "python": "3.13.5",
+    "sqlite": "3.46.1",
+    "tar": "GNU tar 1.35"
+  }
+}

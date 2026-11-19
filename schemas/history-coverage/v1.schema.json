@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vincula.local/schemas/history-coverage/v1.schema.json",
+  "title": "history-coverage/v1",
+  "description": "Read-only stats/audit metadata. Snapshot intervals are envelopes and never prove complete collection or recover lost history.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "status", "day_basis", "completeness", "snapshot_at", "intervals_are_envelopes", "raw_at_snapshot", "legacy_at_snapshot", "legacy_unverified", "missing_history_recovered", "gaps"],
+  "properties": {
+    "schema": {"const": "history-coverage/v1"},
+    "schema_version": {"const": 1},
+    "status": {"enum": ["NEW_DATABASE", "RAW_RECONSTRUCTED", "LEGACY_UNVERIFIED", "UNKNOWN"]},
+    "day_basis": {"const": "UTC_CONNECTION_START"},
+    "completeness": {"const": "NOT_PROVEN"},
+    "snapshot_at": {"type": ["string", "null"], "format": "date-time"},
+    "intervals_are_envelopes": {"const": true},
+    "raw_at_snapshot": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["rows", "from", "through"],
+      "properties": {"rows": {"type": "integer", "minimum": 0}, "from": {"type": ["string", "null"], "format": "date-time"}, "through": {"type": ["string", "null"], "format": "date-time"}}
+    },
+    "legacy_at_snapshot": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["rows", "from_date", "through_date"],
+      "properties": {"rows": {"type": "integer", "minimum": 0}, "from_date": {"type": ["string", "null"]}, "through_date": {"type": ["string", "null"]}}
+    },
+    "legacy_unverified": {"type": "boolean"},
+    "missing_history_recovered": {"const": false},
+    "raw_pruned_max_export_seq": {"type": "integer", "minimum": 0},
+    "daily_retention_cutoff": {"type": ["string", "null"]},
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {"kind": {"enum": ["LEGACY_DAILY_UNVERIFIED", "RAW_EVENTS_PRUNED", "HISTORY_NOT_ASSESSED"]}, "from_date": {"type": ["string", "null"]}, "through_date": {"type": ["string", "null"]}, "through_export_seq": {"type": "integer", "minimum": 1}}
+      }
+    }
+  }
+}

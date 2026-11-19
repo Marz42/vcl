@@ -1,0 +1,323 @@
+{
+  "$defs": {
+    "dimension": {
+      "additionalProperties": false,
+      "properties": {
+        "failures": {
+          "maximum": 1001,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "enum": [
+            "NO_OBSERVATION",
+            "ERROR",
+            "TIMEOUT",
+            "SSH_RESPONDED",
+            "AUTH_FAILED",
+            "UNSUPPORTED",
+            "FRESH",
+            "TELEMETRY_STALE",
+            "SERVICE_INACTIVE",
+            "POLL_AGE_MISSING",
+            "POLL_STALLED",
+            "POLL_RECENT",
+            "OK",
+            "NOT_CONFIGURED",
+            "TLS_FAILED",
+            "DNS_FAILED",
+            "CONNECT_FAILED",
+            "HTTP_FAILED",
+            "RUNTIME_UNAVAILABLE",
+            "INVALID_CONFIG",
+            "CACHE_STALE"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "successes": {
+          "maximum": 1001,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "reason",
+        "failures",
+        "successes"
+      ],
+      "type": "object"
+    },
+    "health": {
+      "additionalProperties": false,
+      "properties": {
+        "accounting": {
+          "$ref": "#/$defs/dimension"
+        },
+        "node": {
+          "$ref": "#/$defs/dimension"
+        },
+        "observation": {
+          "$ref": "#/$defs/dimension"
+        },
+        "proxy": {
+          "$ref": "#/$defs/dimension"
+        }
+      },
+      "required": [
+        "node",
+        "observation",
+        "proxy",
+        "accounting"
+      ],
+      "type": "object"
+    },
+    "node": {
+      "additionalProperties": false,
+      "properties": {
+        "health": {
+          "$ref": "#/$defs/health"
+        },
+        "instance_id": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_health": {
+          "$ref": "#/$defs/health"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/number"
+          },
+          "propertyNames": {
+            "enum": [
+              "uptime_seconds",
+              "load1",
+              "load5",
+              "load15",
+              "memory_total_bytes",
+              "memory_used_bytes",
+              "disk_total_bytes",
+              "disk_used_bytes",
+              "rx_bytes",
+              "tx_bytes",
+              "connections",
+              "restart_count",
+              "last_poll_age_seconds",
+              "export_seq",
+              "last_event_age_seconds",
+              "rx_bytes_per_second",
+              "tx_bytes_per_second"
+            ]
+          },
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+          "type": "string"
+        },
+        "node_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "observation_state": {
+          "enum": [
+            "OK",
+            "ERROR",
+            "AUTH_FAILED",
+            "UNSUPPORTED",
+            "TIMEOUT",
+            "UNKNOWN"
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/$defs/time"
+        },
+        "overall": {
+          "$ref": "#/$defs/state"
+        },
+        "probe": {
+          "additionalProperties": false,
+          "properties": {
+            "connect_ms": {
+              "$ref": "#/$defs/number"
+            },
+            "reason": {
+              "enum": [
+                "OK",
+                "NOT_CONFIGURED",
+                "TIMEOUT",
+                "TLS_FAILED",
+                "DNS_FAILED",
+                "CONNECT_FAILED",
+                "HTTP_FAILED",
+                "RUNTIME_UNAVAILABLE",
+                "INVALID_CONFIG"
+              ]
+            },
+            "success": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "total_ms": {
+              "$ref": "#/$defs/number"
+            },
+            "ttfb_ms": {
+              "$ref": "#/$defs/number"
+            }
+          },
+          "required": [
+            "success",
+            "reason",
+            "connect_ms",
+            "ttfb_ms",
+            "total_ms"
+          ],
+          "type": "object"
+        },
+        "received_at": {
+          "$ref": "#/$defs/time"
+        },
+        "sampled_at": {
+          "$ref": "#/$defs/time"
+        },
+        "services": {
+          "additionalProperties": false,
+          "properties": {
+            "accountd_active": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "sing_box_active": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "sing_box_active",
+            "accountd_active"
+          ],
+          "type": "object"
+        },
+        "telemetry_age_seconds": {
+          "$ref": "#/$defs/number"
+        }
+      },
+      "required": [
+        "name",
+        "node_id",
+        "instance_id",
+        "received_at",
+        "sampled_at",
+        "observed_at",
+        "observation_state",
+        "health",
+        "overall",
+        "metrics",
+        "services",
+        "probe",
+        "telemetry_age_seconds"
+      ],
+      "type": "object"
+    },
+    "number": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "HEALTHY",
+        "SUSPECT",
+        "DEGRADED",
+        "UNREACHABLE",
+        "RECOVERING",
+        "UNKNOWN"
+      ]
+    },
+    "time": {
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cache_state": {
+      "enum": [
+        "OK",
+        "EMPTY",
+        "PARTIAL",
+        "CACHE_CORRUPT"
+      ]
+    },
+    "generated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
+    "run": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_write_errors": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "finding_write_errors": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inspection_write_errors": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampled_nodes": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sampled_nodes",
+        "cache_write_errors",
+        "finding_write_errors",
+        "inspection_write_errors"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "monitor/v3"
+    }
+  },
+  "required": [
+    "schema",
+    "generated_at",
+    "cache_state",
+    "nodes"
+  ],
+  "title": "monitor/v3",
+  "type": "object"
+}

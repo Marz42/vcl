@@ -1,0 +1,33 @@
+{
+  "candidate_helper_sha256": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+  "embedded_helper_sha256": "8314b5385a689ccc419ad757779096f6f960e46d796103b68af7418f074215f8",
+  "new_verify_err": "ERROR: checkpoint integrity verification failed: type/size mismatch: accounting.db\n",
+  "new_verify_only_rc": 1,
+  "new_verify_only_rc2": 1,
+  "new_verify_only_result": {
+    "error": "checkpoint_integrity_failed",
+    "mode": "in_place",
+    "ok": false,
+    "schema_version": 1
+  },
+  "new_verify_only_result2": {
+    "error": "checkpoint_integrity_failed",
+    "mode": "in_place",
+    "ok": false,
+    "schema_version": 1
+  },
+  "new_verify_only_target_unchanged": true,
+  "old_helper_accepts_without_manifest_check": true,
+  "old_helper_replaced_target": true,
+  "old_helper_result": {
+    "mode": "in_place",
+    "ok": true,
+    "path": "/var/backups/vincula/upgrade-checkpoint-20261111T081359Z.8n5UBT",
+    "restored_version": "0.5.5",
+    "schema_version": 1
+  },
+  "old_helper_rollback_rc": 0,
+  "old_helper_sha256": "aca00a2001168727000756bd36fecbbb0a0346a92b88093e36b1bf2a90ed3348",
+  "old_rollback_err": "",
+  "target_unchanged_by_new_verify": false
+}

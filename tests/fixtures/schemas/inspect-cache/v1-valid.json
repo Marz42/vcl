@@ -1,0 +1,409 @@
+{
+  "cache_state": "OK",
+  "nodes": [
+    {
+      "baseline": {
+        "accepted_at": 1791216000,
+        "baseline_sha256": "cd3980b5c31bb81db39c3b4d57f22d2edebfef94bd05bcfaa8d22c0f59e3e283",
+        "instance_id": "22222222-2222-4222-8222-222222222222",
+        "observed_at": "2026-10-05T16:00:00Z",
+        "snapshot_sha256": "0552ee6cddf76f02f2456cd52edc6d5b3823a34b4c65482d7e9063b59a90f397",
+        "source": "LOCAL_ACCEPTED"
+      },
+      "drift": {
+        "checks": {
+          "binary": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "config": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "listeners": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "runtime": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "services": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "units": {
+            "changed_count": 0,
+            "state": "MATCH"
+          },
+          "versions": {
+            "changed_count": 0,
+            "state": "MATCH"
+          }
+        },
+        "state": "MATCH"
+      },
+      "instance_id": "22222222-2222-4222-8222-222222222222",
+      "name": "test",
+      "node_id": "11111111-1111-4111-8111-111111111111",
+      "observed_at": "2026-10-05T16:00:00Z",
+      "reason": "NONE",
+      "snapshot": {
+        "clock": {
+          "ntp_active": true,
+          "reason": "NONE",
+          "state": "OK",
+          "synchronized": true,
+          "timezone": "UTC"
+        },
+        "cpu": {
+          "count": 2,
+          "reason": "NONE",
+          "state": "OK"
+        },
+        "filesystems": {
+          "items": [
+            {
+              "available_bytes": 204800,
+              "filesystem": "ext4",
+              "mount": "/",
+              "total_bytes": 409600
+            },
+            {
+              "available_bytes": 204800,
+              "filesystem": "ext4",
+              "mount": "/var",
+              "total_bytes": 409600
+            },
+            {
+              "available_bytes": 204800,
+              "filesystem": "ext4",
+              "mount": "/run",
+              "total_bytes": 409600
+            },
+            {
+              "available_bytes": 204800,
+              "filesystem": "ext4",
+              "mount": "/tmp",
+              "total_bytes": 409600
+            }
+          ],
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "fingerprints": {
+          "items": [
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "sing_box_unit",
+              "reason": "NONE",
+              "sha256": "bed818d2e53ca2468c0e0f4ecab8181e54823c2489c8e2235e993aca26becb9d",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "accountd_unit",
+              "reason": "NONE",
+              "sha256": "bed818d2e53ca2468c0e0f4ecab8181e54823c2489c8e2235e993aca26becb9d",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "observer_socket",
+              "reason": "NONE",
+              "sha256": "bed818d2e53ca2468c0e0f4ecab8181e54823c2489c8e2235e993aca26becb9d",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "observer_unit",
+              "reason": "NONE",
+              "sha256": "bed818d2e53ca2468c0e0f4ecab8181e54823c2489c8e2235e993aca26becb9d",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "helper",
+              "reason": "NONE",
+              "sha256": "b081b1315c39cb74fd361a9aa85ad14d6a674403259f85a54613d87e5a6999f9",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "common",
+              "reason": "NONE",
+              "sha256": "a492929a1908990cf83226ac4717a5ebeda89c1c3554a485f14bdf01c040586b",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "accountd",
+              "reason": "NONE",
+              "sha256": "40aea59810c0cad74a62c1f374505987ca8b7d5e0d901fb81333e294cc74af0f",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "accountd_runtime",
+              "reason": "NONE",
+              "sha256": "6c5bf41670160d559d5293ffb9915a6ad3933e1a61865c3b4953a26476e777ce",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "observer",
+              "reason": "NONE",
+              "sha256": "2cbff011e1466d04ffa1c8855bc93c9ff200610e8668a3aaf350c493f028380a",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "telemetry",
+              "reason": "NONE",
+              "sha256": "bb35f7e63b9c6b2e7c82dcb5448a358cb1fb8044ae3c819f1c85794d9792d5d3",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "inspect",
+              "reason": "NONE",
+              "sha256": "54f2ecf94fa164fdfa0a0473429ef90ab2762c5aae71c6d97e73d076a77a2ec4",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "stats",
+              "reason": "NONE",
+              "sha256": "bd8f8d6b6e72a99538c9e1c04282ee2c22319c80f84f93b9a71f737a90f7b864",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "audit",
+              "reason": "NONE",
+              "sha256": "b1d9dfee9b5bdc6356fffb758034e6bc3fac253590370b4667898c15797139ba",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "backup",
+              "reason": "NONE",
+              "sha256": "1dff353996c1c3a562d6c4b8b18877dccd989a8129b6a1dcbd01155e36e03774",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "config_nonsecret",
+              "reason": "NONE",
+              "sha256": "df280beaa4cd8372f273c62fb92f9d68a26383baab9ecaf052185459b8724e9d",
+              "state": "OK",
+              "uid": 0
+            },
+            {
+              "gid": 0,
+              "mode": 438,
+              "name": "binary",
+              "reason": "NONE",
+              "sha256": "d80a66e71a525be3d1a2ad2961c2dcd587e79b832a3e976966c29ca4aebfa8d5",
+              "state": "OK",
+              "uid": 0
+            }
+          ],
+          "projection": "managed-config/v1",
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "firewall": {
+          "backend": "NFTABLES",
+          "ipv4_available": true,
+          "ipv6_available": true,
+          "items": [
+            {
+              "chain_key": "83011f6f1d6123d1dfce3d385a96446014d94d8ce98cf685605c45b2442b7334",
+              "family": "inet",
+              "hook": "input",
+              "policy": "DROP"
+            }
+          ],
+          "reason": "NONE",
+          "rule_count": 1,
+          "state": "OK",
+          "truncated": false
+        },
+        "instance_id": "22222222-2222-4222-8222-222222222222",
+        "interfaces": {
+          "items": [
+            {
+              "loopback": false,
+              "mtu": 1500,
+              "name": "eth0",
+              "up": true
+            },
+            {
+              "loopback": true,
+              "mtu": 1500,
+              "name": "lo",
+              "up": true
+            }
+          ],
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "limits": {
+          "observer_nofile_hard": 65536,
+          "observer_nofile_soft": 65536,
+          "reason": "NONE",
+          "state": "OK",
+          "system_file_max": 100000
+        },
+        "listeners": {
+          "items": [
+            {
+              "address": "0.0.0.0",
+              "family": "IPV4",
+              "interface": null,
+              "port": 443,
+              "protocol": "TCP",
+              "scope": "NON_LOOPBACK"
+            },
+            {
+              "address": "127.0.0.1",
+              "family": "IPV4",
+              "interface": null,
+              "port": 9090,
+              "protocol": "TCP",
+              "scope": "LOOPBACK"
+            }
+          ],
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "memory": {
+          "available_bytes": 524288,
+          "reason": "NONE",
+          "state": "OK",
+          "swap_free_bytes": 0,
+          "swap_total_bytes": 0,
+          "total_bytes": 1048576
+        },
+        "node_id": "11111111-1111-4111-8111-111111111111",
+        "observed_at": "2026-10-05T16:00:00Z",
+        "os": {
+          "id": "ubuntu",
+          "kernel": "6.8.0-fixture",
+          "reason": "NONE",
+          "state": "OK",
+          "supported": true,
+          "version_id": "24.04"
+        },
+        "qdisc": {
+          "items": [
+            {
+              "interface": "eth0",
+              "kind": "fq",
+              "root": true
+            }
+          ],
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "schema": "inspect/v1",
+        "services": {
+          "items": [
+            {
+              "active": true,
+              "enabled": true,
+              "group": "sing-box",
+              "limit_nofile_hard": 65536,
+              "limit_nofile_soft": 65536,
+              "name": "sing-box.service",
+              "reason": "NONE",
+              "restart_count": 1,
+              "state": "OK",
+              "user": "sing-box"
+            },
+            {
+              "active": true,
+              "enabled": true,
+              "group": "sing-box",
+              "limit_nofile_hard": 65536,
+              "limit_nofile_soft": 65536,
+              "name": "vincula-accountd.service",
+              "reason": "NONE",
+              "restart_count": 1,
+              "state": "OK",
+              "user": "sing-box"
+            }
+          ],
+          "reason": "NONE",
+          "state": "OK",
+          "truncated": false
+        },
+        "state": "OK",
+        "sysctl": {
+          "net.core.default_qdisc": "fq",
+          "net.core.somaxconn": 1,
+          "net.ipv4.ip_forward": 1,
+          "net.ipv4.tcp_congestion_control": "cubic",
+          "net.ipv4.tcp_mtu_probing": 1,
+          "net.ipv6.conf.all.forwarding": 1,
+          "reason": "NONE",
+          "state": "OK"
+        },
+        "updates": {
+          "available_count": 2,
+          "reason": "NONE",
+          "reboot_marker_present": false,
+          "security_count": 1,
+          "state": "OK"
+        },
+        "versions": {
+          "installed_vcl": "0.5.2",
+          "reason": "NONE",
+          "sing_box": "1.13.18",
+          "sing_box_source": "INSTALLED_MANIFEST",
+          "state": "OK",
+          "vcl": "0.5.2"
+        }
+      },
+      "snapshot_sha256": "0552ee6cddf76f02f2456cd52edc6d5b3823a34b4c65482d7e9063b59a90f397",
+      "state": "OK"
+    }
+  ],
+  "schema": "inspect-cache/v1",
+  "truncated": false
+}
